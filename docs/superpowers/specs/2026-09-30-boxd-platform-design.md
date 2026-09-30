@@ -1,7 +1,7 @@
 # Self-hosted box platform
 
 Date: 2026-09-30
-Status: Architecture approved in conversation; written specification pending review.
+Status: Architecture and Rust selection approved in conversation; written specification pending review.
 
 ## Outcome
 
@@ -11,14 +11,15 @@ The first milestone is a single-host runtime with a CLI and real KVM integration
 
 ## Established environment
 
-The repository was empty at design time. The development runner is Linux x86_64 with accessible `/dev/kvm`, cgroup v2, Go 1.25.6, and matching Firecracker/jailer 1.16.0 binaries. Its workspace filesystem is ext4, not a reflink-capable filesystem. These observations are development facts, not portable installation assumptions.
+The repository was empty at design time. The development runner is Linux x86_64 with accessible `/dev/kvm`, cgroup v2, stable Rust/Cargo 1.95.0, and matching Firecracker/jailer 1.16.0 binaries. Its default Rust toolchain is nightly, so the project must select its pinned stable toolchain explicitly. Its workspace filesystem is ext4, not a reflink-capable filesystem. These observations are development facts, not portable installation assumptions.
 
 No existing host configuration, firewall, service, logical volume, or filesystem is changed by this design approval. Privileged installation and storage provisioning require explicit approval before execution.
 
 ## Runtime decisions
 
 - Use Firecracker/KVM, not containers as the security boundary for customer code.
-- Implement host orchestration and the guest agent in Go. Use the standard library where practical; use maintained Linux/vsock libraries rather than inventing an ABI wrapper.
+- Implement host orchestration, CLI, guest agent, and the later service backend in Rust. Use Rust 1.95.0, edition 2024, with a pinned stable toolchain and committed Cargo.lock. Rust gives explicit resource ownership and allocation control without a garbage collector; this is not an unmeasured claim of faster VM launches.
+- Use Tokio for asynchronous process/socket orchestration, Serde for versioned wire formats, and maintained Linux/vsock crates rather than inventing ABI wrappers. Keep host-only dependencies out of the guest agent. Use typed errors, bounded tasks, explicit cancellation, and safe resource wrappers; Rust memory safety does not make external side effects or crash recovery transactional.
 - Start on Linux x86_64 with cgroup v2 and an exact, matching Firecracker/jailer version pair. Validate 1.16.0 first because it is installed; record the actual binary hashes in compatibility metadata. Do not silently upgrade system binaries.
 - Use full snapshots and Firecracker's file-backed, demand-paged memory restoration. Do not implement a userfaultfd pager or differential memory snapshot chain in milestone one.
 - Build a minimal trusted guest fixture first, then a versioned Ubuntu 24.04 development image. Pin kernel, root filesystem inputs, and guest-agent version in an image manifest. The guest kernel must support KVM, virtio block/vsock, and VMGenID; x86 VMGenID requires Linux 5.18 or later. Docker support is a separate image acceptance test, not inferred from the Ubuntu label.
@@ -62,7 +63,7 @@ Fast launch comes from avoiding repeated boot and setup, caching immutable templ
 
 ## Milestone one: executable runtime, not a hosted service
 
-Deliver a Go module with a runtime library, `box` CLI, `box-guest` agent, image build instructions, and reproducible integration/benchmark commands.
+Deliver a Cargo workspace with a runtime library, `box` CLI, `box-guest` agent, shared protocol types, image build instructions, and reproducible integration/benchmark commands. Build the guest agent for a compatible guest target; the minimal fixture uses a static musl build. Benchmark release binaries, not debug builds.
 
 Commands cover host preflight, cold create, list/inspect, exec, pause/resume, stop/start, delete, checkpoint/restore, controlled template creation, and template clone. Stop preserves disk and loses RAM; checkpoint/restore preserves captured RAM; delete removes a box's writable state after stopping its process. Readiness means an actual successful guest-agent exchange, not an open Firecracker API socket.
 
@@ -81,7 +82,7 @@ Milestone one needs vsock only. Guest networking, SSH, preview routes, a public 
 
 ## Milestone two: single-host product
 
-Use a Go API, PostgreSQL, a host service, a React/TypeScript dashboard, and a TypeScript SDK. Start with one administrator, workspace-owned resources, and scoped API tokens. The API records intent; a reconciler performs operations and records observed results. Durable idempotency keys prevent duplicate boxes on retried creates. Resource reservation prevents concurrent requests from oversubscribing configured capacity.
+Use a Rust API and host service, PostgreSQL, a React/TypeScript dashboard, and a TypeScript SDK. Axum and SQLx are the default service-layer choices, to be validated when that milestone is planned. Start with one administrator, workspace-owned resources, and scoped API tokens. The API records intent; a reconciler performs operations and records observed results. Durable idempotency keys prevent duplicate boxes on retried creates. Resource reservation prevents concurrent requests from oversubscribing configured capacity.
 
 The host service's privileged surface accepts validated resource operations, never arbitrary host commands or paths. It is reachable through a permission-restricted Unix socket on a single-host installation. A later remote-host transport must authenticate both ends and scope host authority.
 
