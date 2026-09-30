@@ -1,0 +1,18 @@
+[workspace]
+members = ["crates/box-runtime", "crates/box-protocol", "crates/box-guest"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "process", "sync", "signal"] }
+tempfile = "3"
+sha2 = "0.10"
+libc = "0.2"

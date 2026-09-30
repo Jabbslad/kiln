@@ -1,7 +1,7 @@
 # Self-hosted box platform
 
 Date: 2026-09-30
-Status: Architecture and Rust selection approved in conversation; written specification pending review.
+Status: Architecture and Rust selection approved; user authorized implementation. The development runtime is implemented and KVM-tested; isolated runtime and subsequent platform milestones remain outstanding. See [actual delivery and limitations](../../runtime.md).
 
 ## Outcome
 
@@ -20,7 +20,7 @@ No existing host configuration, firewall, service, logical volume, or filesystem
 - Use Firecracker/KVM, not containers as the security boundary for customer code.
 - Implement host orchestration, CLI, guest agent, and the later service backend in Rust. Use Rust 1.95.0, edition 2024, with a pinned stable toolchain and committed Cargo.lock. Rust gives explicit resource ownership and allocation control without a garbage collector; this is not an unmeasured claim of faster VM launches.
 - Use Tokio for asynchronous process/socket orchestration, Serde for versioned wire formats, and maintained Linux/vsock crates rather than inventing ABI wrappers. Keep host-only dependencies out of the guest agent. Use typed errors, bounded tasks, explicit cancellation, and safe resource wrappers; Rust memory safety does not make external side effects or crash recovery transactional.
-- Start on Linux x86_64 with cgroup v2 and an exact, matching Firecracker/jailer version pair. Validate 1.16.0 first because it is installed; record the actual binary hashes in compatibility metadata. Do not silently upgrade system binaries.
+- Start on Linux x86_64 with cgroup v2 and an exact, matching Firecracker/jailer version pair. Validation found that installed 1.16.0 permanently breaks vsock after bare pause/resume (upstream PR #6100). The implementation therefore pins 1.17.0 through a checksum-verified workspace-local download; system binaries remain unchanged. Record actual binary hashes in compatibility metadata.
 - Use full snapshots and Firecracker's file-backed, demand-paged memory restoration. Do not implement a userfaultfd pager or differential memory snapshot chain in milestone one.
 - Build a minimal trusted guest fixture first, then a versioned Ubuntu 24.04 development image. Pin kernel, root filesystem inputs, and guest-agent version in an image manifest. The guest kernel must support KVM, virtio block/vsock, and VMGenID; x86 VMGenID requires Linux 5.18 or later. Docker support is a separate image acceptance test, not inferred from the Ubuntu label.
 - Keep Firecracker API sockets private. The platform, not users, supplies VMM paths, kernel command lines, resource limits, and jailer arguments.

@@ -1,0 +1,268 @@
+use super::*;
+use std::os::unix::fs::PermissionsExt;
+
+impl Runtime {
+    pub async fn checkpoint(&self, box_id: &str) -> Result<Snapshot> {
+        self.capture(box_id, false).await
+    }
+
+    async fn capture(&self, box_id: &str, template: bool) -> Result<Snapshot> {
+        let _allocation = storage::lock(&self.root)?;
+        let _lock = storage::lock(&self.directory(box_id)?)?;
+        if fs::read_dir(self.root.join("snapshots"))?.count() >= 16 {
+            return Err(Error::Invalid("local snapshot quota exceeded (16)".into()));
+        }
+        let mut record = self.read(box_id)?;
+        self.observed(&mut record).await?;
+        if record.state != "running" && record.state != "paused" {
+            return Err(Error::Invalid(
+                "checkpoint requires a running or paused box".into(),
+            ));
+        }
+        if template
+            && !matches!(
+                self.guest(
+                    &record,
+                    &Request::Hello {
+                        version: PROTOCOL_VERSION
+                    },
+                    Duration::from_secs(2)
+                )
+                .await?,
+                Response::Hello {
+                    initialized: false,
+                    ..
+                }
+            )
+        {
+            return Err(Error::Invalid(
+                "only an uninitialized builder may become a template".into(),
+            ));
+        }
+        let running = record.state == "running";
+        let snapshot_id = id()?;
+        let directory = self.root.join("snapshots").join(&snapshot_id);
+        storage::private_dir(&directory)?;
+        let (_fd, client) = self.connection(&record)?;
+        record.operation = Some(
+            if running {
+                "capture-running"
+            } else {
+                "capture-paused"
+            }
+            .into(),
+        );
+        self.save(&record)?;
+        let result: Result<Snapshot> = async {
+            client.request("PATCH", "/vm", json!({"state":"Paused"})).await?;
+            record.state = "paused".into(); self.save(&record)?;
+            failpoint("after-pause");
+            client.request("PUT", "/snapshot/create", json!({"snapshot_type":"Full", "snapshot_path":directory.join("state.snap"), "mem_file_path":directory.join("memory.snap")})).await?;
+            let disk = self.run(&record)?.join("disk.ext4");
+            File::open(&disk)?.sync_all()?;
+            storage::copy_disk(&disk, &directory.join("disk.ext4"), Instant::now() + Duration::from_secs(120))?;
+            let mut hashes = std::collections::BTreeMap::new();
+            for name in ["disk.ext4", "state.snap", "memory.snap"] {
+                let path = directory.join(name);
+                File::open(&path)?.sync_all()?;
+                hashes.insert(name.into(), image::sha256(&path)?);
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o400))?;
+            }
+            let snapshot = Snapshot {schema_version:1,id:snapshot_id.clone(),source_box:box_id.into(),template,image:record.image.clone(),host:record.host.clone(),memory_mib:record.memory_mib,vcpus:record.vcpus,hashes};
+            storage::atomic_json(&directory.join("snapshot.json"), &snapshot)?;
+            File::open(self.root.join("snapshots"))?.sync_all()?;
+            failpoint("after-snapshot-publication");
+            Ok(snapshot)
+        }.await;
+        // Even a failed pause/snapshot request can have changed the VMM. Query
+        // it before choosing the recovery action; never retry snapshot creation.
+        self.observed(&mut record).await?;
+        if running && record.state == "paused" {
+            if let Err(error) = client
+                .request("PATCH", "/vm", json!({"state":"Resumed"}))
+                .await
+            {
+                record.last_error = Some(format!("source resume failed: {error}"));
+                self.save(&record)?;
+                return Err(error);
+            }
+            record.state = "running".into();
+        }
+        record.operation = None;
+        record.last_error = result.as_ref().err().map(ToString::to_string);
+        self.save(&record)?;
+        if result.is_err() {
+            fs::remove_dir_all(&directory)?;
+        }
+        result
+    }
+
+    pub fn snapshots(&self) -> Result<Vec<Snapshot>> {
+        let mut snapshots = Vec::new();
+        for entry in fs::read_dir(self.root.join("snapshots"))? {
+            let entry = entry?;
+            if entry.path().join("snapshot.json").is_file() {
+                snapshots.push(storage::read_json(&entry.path().join("snapshot.json"))?);
+            }
+        }
+        Ok(snapshots)
+    }
+
+    pub fn delete_snapshot(&self, snapshot_id: &str) -> Result<()> {
+        if !storage::valid_id(snapshot_id) {
+            return Err(Error::Invalid("invalid snapshot ID".into()));
+        }
+        let _allocation = storage::lock(&self.root)?;
+        if self
+            .records()?
+            .iter()
+            .any(|r| r.source.as_deref() == Some(snapshot_id))
+        {
+            return Err(Error::Invalid(
+                "snapshot is referenced by a box; delete that box first".into(),
+            ));
+        }
+        let directory = self.root.join("snapshots").join(snapshot_id);
+        if !directory.exists() {
+            return Err(Error::Invalid("snapshot not found".into()));
+        }
+        storage::private_dir(&directory)?;
+        fs::remove_dir_all(directory)?;
+        File::open(self.root.join("snapshots"))?.sync_all()?;
+        Ok(())
+    }
+
+    fn snapshot(&self, snapshot_id: &str) -> Result<Snapshot> {
+        if !storage::valid_id(snapshot_id) {
+            return Err(Error::Invalid("invalid snapshot ID".into()));
+        }
+        let report = host::check();
+        if !report.development_ready {
+            return Err(Error::Invalid(report.problems.join("; ")));
+        }
+        let directory = self.root.join("snapshots").join(snapshot_id);
+        storage::private_dir(&directory)?;
+        let snapshot: Snapshot = storage::read_json(&directory.join("snapshot.json"))?;
+        if snapshot.schema_version != 1
+            || snapshot.id != snapshot_id
+            || snapshot.host != host::fingerprint()?
+        {
+            return Err(Error::Invalid("snapshot compatibility mismatch".into()));
+        }
+        for name in ["disk.ext4", "state.snap", "memory.snap"] {
+            if snapshot.hashes.get(name) != Some(&image::sha256(&directory.join(name))?) {
+                return Err(Error::Invalid(format!(
+                    "snapshot checksum mismatch: {name}"
+                )));
+            }
+        }
+        Ok(snapshot)
+    }
+
+    pub async fn restore(&self, box_id: &str, snapshot_id: &str) -> Result<BoxRecord> {
+        let _allocation = storage::lock(&self.root)?;
+        let _lock = storage::lock(&self.directory(box_id)?)?;
+        let snapshot = self.snapshot(snapshot_id)?;
+        if snapshot.template || snapshot.source_box != box_id {
+            return Err(Error::Invalid(
+                "checkpoint belongs to another box or is a template".into(),
+            ));
+        }
+        let mut record = self.read(box_id)?;
+        self.observed(&mut record).await?;
+        let previous = record.clone();
+        let next_run = id()?;
+        let next_path = self.directory(box_id)?.join(&next_run);
+        storage::private_dir(&next_path)?;
+        storage::copy_disk(
+            &self
+                .root
+                .join("snapshots")
+                .join(snapshot_id)
+                .join("disk.ext4"),
+            &next_path.join("disk.ext4"),
+            Instant::now() + Duration::from_secs(120),
+        )?;
+        storage::atomic_json(
+            &self.directory(box_id)?.join("restore.previous.json"),
+            &previous,
+        )?;
+        record.operation = Some("restore".into());
+        self.save(&record)?;
+        if let Some(identity) = &record.process {
+            process::terminate(identity)?;
+        }
+        record.process = None;
+        record.run = next_run;
+        record.source = Some(snapshot_id.into());
+        record.state = "restoring".into();
+        self.save(&record)?;
+        let result = self.boot(&mut record, Some(&snapshot), false).await;
+        self.finish_launch(&mut record, result)?;
+        fs::remove_dir_all(self.directory(box_id)?.join(previous.run))?;
+        fs::remove_file(self.directory(box_id)?.join("restore.previous.json"))?;
+        Ok(record)
+    }
+
+    pub async fn build_template(&self, image: &Path) -> Result<Snapshot> {
+        let builder = self.create(image, "template-builder", 256, 1, true).await?;
+        let result = self.capture(&builder.id, true).await;
+        self.delete(&builder.id).await?;
+        result
+    }
+
+    pub async fn clone_template(&self, snapshot_id: &str, name: &str) -> Result<BoxRecord> {
+        if name.is_empty() || name.len() > 63 {
+            return Err(Error::Invalid("name must be 1..63 bytes".into()));
+        }
+        let allocation = self.allocation().await?;
+        let snapshot = self.snapshot(snapshot_id)?;
+        if !snapshot.template {
+            return Err(Error::Invalid(
+                "only prepared templates can be cloned".into(),
+            ));
+        }
+        let records = self.records()?;
+        if records.len() >= 8
+            || records.iter().map(|r| r.memory_mib).sum::<u32>() + snapshot.memory_mib > 8192
+        {
+            return Err(Error::Invalid("local box quota exceeded".into()));
+        }
+        let mut record = BoxRecord {
+            schema_version: 1,
+            id: id()?,
+            name: name.into(),
+            state: "creating".into(),
+            run: id()?,
+            process: None,
+            image: snapshot.image.clone(),
+            host: snapshot.host.clone(),
+            memory_mib: snapshot.memory_mib,
+            vcpus: snapshot.vcpus,
+            source: Some(snapshot.id.clone()),
+            operation: Some("clone".into()),
+            last_error: None,
+            disk_copy: String::new(),
+        };
+        storage::private_dir(&self.root.join("boxes").join(&record.id))?;
+        let _lock = storage::lock(&self.directory(&record.id)?)?;
+        self.save(&record)?;
+        drop(allocation);
+        let result = async {
+            let method = storage::copy_disk(
+                &self
+                    .root
+                    .join("snapshots")
+                    .join(snapshot_id)
+                    .join("disk.ext4"),
+                &self.run(&record)?.join("disk.ext4"),
+                Instant::now() + Duration::from_secs(120),
+            )?;
+            record.disk_copy = format!("{method:?}");
+            self.boot(&mut record, Some(&snapshot), true).await
+        }
+        .await;
+        self.finish_launch(&mut record, result)?;
+        Ok(record)
+    }
+}

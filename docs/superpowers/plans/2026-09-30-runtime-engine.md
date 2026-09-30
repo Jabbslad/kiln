@@ -1,12 +1,27 @@
 # Single-host Runtime Engine Implementation Plan
 
-> **For agentic workers:** Use the executing-plans skill to implement this plan task-by-task in the checkout containing the work. Steps use checkbox syntax for tracking. The written design is pending user review; implementation follows that review.
+> **For agentic workers:** User authorized implementation. Continue in the checkout containing the work. The original detailed checklist below remains the target, not a claim that every hardening item shipped. Consult the delivery status here and [operator guide](../../runtime.md) before continuing.
 
 **Goal:** Run real Linux microVMs from a CLI, preserve and restore their state, clone controlled templates, and measure request-to-command launch latency.
 
 **Architecture:** A Rust runtime owns private per-instance state, Firecracker processes, disk files, and full snapshots. A small Rust guest agent provides readiness and bounded command execution over vsock, sharing protocol types without depending on the host runtime. Start with an explicit trusted development profile and validate the jailed profile separately; do not introduce a public API or PostgreSQL in this milestone.
 
-**Tech Stack:** Rust 1.95.0 (stable), edition 2024, Cargo workspace, Tokio, Serde, Clap, thiserror, tracing, maintained Linux/vsock crates, Linux x86_64, KVM, Firecracker/jailer 1.16.0, cgroup v2, raw ext4 guest disks, JSON manifests, Cargo unit and real-KVM integration tests.
+**Tech Stack:** Rust 1.95.0 (stable), edition 2024, Cargo workspace, Tokio, Serde, Clap, thiserror, maintained Linux/vsock crates, Linux x86_64, KVM, Firecracker/jailer 1.17.0, cgroup v2, raw ext4 guest disks, JSON manifests, Cargo unit and real-KVM integration tests.
+
+## Delivery status
+
+- [x] Three-crate Rust workspace, pinned stable toolchain/lockfile, preflight, image verification, Firecracker Unix API transport, and PID-safe process ownership.
+- [x] Rootless trusted fixture build and bounded guest protocol/exec over real vsock.
+- [x] Persistent CLI lifecycle, per-box serialization, quota reservations, forced stop, and overlapping-start protection.
+- [x] Coordinated full memory/disk checkpoints, same-box restore, reference-protected snapshot deletion, pre-initialization templates, and independent clone identities/disks.
+- [x] Release benchmarks: 30 sequential samples per mode and 16 concurrency-four samples per mode, all successful; first-command timing includes checksum/disk work.
+- [x] Real-KVM process-crash tests around spawn/PID recording and checkpoint pause/publication, plus killed-process memory restoration and corruption rejection.
+- [ ] Complete the broader storage/ENOSPC/power-loss/restore/cancellation failure matrix; add operation-wide cancellation, bounded blocking work, orphan generation cleanup, and disk/log budgets. Current implementation does not claim these are complete.
+- [ ] Task 8: implement jailed/cgroup-enforced profile and Ubuntu image; obtain explicit approval before privileged host setup and validation.
+
+**Version correction:** Real testing reproduced Firecracker 1.16.0's vsock pause/resume bug. The implementation pins the fixed 1.17.0 release using a checksum-verified local download. System-installed 1.16.0 binaries were not replaced. Historical 1.16 API examples below remain design context; tested operator commands use 1.17.0.
+
+**Implementation shape:** Small owners remain single Rust source files rather than the initially proposed directory trees. CLI timing uses `--timeout-ms`, output is JSON-only, and actual integration scenarios are consolidated in `tests/lifecycle.rs`. See that file for the executed assertions rather than inferring completion from the original checklist.
 
 ## Global constraints
 
