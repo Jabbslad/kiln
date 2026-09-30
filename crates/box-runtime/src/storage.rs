@@ -143,18 +143,54 @@ pub fn copy_disk(src: &Path, dst: &Path, deadline: Instant) -> Result<CopyMethod
 
         ensure_free_space(&destination, source_metadata.len())?;
         let mut buffer = vec![0_u8; 1024 * 1024];
-        loop {
+        let mut offset = 0;
+        let length = source_metadata.len();
+        let mut seek_holes = true;
+        while offset < length {
             if Instant::now() >= deadline {
                 return Err(Error::Invalid("disk copy deadline expired".into()));
             }
-            let count = source.read(&mut buffer)?;
-            if count == 0 {
-                break;
+            let mut end = length;
+            if seek_holes {
+                // Linux permits conservative hole reporting (the whole file
+                // may be data). Unsupported filesystems retain zero scanning.
+                let data =
+                    unsafe { libc::lseek(source.as_raw_fd(), offset as i64, libc::SEEK_DATA) };
+                if data < 0 {
+                    let error = std::io::Error::last_os_error();
+                    match error.raw_os_error() {
+                        Some(libc::ENXIO) => break, // trailing hole, including an all-hole file
+                        Some(libc::EINVAL | libc::EOPNOTSUPP) => seek_holes = false,
+                        _ => return Err(error.into()),
+                    }
+                } else {
+                    let hole = unsafe { libc::lseek(source.as_raw_fd(), data, libc::SEEK_HOLE) };
+                    if hole < 0 {
+                        let error = std::io::Error::last_os_error();
+                        match error.raw_os_error() {
+                            Some(libc::EINVAL | libc::EOPNOTSUPP) => seek_holes = false,
+                            _ => return Err(error.into()),
+                        }
+                    } else {
+                        offset = data as u64;
+                        end = (hole as u64).min(length);
+                    }
+                }
             }
-            if buffer[..count].iter().all(|byte| *byte == 0) {
-                destination.seek(SeekFrom::Current(count as i64))?;
-            } else {
-                destination.write_all(&buffer[..count])?;
+            source.seek(SeekFrom::Start(offset))?;
+            destination.seek(SeekFrom::Start(offset))?;
+            while offset < end {
+                if Instant::now() >= deadline {
+                    return Err(Error::Invalid("disk copy deadline expired".into()));
+                }
+                let count = (end - offset).min(buffer.len() as u64) as usize;
+                source.read_exact(&mut buffer[..count])?;
+                if buffer[..count].iter().all(|byte| *byte == 0) {
+                    destination.seek(SeekFrom::Current(count as i64))?;
+                } else {
+                    destination.write_all(&buffer[..count])?;
+                }
+                offset += count as u64;
             }
         }
         destination.set_len(source_metadata.len())?;
@@ -273,6 +309,66 @@ mod tests {
         copy_disk(&source, &second, Instant::now() + Duration::from_secs(2)).unwrap();
         assert_eq!(fs::read(first).unwrap(), b"left\0\0\0right");
         assert_eq!(fs::read(second).unwrap(), b"changed");
+    }
+
+    #[test]
+    fn sparse_copy_preserves_extents_holes_and_partial_tail() {
+        let root = tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        let mut file = File::create(&source).unwrap();
+        let mut expected = vec![0; 5 * 1024 * 1024 + 31];
+        for (offset, bytes) in [
+            (8193, b"left".as_slice()),
+            (3 * 1024 * 1024 + 17, b"right-tail"),
+        ] {
+            file.seek(SeekFrom::Start(offset as u64)).unwrap();
+            file.write_all(bytes).unwrap();
+            expected[offset..offset + bytes.len()].copy_from_slice(bytes);
+        }
+        file.set_len(expected.len() as u64).unwrap();
+        file.sync_all().unwrap();
+        copy_disk(
+            &source,
+            &destination,
+            Instant::now() + Duration::from_secs(2),
+        )
+        .unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), expected);
+        // The old 1 MiB zero scanning copies an entire chunk for each tiny
+        // extent. SEEK_DATA/HOLE should preserve the large surrounding holes.
+        if unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_DATA) } > 0 {
+            assert!(fs::metadata(&destination).unwrap().blocks() * 512 < 128 * 1024);
+        }
+        fs::write(&source, b"changed").unwrap();
+        assert_eq!(fs::read(destination).unwrap(), expected);
+    }
+
+    #[test]
+    fn copy_handles_empty_all_hole_and_dense_files_with_short_final_block() {
+        let root = tempdir().unwrap();
+        let mut dense = vec![0; 2 * 1024 * 1024 + 71];
+        for (index, byte) in dense.iter_mut().enumerate().skip(1024 * 1024) {
+            *byte = (index % 251) as u8;
+        }
+        for (index, expected) in [vec![], vec![0; 65539], dense].into_iter().enumerate() {
+            let source = root.path().join(format!("source-{index}"));
+            let destination = root.path().join(format!("destination-{index}"));
+            let mut file = File::create(&source).unwrap();
+            if index == 1 {
+                file.set_len(expected.len() as u64).unwrap();
+            } else {
+                file.write_all(&expected).unwrap();
+            }
+            file.sync_all().unwrap();
+            copy_disk(
+                &source,
+                &destination,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .unwrap();
+            assert_eq!(fs::read(destination).unwrap(), expected);
+        }
     }
 
     #[test]

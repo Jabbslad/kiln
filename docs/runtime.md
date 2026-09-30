@@ -38,6 +38,8 @@ box delete BOX_ID
 - Limits: 8 allocated boxes / 8192 MiB total guest RAM per state directory, 128–2048 MiB and 1–4 vCPUs per box, 16 snapshot directories, 64 KiB output per stream, 1 MiB protocol frames, bounded guest connections/executions, CLI exec timeout 1–3,600,000 ms. Host overhead is additional. These are development limits, not tenant quotas.
 - Copy operations check free space and a 120-second deadline; requests have transport timeouts. No general operation-wide cancellation token or strict I/O deadline exists yet. OS filesystem calls can block. Logs/files have a 3 GiB per-file VMM limit to accommodate full memory snapshots; there is no total disk quota or log rotation yet.
 
+Disk copies try reflink first. The byte-copy fallback uses `SEEK_DATA`/`SEEK_HOLE` to skip filesystem holes, scans allocated ranges for zero chunks, preserves logical length, and syncs the new file and parent directory. Filesystems without hole-seek support retain full-file zero scanning. No host filesystem provisioning is performed.
+
 The wire protocol is one length-framed request per vsock connection. Arguments are passed as argv, not interpolated into a shell. Use a shell explicitly if desired. The agent starts each command in a process group, caps output, and cancels that group on timeout or host disconnect. Descendants that deliberately escape the process group are outside this development mechanism; guest cgroups are not implemented. Commands are never automatically retried after an unknown transport outcome.
 
 ## Checkpoints restore both memory and disk
@@ -68,6 +70,8 @@ box clone TEMPLATE_ID --name beta --allow-unsafe-development
 
 The builder boots a trusted image to the guest agent's pre-initialization barrier, snapshots it, and deletes its temporary VM. Only those template records are cloneable. Every clone receives an independent writable disk, distinct hostname/machine ID, and fresh host entropy before execution is allowed. The kernel boot ID is intentionally inherited from the prepared boot and is **not** a clone identity.
 
+Clone validates snapshot metadata and reserves quota plus a durable snapshot reference under the allocation lock, then releases that lock before scanning all artifact checksums. The per-box lock remains held through verification and launch; snapshot deletion refuses the durable reference. Corruption still prevents VM startup. A verification failure leaves a failed reservation that counts against quota and pins the snapshot until `box delete BOX_ID`; `box list` reconciles it to stopped. Same-box checkpoint restore still verifies before stopping the source VM.
+
 The image author must keep workload daemons, credentials, and userspace random state out of the prepared image. The minimal fixture satisfies that contract; arbitrary Linux images may not. VMGenID and entropy injection do not magically rewrite application-level credentials or cached random values.
 
 ## Crash recovery and its limits
@@ -93,18 +97,22 @@ box benchmark --image IMAGE_MANIFEST --template TEMPLATE_ID \
 
 The JSON includes each sample, failures, nearest-rank p50/p95/p99, launch-to-ready and first-exec timing, actual copy method, versions, host fingerprint, concurrency, and cache assumptions. It returns a failure status if any measured operation fails. Measurement starts at the runtime call, includes validation/allocation waits/disk preparation/VMM/guest initialization, and ends after `/bin/printf boxd-ready` returns the expected bytes and exit code. It excludes benchmark program startup and cleanup. Only boxes with this benchmark invocation's unique name prefix are removed.
 
+Each sample includes non-overlapping wall-clock `phases_ms`: image or snapshot verification (including validation/preflight), allocation wait, durable reservation, disk copy, boot preflight, VMM spawn/API readiness, VMM configuration/snapshot load, guest readiness, initialization, and launch commit. Timings are task-local, so concurrent requests do not share counters. Failed attempts include completed/failed phase timings but no successful `total_ms`; phases that were never reached are absent. Phase sums exclude small bookkeeping gaps and the separately reported first exec.
+
 "Cold boot" means a fresh guest kernel boot, **not** an evicted host filesystem cache. No host cache eviction is performed. Firecracker uses file-backed demand paging, but the runtime currently reads every artifact for integrity verification before restore; those reads are included in the measurements and populate the cache.
 
-Observed baseline on the development runner, release host/guest, Firecracker 1.17.0, Ryzen 7 7840HS, host Linux 7.0.0-34-generic, ext4 without reflink, 256 MiB / 1 vCPU / 128 MiB disk:
+Matched before/after measurements on the development runner, release host/guest, Firecracker 1.17.0, Ryzen 7 7840HS, host Linux 7.0.0-34-generic, ext4 without reflink, 256 MiB / 1 vCPU / 128 MiB disk. Both runs use the same image and prepared snapshot; the before run includes timing instrumentation but neither optimization. Each row has the indicated sample count per implementation:
 
-| Mode | Samples | Concurrency | p50 | p95 | Failures |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Cold boot | 30 | 1 | 844 ms | 895 ms | 0 |
-| Template restore | 30 | 1 | 279 ms | 287 ms | 0 |
-| Cold boot | 16 | 4 | 829 ms | 868 ms | 0 |
-| Template restore | 16 | 4 | 504 ms | 944 ms | 0 |
+| Mode | Samples | Concurrency | Before p50 / p95 | After p50 / p95 |
+| --- | ---: | ---: | ---: | ---: |
+| Cold boot | 30 | 1 | 844 / 888 ms | 807 / 851 ms |
+| Template restore | 30 | 1 | 281 / 288 ms | 245 / 257 ms |
+| Cold boot | 16 | 4 | 836 / 881 ms | 805 / 852 ms |
+| Template restore | 16 | 4 | 537 / 973 ms | 277 / 325 ms |
 
-Raw machine-specific results are retained locally under `.amp/in/artifacts/`, not committed. No sub-10ms end-to-end claim is made. The host service should move invariant verification out of the launch path under a tested immutable-artifact trust model and evaluate reflink-capable storage before adding a custom memory pager.
+All 184 launches succeeded. Sequential template disk-copy median fell from 41 to 13 ms; concurrency-four allocation-wait median fell from 340 to 24 ms. Full snapshot verification remains about 196 ms sequential and dominates the remaining template latency. Guest kernel readiness still takes about 602 ms on cold boots. These are small local samples with uncontrolled cache/load, not an SLA or a matched comparison with boxd.sh.
+
+Raw results are retained locally as `.amp/in/artifacts/perf-{before,after}-{sequential,concurrent}.json`, not committed. No sub-10ms end-to-end claim is made. A disposable-file `FS_IOC_ENABLE_VERITY` probe returned `EOPNOTSUPP` on this host; kernel feature support alone does not mean the filesystem has verity enabled. No filesystem features were changed. A future host service should evaluate verified immutable artifact storage (for example, fs-verity where available) and reflink-capable disks before adding a custom memory pager. Metadata-only checksum caches are not implemented.
 
 ## Verification and remaining milestones
 
@@ -114,5 +122,7 @@ The README lists exact commands. The normal suite checks protocol limits, guest 
 2. Independent clone identities/disks/lifetimes and prevention of backing-memory deletion.
 3. CLI crashes before spawn, after spawn, after PID persistence, after pause, and after manifest publication, with safe process reconciliation and no partial snapshot publication.
 4. Simultaneous starts and forced termination with an inaccessible API socket.
+5. Per-request, non-overlapping phase timings during concurrent benchmarks and cleanup of measured boxes.
+6. A clone blocked in verification releases the allocation lock while its quota/reference remain durable, prevents snapshot deletion, and rejects corrupt contents without spawning a VMM.
 
 Not implemented: jailed launch/cgroup enforcement, Ubuntu/systemd/Docker image, public API, PostgreSQL operations/idempotency, network/SSH/preview access, web UI, SDK, fleet scheduling, or hosted tenancy. Privileged host setup and validation require separate approval. These are real remaining implementation steps, not mocked features in this runtime.

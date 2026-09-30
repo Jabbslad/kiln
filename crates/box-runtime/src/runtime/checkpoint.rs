@@ -132,7 +132,8 @@ impl Runtime {
         Ok(())
     }
 
-    fn snapshot(&self, snapshot_id: &str) -> Result<Snapshot> {
+    fn snapshot_metadata(&self, snapshot_id: &str) -> Result<Snapshot> {
+        let _phase = Phase::start("snapshot_verification");
         if !storage::valid_id(snapshot_id) {
             return Err(Error::Invalid("invalid snapshot ID".into()));
         }
@@ -149,6 +150,12 @@ impl Runtime {
         {
             return Err(Error::Invalid("snapshot compatibility mismatch".into()));
         }
+        Ok(snapshot)
+    }
+
+    fn verify_snapshot(&self, snapshot: &Snapshot) -> Result<()> {
+        let _phase = Phase::start("snapshot_verification");
+        let directory = self.root.join("snapshots").join(&snapshot.id);
         for name in ["disk.ext4", "state.snap", "memory.snap"] {
             if snapshot.hashes.get(name) != Some(&image::sha256(&directory.join(name))?) {
                 return Err(Error::Invalid(format!(
@@ -156,13 +163,14 @@ impl Runtime {
                 )));
             }
         }
-        Ok(snapshot)
+        Ok(())
     }
 
     pub async fn restore(&self, box_id: &str, snapshot_id: &str) -> Result<BoxRecord> {
         let _allocation = storage::lock(&self.root)?;
         let _lock = storage::lock(&self.directory(box_id)?)?;
-        let snapshot = self.snapshot(snapshot_id)?;
+        let snapshot = self.snapshot_metadata(snapshot_id)?;
+        self.verify_snapshot(&snapshot)?;
         if snapshot.template || snapshot.source_box != box_id {
             return Err(Error::Invalid(
                 "checkpoint belongs to another box or is a template".into(),
@@ -215,8 +223,11 @@ impl Runtime {
         if name.is_empty() || name.len() > 63 {
             return Err(Error::Invalid("name must be 1..63 bytes".into()));
         }
+        let phase = Phase::start("allocation_wait");
         let allocation = self.allocation().await?;
-        let snapshot = self.snapshot(snapshot_id)?;
+        drop(phase);
+        let snapshot = self.snapshot_metadata(snapshot_id)?;
+        let phase = Phase::start("reservation");
         if !snapshot.template {
             return Err(Error::Invalid(
                 "only prepared templates can be cloned".into(),
@@ -247,8 +258,14 @@ impl Runtime {
         storage::private_dir(&self.root.join("boxes").join(&record.id))?;
         let _lock = storage::lock(&self.directory(&record.id)?)?;
         self.save(&record)?;
+        // The durable source reference prevents deletion of backing files;
+        // quota is reserved and the box lock prevents lifecycle interference.
+        // Expensive checksums can now run alongside other box allocations.
         drop(allocation);
+        drop(phase);
         let result = async {
+            self.verify_snapshot(&snapshot)?;
+            let phase = Phase::start("disk_copy");
             let method = storage::copy_disk(
                 &self
                     .root
@@ -259,6 +276,7 @@ impl Runtime {
                 Instant::now() + Duration::from_secs(120),
             )?;
             record.disk_copy = format!("{method:?}");
+            drop(phase);
             self.boot(&mut record, Some(&snapshot), true).await
         }
         .await;

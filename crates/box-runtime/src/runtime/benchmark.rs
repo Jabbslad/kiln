@@ -1,4 +1,28 @@
 use super::*;
+use std::{cell::RefCell, collections::BTreeMap};
+
+tokio::task_local! {
+    static PHASES: RefCell<BTreeMap<&'static str, f64>>;
+}
+
+// Task-local rather than thread-local: concurrent launches can migrate between
+// executor threads. Outside a benchmark the guard collects nothing.
+pub(super) struct Phase(&'static str, Instant);
+
+impl Phase {
+    pub(super) fn start(name: &'static str) -> Self {
+        Self(name, Instant::now())
+    }
+}
+
+impl Drop for Phase {
+    fn drop(&mut self) {
+        let elapsed = self.1.elapsed().as_secs_f64() * 1000.;
+        let _ = PHASES.try_with(|phases| {
+            *phases.borrow_mut().entry(self.0).or_default() += elapsed;
+        });
+    }
+}
 
 fn summarize(values: &[Option<f64>]) -> Value {
     let mut successful: Vec<_> = values.iter().flatten().copied().collect();
@@ -39,7 +63,10 @@ impl Runtime {
                     let name = format!("{prefix}-{index}");
                     workers.spawn(async move {
                         let start = Instant::now();
-                        let launched = if mode == "cold_boot" { runtime.create(&image, &name, 256, 1, false).await } else { runtime.clone_template(&template, &name).await };
+                        let (launched, phases) = PHASES.scope(RefCell::new(BTreeMap::new()), async {
+                            let launched = if mode == "cold_boot" { runtime.create(&image, &name, 256, 1, false).await } else { runtime.clone_template(&template, &name).await };
+                            (launched, PHASES.with(|phases| phases.take()))
+                        }).await;
                         let launch_ms = start.elapsed().as_secs_f64()*1000.;
                         let mut copy_method = None;
                         let result = async {
@@ -52,7 +79,7 @@ impl Runtime {
                             Ok(())
                         }.await;
                         let elapsed = start.elapsed().as_secs_f64()*1000.;
-                        json!({"index":index,"launch_ms":launch_ms,"first_exec_ms":elapsed-launch_ms,"total_ms":result.as_ref().ok().map(|_|elapsed),"attempt_ms":elapsed,"disk_copy":copy_method,"error":result.err().map(|e:Error|e.to_string())})
+                        json!({"index":index,"launch_ms":launch_ms,"phases_ms":phases,"first_exec_ms":elapsed-launch_ms,"total_ms":result.as_ref().ok().map(|_|elapsed),"attempt_ms":elapsed,"disk_copy":copy_method,"error":result.err().map(|e:Error|e.to_string())})
                     });
                 }
                 while let Some(result) = workers.join_next().await {

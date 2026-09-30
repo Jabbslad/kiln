@@ -24,6 +24,7 @@ use std::{
 };
 mod benchmark;
 mod checkpoint;
+use benchmark::Phase;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoxRecord {
@@ -291,6 +292,7 @@ impl Runtime {
         vcpus: u8,
         template: bool,
     ) -> Result<BoxRecord> {
+        let phase = Phase::start("image_verification");
         if name.is_empty()
             || name.len() > 63
             || !(128..=2048).contains(&memory_mib)
@@ -305,7 +307,11 @@ impl Runtime {
             return Err(Error::Invalid(report.problems.join("; ")));
         }
         let image = image::load(manifest)?;
+        drop(phase);
+        let phase = Phase::start("allocation_wait");
         let allocation = self.allocation().await?;
+        drop(phase);
+        let phase = Phase::start("reservation");
         let records = self.records()?;
         if records.len() >= 8
             || records.iter().map(|r| r.memory_mib).sum::<u32>() + memory_mib > 8192
@@ -335,13 +341,16 @@ impl Runtime {
         let run = self.run(&record)?;
         self.save(&record)?;
         drop(allocation); // The durable record reserves quota before parallel I/O.
+        drop(phase);
         let result = async {
+            let phase = Phase::start("disk_copy");
             let method = storage::copy_disk(
                 &record.image.rootfs_path,
                 &run.join("disk.ext4"),
                 Instant::now() + Duration::from_secs(120),
             )?;
             record.disk_copy = format!("{method:?}");
+            drop(phase);
             self.boot(&mut record, None, !template).await
         }
         .await;
@@ -350,6 +359,7 @@ impl Runtime {
     }
 
     fn finish_launch(&self, record: &mut BoxRecord, result: Result<()>) -> Result<()> {
+        let _phase = Phase::start("launch_commit");
         match result {
             Ok(()) => {
                 record.operation = None;
@@ -377,12 +387,15 @@ impl Runtime {
         snapshot: Option<&Snapshot>,
         initialize: bool,
     ) -> Result<()> {
+        let phase = Phase::start("boot_preflight");
         let report = host::check();
         if !report.development_ready || record.host != host::fingerprint()? {
             return Err(Error::Invalid(
                 "host or VMM changed; refusing incompatible launch".into(),
             ));
         }
+        drop(phase);
+        let phase = Phase::start("vmm_start");
         let run = self.run(record)?;
         for socket in ["api.sock", "vsock.sock"] {
             match fs::remove_file(run.join(socket)) {
@@ -448,6 +461,8 @@ impl Runtime {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+        drop(phase);
+        let phase = Phase::start("vmm_configure");
         if let Some(snapshot) = snapshot {
             let directory = self.root.join("snapshots").join(&snapshot.id);
             client.request("PUT", "/snapshot/load", json!({"snapshot_path":directory.join("state.snap"), "mem_backend":{"backend_type":"File", "backend_path": directory.join("memory.snap")}, "resume_vm":false, "track_dirty_pages":false})).await?;
@@ -478,6 +493,8 @@ impl Runtime {
                 .request("PUT", "/actions", json!({"action_type":"InstanceStart"}))
                 .await?;
         }
+        drop(phase);
+        let phase = Phase::start("guest_ready");
         let deadline = Instant::now() + Duration::from_secs(20);
         let initialized = loop {
             if let Ok(Response::Hello {
@@ -503,6 +520,8 @@ impl Runtime {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         };
+        drop(phase);
+        let _phase = Phase::start("guest_initialize");
         if initialize
             && !initialized
             && !matches!(

@@ -26,16 +26,18 @@ target/release/box delete BOX_ID
 
 The fixture builder refuses to overwrite existing images; use a new output directory when rebuilding. State defaults to a private `.boxd/` directory. Commands accept `--state-dir PATH` and emit versioned JSON. See the [operator guide](docs/runtime.md) for templates, checkpoints, benchmarks, recovery, and limitations.
 
-## Measured baseline
+## Measured launch performance
 
-Release host/guest builds, Ryzen 7 7840HS, ext4 byte-copy fallback, 256 MiB / 1 vCPU fixture, Firecracker 1.17.0. Includes integrity checks and first successful guest command; OS page cache was uncontrolled.
+Release host/guest builds, Ryzen 7 7840HS, ext4 sparse-copy fallback, 256 MiB / 1 vCPU fixture, Firecracker 1.17.0. Includes integrity checks and first successful guest command; OS page cache was uncontrolled.
 
 | Launch path | Sequential p50 / p95 (30 samples) | Concurrency 4 p50 / p95 (16 samples) |
 | --- | --- | --- |
-| Cold boot | 844 / 895 ms | 829 / 868 ms |
-| Prepared-template restore | 279 / 287 ms | 504 / 944 ms |
+| Cold boot | 807 / 851 ms | 805 / 852 ms |
+| Prepared-template restore | 245 / 257 ms | 277 / 325 ms |
 
-All 92 measured launches succeeded. These are local measurements, not a hosted SLA. Every restore currently scans full snapshot checksums and takes an allocation lock during validation. A long-running host service with verified immutable artifact caching and reflink-capable storage is the next optimization to evaluate, not a performance claim already achieved.
+All 92 measured launches succeeded. A matched pre-optimization run measured template launches at 281 ms sequential p50 and 537 / 973 ms concurrent p50 / p95. Skipping disk holes and releasing the allocation lock before full checksum verification reduced these costs without disabling checksums or durability syncs. The [operator guide](docs/runtime.md#reproduce-launch-measurements) records the comparison and phase timings.
+
+These are local measurements, not a hosted SLA or a matched comparison with boxd.sh. Full snapshot scans still dominate template latency. Verified immutable artifact storage and reflink-capable disks remain work to evaluate, not performance already achieved.
 
 ## Development
 
