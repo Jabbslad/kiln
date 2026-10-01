@@ -12,7 +12,7 @@ pub async fn handle<I: Initializer>(agent: &Agent<I>, request: Request, marker: 
     match request {
         Request::Exec(_) => Response::Error(ProtocolError::new(
             ErrorCode::NotInitialized,
-            "systemd has not started",
+            "systemd initialization has not completed",
         )),
         Request::Hello { .. } => {
             let mut response = agent.handle(request).await;
@@ -49,8 +49,12 @@ pub async fn handle<I: Initializer>(agent: &Agent<I>, request: Request, marker: 
 }
 
 pub async fn serve() -> io::Result<()> {
+    serve_with(Arc::new(SystemInitializer)).await
+}
+
+pub async fn serve_with<I: Initializer>(initializer: Arc<I>) -> io::Result<()> {
     let listener = VsockListener::bind(VsockAddr::new(libc::VMADDR_CID_ANY, VSOCK_PORT))?;
-    let agent = Agent::new(Arc::new(SystemInitializer), 1);
+    let agent = Agent::new(initializer, 1);
     loop {
         let (mut stream, peer) = listener.accept().await?;
         if peer.cid() != HOST_CID {

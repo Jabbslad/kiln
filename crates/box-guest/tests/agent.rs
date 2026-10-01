@@ -20,7 +20,10 @@ async fn bootstrap_never_executes_workloads_and_service_requires_handoff() {
     assert!(Agent::from_boot_marker(init.clone(), 2, &marker).is_err());
     let request = InitializeRequest {
         hostname: "box-17".into(),
-        machine_id: "17abcdef0123456789abcdef01234567".into(),
+        machine_id: std::fs::read_to_string("/etc/machine-id")
+            .unwrap()
+            .trim()
+            .into(),
         entropy: vec![19; 64],
     };
     assert!(matches!(
@@ -45,6 +48,20 @@ async fn bootstrap_never_executes_workloads_and_service_requires_handoff() {
     assert_eq!(init.calls(), 1);
     std::fs::write(&marker, b"not-an-identity\n").unwrap();
     assert!(Agent::from_boot_marker(init, 2, &marker).is_err());
+}
+
+#[test]
+fn handoff_rejects_a_valid_but_foreign_machine_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let marker = root.path().join("initialized");
+    let current = std::fs::read_to_string("/etc/machine-id").unwrap();
+    let foreign = if current.starts_with('1') {
+        "2".repeat(32)
+    } else {
+        "1".repeat(32)
+    };
+    std::fs::write(&marker, foreign).unwrap();
+    assert!(Agent::from_boot_marker(Arc::new(FakeInitializer::default()), 1, &marker).is_err());
 }
 
 #[tokio::test]

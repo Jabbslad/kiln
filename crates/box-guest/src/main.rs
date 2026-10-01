@@ -10,12 +10,17 @@ use tokio_vsock::{VsockAddr, VsockListener};
 async fn main() -> io::Result<()> {
     let agent = match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
         [] => Agent::new(Arc::new(SystemInitializer), 8),
+        [flag] if flag == "--warm-bootstrap" => return box_guest::warm::serve().await,
         [flag] if flag == "--systemd-service" => Agent::from_boot_marker(
             Arc::new(SystemInitializer),
             8,
             std::path::Path::new(box_guest::bootstrap::MARKER),
         )?,
-        _ => return Err(io::Error::other("usage: box-guest [--systemd-service]")),
+        _ => {
+            return Err(io::Error::other(
+                "usage: box-guest [--systemd-service | --warm-bootstrap]",
+            ));
+        }
     };
     let listener = VsockListener::bind(VsockAddr::new(libc::VMADDR_CID_ANY, VSOCK_PORT))?;
     let agent = Arc::new(agent);

@@ -8,6 +8,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+pub mod overlay;
+pub mod verity;
+
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const FICLONE: libc::c_ulong = 0x4004_9409;
 
@@ -103,6 +106,27 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
 }
 
 pub fn copy_disk(src: &Path, dst: &Path, deadline: Instant) -> Result<CopyMethod> {
+    copy_file(src, dst, deadline, None)
+}
+
+/// Materialize a snapshot disk after manifest verification. Sealed sources must
+/// be read through their authenticated inode, including every logical zero.
+pub fn copy_snapshot_disk(
+    src: &Path,
+    dst: &Path,
+    expected: &str,
+    seal: Option<&verity::Seal>,
+    deadline: Instant,
+) -> Result<CopyMethod> {
+    copy_file(src, dst, deadline, seal.map(|seal| (expected, seal)))
+}
+
+fn copy_file(
+    src: &Path,
+    dst: &Path,
+    deadline: Instant,
+    sealed: Option<(&str, &verity::Seal)>,
+) -> Result<CopyMethod> {
     if Instant::now() >= deadline {
         return Err(Error::Invalid("disk copy deadline expired".into()));
     }
@@ -117,6 +141,9 @@ pub fn copy_disk(src: &Path, dst: &Path, deadline: Instant) -> Result<CopyMethod
             src.display()
         )));
     }
+    if let Some((expected, seal)) = sealed {
+        verity::verify_file(&source, expected, seal)?;
+    }
     let mut destination = OpenOptions::new()
         .read(true)
         .write(true)
@@ -126,26 +153,30 @@ pub fn copy_disk(src: &Path, dst: &Path, deadline: Instant) -> Result<CopyMethod
         .open(dst)?;
 
     let result = (|| -> Result<CopyMethod> {
-        if unsafe { libc::ioctl(destination.as_raw_fd(), FICLONE, source.as_raw_fd()) } == 0 {
-            if Instant::now() >= deadline {
-                return Err(Error::Invalid("disk copy deadline expired".into()));
+        // A writable reflink does not inherit fs-verity. Only the read path of
+        // the sealed source authenticates its blocks against the trusted digest.
+        if sealed.is_none() {
+            if unsafe { libc::ioctl(destination.as_raw_fd(), FICLONE, source.as_raw_fd()) } == 0 {
+                if Instant::now() >= deadline {
+                    return Err(Error::Invalid("disk copy deadline expired".into()));
+                }
+                destination.sync_all()?;
+                return Ok(CopyMethod::Reflink);
             }
-            destination.sync_all()?;
-            return Ok(CopyMethod::Reflink);
-        }
-        let reflink_error = std::io::Error::last_os_error();
-        if !matches!(
-            reflink_error.raw_os_error(),
-            Some(libc::EOPNOTSUPP | libc::ENOTTY | libc::EINVAL | libc::EXDEV | libc::ENOSYS)
-        ) {
-            return Err(reflink_error.into());
+            let reflink_error = std::io::Error::last_os_error();
+            if !matches!(
+                reflink_error.raw_os_error(),
+                Some(libc::EOPNOTSUPP | libc::ENOTTY | libc::EINVAL | libc::EXDEV | libc::ENOSYS)
+            ) {
+                return Err(reflink_error.into());
+            }
         }
 
         ensure_free_space(&destination, source_metadata.len())?;
         let mut buffer = vec![0_u8; 1024 * 1024];
         let mut offset = 0;
         let length = source_metadata.len();
-        let mut seek_holes = true;
+        let mut seek_holes = sealed.is_none();
         while offset < length {
             if Instant::now() >= deadline {
                 return Err(Error::Invalid("disk copy deadline expired".into()));
@@ -185,7 +216,7 @@ pub fn copy_disk(src: &Path, dst: &Path, deadline: Instant) -> Result<CopyMethod
                 }
                 let count = (end - offset).min(buffer.len() as u64) as usize;
                 source.read_exact(&mut buffer[..count])?;
-                if buffer[..count].iter().all(|byte| *byte == 0) {
+                if is_zero(&buffer[..count]) {
                     destination.seek(SeekFrom::Current(count as i64))?;
                 } else {
                     destination.write_all(&buffer[..count])?;
@@ -204,6 +235,14 @@ pub fn copy_disk(src: &Path, dst: &Path, deadline: Instant) -> Result<CopyMethod
         File::open(dst.parent().unwrap_or(Path::new(".")))?.sync_all()?;
     }
     result
+}
+
+fn is_zero(bytes: &[u8]) -> bool {
+    // Fixed-size comparisons let LLVM use wide loads rather than branching on
+    // each byte. Check the short tail too; these are already-read bytes only.
+    let mut chunks = bytes.chunks_exact(32);
+    chunks.by_ref().all(|chunk| chunk == [0; 32])
+        && chunks.remainder().iter().all(|byte| *byte == 0)
 }
 
 fn ensure_free_space(file: &File, required: u64) -> Result<()> {
@@ -252,6 +291,21 @@ mod tests {
     use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
     use std::time::{Duration, Instant};
     use tempfile::tempdir;
+
+    #[test]
+    fn zero_detection_checks_chunk_boundaries_and_partial_tails() {
+        for length in [0, 1, 31, 32, 33, 63, 64, 65, 97] {
+            // Misalign the input and place the only nonzero byte at every
+            // possible position, including the portion after the last chunk.
+            let mut bytes = vec![0; length + 1];
+            assert!(is_zero(&bytes[1..]));
+            for offset in 1..=length {
+                bytes[offset] = 0x80;
+                assert!(!is_zero(&bytes[1..]), "length {length}, offset {offset}");
+                bytes[offset] = 0;
+            }
+        }
+    }
 
     #[derive(Debug, Deserialize, PartialEq, Serialize)]
     struct Record {
@@ -309,6 +363,92 @@ mod tests {
         copy_disk(&source, &second, Instant::now() + Duration::from_secs(2)).unwrap();
         assert_eq!(fs::read(first).unwrap(), b"left\0\0\0right");
         assert_eq!(fs::read(second).unwrap(), b"changed");
+    }
+
+    #[test]
+    fn sealed_disk_copy_rejects_a_false_seal_before_creating_output() {
+        let root = tempdir().unwrap();
+        let source = root.path().join("source");
+        let target = root.path().join("disk");
+        fs::write(&source, b"abc").unwrap();
+        let hash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let seal = verity::Seal {
+            sha256: hash.into(),
+            digest: "00".repeat(32),
+        };
+        assert!(
+            copy_snapshot_disk(
+                &source,
+                &target,
+                hash,
+                Some(&seal),
+                Instant::now() + Duration::from_secs(5)
+            )
+            .is_err()
+        );
+        assert!(!target.exists());
+    }
+
+    #[test]
+    #[ignore = "requires BOXD_TEST_VERITY_DIR on Btrfs with fs-verity and reflinks"]
+    fn sealed_disk_copy_reads_data_instead_of_reflinking_away_verification() {
+        let root = tempdir_in_verity();
+        let source = root.path().join("source");
+        let target = root.path().join("disk");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut expected = vec![0; 8 * 1024 * 1024 + 31];
+        expected[8193..8197].copy_from_slice(b"left");
+        expected[8 * 1024 * 1024 + 17..8 * 1024 * 1024 + 22].copy_from_slice(b"right");
+        let mut file = File::create(&source).unwrap();
+        file.seek(SeekFrom::Start(8193)).unwrap();
+        file.write_all(b"left").unwrap();
+        file.seek(SeekFrom::Start(8 * 1024 * 1024 + 17)).unwrap();
+        file.write_all(b"right").unwrap();
+        file.set_len(expected.len() as u64).unwrap();
+        drop(file);
+        let (hash, seal) = verity::seal(&source).unwrap();
+        let seal = seal.expect("real sealing required");
+        // Prove FICLONE is available for this sealed source. Merely testing on
+        // ext4 would let an unsafe implementation pass via unsupported fallback.
+        let raw = root.path().join("raw-reflink");
+        assert_eq!(
+            copy_disk(&source, &raw, deadline).unwrap(),
+            CopyMethod::Reflink
+        );
+        let rchar = || -> u64 {
+            fs::read_to_string("/proc/thread-self/io")
+                .unwrap()
+                .lines()
+                .find_map(|line| line.strip_prefix("rchar: "))
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        let before = rchar();
+        assert_eq!(
+            copy_snapshot_disk(&source, &target, &hash, Some(&seal), deadline).unwrap(),
+            CopyMethod::Copy
+        );
+        assert!(
+            rchar() - before >= expected.len() as u64,
+            "must read holes too, not synthesize unauthenticated zeroes"
+        );
+        assert_eq!(fs::read(&target).unwrap(), expected);
+        fs::write(&target, b"changed").unwrap();
+        assert_eq!(fs::read(&source).unwrap(), expected);
+        fs::remove_file(&source).unwrap();
+        fs::write(&source, b"replacement").unwrap();
+        verity::seal(&source).unwrap().1.expect("seal replacement");
+        let rejected = root.path().join("rejected");
+        assert!(copy_snapshot_disk(&source, &rejected, &hash, Some(&seal), deadline).is_err());
+        assert!(!rejected.exists());
+    }
+
+    fn tempdir_in_verity() -> tempfile::TempDir {
+        tempfile::tempdir_in(
+            std::env::var("BOXD_TEST_VERITY_DIR").expect("set BOXD_TEST_VERITY_DIR"),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -441,7 +581,19 @@ mod tests {
         let first = lock(root.path()).unwrap();
         assert!(lock(root.path()).is_err());
         drop(first);
-        lock(root.path()).unwrap();
+        // Parallel tests spawn helpers. Between fork and exec, a child briefly
+        // inherits even CLOEXEC lock descriptors; release follows its exec.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            match lock(root.path()) {
+                Ok(_) => break,
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "lock was not released");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("unexpected lock error: {error}"),
+            }
+        }
     }
 
     #[test]

@@ -48,6 +48,20 @@ impl Runtime {
                 "samples must be 1..100, concurrency 1..4".into(),
             ));
         }
+        let snapshot = self.snapshot_metadata(template)?;
+        let template_verification: BTreeMap<_, _> = ["disk.ext4", "state.snap", "memory.snap"]
+            .into_iter()
+            .map(|name| {
+                (
+                    name,
+                    if snapshot.seals.contains_key(name) {
+                        "fs_verity"
+                    } else {
+                        "sha256"
+                    },
+                )
+            })
+            .collect();
         let prefix = format!("bench-{}", id()?);
         let mut groups = serde_json::Map::new();
         for mode in ["cold_boot", "template_restore"] {
@@ -62,17 +76,21 @@ impl Runtime {
                     let image = image.to_owned();
                     let template = template.to_owned();
                     let name = format!("{prefix}-{index}");
+                    let memory_mib = snapshot.memory_mib;
+                    let vcpus = snapshot.vcpus;
                     workers.spawn(async move {
                         let start = Instant::now();
                         let (launched, phases) = PHASES.scope(RefCell::new(BTreeMap::new()), async {
-                            let launched = if mode == "cold_boot" { runtime.create(&image, &name, 256, 1, false).await } else { runtime.clone_template(&template, &name).await };
+                            let launched = if mode == "cold_boot" { runtime.create(&image, &name, memory_mib, vcpus, false).await } else { runtime.clone_template(&template, &name).await };
                             (launched, PHASES.with(|phases| phases.take()))
                         }).await;
                         let launch_ms = start.elapsed().as_secs_f64()*1000.;
                         let mut copy_method = None;
+                        let mut resources = None;
                         let result = async {
                             let record = launched?;
                             copy_method = Some(record.disk_copy);
+                            resources = Some((record.memory_mib, record.vcpus));
                             let result = runtime.exec(&record.id, ExecRequest {argv:vec!["/bin/printf".into(),"boxd-ready".into()],cwd:None,env:Default::default(),timeout_ms:5000}).await?;
                             if result.stdout != b"boxd-ready" || result.exit_code != Some(0) || result.timed_out {
                                 return Err(Error::Invalid("first command returned unexpected output or exit code".into()));
@@ -80,7 +98,7 @@ impl Runtime {
                             Ok(())
                         }.await;
                         let elapsed = start.elapsed().as_secs_f64()*1000.;
-                        json!({"index":index,"launch_ms":launch_ms,"phases_ms":phases,"first_exec_ms":elapsed-launch_ms,"total_ms":result.as_ref().ok().map(|_|elapsed),"attempt_ms":elapsed,"disk_copy":copy_method,"error":result.err().map(|e:Error|e.to_string())})
+                        json!({"index":index,"launch_ms":launch_ms,"phases_ms":phases,"first_exec_ms":elapsed-launch_ms,"total_ms":result.as_ref().ok().map(|_|elapsed),"attempt_ms":elapsed,"disk_copy":copy_method,"memory_mib":resources.map(|r|r.0),"vcpus":resources.map(|r|r.1),"error":result.err().map(|e:Error|e.to_string())})
                     });
                 }
                 while let Some(result) = workers.join_next().await {
@@ -110,7 +128,7 @@ impl Runtime {
             );
         }
         Ok(
-            json!({"schema_version":1,"profile":if self.is_isolated() {"isolated"} else {"development"},"samples_per_mode":samples,"concurrency":concurrency,"cache_condition":"uncontrolled OS page cache; all checksums verified on every launch; no cache eviction", "build_profile":if cfg!(debug_assertions) {"debug"} else {"release"},"clock_scope":"runtime request through first successful guest command; excludes benchmark startup and cleanup", "host":host::fingerprint()?,"versions":host::check(),"image":image,"template":template,"results":groups}),
+            json!({"schema_version":1,"profile":if self.is_isolated() {"isolated"} else {"development"},"samples_per_mode":samples,"concurrency":concurrency,"cache_condition":"uncontrolled OS page cache; integrity checked on every launch (SHA-256 scans or kernel fs-verity); no cache eviction", "template_verification":template_verification,"build_profile":if cfg!(debug_assertions) {"debug"} else {"release"},"clock_scope":"runtime request through first successful guest command; excludes benchmark startup and cleanup", "host":host::fingerprint()?,"versions":host::check(),"image":image,"template":template,"results":groups}),
         )
     }
 }

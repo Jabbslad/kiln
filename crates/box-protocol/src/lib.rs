@@ -7,6 +7,9 @@ pub const VSOCK_PORT: u32 = 1024;
 pub const HOST_CID: u32 = 2;
 pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
 pub const MAX_OUTPUT_SIZE: usize = 64 * 1024;
+// Public, non-secret preparation identity. Only explicit shared-identity images
+// retain it for workloads; normal clones replace it before becoming ready.
+pub const PREPARATION_MACHINE_ID: &str = "11111111111111111111111111111111";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]

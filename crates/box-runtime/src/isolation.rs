@@ -14,6 +14,22 @@ pub struct Config {
     pub cgroup_parent: String,
     pub uid_base: u32,
     pub gid_base: u32,
+    #[serde(default, skip_serializing_if = "DiskBackend::is_copy")]
+    pub disk_backend: DiskBackend,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiskBackend {
+    #[default]
+    Copy,
+    Snapshot,
+}
+
+impl DiskBackend {
+    fn is_copy(&self) -> bool {
+        *self == Self::Copy
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +135,9 @@ impl Config {
         if !report.development_ready {
             return Err(Error::Invalid(report.problems.join("; ")));
         }
+        if self.disk_backend == DiskBackend::Snapshot {
+            storage::overlay::preflight()?;
+        }
         Ok(())
     }
 
@@ -172,7 +191,7 @@ impl Config {
     ) -> Result<Vec<String>> {
         self.validate_identity(identity)?;
         self.cgroup(run)?;
-        if !base.is_absolute() || !(128..=2048).contains(&memory) || !(1..=4).contains(&vcpus) {
+        if !base.is_absolute() || !(128..=4096).contains(&memory) || !(1..=4).contains(&vcpus) {
             return Err(Error::Invalid(
                 "invalid jail path or resource limits".into(),
             ));
@@ -278,23 +297,68 @@ pub fn require_root() -> Result<()> {
     Ok(())
 }
 
-pub fn stage_readonly(source: &Path, destination: &Path, expected: &str) -> Result<()> {
+pub fn stage_readonly(
+    source: &Path,
+    destination: &Path,
+    expected: &str,
+    seal: Option<&storage::verity::Seal>,
+) -> Result<()> {
     use std::{
         os::unix::fs::PermissionsExt,
         time::{Duration, Instant},
     };
+    if let Some(seal) = seal {
+        storage::verity::verify(source, expected, Some(seal))?;
+        let metadata = fs::symlink_metadata(source)?;
+        if metadata.is_file() && metadata.uid() == 0 && metadata.mode() & 0o7777 == 0o444 {
+            match fs::hard_link(source, destination) {
+                Ok(()) => {
+                    let result = (|| -> Result<()> {
+                        // Authenticate the actual linked inode, not just the
+                        // source pathname inspected before link creation.
+                        storage::verity::verify(destination, expected, Some(seal))?;
+                        let metadata = fs::symlink_metadata(destination)?;
+                        if !metadata.is_file()
+                            || metadata.uid() != 0
+                            || metadata.mode() & 0o7777 != 0o444
+                        {
+                            return Err(Error::Invalid(
+                                "sealed jail input ownership/mode changed".into(),
+                            ));
+                        }
+                        fs::File::open(destination.parent().unwrap_or(Path::new(".")))?
+                            .sync_all()?;
+                        Ok(())
+                    })();
+                    if result.is_err() {
+                        fs::remove_file(destination)?;
+                    }
+                    return result;
+                }
+                Err(error) if error.raw_os_error() == Some(libc::EXDEV) => (),
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    // Unsealed/legacy-mode/cross-filesystem inputs get a private copy whose
+    // complete contents are authenticated before being exposed to the jail.
     storage::copy_disk(
         source,
         destination,
         Instant::now() + Duration::from_secs(120),
     )?;
-    if crate::image::sha256(destination)? != expected {
+    let result = (|| -> Result<()> {
+        if crate::image::sha256(destination)? != expected {
+            return Err(Error::Invalid("staged jail input checksum mismatch".into()));
+        }
+        fs::set_permissions(destination, fs::Permissions::from_mode(0o444))?;
+        fs::File::open(destination)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
         fs::remove_file(destination)?;
-        return Err(Error::Invalid("staged jail input checksum mismatch".into()));
     }
-    fs::set_permissions(destination, fs::Permissions::from_mode(0o444))?;
-    fs::File::open(destination)?.sync_all()?;
-    Ok(())
+    result
 }
 
 pub fn own_file(path: &Path, identity: &JailIdentity) -> Result<()> {
@@ -355,7 +419,25 @@ mod tests {
             cgroup_parent: "boxd".into(),
             uid_base: 70000,
             gid_base: 71000,
+            disk_backend: DiskBackend::Copy,
         }
+    }
+
+    #[test]
+    fn disk_backend_is_explicit_and_legacy_policy_keeps_copying() {
+        let mut value = serde_json::to_value(config()).unwrap();
+        assert!(value.get("disk_backend").is_none());
+        let legacy: Config = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(legacy.disk_backend, DiskBackend::Copy);
+        value["disk_backend"] = "snapshot".into();
+        assert_eq!(
+            serde_json::from_value::<Config>(value.clone())
+                .unwrap()
+                .disk_backend,
+            DiskBackend::Snapshot
+        );
+        value["disk_backend"] = "unverified_reflink".into();
+        assert!(serde_json::from_value::<Config>(value).is_err());
     }
 
     #[test]
@@ -406,7 +488,7 @@ mod tests {
         let target = root.path().join("restore.memory");
         fs::write(&source, b"abc").unwrap();
         let hash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-        stage_readonly(&source, &target, hash).unwrap();
+        stage_readonly(&source, &target, hash, None).unwrap();
         assert_eq!(fs::metadata(&target).unwrap().mode() & 0o777, 0o444);
         assert_ne!(
             fs::metadata(&source).unwrap().ino(),
@@ -415,7 +497,7 @@ mod tests {
         fs::write(&source, b"changed").unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"abc");
         let bad = root.path().join("corrupt");
-        assert!(stage_readonly(&source, &bad, hash).is_err());
+        assert!(stage_readonly(&source, &bad, hash, None).is_err());
         assert!(!bad.exists());
     }
 
@@ -433,9 +515,98 @@ mod tests {
     }
 
     #[test]
+    fn claimed_seal_cannot_authorize_unsealed_jail_inputs() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        fs::write(&source, b"abc").unwrap();
+        let hash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let seal = storage::verity::Seal {
+            sha256: hash.into(),
+            digest: "00".repeat(32),
+        };
+        assert!(stage_readonly(&source, &target, hash, Some(&seal)).is_err());
+        assert!(!target.exists());
+    }
+
+    #[test]
+    #[ignore = "requires root and BOXD_TEST_VERITY_DIR on an fs-verity-enabled filesystem"]
+    fn sealed_jail_links_preserve_integrity_ownership_and_lifetime() {
+        use std::os::unix::fs::PermissionsExt;
+        require_root().unwrap();
+        let root = tempfile::tempdir_in(std::env::var("BOXD_TEST_VERITY_DIR").unwrap()).unwrap();
+        let source = root.path().join("source");
+        let a = root.path().join("jail-a");
+        let b = root.path().join("jail-b");
+        fs::write(&source, b"abc").unwrap();
+        let (hash, seal) = storage::verity::seal(&source).unwrap();
+        let seal = seal.expect("real sealing required");
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o444)).unwrap();
+        stage_readonly(&source, &a, &hash, Some(&seal)).unwrap();
+        stage_readonly(&source, &b, &hash, Some(&seal)).unwrap();
+        assert_eq!(
+            fs::metadata(&source).unwrap().ino(),
+            fs::metadata(&a).unwrap().ino()
+        );
+        assert_eq!(
+            fs::metadata(&a).unwrap().ino(),
+            fs::metadata(&b).unwrap().ino()
+        );
+        assert_eq!(fs::metadata(&a).unwrap().uid(), 0);
+        assert!(fs::OpenOptions::new().write(true).open(&a).is_err());
+        let mut bad = seal.clone();
+        bad.digest = "00".repeat(32);
+        let rejected = root.path().join("bad");
+        assert!(stage_readonly(&source, &rejected, &hash, Some(&bad)).is_err());
+        assert!(!rejected.exists());
+        assert!(stage_readonly(&source, &a, &hash, Some(&seal)).is_err());
+        assert_eq!(fs::read(&a).unwrap(), b"abc");
+        fs::remove_file(&a).unwrap();
+        fs::remove_file(&source).unwrap();
+        storage::verity::verify(&b, &hash, Some(&seal)).unwrap();
+        assert_eq!(fs::read(&b).unwrap(), b"abc");
+        // Old sealed files keep 0400 and fall back to private authenticated copies.
+        fs::set_permissions(&b, fs::Permissions::from_mode(0o400)).unwrap();
+        let legacy = root.path().join("legacy-mode");
+        stage_readonly(&b, &legacy, &hash, Some(&seal)).unwrap();
+        assert_ne!(
+            fs::metadata(&b).unwrap().ino(),
+            fs::metadata(&legacy).unwrap().ino()
+        );
+    }
+
+    #[test]
     fn foreground_jailer_command_has_fixed_paths_and_explicit_limits() {
         let config = config();
         let id = "0123456789abcdef0123456789abcdef";
+        let identity = JailIdentity {
+            uid: 70003,
+            gid: 71003,
+        };
+        let large = config
+            .args(
+                Path::new("/var/lib/boxd/generation"),
+                id,
+                &identity,
+                4096,
+                1,
+            )
+            .unwrap();
+        assert!(large.contains(&"memory.max=8724152320".to_owned()));
+        assert!(large.contains(&"cpu.max=100000 100000".to_owned()));
+        for memory in [127, 4097] {
+            assert!(
+                config
+                    .args(
+                        Path::new("/var/lib/boxd/generation"),
+                        id,
+                        &identity,
+                        memory,
+                        1
+                    )
+                    .is_err()
+            );
+        }
         let args = config
             .args(
                 Path::new("/var/lib/boxd/generation"),

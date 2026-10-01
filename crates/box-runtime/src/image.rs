@@ -10,6 +10,8 @@ pub enum BootMode {
     #[default]
     Init,
     Systemd,
+    SystemdWarm,
+    SystemdWarmShared,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,12 +29,20 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    pub fn boot_args(&self) -> &'static str {
+    pub fn boot_args(&self, template: bool) -> &'static str {
         match self.boot_mode {
             BootMode::Init => {
                 "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/sbin/init quiet"
             }
-            BootMode::Systemd => {
+            BootMode::SystemdWarm if template => {
+                // The pinned kernel embeds an experimental userspace bpfilter
+                // helper. It implements no filtering; normal netfilter remains.
+                "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/sbin/box-init boxd.warm=1 initcall_blacklist=load_umh quiet"
+            }
+            BootMode::SystemdWarmShared if template => {
+                "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/sbin/box-init boxd.warm=1 boxd.retain_pid1=1 initcall_blacklist=load_umh quiet"
+            }
+            BootMode::Systemd | BootMode::SystemdWarm | BootMode::SystemdWarmShared => {
                 "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/sbin/box-init quiet"
             }
         }
@@ -40,7 +50,10 @@ impl Manifest {
 }
 
 pub fn sha256(path: &Path) -> Result<String> {
-    let mut file = fs::File::open(path)?;
+    sha256_reader(&mut fs::File::open(path)?)
+}
+
+pub(crate) fn sha256_reader(file: &mut impl Read) -> Result<String> {
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 65536];
     loop {
@@ -89,6 +102,20 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn shared_mode_is_explicit_and_only_retains_pid1_for_templates() {
+        let manifest: Manifest = serde_json::from_value(serde_json::json!({
+            "schema_version":1,"architecture":"x86_64","kernel_path":"kernel",
+            "kernel_sha256":"abc","rootfs_path":"disk","rootfs_sha256":"def",
+            "agent_protocol_version":1,"boot_mode":"systemd_warm_shared"
+        }))
+        .expect("explicit shared warm mode");
+        assert!(manifest.boot_args(true).contains("boxd.warm=1"));
+        assert!(manifest.boot_args(true).contains("boxd.retain_pid1=1"));
+        assert!(!manifest.boot_args(false).contains("boxd.warm"));
+        assert!(!manifest.boot_args(false).contains("boxd.retain_pid1"));
+    }
+
+    #[test]
     fn boot_mode_is_explicit_and_legacy_images_keep_their_init() {
         let value = serde_json::json!({
             "schema_version":1,"architecture":"x86_64","kernel_path":"kernel",
@@ -96,11 +123,23 @@ mod tests {
             "agent_protocol_version":1
         });
         let legacy: Manifest = serde_json::from_value(value.clone()).unwrap();
-        assert!(legacy.boot_args().contains("init=/sbin/init"));
+        assert!(legacy.boot_args(true).contains("init=/sbin/init"));
         let mut ubuntu = value;
         ubuntu["boot_mode"] = "systemd".into();
         let manifest: Manifest = serde_json::from_value(ubuntu.clone()).unwrap();
-        assert!(manifest.boot_args().contains("init=/sbin/box-init"));
+        assert!(manifest.boot_args(true).contains("init=/sbin/box-init"));
+        ubuntu["boot_mode"] = "systemd_warm".into();
+        let warm: Manifest = serde_json::from_value(ubuntu.clone()).unwrap();
+        assert!(
+            warm.boot_args(true)
+                .contains("init=/sbin/box-init boxd.warm=1")
+        );
+        assert!(warm.boot_args(true).contains("initcall_blacklist=load_umh"));
+        assert_eq!(
+            warm.boot_args(false),
+            manifest.boot_args(false),
+            "ordinary cold launches must not pay for template preparation"
+        );
         ubuntu["boot_mode"] = "init=/bin/sh".into();
         assert!(serde_json::from_value::<Manifest>(ubuntu).is_err());
     }

@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
@@ -87,11 +87,22 @@ fn success(state: &Path, args: &[&str]) -> Value {
     let output = invoke(state, args);
     assert!(
         output.status.success(),
-        "{:?}: {}",
+        "{:?}: {}\nstdout: {}\nstderr: {}",
         args,
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    if value["hashes"].is_object() && std::env::var_os("BOXD_TEST_REQUIRE_VERITY").is_some() {
+        for name in ["disk.ext4", "state.snap", "memory.snap"] {
+            assert_eq!(value["seals"][name]["sha256"], value["hashes"][name]);
+            assert!(
+                value["seals"][name]["digest"].is_string(),
+                "missing seal for {name}: {value}"
+            );
+        }
+    }
     if value["process"].is_object() && value["jail"].is_object() {
         let pid = value["process"]["pid"].as_u64().unwrap();
         let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
@@ -116,6 +127,12 @@ fn success(state: &Path, args: &[&str]) -> Value {
             std::fs::metadata(run.join("disk.ext4")).unwrap().uid(),
             uid as u32
         );
+        let disk = std::fs::metadata(run.join("disk.ext4")).unwrap();
+        assert_eq!(
+            disk.file_type().is_block_device(),
+            value["disk_layer"].is_string()
+        );
+        assert_eq!(disk.mode() & 0o777, 0o600);
         assert_eq!(
             std::fs::metadata(state.join("boxes")).unwrap().mode() & 0o777,
             0o700
@@ -479,16 +496,40 @@ fn prepared_clones_have_private_identity_disks_and_lifetimes() {
     let aid = a["id"].as_str().unwrap();
     let bid = b["id"].as_str().unwrap();
     assert_ne!(aid, bid);
+    let expected_id = |id: &str| {
+        if a["image"]["boot_mode"] == "systemd_warm_shared" {
+            "11111111111111111111111111111111".to_owned()
+        } else {
+            id.to_owned()
+        }
+    };
     if a["jail"].is_object() {
         assert_ne!(a["jail"]["uid"], b["jail"]["uid"]);
         assert_ne!(a["jail"]["gid"], b["jail"]["gid"]);
         let a_run = run_directory(state.path(), &a);
         let b_run = run_directory(state.path(), &b);
-        for name in ["disk.ext4", "memory.snap"] {
-            assert_ne!(
-                std::fs::metadata(a_run.join(name)).unwrap().ino(),
-                std::fs::metadata(b_run.join(name)).unwrap().ino()
-            );
+        for name in ["disk.ext4", "state.snap", "memory.snap"] {
+            let source = state.path().join("snapshots").join(template_id).join(name);
+            let original = std::fs::metadata(&source).unwrap();
+            let first = std::fs::metadata(a_run.join(name)).unwrap();
+            let second = std::fs::metadata(b_run.join(name)).unwrap();
+            if name != "disk.ext4" && template["seals"][name].is_object() {
+                assert_eq!((first.dev(), first.ino()), (original.dev(), original.ino()));
+                assert_eq!(
+                    (second.dev(), second.ino()),
+                    (original.dev(), original.ino())
+                );
+                assert_eq!(first.uid(), 0);
+                assert!(
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(a_run.join(name))
+                        .is_err()
+                );
+            } else {
+                assert_ne!((first.dev(), first.ino()), (second.dev(), second.ino()));
+                assert_ne!((first.dev(), first.ino()), (original.dev(), original.ino()));
+            }
         }
         assert_eq!(
             std::fs::metadata(a_run.join("memory.snap")).unwrap().mode() & 0o777,
@@ -519,13 +560,16 @@ fn prepared_clones_have_private_identity_disks_and_lifetimes() {
                 state.path(),
                 &["exec", id, "--", "/bin/cat", "/etc/machine-id"]
             )["stdout"],
-            format!("{id}\n")
+            format!("{}\n", expected_id(id))
         );
         assert_eq!(
             success(state.path(), &["exec", id, "--", "/bin/hostname"])["stdout"],
             format!("box-{}\n", &id[..12])
         );
-        if a["image"]["boot_mode"] == "systemd" {
+        if matches!(
+            a["image"]["boot_mode"].as_str(),
+            Some("systemd" | "systemd_warm" | "systemd_warm_shared")
+        ) {
             let script = "set -e; test \"$(cat /proc/1/comm)\" = systemd; . /etc/os-release; test \"$ID:$VERSION_ID\" = ubuntu:24.04; systemd-run --quiet --wait --pipe /bin/cat /etc/machine-id; python3 -c 'print(sum([17, 93, -8]))'";
             let result = success(
                 state.path(),
@@ -541,7 +585,7 @@ fn prepared_clones_have_private_identity_disks_and_lifetimes() {
                 ],
             );
             assert_eq!(result["exit_code"], 0, "{result}");
-            assert_eq!(result["stdout"], format!("{id}\n102\n"));
+            assert_eq!(result["stdout"], format!("{}\n102\n", expected_id(id)));
             let result = success(
                 state.path(),
                 &[
@@ -560,12 +604,55 @@ fn prepared_clones_have_private_identity_disks_and_lifetimes() {
             assert_eq!(result["exit_code"], 0, "{result}");
             assert_eq!(
                 result["stdout"],
-                format!("s \"{id}\"\n"),
-                "systemd must not cache the template identity"
+                format!("s \"{}\"\n", expected_id(id)),
+                "systemd identity must match the explicit image policy"
             );
         }
     }
-    if a["image"]["boot_mode"] == "systemd" {
+    if matches!(
+        a["image"]["boot_mode"].as_str(),
+        Some("systemd" | "systemd_warm" | "systemd_warm_shared")
+    ) {
+        let script = "set -e; busctl call org.freedesktop.DBus / org.freedesktop.DBus GetId; systemctl show --value -p InvocationID dbus.service systemd-journald.service systemd-udevd.service box-guest.service";
+        let mut identities = Vec::new();
+        for id in [aid, bid] {
+            let result = success(state.path(), &["exec", id, "--", "/bin/sh", "-c", script]);
+            assert_eq!(result["exit_code"], 0, "{result}");
+            let lines: Vec<String> = result["stdout"]
+                .as_str()
+                .unwrap()
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(lines.len(), 5, "{result}");
+            for invocation in &lines[1..] {
+                assert_eq!(invocation.len(), 32);
+                assert_ne!(invocation, &"0".repeat(32));
+            }
+            identities.push(lines);
+            let journal = success(
+                state.path(),
+                &[
+                    "exec",
+                    id,
+                    "--",
+                    "/bin/sh",
+                    "-c",
+                    "set -e; logger -t boxd-identity-test ready; journalctl --sync; journalctl --no-pager -t boxd-identity-test -n 1 -o json",
+                ],
+            );
+            assert_eq!(journal["exit_code"], 0, "{journal}");
+            let entry: Value = serde_json::from_str(journal["stdout"].as_str().unwrap()).unwrap();
+            assert_eq!(entry["_MACHINE_ID"], expected_id(id));
+            assert_eq!(entry["_HOSTNAME"], format!("box-{}", &id[..12]));
+        }
+        for (first, second) in identities[0].iter().zip(&identities[1]) {
+            assert_ne!(
+                first, second,
+                "daemon/bus identity must not be inherited from template"
+            );
+        }
         let args = [
             "exec",
             aid,
@@ -613,7 +700,7 @@ fn prepared_clones_have_private_identity_disks_and_lifetimes() {
                 state.path(),
                 &["exec", aid, "--", "/bin/cat", "/etc/machine-id"]
             )["stdout"],
-            format!("{aid}\n")
+            format!("{}\n", expected_id(aid))
         );
     }
     let arandom = success(
@@ -672,6 +759,53 @@ fn prepared_clones_have_private_identity_disks_and_lifetimes() {
         )["stdout"],
         "alpha-17"
     );
+    if matches!(
+        a["image"]["boot_mode"].as_str(),
+        Some("systemd_warm" | "systemd_warm_shared")
+    ) {
+        // Admission is for new templates, not for restarting user-modified boxes.
+        let install = "set -e; mkdir -p /etc/credstore; printf synthetic-custom-93 > /etc/credstore/boot-probe; printf '%s\\n' '[Unit]' 'After=basic.target' 'Before=box-guest.service' '[Service]' 'Type=oneshot' 'RemainAfterExit=yes' 'LoadCredential=boot-probe:/etc/credstore/boot-probe' 'ExecStart=/bin/sh -c \"cat ${CREDENTIALS_DIRECTORY}/boot-probe > /workspace/custom-started\"' '[Install]' 'WantedBy=boxd.target' > /etc/systemd/system/custom-workload.service; systemctl enable custom-workload.service";
+        assert_eq!(
+            success(state.path(), &["exec", aid, "--", "/bin/sh", "-c", install])["exit_code"],
+            0
+        );
+    }
+    success(state.path(), &["stop", aid]);
+    let restarted = success(state.path(), &["start", aid]);
+    assert_eq!(restarted["disk_layer"], a["disk_layer"]);
+    assert_eq!(
+        success(
+            state.path(),
+            &["exec", aid, "--", "/bin/cat", "/etc/machine-id"]
+        )["stdout"],
+        format!("{}\n", expected_id(aid))
+    );
+    if matches!(
+        a["image"]["boot_mode"].as_str(),
+        Some("systemd_warm" | "systemd_warm_shared")
+    ) {
+        let result = success(
+            state.path(),
+            &["exec", aid, "--", "/bin/cat", "/workspace/custom-started"],
+        );
+        assert_eq!(result["exit_code"], 0, "{result}");
+        assert_eq!(result["stdout"], "synthetic-custom-93");
+    }
+    assert_eq!(
+        success(
+            state.path(),
+            &["exec", aid, "--", "/bin/cat", "/workspace/value"]
+        )["stdout"],
+        "alpha-17"
+    );
+    // The retained layer must remain writable across jail generations.
+    if a["disk_layer"].is_string() {
+        assert!(
+            !invoke(state.path(), &["checkpoint", "delete", template_id])
+                .status
+                .success()
+        );
+    }
     success(state.path(), &["delete", aid]);
     assert_eq!(
         success(
@@ -680,7 +814,33 @@ fn prepared_clones_have_private_identity_disks_and_lifetimes() {
         )["stdout"],
         "beta-93"
     );
+    if b["disk_layer"].is_string() {
+        success(state.path(), &["stop", bid]);
+        success(state.path(), &["start", bid]);
+        success(state.path(), &["stop", bid]);
+        // A cold-started generation no longer maps template memory. Model a
+        // cleared memory reference; disk ownership alone must pin the base.
+        let mut restarted = success(state.path(), &["inspect", bid]);
+        restarted["source"] = Value::Null;
+        box_runtime::storage::atomic_json(
+            &state.path().join("boxes").join(bid).join("box.json"),
+            &restarted,
+        )
+        .unwrap();
+        assert!(
+            !invoke(state.path(), &["checkpoint", "delete", template_id])
+                .status
+                .success()
+        );
+    }
     success(state.path(), &["delete", bid]);
+    if let Ok(config) = std::env::var("BOXD_TEST_ISOLATION_CONFIG") {
+        let config: box_runtime::isolation::Config =
+            box_runtime::storage::read_json(Path::new(&config)).unwrap();
+        if config.disk_backend == box_runtime::isolation::DiskBackend::Snapshot {
+            assert_eq!(a["disk_copy"], "Snapshot");
+        }
+    }
     success(state.path(), &["checkpoint", "delete", template_id]);
     assert_eq!(
         success(state.path(), &["template", "list"])["templates"],
@@ -766,6 +926,55 @@ fn manager_crashes_do_not_duplicate_vmm_or_publish_partial_snapshots() {
         );
     }
     success(state.path(), &["delete", id]);
+    let template = success(
+        state.path(),
+        &[
+            "template",
+            "build",
+            "--image",
+            &image,
+            "--allow-unsafe-development",
+        ],
+    );
+    let template_id = template["id"].as_str().unwrap();
+    let policy = state.path().join("isolation.json");
+    if policy.exists()
+        && box_runtime::storage::read_json::<box_runtime::isolation::Config>(&policy)
+            .unwrap()
+            .disk_backend
+            == box_runtime::isolation::DiskBackend::Snapshot
+    {
+        for point in ["after-layer-publication", "after-disk-mapping"] {
+            let output = command(
+                state.path(),
+                &["clone", template_id, "--allow-unsafe-development"],
+            )
+            .env("BOXD_FAILPOINT", point)
+            .output()
+            .unwrap();
+            assert_eq!(output.status.code(), Some(86), "{point}: {output:?}");
+            let records = success(state.path(), &["list"]);
+            let record = &records["boxes"][0];
+            let id = record["id"].as_str().unwrap();
+            assert_eq!(record["state"], "stopped");
+            assert!(record["disk_layer"].is_string());
+            assert!(
+                !invoke(state.path(), &["checkpoint", "delete", template_id])
+                    .status
+                    .success()
+            );
+            success(state.path(), &["start", id]);
+            assert_eq!(
+                success(
+                    state.path(),
+                    &["exec", id, "--", "/bin/printf", "recovered"]
+                )["stdout"],
+                "recovered"
+            );
+            success(state.path(), &["delete", id]);
+        }
+    }
+    success(state.path(), &["checkpoint", "delete", template_id]);
 }
 
 #[test]
@@ -808,6 +1017,16 @@ fn benchmark_reports_nonoverlapping_phases_per_concurrent_launch() {
             "development"
         }
     );
+    for name in ["disk.ext4", "state.snap", "memory.snap"] {
+        assert_eq!(
+            report["template_verification"][name],
+            if template["seals"][name].is_object() {
+                "fs_verity"
+            } else {
+                "sha256"
+            }
+        );
+    }
     for mode in ["cold_boot", "template_restore"] {
         let samples = report["results"][mode]["samples"].as_array().unwrap();
         assert_eq!(samples.len(), 2);
@@ -874,6 +1093,19 @@ fn clone_verification_releases_allocation_but_pins_snapshot_and_quota() {
         ],
     );
     let id = template["id"].as_str().unwrap();
+    // Exercise the legacy full-scan path even on a verity-capable filesystem.
+    // A claimed seal on a FIFO instead fails immediately (covered by unit tests).
+    let mut legacy = template.clone();
+    legacy.as_object_mut().unwrap().remove("seals");
+    box_runtime::storage::atomic_json(
+        &state
+            .path()
+            .join("snapshots")
+            .join(id)
+            .join("snapshot.json"),
+        &legacy,
+    )
+    .unwrap();
     // Gate checksum I/O deterministically; no timing assumption about hashing
     // speed. This deliberately damaged artifact must never reach the VMM.
     let artifact = state.path().join("snapshots").join(id).join("state.snap");
@@ -951,6 +1183,107 @@ fn clone_verification_releases_allocation_but_pins_snapshot_and_quota() {
     assert!(success(state.path(), &["inspect", &records[0].id])["process"].is_null());
     success(state.path(), &["delete", &records[0].id]);
     success(state.path(), &["checkpoint", "delete", id]);
+}
+
+#[test]
+#[ignore = "requires KVM and BOXD_TEST_IMAGE"]
+fn four_4g_clones_preserve_resources_and_enforce_total_quota() {
+    let image = std::env::var("BOXD_TEST_IMAGE").expect("set BOXD_TEST_IMAGE");
+    let state = state_directory();
+    std::fs::set_permissions(state.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let template = success(
+        state.path(),
+        &[
+            "template",
+            "build",
+            "--image",
+            &image,
+            "--memory-mib",
+            "4096",
+            "--vcpus",
+            "1",
+            "--allow-unsafe-development",
+        ],
+    );
+    assert_eq!(template["memory_mib"], 4096);
+    assert_eq!(template["vcpus"], 1);
+    let tid = template["id"].as_str().unwrap();
+    assert_eq!(
+        std::fs::metadata(state.path().join("snapshots").join(tid).join("memory.snap"))
+            .unwrap()
+            .len(),
+        4 * 1024 * 1024 * 1024
+    );
+    let mut ids = Vec::new();
+    for _ in 0..4 {
+        let clone = success(state.path(), &["clone", tid, "--allow-unsafe-development"]);
+        assert_eq!(clone["memory_mib"], 4096);
+        assert_eq!(clone["vcpus"], 1);
+        let id = clone["id"].as_str().unwrap().to_owned();
+        let result = success(
+            state.path(),
+            &[
+                "exec",
+                &id,
+                "--",
+                "/bin/cat",
+                "/proc/meminfo",
+                "/proc/cpuinfo",
+            ],
+        );
+        assert_eq!(result["exit_code"], 0);
+        let output = result["stdout"].as_str().unwrap();
+        let memory_kib: u64 = output
+            .lines()
+            .find_map(|line| line.strip_prefix("MemTotal:"))
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((3_900_000..4_194_304).contains(&memory_kib));
+        assert_eq!(
+            output
+                .lines()
+                .filter(|line| line.starts_with("processor\t"))
+                .count(),
+            1
+        );
+        ids.push(id);
+    }
+    let fifth = invoke(state.path(), &["clone", tid, "--allow-unsafe-development"]);
+    assert!(!fifth.status.success());
+    assert!(String::from_utf8_lossy(&fifth.stderr).contains("quota exceeded"));
+    assert_eq!(
+        success(state.path(), &["list"])["boxes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    for id in ids {
+        success(state.path(), &["delete", &id]);
+    }
+    let report = success(
+        state.path(),
+        &[
+            "benchmark",
+            "--image",
+            &image,
+            "--template",
+            tid,
+            "--samples",
+            "1",
+            "--allow-unsafe-development",
+        ],
+    );
+    for mode in ["cold_boot", "template_restore"] {
+        let sample = &report["results"][mode]["samples"][0];
+        assert_eq!(sample["memory_mib"], 4096, "{mode}");
+        assert_eq!(sample["vcpus"], 1, "{mode}");
+    }
+    success(state.path(), &["checkpoint", "delete", tid]);
 }
 
 #[test]

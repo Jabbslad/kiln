@@ -25,6 +25,7 @@ use std::{
 };
 mod benchmark;
 mod checkpoint;
+mod disk;
 use benchmark::Phase;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +44,8 @@ pub struct BoxRecord {
     pub operation: Option<String>,
     pub last_error: Option<String>,
     pub disk_copy: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_layer: Option<String>,
     #[serde(default)]
     pub jail: Option<JailIdentity>,
 }
@@ -58,6 +61,8 @@ pub struct Snapshot {
     pub memory_mib: u32,
     pub vcpus: u8,
     pub hashes: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub seals: std::collections::BTreeMap<String, storage::verity::Seal>,
     #[serde(default)]
     pub isolated: bool,
 }
@@ -216,6 +221,13 @@ impl Runtime {
         if record.id != id || record.schema_version != 1 {
             return Err(Error::Invalid("invalid box record".into()));
         }
+        if let Some(layer) = &record.disk_layer
+            && (!storage::valid_id(layer) || !self.snapshot_disks())
+        {
+            return Err(Error::Invalid(
+                "invalid disk layer or storage policy mismatch".into(),
+            ));
+        }
         match (&self.isolation, &record.jail) {
             (Some(config), Some(identity)) => config.validate_identity(identity)?,
             (None, None) => (),
@@ -351,6 +363,7 @@ impl Runtime {
                 record.memory_mib,
                 record.vcpus,
             )?;
+            self.check_disk_layer(record)?;
         }
         Ok(())
     }
@@ -469,11 +482,11 @@ impl Runtime {
         let phase = Phase::start("image_verification");
         if name.is_empty()
             || name.len() > 63
-            || !(128..=2048).contains(&memory_mib)
+            || !(128..=4096).contains(&memory_mib)
             || !(1..=4).contains(&vcpus)
         {
             return Err(Error::Invalid(
-                "name must be 1..63 bytes, memory 128..2048 MiB, vCPUs 1..4".into(),
+                "name must be 1..63 bytes, memory 128..4096 MiB, vCPUs 1..4".into(),
             ));
         }
         if let Some(config) = &self.isolation {
@@ -496,10 +509,10 @@ impl Runtime {
         let phase = Phase::start("reservation");
         let records = self.records()?;
         if records.len() >= 8
-            || records.iter().map(|r| r.memory_mib).sum::<u32>() + memory_mib > 8192
+            || records.iter().map(|r| r.memory_mib).sum::<u32>() + memory_mib > 16384
         {
             return Err(Error::Invalid(
-                "local quota exceeded (8 boxes / 8192 MiB allocated)".into(),
+                "local quota exceeded (8 boxes / 16384 MiB allocated)".into(),
             ));
         }
         let mut record = BoxRecord {
@@ -517,6 +530,7 @@ impl Runtime {
             operation: Some("create".into()),
             last_error: None,
             disk_copy: String::new(),
+            disk_layer: None,
             jail: self.allocate_identity(&records)?,
         };
         storage::private_dir(&self.root.join("boxes").join(&record.id))?;
@@ -584,7 +598,13 @@ impl Runtime {
             if run.join("firecracker").try_exists()? {
                 return Err(Error::Invalid("refusing to reuse a jail generation".into()));
             }
-            isolation::own_file(&run.join("disk.ext4"), identity)?;
+            if record.disk_layer.is_some() {
+                self.ensure_disk_layer(record)?;
+                self.expose_disk_layer(record)?;
+                failpoint("after-disk-mapping");
+            } else {
+                isolation::own_file(&run.join("disk.ext4"), identity)?;
+            }
             if let Some(snapshot) = snapshot {
                 for name in ["state.snap", "memory.snap"] {
                     let source = self.root.join("snapshots").join(&snapshot.id).join(name);
@@ -592,7 +612,12 @@ impl Runtime {
                         .hashes
                         .get(name)
                         .ok_or_else(|| Error::Invalid("snapshot hash missing".into()))?;
-                    isolation::stage_readonly(&source, &run.join(name), hash)?;
+                    isolation::stage_readonly(
+                        &source,
+                        &run.join(name),
+                        hash,
+                        snapshot.seals.get(name),
+                    )?;
                 }
                 snapshot_directory = Some(PathBuf::from("."));
             } else {
@@ -601,6 +626,7 @@ impl Runtime {
                     &record.image.kernel_path,
                     &run.join("kernel"),
                     &record.image.kernel_sha256,
+                    None,
                 )?;
                 kernel = "kernel".into();
             }
@@ -640,7 +666,7 @@ impl Runtime {
             .stdout(output.try_clone()?)
             .stderr(output);
         // SAFETY: only async-signal-safe syscalls before exec. The file budget
-        // must accommodate full memory snapshots (up to 2 GiB), as well as logs.
+        // must accommodate full memory snapshots (up to 4 GiB), as well as logs.
         let isolated = self.is_isolated();
         unsafe {
             command.pre_exec(move || {
@@ -652,8 +678,8 @@ impl Runtime {
                     return Err(std::io::Error::last_os_error());
                 }
                 let limit = libc::rlimit {
-                    rlim_cur: 3 * 1024 * 1024 * 1024,
-                    rlim_max: 3 * 1024 * 1024 * 1024,
+                    rlim_cur: 5 * 1024 * 1024 * 1024,
+                    rlim_max: 5 * 1024 * 1024 * 1024,
                 };
                 if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
                     return Err(std::io::Error::last_os_error());
@@ -713,7 +739,7 @@ impl Runtime {
                 .request(
                     "PUT",
                     "/boot-source",
-                    json!({"kernel_image_path":kernel,"boot_args":record.image.boot_args()}),
+                    json!({"kernel_image_path":kernel,"boot_args":record.image.boot_args(!initialize)}),
                 )
                 .await?;
             client.request("PUT", "/drives/rootfs", json!({"drive_id":"rootfs","path_on_host":"disk.ext4","is_root_device":true,"is_read_only":false})).await?;
@@ -758,6 +784,11 @@ impl Runtime {
         };
         drop(phase);
         let _phase = Phase::start("guest_initialize");
+        if initialize && initialized {
+            return Err(Error::Invalid(
+                "new boot or template clone was already initialized".into(),
+            ));
+        }
         if initialize
             && !initialized
             && !matches!(
@@ -765,10 +796,15 @@ impl Runtime {
                     record,
                     &Request::Initialize(InitializeRequest {
                         hostname: format!("box-{}", &record.id[..12]),
-                        machine_id: record.id.clone(),
+                        machine_id: if record.image.boot_mode == image::BootMode::SystemdWarmShared
+                        {
+                            box_protocol::PREPARATION_MACHINE_ID.into()
+                        } else {
+                            record.id.clone()
+                        },
                         entropy: random_bytes(64)?
                     }),
-                    Duration::from_secs(5)
+                    Duration::from_secs(30)
                 )
                 .await?,
                 Response::Initialized {
@@ -780,7 +816,14 @@ impl Runtime {
                 "unexpected guest initialization response".into(),
             ));
         }
-        if initialize && record.image.boot_mode == image::BootMode::Systemd {
+        if initialize
+            && matches!(
+                record.image.boot_mode,
+                image::BootMode::Systemd
+                    | image::BootMode::SystemdWarm
+                    | image::BootMode::SystemdWarmShared
+            )
+        {
             // Initialize acknowledges identity provisioning, not systemd startup.
             // The bootstrap closes its listener before that acknowledgement.
             let deadline = Instant::now() + Duration::from_secs(30);
@@ -932,11 +975,13 @@ impl Runtime {
         if self.is_isolated() {
             self.terminate(&mut record)?;
             record.run = self::id()?;
-            storage::copy_disk(
-                &self.run(&previous)?.join("disk.ext4"),
-                &self.run(&record)?.join("disk.ext4"),
-                Instant::now() + Duration::from_secs(120),
-            )?;
+            if record.disk_layer.is_none() {
+                storage::copy_disk(
+                    &self.run(&previous)?.join("disk.ext4"),
+                    &self.run(&record)?.join("disk.ext4"),
+                    Instant::now() + Duration::from_secs(120),
+                )?;
+            }
         }
         record.operation = Some("start".into());
         self.save(&record)?;
@@ -959,6 +1004,7 @@ impl Runtime {
         if record.process.is_some() {
             return Err(Error::Invalid("box restarted during deletion".into()));
         }
+        self.cleanup_disk_layers(&record, None)?;
         fs::remove_dir_all(directory)?;
         File::open(self.root.join("boxes"))?.sync_all()?;
         Ok(())
@@ -985,6 +1031,7 @@ mod tests {
             cgroup_parent: format!("boxd-unit-{}", id().unwrap()),
             uid_base: uid,
             gid_base: gid,
+            disk_backend: isolation::DiskBackend::Copy,
         });
         let mut record: BoxRecord = serde_json::from_value(json!({
             "schema_version":1, "id":id().unwrap(), "run":id().unwrap(),

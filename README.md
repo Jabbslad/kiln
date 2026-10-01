@@ -52,7 +52,7 @@ Release host/guest builds, Ryzen 7 7840HS, ext4 sparse-copy fallback, 256 MiB / 
 
 All 92 measured launches succeeded. A matched pre-optimization run measured template launches at 281 ms sequential p50 and 537 / 973 ms concurrent p50 / p95. Skipping disk holes and releasing the allocation lock before full checksum verification reduced these costs without disabling checksums or durability syncs. The [operator guide](docs/runtime.md#reproduce-launch-measurements) records the comparison and phase timings.
 
-These are local measurements, not a hosted SLA or a matched comparison with boxd.sh. Full snapshot scans still dominate template latency. Verified immutable artifact storage and reflink-capable disks remain work to evaluate, not performance already achieved.
+These are local measurements, not a hosted SLA or a matched comparison with boxd.sh. Full snapshot scans dominated these original template measurements. Subsequent immutable-storage and authenticated-overlay optimizations are measured separately below.
 
 Ubuntu Minimal 24.04 **isolated-profile** measurements on the same runner, release builds, 256 MiB / 1 vCPU, 2 GiB disk, include private jail copies, integrity checks, systemd startup, and the first successful command:
 
@@ -62,6 +62,55 @@ Ubuntu Minimal 24.04 **isolated-profile** measurements on the same runner, relea
 | Prepared-template restore | 2,037 / 2,054 ms | 2,553 / 3,900 ms |
 
 All 92 Ubuntu launches succeeded. Sequential restore spends about 1,081 ms verifying artifacts and 523 ms initializing the guest/systemd. Concurrent restore has a worse p95 than cold boot in this small sample; the slow samples include allocation waits and a snapshot-load stall. The larger image, different init system, and isolation profile make this **not** a controlled comparison against the BusyBox results above. See [phase analysis and caveats](docs/runtime.md#ubuntu-isolated-launch-measurements).
+
+The subsequent [kernel-enforced snapshot integrity](docs/runtime.md#kernel-enforced-snapshot-integrity) optimization uses kernel digest checks instead of repeated full scans on fs-verity-capable storage. Unsupported filesystems and old snapshots keep full SHA-256 verification. The real sealing test and all six isolated Ubuntu lifecycle tests pass. A matched comparison on the same sealed template and loop-backed ext4 filesystem measured:
+
+| Template restore | Before p50 / p95 | With fs-verity p50 / p95 |
+| --- | --- | --- |
+| Sequential (30 samples each) | 2,145 / 2,181 ms | **1,045 / 1,060 ms** |
+| Concurrency 4 (16 samples each) | 2,724 / 2,760 ms | **1,594 / 1,619 ms** |
+
+All 184 cold/template launches across both implementations succeeded. Sequential template median latency fell **51%**; the snapshot-verification phase fell from 1,083 to 6.7 ms. Systemd startup and private disk/jail copies remain. Cold boot was not optimized, and its concurrent p95 worsened in this small sample. See the [full matched results and cache/order caveats](docs/runtime.md#matched-fs-verity-launch-measurements). These figures are separate from the original measurements above, not a comparison across filesystems or against boxd.sh.
+
+The next follow-up shares sealed immutable jail inputs, authenticates all snapshot-disk reads, and speeds up zero-buffer scanning. A fresh matched comparison against the fs-verity baseline measured:
+
+| Launch path | Before p50 / p95 | Latest p50 / p95 |
+| --- | --- | --- |
+| Sequential template (30 each) | 1,070 / 1,116 ms | **966 / 1,016 ms** |
+| Concurrency 4 template (16 each) | 1,612 / 1,873 ms | **1,513 / 1,548 ms** |
+| Sequential cold boot (30 each) | 2,954 / 2,989 ms | **2,632 / 2,675 ms** |
+
+All 184 final-comparison launches succeeded. Template median latency improved another **9.8% sequentially / 6.2% at concurrency four**. Writable disk materialization and systemd startup remain the dominant costs; unsafe writable reflinks from sealed snapshots are deliberately excluded. All 55 ordinary tests, three real-filesystem tests, and Ubuntu development/isolated lifecycle suites pass. See [measurements, the initial regression, and limitations](docs/runtime.md#matched-sealed-sharing-and-disk-copy-measurements). These remain uncontrolled-cache local results, not a boxd.sh comparison.
+
+The latest opt-in [authenticated disk-overlay backend](docs/runtime.md#optional-authenticated-disk-overlays) removes full disk materialization from sealed isolated template launches. It shares a read-only fs-verity base through Linux dm-snapshot with private persistent writes; the existing copy backend remains the default.
+
+| Template launch | Copy p50 / p95 | Overlay p50 / p95 |
+| --- | --- | --- |
+| Sequential (30 each) | 945 / 970 ms | **714 / 740 ms** |
+| Concurrency 4 (16 each) | 1,508 / 1,531 ms | **894 / 1,024 ms** |
+
+All 184 matched cold/template launches succeeded. Template median improved **24.5% / 40.7%**. Both isolated backends pass seven lifecycle checks, including interrupted launches, private disks, checkpoint restore, and restart persistence. Cold creation is unchanged; systemd/guest initialization still takes about 556 ms sequentially. See [full results and limitations](docs/runtime.md#matched-authenticated-overlay-measurements). This does not establish that we are faster than boxd.sh, whose earlier hosted measurements use different resources and timing boundaries.
+
+Opt-in [warm systemd templates](docs/runtime.md#opt-in-warm-systemd-templates) now reuse completed systemd boot work, then reseed entropy, reset identity and start fresh workload services before accepting commands. Ubuntu/systemd remains available; the default image mode is unchanged.
+
+| Template-to-first-command | Legacy p50 / p95 | Warm p50 / p95 |
+| --- | --- | --- |
+| Sequential (30 each) | 721 / 756 ms | **512 / 536 ms** |
+| Concurrency 4 (16 attempts each) | 909 / 969 ms† | **630 / 677 ms** |
+
+Sequential template p50 improved **29%** on matched isolated-profile images with authenticated overlays. All **92 warm cold/template attempts succeeded**. †One legacy concurrent first exec failed with `Resource temporarily unavailable`; its percentiles include only 15 successful samples, and the failure is retained. Cold-boot p50 stayed essentially unchanged at 2.55–2.56 seconds sequentially. See [complete measurements, phase timings and caveats](docs/runtime.md#matched-warm-template-measurements). The warm policy admits only the pinned trusted image, not arbitrary live workloads or hostile tenant images. These are local comparisons against our previous boot path, **not evidence that we beat boxd.sh**.
+
+A fresh [4 GiB / one-vCPU CLI comparison with boxd.sh](docs/runtime.md#fresh-boxdsh-comparison-at-4-gib--one-vcpu) measured launch through first command at **523 / 643 ms p50/p95 locally versus 803 / 975 ms hosted** (30 sequential samples), and **640 / 695 versus 1,002 / 1,224 ms** at concurrency four (16 each). All 92 attempts succeeded. Both clocks include CLI startup, and RAM/CPU allocations were verified. **boxd.sh's create command alone was faster** (408 versus 505 ms sequential median); our lower total largely reflects cheaper local exec (18 versus 388 ms). Disk sizes, hosts and service functionality still differ, so this is not evidence of a faster VM-restore engine. Template build now accepts `--memory-mib 4096 --vcpus 1`; the local aggregate guest quota is 16 GiB.
+
+The opt-in [`systemd_warm_shared` experiment](docs/runtime.md#experimental-retained-pid1-policy)
+retains PID1 and deliberately shares the machine ID while preserving entropy
+reseeding, private disks, fresh daemons and the workload-readiness barrier.
+A matched 4 GiB / one-vCPU run reduced sequential create p50 **517 → 475 ms**
+and launch-through-first-command **536 → 493 ms**; concurrent totals fell
+**636 → 598 ms**. All 92 comparison attempts succeeded. This is an **8% / 6%**
+improvement, not elimination of the earlier hosted create gap. Existing modes and
+defaults keep unique identities. See [reset breakdowns, compatibility restrictions
+and the separately retained transient test failure](docs/runtime.md#retained-pid1-measurements).
 
 ## Development
 

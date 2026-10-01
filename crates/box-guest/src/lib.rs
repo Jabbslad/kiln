@@ -15,6 +15,7 @@ use tokio::{
 };
 
 pub mod bootstrap;
+pub mod warm;
 
 pub trait Initializer: Send + Sync + 'static {
     fn initialize(&self, request: &InitializeRequest) -> Result<(), String>;
@@ -141,6 +142,7 @@ impl<I: Initializer> Agent<I> {
         if id.len() != 32
             || !id.bytes().all(|b| b.is_ascii_hexdigit())
             || id.bytes().all(|b| b == b'0')
+            || id != std::fs::read_to_string("/etc/machine-id")?.trim_end_matches('\n')
         {
             return Err(io::Error::other("invalid bootstrap handoff identity"));
         }

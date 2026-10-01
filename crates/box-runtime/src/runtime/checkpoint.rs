@@ -72,17 +72,21 @@ impl Runtime {
                     storage::copy_disk(&run.join(source), &directory.join(destination), Instant::now() + Duration::from_secs(120))?;
                 }
             }
-            let disk = run.join("disk.ext4");
-            fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&disk)?.sync_all()?;
-            storage::copy_disk(&disk, &directory.join("disk.ext4"), Instant::now() + Duration::from_secs(120))?;
+            self.capture_disk(&record, &directory.join("disk.ext4"))?;
             let mut hashes = std::collections::BTreeMap::new();
+            let mut seals = std::collections::BTreeMap::new();
             for name in ["disk.ext4", "state.snap", "memory.snap"] {
                 let path = directory.join(name);
+                let (hash, seal) = storage::verity::seal(&path)?;
+                hashes.insert(name.into(), hash);
+                if let Some(seal) = seal { seals.insert(name.into(), seal); }
+                // Only immutable root-owned inputs may be shared with a jailed
+                // VMM. The private snapshot directory still prevents traversal.
+                let mode = if self.is_isolated() && name != "disk.ext4" && seals.contains_key(name) { 0o444 } else { 0o400 };
+                fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
                 File::open(&path)?.sync_all()?;
-                hashes.insert(name.into(), image::sha256(&path)?);
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o400))?;
             }
-            let snapshot = Snapshot {schema_version:1,id:snapshot_id.clone(),source_box:box_id.into(),template,image:record.image.clone(),host:record.host.clone(),memory_mib:record.memory_mib,vcpus:record.vcpus,hashes,isolated:self.is_isolated()};
+            let snapshot = Snapshot {schema_version:1,id:snapshot_id.clone(),source_box:box_id.into(),template,image:record.image.clone(),host:record.host.clone(),memory_mib:record.memory_mib,vcpus:record.vcpus,hashes,seals,isolated:self.is_isolated()};
             storage::atomic_json(&directory.join("snapshot.json"), &snapshot)?;
             File::open(self.root.join("snapshots"))?.sync_all()?;
             failpoint("after-snapshot-publication");
@@ -136,14 +140,14 @@ impl Runtime {
             return Err(Error::Invalid("invalid snapshot ID".into()));
         }
         let _allocation = storage::lock(&self.root)?;
-        if self
-            .records()?
-            .iter()
-            .any(|r| r.source.as_deref() == Some(snapshot_id))
-        {
-            return Err(Error::Invalid(
-                "snapshot is referenced by a box; delete that box first".into(),
-            ));
+        for record in self.records()? {
+            if record.source.as_deref() == Some(snapshot_id)
+                || self.disk_references(&record, snapshot_id)?
+            {
+                return Err(Error::Invalid(
+                    "snapshot is referenced by a box; delete that box first".into(),
+                ));
+            }
         }
         let directory = self.root.join("snapshots").join(snapshot_id);
         if !directory.exists() {
@@ -155,8 +159,12 @@ impl Runtime {
         Ok(())
     }
 
-    fn snapshot_metadata(&self, snapshot_id: &str) -> Result<Snapshot> {
+    pub(super) fn snapshot_metadata(&self, snapshot_id: &str) -> Result<Snapshot> {
         let _phase = Phase::start("snapshot_verification");
+        self.load_snapshot_metadata(snapshot_id)
+    }
+
+    pub(super) fn load_snapshot_metadata(&self, snapshot_id: &str) -> Result<Snapshot> {
         if !storage::valid_id(snapshot_id) {
             return Err(Error::Invalid("invalid snapshot ID".into()));
         }
@@ -184,11 +192,12 @@ impl Runtime {
         let _phase = Phase::start("snapshot_verification");
         let directory = self.root.join("snapshots").join(&snapshot.id);
         for name in ["disk.ext4", "state.snap", "memory.snap"] {
-            if snapshot.hashes.get(name) != Some(&image::sha256(&directory.join(name))?) {
-                return Err(Error::Invalid(format!(
-                    "snapshot checksum mismatch: {name}"
-                )));
-            }
+            let hash = snapshot
+                .hashes
+                .get(name)
+                .ok_or_else(|| Error::Invalid(format!("snapshot hash missing: {name}")))?;
+            storage::verity::verify(&directory.join(name), hash, snapshot.seals.get(name))
+                .map_err(|e| Error::Invalid(format!("snapshot integrity failure: {name}: {e}")))?;
         }
         Ok(())
     }
@@ -209,16 +218,8 @@ impl Runtime {
         let next_run = id()?;
         let mut next = record.clone();
         next.run = next_run.clone();
-        let next_path = self.run(&next)?;
-        storage::copy_disk(
-            &self
-                .root
-                .join("snapshots")
-                .join(snapshot_id)
-                .join("disk.ext4"),
-            &next_path.join("disk.ext4"),
-            Instant::now() + Duration::from_secs(120),
-        )?;
+        self.prepare_snapshot_disk(&mut next, &snapshot)?;
+        self.ensure_disk_layer(&next)?;
         storage::atomic_json(
             &self.directory(box_id)?.join("restore.previous.json"),
             &previous,
@@ -227,18 +228,28 @@ impl Runtime {
         self.save(&record)?;
         self.terminate(&mut record)?;
         record.run = next_run;
+        record.disk_copy = next.disk_copy;
+        record.disk_layer = next.disk_layer;
         record.source = Some(snapshot_id.into());
         record.state = "restoring".into();
         self.save(&record)?;
         let result = self.boot(&mut record, Some(&snapshot), false).await;
         self.finish_launch(&mut record, result)?;
         fs::remove_dir_all(self.directory(box_id)?.join(previous.run))?;
+        self.cleanup_disk_layers(&record, record.disk_layer.as_deref())?;
         fs::remove_file(self.directory(box_id)?.join("restore.previous.json"))?;
         Ok(record)
     }
 
-    pub async fn build_template(&self, image: &Path) -> Result<Snapshot> {
-        let builder = self.create(image, "template-builder", 256, 1, true).await?;
+    pub async fn build_template(
+        &self,
+        image: &Path,
+        memory_mib: u32,
+        vcpus: u8,
+    ) -> Result<Snapshot> {
+        let builder = self
+            .create(image, "template-builder", memory_mib, vcpus, true)
+            .await?;
         let result = self.capture(&builder.id, true).await;
         self.delete(&builder.id).await?;
         result
@@ -260,7 +271,7 @@ impl Runtime {
         }
         let records = self.records()?;
         if records.len() >= 8
-            || records.iter().map(|r| r.memory_mib).sum::<u32>() + snapshot.memory_mib > 8192
+            || records.iter().map(|r| r.memory_mib).sum::<u32>() + snapshot.memory_mib > 16384
         {
             return Err(Error::Invalid("local box quota exceeded".into()));
         }
@@ -279,6 +290,7 @@ impl Runtime {
             operation: Some("clone".into()),
             last_error: None,
             disk_copy: String::new(),
+            disk_layer: None,
             jail: self.allocate_identity(&records)?,
         };
         storage::private_dir(&self.root.join("boxes").join(&record.id))?;
@@ -292,21 +304,60 @@ impl Runtime {
         let result = async {
             self.verify_snapshot(&snapshot)?;
             let phase = Phase::start("disk_copy");
-            let method = storage::copy_disk(
-                &self
-                    .root
-                    .join("snapshots")
-                    .join(snapshot_id)
-                    .join("disk.ext4"),
-                &self.run(&record)?.join("disk.ext4"),
-                Instant::now() + Duration::from_secs(120),
-            )?;
-            record.disk_copy = format!("{method:?}");
+            self.prepare_snapshot_disk(&mut record, &snapshot)?;
+            self.save(&record)?;
+            failpoint("after-layer-publication");
             drop(phase);
             self.boot(&mut record, Some(&snapshot), true).await
         }
         .await;
         self.finish_launch(&mut record, result)?;
         Ok(record)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_verification_honors_seals_and_accepts_legacy_manifests() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = Runtime::open(root.path()).unwrap();
+        let id = "123456789abcdef0123456789abcdef0";
+        let directory = root.path().join("snapshots").join(id);
+        fs::create_dir(&directory).unwrap();
+        let hash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        for name in ["disk.ext4", "state.snap", "memory.snap"] {
+            fs::write(directory.join(name), b"abc").unwrap();
+        }
+        let mut value = json!({
+            "schema_version": 1, "id": id, "source_box": id, "template": true,
+            "image": {"schema_version": 1, "architecture": "x86_64",
+                "kernel_path": "kernel", "kernel_sha256": hash,
+                "rootfs_path": "disk", "rootfs_sha256": hash, "agent_protocol_version": 1},
+            "host": "test", "memory_mib": 256, "vcpus": 1,
+            "hashes": {"disk.ext4": hash, "state.snap": hash, "memory.snap": hash}
+        });
+        let legacy: Snapshot = serde_json::from_value(value.clone()).unwrap();
+        runtime.verify_snapshot(&legacy).unwrap();
+        value["seals"] = json!({"memory.snap": {"sha256": hash, "digest": "00".repeat(32)}});
+        let claimed: Snapshot = serde_json::from_value(value.clone()).unwrap();
+        assert!(
+            runtime.verify_snapshot(&claimed).is_err(),
+            "must not ignore a claimed seal"
+        );
+        value["seals"]["memory.snap"]["sha256"] = "11".repeat(32).into();
+        let mismatched: Snapshot = serde_json::from_value(value).unwrap();
+        assert!(
+            runtime
+                .verify_snapshot(&mismatched)
+                .unwrap_err()
+                .to_string()
+                .contains("seal SHA-256 mismatch")
+        );
+        fs::write(directory.join("disk.ext4"), b"abd").unwrap();
+        assert!(runtime.verify_snapshot(&legacy).is_err());
     }
 }

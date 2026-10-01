@@ -108,6 +108,10 @@ enum Template {
     Build {
         #[arg(long)]
         image: PathBuf,
+        #[arg(long, default_value_t = 256)]
+        memory_mib: u32,
+        #[arg(long, default_value_t = 1)]
+        vcpus: u8,
         #[arg(long, default_value = "development")]
         profile: String,
         #[arg(long)]
@@ -238,12 +242,14 @@ async fn run(cli: Cli) -> Result<(Value, i32)> {
             command:
                 Template::Build {
                     image,
+                    memory_mib,
+                    vcpus,
                     profile,
                     allow_unsafe_development,
                 },
         } => {
             launch_profile(&runtime, &profile, allow_unsafe_development)?;
-            serde_json::to_value(runtime.build_template(&image).await?)?
+            serde_json::to_value(runtime.build_template(&image, memory_mib, vcpus).await?)?
         }
         Command::Template {
             command: Template::List,
