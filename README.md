@@ -4,6 +4,8 @@ A self-hosted-first platform for persistent Linux microVMs, implemented in Rust.
 
 **Current delivery: working single-host development runtime, not a hosted service or a safe sandbox for untrusted code.** The CLI boots real Firecracker/KVM guests, executes commands over vsock, preserves writable disks, restores coordinated memory/disk checkpoints, and launches independent boxes from prepared templates. No marketing-site mockups or simulated VM operations.
 
+An experimental isolated profile now integrates jailer, per-box host identities, cgroup limits, and jail-local snapshot handling. Unit checks, development-mode regression tests, and all six privileged isolated lifecycle tests pass on the development runner. See the [setup and validation procedure](docs/runtime.md#experimental-isolated-profile). This single-host fixture validation is not a production security claim; isolated launch performance has not yet been characterized.
+
 ## Try the runtime
 
 Requires Linux x86_64, read/write access to `/dev/kvm`, cgroup v2, Rust/rustup, curl, Python 3, binutils, e2fsprogs, and a static x86_64 BusyBox at `/usr/bin/busybox` (or pass another path to the fixture builder). Do not run the CLI as root.
@@ -55,4 +57,4 @@ The opt-in integration suite launches disposable VMs and deliberately crashes CL
 
 ## Path to the platform
 
-The [architecture](docs/superpowers/specs/2026-09-30-boxd-platform-design.md) and [runtime plan](docs/superpowers/plans/2026-09-30-runtime-engine.md) describe the wider product. Still outstanding: a jailed/cgroup-enforced profile, a maintained Ubuntu development image, broader failure/cancellation coverage, authenticated host service, PostgreSQL control plane, networking/SSH/preview routing, dashboard, SDK, and fleet scheduling. The current guest is a minimal trusted test fixture—not Ubuntu, Docker, or a multi-tenant environment.
+The [architecture](docs/superpowers/specs/2026-09-30-boxd-platform-design.md) and [runtime plan](docs/superpowers/plans/2026-09-30-runtime-engine.md) describe the wider product. Still outstanding: a maintained Ubuntu development image, isolated-profile performance characterization, broader failure/cancellation coverage, authenticated host service, PostgreSQL control plane, networking/SSH/preview routing, dashboard, SDK, and fleet scheduling. The current guest is a minimal trusted test fixture—not Ubuntu, Docker, or a multi-tenant environment.

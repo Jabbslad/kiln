@@ -1,17 +1,86 @@
 use serde_json::{Value, json};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Output},
 };
 
+fn command(state: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(
+        std::env::var_os("BOXD_TEST_BOX").unwrap_or_else(|| env!("CARGO_BIN_EXE_box").into()),
+    );
+    command.arg("--state-dir").arg(state);
+    if let Ok(config) = std::env::var("BOXD_TEST_ISOLATION_CONFIG") {
+        if !state.join("isolation.json").exists() {
+            command.arg("--isolation-config").arg(config);
+        }
+        command.args(
+            args.iter()
+                .filter(|arg| **arg != "--allow-unsafe-development"),
+        );
+        if matches!(args.first(), Some(&"create" | &"clone" | &"benchmark"))
+            || args.starts_with(&["template", "build"])
+        {
+            command.args(["--profile", "isolated"]);
+        }
+    } else {
+        command.args(args);
+    }
+    command
+}
+
+struct StateDirectory(Option<tempfile::TempDir>);
+
+impl StateDirectory {
+    fn path(&self) -> &Path {
+        self.0.as_ref().unwrap().path()
+    }
+}
+
+impl Drop for StateDirectory {
+    fn drop(&mut self) {
+        let retain = match std::fs::read_dir(self.path().join("boxes")) {
+            Ok(mut entries) => entries.next().is_some(),
+            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+        };
+        if retain {
+            let path = self.0.take().unwrap().keep();
+            eprintln!(
+                "Retained unfinished VM state for diagnosis: {}",
+                path.display()
+            );
+        }
+    }
+}
+
+fn state_directory() -> StateDirectory {
+    let directory = if std::env::var_os("BOXD_TEST_ISOLATION_CONFIG").is_some() {
+        box_runtime::isolation::require_root().unwrap();
+        let parent = std::env::var("BOXD_TEST_STATE_PARENT")
+            .expect("isolated tests need a root-owned BOXD_TEST_STATE_PARENT; run serially");
+        box_runtime::isolation::trusted_path(Path::new(&parent)).unwrap();
+        tempfile::tempdir_in(parent).unwrap()
+    } else {
+        tempfile::tempdir().unwrap()
+    };
+    StateDirectory(Some(directory))
+}
+
+fn run_directory(state: &Path, record: &Value) -> PathBuf {
+    let generation = record["run"].as_str().unwrap();
+    let root = state
+        .join("boxes")
+        .join(record["id"].as_str().unwrap())
+        .join(generation);
+    if record["jail"].is_object() {
+        root.join("firecracker").join(generation).join("root")
+    } else {
+        root
+    }
+}
+
 fn invoke(state: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_box"))
-        .arg("--state-dir")
-        .arg(state)
-        .args(args)
-        .output()
-        .unwrap()
+    command(state, args).output().unwrap()
 }
 
 fn success(state: &Path, args: &[&str]) -> Value {
@@ -22,7 +91,69 @@ fn success(state: &Path, args: &[&str]) -> Value {
         args,
         String::from_utf8_lossy(&output.stderr)
     );
-    serde_json::from_slice(&output.stdout).unwrap()
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    if value["process"].is_object() && value["jail"].is_object() {
+        let pid = value["process"]["pid"].as_u64().unwrap();
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+        let uid = value["jail"]["uid"].as_u64().unwrap();
+        assert_ne!(uid, 0);
+        assert!(
+            status
+                .lines()
+                .any(|line| line == format!("Uid:\t{uid}\t{uid}\t{uid}\t{uid}"))
+        );
+        for field in ["NoNewPrivs:\t1", "Seccomp:\t2", "CapEff:\t0000000000000000"] {
+            assert!(status.lines().any(|line| line == field), "missing {field}");
+        }
+        let run = run_directory(state, &value);
+        let observed_root = std::fs::metadata(format!("/proc/{pid}/root")).unwrap();
+        let expected_root = std::fs::metadata(&run).unwrap();
+        assert_eq!(
+            (observed_root.dev(), observed_root.ino()),
+            (expected_root.dev(), expected_root.ino())
+        );
+        assert_eq!(
+            std::fs::metadata(run.join("disk.ext4")).unwrap().uid(),
+            uid as u32
+        );
+        assert_eq!(
+            std::fs::metadata(state.join("boxes")).unwrap().mode() & 0o777,
+            0o700
+        );
+        let config: box_runtime::isolation::Config =
+            box_runtime::storage::read_json(&state.join("isolation.json")).unwrap();
+        let group = Path::new("/sys/fs/cgroup")
+            .join(&config.cgroup_parent)
+            .join(value["run"].as_str().unwrap());
+        assert_eq!(
+            std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+                .unwrap()
+                .trim(),
+            format!(
+                "0::/{}/{}",
+                config.cgroup_parent,
+                value["run"].as_str().unwrap()
+            )
+        );
+        for (file, expected) in [
+            ("pids.max", "64".to_owned()),
+            ("memory.swap.max", "0".to_owned()),
+            (
+                "cpu.max",
+                format!("{} 100000", value["vcpus"].as_u64().unwrap() * 100000),
+            ),
+            (
+                "memory.max",
+                ((value["memory_mib"].as_u64().unwrap() * 2 + 128) * 1048576).to_string(),
+            ),
+        ] {
+            assert_eq!(
+                std::fs::read_to_string(group.join(file)).unwrap().trim(),
+                expected
+            );
+        }
+    }
+    value
 }
 
 struct Cleanup<'a>(&'a Path);
@@ -42,8 +173,15 @@ impl Drop for Cleanup<'_> {
                             .unwrap_or_default();
                     eprintln!("guest log: {}", &log[log.len().saturating_sub(8000)..]);
                 }
-                if let Some(process) = record.process {
-                    let _ = box_runtime::process::terminate(&process);
+                let output = invoke(self.0, &["delete", &record.id]);
+                if !output.status.success() {
+                    eprintln!(
+                        "cleanup failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    if let Some(process) = record.process {
+                        let _ = box_runtime::process::terminate(&process);
+                    }
                 }
             }
         }
@@ -51,11 +189,27 @@ impl Drop for Cleanup<'_> {
 }
 
 #[test]
+fn failed_cleanup_preserves_state_but_successful_cleanup_removes_it() {
+    let parent = tempfile::tempdir().unwrap();
+    let state = StateDirectory(Some(tempfile::tempdir_in(parent.path()).unwrap()));
+    let retained = state.path().to_owned();
+    std::fs::create_dir(retained.join("boxes")).unwrap();
+    std::fs::create_dir(retained.join("boxes/unfinished")).unwrap();
+    drop(state);
+    assert!(retained.exists());
+    let state = StateDirectory(Some(tempfile::tempdir_in(parent.path()).unwrap()));
+    let removed = state.path().to_owned();
+    std::fs::create_dir(removed.join("boxes")).unwrap();
+    drop(state);
+    assert!(!removed.exists());
+}
+
+#[test]
 #[ignore = "requires KVM and BOXD_TEST_IMAGE"]
 fn real_lifecycle_persists_disk_and_restores_memory() {
     let image =
         std::env::var("BOXD_TEST_IMAGE").expect("set BOXD_TEST_IMAGE to a built image.json");
-    let state = tempfile::tempdir().unwrap();
+    let state = state_directory();
     std::fs::set_permissions(state.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let _cleanup = Cleanup(state.path());
     let created = success(
@@ -70,6 +224,22 @@ fn real_lifecycle_persists_disk_and_restores_memory() {
         ],
     );
     let id = created["id"].as_str().unwrap();
+    if created["jail"].is_object() {
+        assert_eq!(
+            success(
+                state.path(),
+                &[
+                    "exec",
+                    id,
+                    "--",
+                    "/bin/sh",
+                    "-c",
+                    "ls /sys/class/net; test ! -S /api.sock"
+                ]
+            )["stdout"],
+            "lo\n"
+        );
+    }
     let result = success(
         state.path(),
         &[
@@ -271,7 +441,7 @@ fn real_lifecycle_persists_disk_and_restores_memory() {
 #[ignore = "requires KVM and BOXD_TEST_IMAGE"]
 fn prepared_clones_have_private_identity_disks_and_lifetimes() {
     let image = std::env::var("BOXD_TEST_IMAGE").expect("set BOXD_TEST_IMAGE");
-    let state = tempfile::tempdir().unwrap();
+    let state = state_directory();
     std::fs::set_permissions(state.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let _cleanup = Cleanup(state.path());
     let template = success(
@@ -309,6 +479,22 @@ fn prepared_clones_have_private_identity_disks_and_lifetimes() {
     let aid = a["id"].as_str().unwrap();
     let bid = b["id"].as_str().unwrap();
     assert_ne!(aid, bid);
+    if a["jail"].is_object() {
+        assert_ne!(a["jail"]["uid"], b["jail"]["uid"]);
+        assert_ne!(a["jail"]["gid"], b["jail"]["gid"]);
+        let a_run = run_directory(state.path(), &a);
+        let b_run = run_directory(state.path(), &b);
+        for name in ["disk.ext4", "memory.snap"] {
+            assert_ne!(
+                std::fs::metadata(a_run.join(name)).unwrap().ino(),
+                std::fs::metadata(b_run.join(name)).unwrap().ino()
+            );
+        }
+        assert_eq!(
+            std::fs::metadata(a_run.join("memory.snap")).unwrap().mode() & 0o777,
+            0o444
+        );
+    }
     assert_eq!(a["source"], template["id"]);
     assert_eq!(b["source"], template["id"]);
     assert!(
@@ -417,17 +603,17 @@ fn prepared_clones_have_private_identity_disks_and_lifetimes() {
 #[ignore = "requires KVM and BOXD_TEST_IMAGE; deliberately crashes disposable CLI processes"]
 fn manager_crashes_do_not_duplicate_vmm_or_publish_partial_snapshots() {
     let image = std::env::var("BOXD_TEST_IMAGE").expect("set BOXD_TEST_IMAGE");
-    let state = tempfile::tempdir().unwrap();
+    let state = state_directory();
     std::fs::set_permissions(state.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let _cleanup = Cleanup(state.path());
     for point in ["before-spawn", "after-spawn", "after-process-record"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_box"))
-            .arg("--state-dir")
-            .arg(state.path())
-            .args(["create", "--image", &image, "--allow-unsafe-development"])
-            .env("BOXD_FAILPOINT", point)
-            .output()
-            .unwrap();
+        let output = command(
+            state.path(),
+            &["create", "--image", &image, "--allow-unsafe-development"],
+        )
+        .env("BOXD_FAILPOINT", point)
+        .output()
+        .unwrap();
         assert_eq!(
             output.status.code(),
             Some(86),
@@ -440,18 +626,16 @@ fn manager_crashes_do_not_duplicate_vmm_or_publish_partial_snapshots() {
         let id = records[0]["id"].as_str().unwrap();
         assert_eq!(records[0]["state"], "stopped");
         assert!(records[0]["process"].is_null());
-        let run = state
-            .path()
-            .join("boxes")
-            .join(id)
-            .join(records[0]["run"].as_str().unwrap());
+        let run = run_directory(state.path(), &records[0]);
+        let executable = if records[0]["jail"].is_object() {
+            run.join("firecracker")
+        } else {
+            box_runtime::host::executable("firecracker").unwrap()
+        };
         assert!(
-            box_runtime::process::find(
-                &run,
-                &box_runtime::host::executable("firecracker").unwrap()
-            )
-            .unwrap()
-            .is_none()
+            box_runtime::process::find(&run, &[&executable])
+                .unwrap()
+                .is_none()
         );
         success(state.path(), &["start", id]);
         assert_eq!(
@@ -472,10 +656,7 @@ fn manager_crashes_do_not_duplicate_vmm_or_publish_partial_snapshots() {
         .iter()
         .enumerate()
     {
-        let output = Command::new(env!("CARGO_BIN_EXE_box"))
-            .arg("--state-dir")
-            .arg(state.path())
-            .args(["checkpoint", "save", id])
+        let output = command(state.path(), &["checkpoint", "save", id])
             .env("BOXD_FAILPOINT", point)
             .output()
             .unwrap();
@@ -501,7 +682,7 @@ fn manager_crashes_do_not_duplicate_vmm_or_publish_partial_snapshots() {
 #[ignore = "requires KVM and BOXD_TEST_IMAGE"]
 fn benchmark_reports_nonoverlapping_phases_per_concurrent_launch() {
     let image = std::env::var("BOXD_TEST_IMAGE").expect("set BOXD_TEST_IMAGE");
-    let state = tempfile::tempdir().unwrap();
+    let state = state_directory();
     std::fs::set_permissions(state.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let _cleanup = Cleanup(state.path());
     let template = success(
@@ -581,7 +762,7 @@ fn clone_verification_releases_allocation_but_pins_snapshot_and_quota() {
         time::{Duration, Instant},
     };
     let image = std::env::var("BOXD_TEST_IMAGE").expect("set BOXD_TEST_IMAGE");
-    let state = tempfile::tempdir().unwrap();
+    let state = state_directory();
     fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let _cleanup = Cleanup(state.path());
     let template = success(
@@ -606,10 +787,7 @@ fn clone_verification_releases_allocation_but_pins_snapshot_and_quota() {
             .unwrap()
             .success()
     );
-    let mut child = Command::new(env!("CARGO_BIN_EXE_box"))
-        .arg("--state-dir")
-        .arg(state.path())
-        .args(["clone", id, "--allow-unsafe-development"])
+    let mut child = command(state.path(), &["clone", id, "--allow-unsafe-development"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -681,7 +859,7 @@ fn clone_verification_releases_allocation_but_pins_snapshot_and_quota() {
 #[ignore = "requires KVM and BOXD_TEST_IMAGE"]
 fn simultaneous_starts_cannot_create_two_disk_writers() {
     let image = std::env::var("BOXD_TEST_IMAGE").expect("set BOXD_TEST_IMAGE");
-    let state = tempfile::tempdir().unwrap();
+    let state = state_directory();
     std::fs::set_permissions(state.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let _cleanup = Cleanup(state.path());
     let created = success(
@@ -698,13 +876,14 @@ fn simultaneous_starts_cannot_create_two_disk_writers() {
     assert_eq!(outcomes.iter().filter(|r| r.status.success()).count(), 1);
     let record = success(state.path(), &["inspect", id]);
     assert_eq!(record["state"], "running");
-    let run = state
-        .path()
-        .join("boxes")
-        .join(id)
-        .join(record["run"].as_str().unwrap());
+    let run = run_directory(state.path(), &record);
+    let executable = if record["jail"].is_object() {
+        run.join("firecracker")
+    } else {
+        box_runtime::host::executable("firecracker").unwrap()
+    };
     assert!(
-        box_runtime::process::find(&run, &box_runtime::host::executable("firecracker").unwrap())
+        box_runtime::process::find(&run, &[&executable])
             .unwrap()
             .is_some()
     );

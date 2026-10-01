@@ -1,10 +1,10 @@
-# Single-host development runtime
+# Single-host runtime
 
 ## Safety and prerequisites
 
-This is a trusted-workload prototype. Firecracker runs as the invoking user with its normal seccomp policy, **without jailer, per-VM host cgroups, or guest networking**. Guest vCPU/RAM configuration and local inventory quotas are not complete host resource isolation. Do not execute customer or adversarial code, expose the state directory, run as root, or advertise this as production-ready.
+This is a trusted-workload prototype. The default development profile runs Firecracker as the invoking user with its normal seccomp policy, **without jailer, per-VM host cgroups, or guest networking**. Do not run that profile as root. Guest vCPU/RAM configuration and local inventory quotas are not complete host resource isolation. The experimental isolated profile below passes the privileged lifecycle suite on the development runner with the trusted fixture. Neither profile is advertised as production-ready or approved for customer/adversarial workloads.
 
-Linux x86_64, accessible KVM, cgroup v2, and matching Firecracker/jailer **1.17.0** binaries on `PATH` are required. `box doctor` is read-only and reports `isolated_ready: false`. An isolated launch is rejected; there is no silent unjailed fallback.
+Linux x86_64, accessible KVM, cgroup v2, and matching Firecracker/jailer **1.17.0** binaries on `PATH` are required. `box doctor` is read-only and reports `isolated_ready: false` unless an explicit, valid `--isolation-config` passes privileged preflight. That flag reports configuration readiness, not a completed VM isolation test. There is no silent unjailed fallback.
 
 The runner originally had 1.16.0. Crash testing reproduced its permanent vsock failure after bare pause/resume. [Firecracker 1.17.0 fixes this](https://github.com/firecracker-microvm/firecracker/releases/tag/v1.17.0) in PR #6100. `scripts/fetch-firecracker.sh` pins and verifies the official x86_64 release archive SHA-256 and installs into an explicitly selected local directory. No system binaries, services, users, cgroups, firewall rules, or filesystems are provisioned automatically.
 
@@ -125,4 +125,88 @@ The README lists exact commands. The normal suite checks protocol limits, guest 
 5. Per-request, non-overlapping phase timings during concurrent benchmarks and cleanup of measured boxes.
 6. A clone blocked in verification releases the allocation lock while its quota/reference remain durable, prevents snapshot deletion, and rejects corrupt contents without spawning a VMM.
 
-Not implemented: jailed launch/cgroup enforcement, Ubuntu/systemd/Docker image, public API, PostgreSQL operations/idempotency, network/SSH/preview access, web UI, SDK, fleet scheduling, or hosted tenancy. Privileged host setup and validation require separate approval. These are real remaining implementation steps, not mocked features in this runtime.
+All six scenarios also pass with jailed launch and cgroup enforcement on the development runner. Still not implemented: Ubuntu/systemd/Docker image, public API, PostgreSQL operations/idempotency, network/SSH/preview access, web UI, SDK, fleet scheduling, or hosted tenancy. Privileged host setup and validation require separate approval.
+
+## Experimental isolated profile
+
+The operator runs the CLI as root with root-owned, canonical configuration, binaries, images, and state paths. Every ancestor must be root-owned and not group/other writable; a state directory under a user's home or `/tmp` is rejected. Use a dedicated empty state store. Its `isolation.json` pins the policy; subsequent lifecycle commands load it automatically. Existing development boxes/templates cannot be converted or restored into the isolated profile.
+
+The policy reserves eight UID/GID pairs, one per allocated box (including stopped boxes). **Reserve these IDs exclusively on the host**, outside login/service/subuid/subgid allocations, and do not use the same range in another live state store. This is an operator prerequisite, not an identity allocator for a shared fleet. The privileged CLI is a trusted operator tool, not a restricted sudo interface for tenants.
+
+Every launch uses foreground jailer, a fresh jail generation, cgroup v2, normal Firecracker seccomp, empty supplementary groups, and no guest NIC. Start copies the retained disk to a new generation; restore/clone copy state and memory into root-owned read-only jail files. No writable disk or memory backing inode is hardlinked between boxes. Capture uses separate temporary output names, never overwriting a restored VM's mapped input. Extra copies and hashing may increase latency and disk use; development benchmark numbers do not describe this profile.
+
+Limits are CPU quota = configured vCPUs, `memory.max` = (2 × guest MiB + 128) MiB, swap = 0, `pids.max` = 64, open files = 256, plus the existing 3 GiB per-file limit. The memory overhead allowance needs validation with larger/dirty workloads; OOM must fail the launch rather than bypass limits. Before reporting readiness, and when inspecting a running/paused VM, the runtime checks the jail root, executable, cgroup membership/limits, every thread's UID/GID, empty groups, zero effective capabilities, `NoNewPrivs=1`, and `Seccomp=2`.
+
+Stop confirms process termination and removes the empty generation cgroup. Recovery recognizes only the owned jailer → jailed Firecracker exec transition. A manager crash before API creation stops the incomplete launcher. Force-stop does not require working VMM/guest APIs or a successful launch preflight. Interrupted filesystem cleanup and orphan generations still have the limitations described above; retain state until all VM processes have been stopped. There is no total disk quota, always-on reconciliation, networking, or hosted multi-tenant security claim.
+
+### Proposed disposable host setup — execute only after explicit approval
+
+These commands install separate test binaries/images/configuration and create a test cgroup; they do not replace system Firecracker, install a service, or modify networking/filesystem features. They assume the fixture has already been built and the chosen numeric IDs are reserved. Refuse existing test locations rather than overwriting another installation. The root cgroup's `cpu`, `memory`, and `pids` controllers must already be enabled; arrange that with the host administrator if missing. The CLI does not enable them automatically.
+
+```sh
+# Read-only prerequisites. Review these and UID/GID reservations first.
+cat /sys/fs/cgroup/cgroup.subtree_control
+getent passwd | awk -F: '$3 >= 70000 && $3 <= 70007'
+getent group | awk -F: '$3 >= 71000 && $3 <= 71007'
+cat /etc/subuid /etc/subgid
+
+# Run from the reviewed checkout. Build as the ordinary user, never with sudo.
+cargo build --release --locked -p box-runtime --bin box
+test ! -e /opt/boxd-test && test ! -e /var/lib/boxd-test && \
+  test ! -e /etc/boxd-test.json && test ! -e /sys/fs/cgroup/boxd-test || exit 1
+sudo install -d -o root -g root -m 0755 /opt/boxd-test
+sudo install -d -o root -g root -m 0700 /var/lib/boxd-test \
+  /var/lib/boxd-test/image /var/lib/boxd-test/states
+sudo install -o root -g root -m 0755 target/release/box \
+  .tools/firecracker-1.17.0/firecracker .tools/firecracker-1.17.0/jailer /opt/boxd-test/
+sudo install -o root -g root -m 0444 images/output/fixture-v2/image.json \
+  images/output/fixture-v2/vmlinux images/output/fixture-v2/rootfs.ext4 /var/lib/boxd-test/image/
+sudo mkdir /sys/fs/cgroup/boxd-test
+printf '+cpu +memory +pids\n' | sudo tee /sys/fs/cgroup/boxd-test/cgroup.subtree_control >/dev/null
+sudo install -o root -g root -m 0600 /dev/null /etc/boxd-test.json
+sudo tee /etc/boxd-test.json >/dev/null <<'JSON'
+{
+  "firecracker": "/opt/boxd-test/firecracker",
+  "jailer": "/opt/boxd-test/jailer",
+  "cgroup_parent": "boxd-test",
+  "uid_base": 70000,
+  "gid_base": 71000
+}
+JSON
+sudo env PATH=/opt/boxd-test:/usr/sbin:/usr/bin:/sbin:/bin \
+  /opt/boxd-test/box doctor --isolation-config /etc/boxd-test.json
+```
+
+No host accounts are created by these commands. Account/service/subordinate-ID reservations must be managed separately. Test setup is ephemeral across reboot for cgroups; production service provisioning remains future work.
+
+### Validate the same real lifecycle suite under jailer
+
+After approval/setup, build the fault-injection test harness without privileges, copy the reviewed outputs into the trusted installation, and execute only those binaries as root. Tests create disposable state stores under the supplied root-owned parent. **Run serially and do not run other stores using this UID range concurrently.** Missing prerequisites fail, rather than skip, this opt-in run.
+
+```sh
+test_bin=$(cargo test --release --locked -p box-runtime --features fault-injection \
+  --test lifecycle --no-run --message-format=json | python3 -c '
+import json, sys
+for line in sys.stdin:
+    item = json.loads(line)
+    if item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "lifecycle" and item.get("executable"):
+        print(item["executable"])
+')
+test -x "$test_bin" || exit 1
+sudo install -o root -g root -m 0755 "$test_bin" /opt/boxd-test/lifecycle-tests
+sudo install -o root -g root -m 0755 target/release/box /opt/boxd-test/box-test
+sudo env PATH=/opt/boxd-test:/usr/sbin:/usr/bin:/sbin:/bin \
+  BOXD_TEST_BOX=/opt/boxd-test/box-test \
+  BOXD_TEST_IMAGE=/var/lib/boxd-test/image/image.json \
+  BOXD_TEST_ISOLATION_CONFIG=/etc/boxd-test.json \
+  BOXD_TEST_STATE_PARENT=/var/lib/boxd-test/states \
+  /opt/boxd-test/lifecycle-tests --ignored --nocapture --test-threads=1
+# Restore the local CLI build without crash failpoints afterward.
+cargo build --release --locked -p box-runtime --bin box
+```
+
+The suite exercises persistence, killed-process memory restoration, independent clones, concurrent starts, force-stop, and manager crashes. Isolated runs additionally inspect actual process identity, jail root, seccomp/capabilities, cgroup limits, private backing inodes, distinct host UIDs/GIDs, and a guest with only loopback and no management socket.
+
+On 2026-10-01, the privileged retry on `ser7` passed all six tests in 18.10 seconds with Firecracker/jailer 1.17.0 and the trusted fixture. The first run had failed on namespace-relative procfs path checks and left six test VMMs/cgroups after failed cleanup. The retry verified and stopped those processes before testing the correction: followed device/inode ownership checks retain PID/start-time protection, and the harness preserves unfinished state if cleanup fails. The privileged script reported no remaining child cgroups; a subsequent unprivileged process check found no processes in the reserved test UID/GID range. The test installation remains available for inspection. This is single-host lifecycle evidence, not isolated launch latency characterization or adversarial security validation. Do not rerun the one-shot setup over an existing installation.
+
+For manual use after validation, initialize a separate empty state store with `--state-dir /var/lib/boxd-test/manual --isolation-config /etc/boxd-test.json create --profile isolated --image /var/lib/boxd-test/image/image.json`. Later commands only need that `--state-dir`; create/template build/clone/benchmark also require `--profile isolated`. Do not run the manual store concurrently with the test suite. To remove test setup, first delete every test box and verify the test cgroup contains no children or processes; only then remove the dedicated test paths. Never recursively remove live state.

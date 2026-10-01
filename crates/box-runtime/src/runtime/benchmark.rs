@@ -57,6 +57,7 @@ impl Runtime {
                 for index in offset..(offset + concurrency).min(samples) {
                     let runtime = Runtime {
                         root: self.root.clone(),
+                        isolation: self.isolation.clone(),
                     };
                     let image = image.to_owned();
                     let template = template.to_owned();

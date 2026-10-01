@@ -10,6 +10,9 @@ struct Cli {
     state_dir: PathBuf,
     #[arg(long, global = true)]
     json: bool,
+    /// Initialize an empty, root-owned state store with a trusted jailer policy.
+    #[arg(long, global = true)]
+    isolation_config: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -93,6 +96,8 @@ enum Command {
         samples: usize,
         #[arg(long, default_value_t = 1)]
         concurrency: usize,
+        #[arg(long, default_value = "development")]
+        profile: String,
         #[arg(long)]
         allow_unsafe_development: bool,
     },
@@ -130,11 +135,15 @@ enum Checkpoint {
 
 async fn run(cli: Cli) -> Result<(Value, i32)> {
     if matches!(cli.command, Command::Doctor) {
-        let report = box_runtime::host::check();
+        if let Some(path) = &cli.isolation_config {
+            box_runtime::isolation::Config::load(path)?.preflight()?;
+        }
+        let mut report = box_runtime::host::check();
+        report.isolated_ready = cli.isolation_config.is_some();
         let exit = if report.development_ready { 0 } else { 1 };
         return Ok((serde_json::to_value(report)?, exit));
     }
-    let runtime = Runtime::open(&cli.state_dir)?;
+    let runtime = Runtime::open_with_isolation(&cli.state_dir, cli.isolation_config.as_deref())?;
     let value = match cli.command {
         Command::Doctor => unreachable!(),
         Command::Create {
@@ -145,7 +154,7 @@ async fn run(cli: Cli) -> Result<(Value, i32)> {
             profile,
             allow_unsafe_development,
         } => {
-            development(&profile, allow_unsafe_development)?;
+            launch_profile(&runtime, &profile, allow_unsafe_development)?;
             serde_json::to_value(
                 runtime
                     .create(&image, &name, memory_mib, vcpus, false)
@@ -233,7 +242,7 @@ async fn run(cli: Cli) -> Result<(Value, i32)> {
                     allow_unsafe_development,
                 },
         } => {
-            development(&profile, allow_unsafe_development)?;
+            launch_profile(&runtime, &profile, allow_unsafe_development)?;
             serde_json::to_value(runtime.build_template(&image).await?)?
         }
         Command::Template {
@@ -247,7 +256,7 @@ async fn run(cli: Cli) -> Result<(Value, i32)> {
             profile,
             allow_unsafe_development,
         } => {
-            development(&profile, allow_unsafe_development)?;
+            launch_profile(&runtime, &profile, allow_unsafe_development)?;
             serde_json::to_value(runtime.clone_template(&template, &name).await?)?
         }
         Command::Benchmark {
@@ -255,9 +264,10 @@ async fn run(cli: Cli) -> Result<(Value, i32)> {
             template,
             samples,
             concurrency,
+            profile,
             allow_unsafe_development,
         } => {
-            development("development", allow_unsafe_development)?;
+            launch_profile(&runtime, &profile, allow_unsafe_development)?;
             let report = runtime
                 .benchmark(&image, &template, samples, concurrency)
                 .await?;
@@ -272,10 +282,13 @@ async fn run(cli: Cli) -> Result<(Value, i32)> {
     Ok((value, 0))
 }
 
-fn development(profile: &str, allowed: bool) -> Result<()> {
-    if profile != "development" {
+fn launch_profile(runtime: &Runtime, profile: &str, allowed: bool) -> Result<()> {
+    if profile == "isolated" && runtime.is_isolated() {
+        return Ok(());
+    }
+    if profile != "development" || runtime.is_isolated() {
         return Err(Error::Invalid(
-            "isolated profile is not installed; refusing unjailed fallback".into(),
+            "profile does not match state store; isolated launches require --isolation-config on an empty store; refusing unjailed fallback".into(),
         ));
     }
     if !allowed {

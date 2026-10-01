@@ -17,7 +17,9 @@
 - [x] Release benchmarks: 30 sequential samples per mode and 16 concurrency-four samples per mode, all successful; first-command timing includes checksum/disk work.
 - [x] Real-KVM process-crash tests around spawn/PID recording and checkpoint pause/publication, plus killed-process memory restoration and corruption rejection.
 - [ ] Complete the broader storage/ENOSPC/power-loss/restore/cancellation failure matrix; add operation-wide cancellation, bounded blocking work, orphan generation cleanup, and disk/log budgets. Current implementation does not claim these are complete.
-- [ ] Task 8: implement jailed/cgroup-enforced profile and Ubuntu image; obtain explicit approval before privileged host setup and validation.
+- [x] Task 8 isolation implementation: explicit root-owned policy, jailer launch, per-box UID/GID, fresh jail/cgroup generations, jail-local snapshot copies, and observed isolation checks. Normal tests cover arguments, policy rejection, ownership, and launcher recovery. Development KVM regressions pass.
+- [x] Task 8 isolation validation: after correcting namespace-relative process path checks and preserving unfinished test state, the approved privileged retry passed all six lifecycle tests on `ser7` on 2026-10-01 (18.10 seconds). The six prior leftover processes were verified and stopped first; the retry reported no remaining child cgroups, and a fresh process check found no test UID/GID occupants. This validates the trusted-fixture lifecycle, not adversarial security or isolated launch performance.
+- [ ] Task 8 Ubuntu image: implement after isolated runtime validation. The current image remains the minimal trusted fixture.
 
 **Version correction:** Real testing reproduced Firecracker 1.16.0's vsock pause/resume bug. The implementation pins the fixed 1.17.0 release using a checksum-verified local download. System-installed 1.16.0 binaries were not replaced. Historical 1.16 API examples below remain design context; tested operator commands use 1.17.0.
 

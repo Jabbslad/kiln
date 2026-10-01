@@ -108,7 +108,7 @@ pub fn copy_disk(src: &Path, dst: &Path, deadline: Instant) -> Result<CopyMethod
     }
     let mut source = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(src)?;
     let source_metadata = source.metadata()?;
     if !source_metadata.file_type().is_file() || source_metadata.file_type().is_block_device() {
@@ -398,6 +398,39 @@ mod tests {
         fs::write(&source, vec![1; 64 * 1024]).unwrap();
         assert!(copy_disk(&source, &destination, Instant::now()).is_err());
         assert!(!destination.exists());
+    }
+
+    #[test]
+    fn fifo_source_is_rejected_without_waiting_for_a_writer() {
+        let root = tempdir().unwrap();
+        let source = root.path().join("fifo");
+        let destination = root.path().join("copy");
+        let name = std::ffi::CString::new(source.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let (send, receive) = std::sync::mpsc::channel();
+        let input = source.clone();
+        let worker = std::thread::spawn(move || {
+            send.send(
+                copy_disk(
+                    &input,
+                    &destination,
+                    Instant::now() + Duration::from_secs(3),
+                )
+                .is_err(),
+            )
+            .unwrap();
+        });
+        let result = receive.recv_timeout(Duration::from_secs(1));
+        if result.is_err() {
+            // Release an incorrectly blocking open before failing the assertion.
+            let _writer = OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&source)
+                .unwrap();
+        }
+        worker.join().unwrap();
+        assert!(result.unwrap());
     }
 
     #[test]

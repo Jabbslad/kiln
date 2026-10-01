@@ -3,6 +3,7 @@ use crate::{
     firecracker::Client,
     guest, host,
     image::{self, Manifest},
+    isolation::{self, Config, JailIdentity},
     process::{self, Identity},
     storage,
 };
@@ -42,6 +43,8 @@ pub struct BoxRecord {
     pub operation: Option<String>,
     pub last_error: Option<String>,
     pub disk_copy: String,
+    #[serde(default)]
+    pub jail: Option<JailIdentity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,10 +58,13 @@ pub struct Snapshot {
     pub memory_mib: u32,
     pub vcpus: u8,
     pub hashes: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub isolated: bool,
 }
 
 pub struct Runtime {
     root: PathBuf,
+    isolation: Option<Config>,
 }
 
 pub fn random_bytes(count: usize) -> Result<Vec<u8>> {
@@ -83,12 +89,77 @@ fn failpoint(_name: &str) {
 
 impl Runtime {
     pub fn open(root: &Path) -> Result<Self> {
+        Self::open_with_isolation(root, None)
+    }
+
+    pub fn open_with_isolation(root: &Path, config: Option<&Path>) -> Result<Self> {
+        let requested = config.map(Config::load).transpose()?;
+        let persisted = root.join("isolation.json");
+        let stored = match fs::symlink_metadata(&persisted) {
+            Ok(_) => Some(Config::load(&persisted)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        if let (Some(requested), Some(stored)) = (&requested, &stored)
+            && requested != stored
+        {
+            return Err(Error::Invalid(
+                "isolation policy cannot change for an existing state store".into(),
+            ));
+        }
+        let isolation = stored.clone().or(requested);
+        if isolation.is_some() {
+            if root.exists() {
+                isolation::trusted_path(root)?;
+            } else {
+                isolation::trusted_path(root.parent().ok_or_else(|| {
+                    Error::Invalid("state directory needs a trusted parent".into())
+                })?)?;
+            }
+        }
         storage::private_dir(root)?;
         let root = fs::canonicalize(root)?;
         for child in ["boxes", "snapshots"] {
             storage::private_dir(&root.join(child))?;
         }
-        Ok(Self { root })
+        if let Some(config) = &isolation
+            && stored.is_none()
+        {
+            let _lock = storage::lock(&root)?;
+            if root.join("isolation.json").try_exists()? {
+                return Err(Error::Invalid(
+                    "isolation policy was initialized concurrently; reopen the store".into(),
+                ));
+            }
+            if fs::read_dir(root.join("boxes"))?.next().is_some()
+                || fs::read_dir(root.join("snapshots"))?.next().is_some()
+            {
+                return Err(Error::Invalid(
+                    "isolated profile requires an empty, dedicated state store".into(),
+                ));
+            }
+            config.preflight()?;
+            storage::atomic_json(&root.join("isolation.json"), config)?;
+        }
+        Ok(Self { root, isolation })
+    }
+
+    pub fn is_isolated(&self) -> bool {
+        self.isolation.is_some()
+    }
+
+    fn allocate_identity(&self, records: &[BoxRecord]) -> Result<Option<JailIdentity>> {
+        self.isolation
+            .as_ref()
+            .map(|config| {
+                config.allocate(
+                    &records
+                        .iter()
+                        .filter_map(|r| r.jail.clone())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .transpose()
     }
 
     fn directory(&self, id: &str) -> Result<PathBuf> {
@@ -103,12 +174,36 @@ impl Runtime {
         Ok(directory)
     }
 
-    fn run(&self, record: &BoxRecord) -> Result<PathBuf> {
+    fn generation(&self, record: &BoxRecord) -> Result<PathBuf> {
         if !storage::valid_id(&record.run) {
             return Err(Error::Invalid("invalid run generation".into()));
         }
         let path = self.directory(&record.id)?.join(&record.run);
         storage::private_dir(&path)?;
+        Ok(path)
+    }
+
+    fn run(&self, record: &BoxRecord) -> Result<PathBuf> {
+        let mut path = self.generation(record)?;
+        if let Some(identity) = &record.jail {
+            for name in ["firecracker", &record.run] {
+                path.push(name);
+                storage::private_dir(&path)?;
+            }
+            path.push("root");
+            if path.try_exists()? {
+                use std::os::unix::fs::MetadataExt;
+                let metadata = fs::symlink_metadata(&path)?;
+                if !metadata.is_dir()
+                    || metadata.mode() & 0o077 != 0
+                    || (metadata.uid() != 0 && metadata.uid() != identity.uid)
+                {
+                    return Err(Error::Invalid("invalid jail root".into()));
+                }
+            } else {
+                storage::private_dir(&path)?;
+            }
+        }
         Ok(path)
     }
 
@@ -120,6 +215,15 @@ impl Runtime {
         let record: BoxRecord = storage::read_json(&self.directory(id)?.join("box.json"))?;
         if record.id != id || record.schema_version != 1 {
             return Err(Error::Invalid("invalid box record".into()));
+        }
+        match (&self.isolation, &record.jail) {
+            (Some(config), Some(identity)) => config.validate_identity(identity)?,
+            (None, None) => (),
+            _ => {
+                return Err(Error::Invalid(
+                    "box isolation policy mismatch; refusing unjailed fallback".into(),
+                ));
+            }
         }
         Ok(record)
     }
@@ -133,6 +237,14 @@ impl Runtime {
                         && Instant::now() < deadline =>
                 {
                     tokio::time::sleep(Duration::from_millis(5)).await
+                }
+                Ok(lock) => {
+                    if self.root.join("isolation.json").try_exists()? != self.is_isolated() {
+                        return Err(Error::Invalid(
+                            "state store isolation policy changed; reopen the store".into(),
+                        ));
+                    }
+                    return Ok(lock);
                 }
                 result => return result,
             }
@@ -177,20 +289,69 @@ impl Runtime {
 
     fn identify_process(&self, record: &mut BoxRecord) -> Result<()> {
         let run = self.run(record)?;
-        let executable = host::executable("firecracker")?;
+        let executable = if self.is_isolated() {
+            run.join("firecracker")
+        } else {
+            host::executable("firecracker")?
+        };
+        let mut executables = vec![executable.as_path()];
+        if let Some(config) = &self.isolation {
+            executables.push(&config.jailer);
+        }
         let identity = match &record.process {
             Some(expected) => match process::identify(expected.pid) {
-                Ok(actual) if actual == *expected => Some(actual),
+                Ok(actual)
+                    if process::same_launch(
+                        expected,
+                        &actual,
+                        self.isolation.as_ref().map(|_| executable.as_path()),
+                    ) && actual.matches_paths(&run, &executables)? =>
+                {
+                    Some(actual)
+                }
                 Ok(_) => {
                     return Err(Error::Invalid(
                         "recorded PID now belongs to a different process".into(),
                     ));
                 }
-                Err(_) => process::find(&run, &executable)?,
+                Err(_) => process::find(&run, &executables)?,
             },
-            None => process::find(&run, &executable)?,
+            None => process::find(&run, &executables)?,
         };
         record.process = identity;
+        Ok(())
+    }
+
+    fn terminate(&self, record: &mut BoxRecord) -> Result<()> {
+        self.identify_process(record)?;
+        if let Some(identity) = &record.process {
+            let successor = self
+                .isolation
+                .as_ref()
+                .map(|_| self.run(record).map(|p| p.join("firecracker")))
+                .transpose()?;
+            process::terminate_with_successor(identity, successor.as_deref())?;
+        }
+        record.process = None;
+        if let Some(config) = &self.isolation {
+            config.cleanup_cgroup(&record.run)?;
+        }
+        Ok(())
+    }
+
+    fn verify_isolation(&self, record: &BoxRecord) -> Result<()> {
+        if let (Some(config), Some(identity), Some(process)) =
+            (&self.isolation, &record.jail, &record.process)
+        {
+            config.verify(
+                process.pid,
+                &record.run,
+                &self.run(record)?,
+                identity,
+                record.memory_mib,
+                record.vcpus,
+            )?;
+        }
         Ok(())
     }
 
@@ -208,17 +369,33 @@ impl Runtime {
             _ => "starting",
         }
         .into();
+        if matches!(record.state.as_str(), "running" | "paused") {
+            self.verify_isolation(record)?;
+        }
         Ok(())
     }
 
     pub async fn inspect(&self, id: &str) -> Result<BoxRecord> {
         let _lock = storage::lock(&self.directory(id)?)?;
         let mut record = self.read(id)?;
-        self.observed(&mut record).await?;
-        if matches!(
+        let interrupted_launch = matches!(
             record.operation.as_deref(),
             Some("create" | "clone" | "start" | "restore")
-        ) {
+        );
+        if let Err(error) = self.observed(&mut record).await {
+            if !interrupted_launch {
+                return Err(error);
+            }
+            // The manager can die while jailer is still setting up, before
+            // there is an API to query. Termination still requires PID ownership.
+            self.terminate(&mut record)?;
+            record.state = "stopped".into();
+            record.operation = None;
+            record.last_error = Some(format!("interrupted launch stopped: {error}"));
+            self.save(&record)?;
+            return Ok(record);
+        }
+        if interrupted_launch {
             // A crash before API configuration leaves a real but unusable VMM.
             // Stop only that identified process; retain its disk for explicit
             // start/retry. Adopt a fully initialized running VM instead.
@@ -238,10 +415,7 @@ impl Runtime {
                     })
                 );
             if !ready {
-                if let Some(identity) = &record.process {
-                    process::terminate(identity)?;
-                }
-                record.process = None;
+                self.terminate(&mut record)?;
                 record.state = "stopped".into();
             }
             record.operation = None;
@@ -302,11 +476,19 @@ impl Runtime {
                 "name must be 1..63 bytes, memory 128..2048 MiB, vCPUs 1..4".into(),
             ));
         }
+        if let Some(config) = &self.isolation {
+            config.preflight()?;
+        }
         let report = host::check();
         if !report.development_ready {
             return Err(Error::Invalid(report.problems.join("; ")));
         }
         let image = image::load(manifest)?;
+        if self.is_isolated() {
+            isolation::trusted_path(&fs::canonicalize(manifest)?)?;
+            isolation::trusted_path(&image.kernel_path)?;
+            isolation::trusted_path(&image.rootfs_path)?;
+        }
         drop(phase);
         let phase = Phase::start("allocation_wait");
         let allocation = self.allocation().await?;
@@ -335,6 +517,7 @@ impl Runtime {
             operation: Some("create".into()),
             last_error: None,
             disk_copy: String::new(),
+            jail: self.allocate_identity(&records)?,
         };
         storage::private_dir(&self.root.join("boxes").join(&record.id))?;
         let _lock = storage::lock(&self.directory(&record.id)?)?;
@@ -369,12 +552,7 @@ impl Runtime {
             Err(error) => {
                 record.state = "failed".into();
                 record.last_error = Some(error.to_string());
-                if let Some(identity) = &record.process
-                    && process::identify(identity.pid).is_ok()
-                {
-                    process::terminate(identity)?;
-                }
-                record.process = None;
+                self.terminate(record)?;
                 self.save(record)?;
                 Err(error)
             }
@@ -388,6 +566,9 @@ impl Runtime {
         initialize: bool,
     ) -> Result<()> {
         let phase = Phase::start("boot_preflight");
+        if let Some(config) = &self.isolation {
+            config.preflight()?;
+        }
         let report = host::check();
         if !report.development_ready || record.host != host::fingerprint()? {
             return Err(Error::Invalid(
@@ -397,6 +578,48 @@ impl Runtime {
         drop(phase);
         let phase = Phase::start("vmm_start");
         let run = self.run(record)?;
+        let mut kernel = record.image.kernel_path.clone();
+        let mut snapshot_directory = snapshot.map(|s| self.root.join("snapshots").join(&s.id));
+        let mut command = if let (Some(config), Some(identity)) = (&self.isolation, &record.jail) {
+            if run.join("firecracker").try_exists()? {
+                return Err(Error::Invalid("refusing to reuse a jail generation".into()));
+            }
+            isolation::own_file(&run.join("disk.ext4"), identity)?;
+            if let Some(snapshot) = snapshot {
+                for name in ["state.snap", "memory.snap"] {
+                    let source = self.root.join("snapshots").join(&snapshot.id).join(name);
+                    let hash = snapshot
+                        .hashes
+                        .get(name)
+                        .ok_or_else(|| Error::Invalid("snapshot hash missing".into()))?;
+                    isolation::stage_readonly(&source, &run.join(name), hash)?;
+                }
+                snapshot_directory = Some(PathBuf::from("."));
+            } else {
+                isolation::trusted_path(&record.image.kernel_path)?;
+                isolation::stage_readonly(
+                    &record.image.kernel_path,
+                    &run.join("kernel"),
+                    &record.image.kernel_sha256,
+                )?;
+                kernel = "kernel".into();
+            }
+            fs::create_dir(config.cgroup(&record.run)?)?;
+            let mut command = Command::new(&config.jailer);
+            command.args(config.args(
+                &self.generation(record)?,
+                &record.run,
+                identity,
+                record.memory_mib,
+                record.vcpus,
+            )?);
+            command.env_clear();
+            command
+        } else {
+            let mut command = Command::new(host::executable("firecracker")?);
+            command.args(["--id", &record.id, "--api-sock", "api.sock"]);
+            command
+        };
         for socket in ["api.sock", "vsock.sock"] {
             match fs::remove_file(run.join(socket)) {
                 Ok(()) => (),
@@ -404,22 +627,27 @@ impl Runtime {
                 Err(e) => return Err(e.into()),
             }
         }
+        let log = self.generation(record)?.join("console.log");
         let output = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
-            .open(run.join("console.log"))?;
-        let mut command = Command::new(host::executable("firecracker")?);
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&log)?;
         command
             .current_dir(&run)
-            .args(["--id", &record.id, "--api-sock", "api.sock"])
             .stdin(Stdio::null())
             .stdout(output.try_clone()?)
             .stderr(output);
         // SAFETY: only async-signal-safe syscalls before exec. The file budget
         // must accommodate full memory snapshots (up to 2 GiB), as well as logs.
+        let isolated = self.is_isolated();
         unsafe {
-            command.pre_exec(|| {
+            command.pre_exec(move || {
+                libc::umask(0o077);
+                if isolated && libc::setgroups(0, std::ptr::null()) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
                 if libc::setsid() < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
@@ -456,21 +684,22 @@ impl Runtime {
             if Instant::now() >= deadline || process::identify(pid).is_err() {
                 return Err(Error::Invalid(format!(
                     "VMM startup failed; see {}",
-                    run.join("console.log").display()
+                    log.display()
                 )));
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+        self.identify_process(record)?;
+        self.save(record)?;
         drop(phase);
         let phase = Phase::start("vmm_configure");
-        if let Some(snapshot) = snapshot {
-            let directory = self.root.join("snapshots").join(&snapshot.id);
+        if let Some(directory) = snapshot_directory {
             client.request("PUT", "/snapshot/load", json!({"snapshot_path":directory.join("state.snap"), "mem_backend":{"backend_type":"File", "backend_path": directory.join("memory.snap")}, "resume_vm":false, "track_dirty_pages":false})).await?;
             client
                 .request("PATCH", "/vm", json!({"state":"Resumed"}))
                 .await?;
         } else {
-            if image::sha256(&record.image.kernel_path)? != record.image.kernel_sha256 {
+            if image::sha256(&run.join(&kernel))? != record.image.kernel_sha256 {
                 return Err(Error::Invalid("kernel checksum changed".into()));
             }
             client
@@ -480,7 +709,7 @@ impl Runtime {
                     json!({"vcpu_count":record.vcpus,"mem_size_mib":record.memory_mib,"smt":false}),
                 )
                 .await?;
-            client.request("PUT", "/boot-source", json!({"kernel_image_path":record.image.kernel_path,"boot_args":"console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/sbin/init quiet"})).await?;
+            client.request("PUT", "/boot-source", json!({"kernel_image_path":kernel,"boot_args":"console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/sbin/init quiet"})).await?;
             client.request("PUT", "/drives/rootfs", json!({"drive_id":"rootfs","path_on_host":"disk.ext4","is_root_device":true,"is_read_only":false})).await?;
             client
                 .request(
@@ -493,6 +722,7 @@ impl Runtime {
                 .request("PUT", "/actions", json!({"action_type":"InstanceStart"}))
                 .await?;
         }
+        self.verify_isolation(record)?;
         drop(phase);
         let phase = Phase::start("guest_ready");
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -515,7 +745,7 @@ impl Runtime {
             if Instant::now() >= deadline || process::identify(pid).is_err() {
                 return Err(Error::Invalid(format!(
                     "guest readiness failed; see {}",
-                    run.join("console.log").display()
+                    log.display()
                 )));
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -647,10 +877,7 @@ impl Runtime {
                 ));
             }
         }
-        if let Some(identity) = &record.process {
-            process::terminate(identity)?;
-        }
-        record.process = None;
+        self.terminate(&mut record)?;
         record.state = "stopped".into();
         record.operation = None;
         self.save(&record)?;
@@ -665,10 +892,23 @@ impl Runtime {
         if record.state != "stopped" {
             return Err(Error::Invalid("box must be stopped before starting".into()));
         }
+        let previous = record.clone();
+        if self.is_isolated() {
+            self.terminate(&mut record)?;
+            record.run = self::id()?;
+            storage::copy_disk(
+                &self.run(&previous)?.join("disk.ext4"),
+                &self.run(&record)?.join("disk.ext4"),
+                Instant::now() + Duration::from_secs(120),
+            )?;
+        }
         record.operation = Some("start".into());
         self.save(&record)?;
         let result = self.boot(&mut record, None, true).await;
         self.finish_launch(&mut record, result)?;
+        if self.is_isolated() {
+            fs::remove_dir_all(self.generation(&previous)?)?;
+        }
         Ok(record)
     }
 
@@ -686,5 +926,59 @@ impl Runtime {
         fs::remove_dir_all(directory)?;
         File::open(self.root.join("boxes"))?.sync_all()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn interrupted_jailer_without_an_api_is_stopped_not_adopted() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let mut runtime = Runtime::open(root.path()).unwrap();
+        // An ordinary child stands in for a launcher that has not exec'd yet.
+        // No jail, cgroup, privilege escalation, or VM is created by this test.
+        let uid = unsafe { libc::geteuid() }.max(42);
+        let gid = unsafe { libc::getegid() }.max(42);
+        runtime.isolation = Some(Config {
+            firecracker: "/unused/firecracker".into(),
+            jailer: fs::canonicalize("/bin/sleep").unwrap(),
+            cgroup_parent: format!("boxd-unit-{}", id().unwrap()),
+            uid_base: uid,
+            gid_base: gid,
+        });
+        let mut record: BoxRecord = serde_json::from_value(json!({
+            "schema_version":1, "id":id().unwrap(), "run":id().unwrap(),
+            "name":"interrupted", "state":"creating", "process":null,
+            "image":{"schema_version":1,"architecture":"x86_64","kernel_path":"unused",
+                "kernel_sha256":"unused","rootfs_path":"unused","rootfs_sha256":"unused","agent_protocol_version":1},
+            "host":"unused", "memory_mib":256, "vcpus":1, "source":null,
+            "operation":"create", "last_error":null, "disk_copy":"Copy",
+            "jail":{"uid":uid,"gid":gid}
+        })).unwrap();
+        storage::private_dir(&root.path().join("boxes").join(&record.id)).unwrap();
+        let run = runtime.run(&record).unwrap();
+        let mut child = Command::new("/bin/sleep")
+            .arg("60")
+            .current_dir(&run)
+            .spawn()
+            .unwrap();
+        record.process = Some(process::identify(child.id()).unwrap());
+        runtime.save(&record).unwrap();
+        let result = runtime.inspect(&record.id).await;
+        let stopped = child.try_wait().unwrap().is_some();
+        if !stopped {
+            child.kill().unwrap();
+        }
+        child.wait().unwrap();
+        let recovered = result.unwrap();
+        assert!(stopped);
+        assert_eq!(recovered.state, "stopped");
+        assert!(recovered.process.is_none());
+        assert!(recovered.operation.is_none());
+        assert!(recovered.last_error.unwrap().contains("interrupted launch"));
     }
 }

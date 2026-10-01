@@ -53,13 +53,27 @@ impl Runtime {
             .into(),
         );
         self.save(&record)?;
+        let run = self.run(&record)?;
+        // Never overwrite state.snap/memory.snap: they may still back a restored VM.
+        let state_output = format!("capture-{snapshot_id}.state");
+        let memory_output = format!("capture-{snapshot_id}.memory");
         let result: Result<Snapshot> = async {
             client.request("PATCH", "/vm", json!({"state":"Paused"})).await?;
             record.state = "paused".into(); self.save(&record)?;
             failpoint("after-pause");
-            client.request("PUT", "/snapshot/create", json!({"snapshot_type":"Full", "snapshot_path":directory.join("state.snap"), "mem_file_path":directory.join("memory.snap")})).await?;
-            let disk = self.run(&record)?.join("disk.ext4");
-            File::open(&disk)?.sync_all()?;
+            let (state_path, memory_path) = if self.is_isolated() {
+                (PathBuf::from(&state_output), PathBuf::from(&memory_output))
+            } else {
+                (directory.join("state.snap"), directory.join("memory.snap"))
+            };
+            client.request("PUT", "/snapshot/create", json!({"snapshot_type":"Full", "snapshot_path":state_path, "mem_file_path":memory_path})).await?;
+            if self.is_isolated() {
+                for (source, destination) in [(&state_output, "state.snap"), (&memory_output, "memory.snap")] {
+                    storage::copy_disk(&run.join(source), &directory.join(destination), Instant::now() + Duration::from_secs(120))?;
+                }
+            }
+            let disk = run.join("disk.ext4");
+            fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&disk)?.sync_all()?;
             storage::copy_disk(&disk, &directory.join("disk.ext4"), Instant::now() + Duration::from_secs(120))?;
             let mut hashes = std::collections::BTreeMap::new();
             for name in ["disk.ext4", "state.snap", "memory.snap"] {
@@ -68,12 +82,21 @@ impl Runtime {
                 hashes.insert(name.into(), image::sha256(&path)?);
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o400))?;
             }
-            let snapshot = Snapshot {schema_version:1,id:snapshot_id.clone(),source_box:box_id.into(),template,image:record.image.clone(),host:record.host.clone(),memory_mib:record.memory_mib,vcpus:record.vcpus,hashes};
+            let snapshot = Snapshot {schema_version:1,id:snapshot_id.clone(),source_box:box_id.into(),template,image:record.image.clone(),host:record.host.clone(),memory_mib:record.memory_mib,vcpus:record.vcpus,hashes,isolated:self.is_isolated()};
             storage::atomic_json(&directory.join("snapshot.json"), &snapshot)?;
             File::open(self.root.join("snapshots"))?.sync_all()?;
             failpoint("after-snapshot-publication");
             Ok(snapshot)
         }.await;
+        if self.is_isolated() {
+            for name in [&state_output, &memory_output] {
+                match fs::remove_file(run.join(name)) {
+                    Ok(()) => (),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
         // Even a failed pause/snapshot request can have changed the VMM. Query
         // it before choosing the recovery action; never retry snapshot creation.
         self.observed(&mut record).await?;
@@ -137,6 +160,9 @@ impl Runtime {
         if !storage::valid_id(snapshot_id) {
             return Err(Error::Invalid("invalid snapshot ID".into()));
         }
+        if let Some(config) = &self.isolation {
+            config.preflight()?;
+        }
         let report = host::check();
         if !report.development_ready {
             return Err(Error::Invalid(report.problems.join("; ")));
@@ -147,6 +173,7 @@ impl Runtime {
         if snapshot.schema_version != 1
             || snapshot.id != snapshot_id
             || snapshot.host != host::fingerprint()?
+            || snapshot.isolated != self.is_isolated()
         {
             return Err(Error::Invalid("snapshot compatibility mismatch".into()));
         }
@@ -180,8 +207,9 @@ impl Runtime {
         self.observed(&mut record).await?;
         let previous = record.clone();
         let next_run = id()?;
-        let next_path = self.directory(box_id)?.join(&next_run);
-        storage::private_dir(&next_path)?;
+        let mut next = record.clone();
+        next.run = next_run.clone();
+        let next_path = self.run(&next)?;
         storage::copy_disk(
             &self
                 .root
@@ -197,10 +225,7 @@ impl Runtime {
         )?;
         record.operation = Some("restore".into());
         self.save(&record)?;
-        if let Some(identity) = &record.process {
-            process::terminate(identity)?;
-        }
-        record.process = None;
+        self.terminate(&mut record)?;
         record.run = next_run;
         record.source = Some(snapshot_id.into());
         record.state = "restoring".into();
@@ -254,6 +279,7 @@ impl Runtime {
             operation: Some("clone".into()),
             last_error: None,
             disk_copy: String::new(),
+            jail: self.allocate_identity(&records)?,
         };
         storage::private_dir(&self.root.join("boxes").join(&record.id))?;
         let _lock = storage::lock(&self.directory(&record.id)?)?;
