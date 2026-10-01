@@ -14,6 +14,8 @@ use tokio::{
     sync::Semaphore,
 };
 
+pub mod bootstrap;
+
 pub trait Initializer: Send + Sync + 'static {
     fn initialize(&self, request: &InitializeRequest) -> Result<(), String>;
 }
@@ -24,13 +26,21 @@ pub struct SystemInitializer;
 impl Initializer for SystemInitializer {
     fn initialize(&self, request: &InitializeRequest) -> Result<(), String> {
         validate_identity(request)?;
-        write_all(Path::new("/dev/urandom"), &request.entropy)?;
+        let random = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/urandom")
+            .map_err(|e| e.to_string())?;
+        seed_entropy(&random, &request.entropy).map_err(|e| e.to_string())?;
         let hostname = std::ffi::CString::new(request.hostname.as_str())
             .map_err(|_| "hostname contains NUL".to_string())?;
         // SAFETY: the CString remains valid for the duration of sethostname.
         if unsafe { libc::sethostname(hostname.as_ptr(), request.hostname.len()) } != 0 {
             return Err(io::Error::last_os_error().to_string());
         }
+        write_all(
+            Path::new("/etc/hostname"),
+            format!("{}\n", request.hostname).as_bytes(),
+        )?;
         write_all(
             Path::new("/etc/machine-id"),
             format!("{}\n", request.machine_id).as_bytes(),
@@ -42,11 +52,40 @@ fn write_all(path: &Path, data: &[u8]) -> Result<(), String> {
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
-        .truncate(path != Path::new("/dev/urandom"))
+        .create(true)
+        .truncate(true)
         .open(path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
     file.write_all(data)
         .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn seed_entropy(file: &std::fs::File, entropy: &[u8]) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // Linux random.h ABI, x86_64 guest. A write alone mixes the input pool but
+    // need not reseed the cloned CRNG before workloads ask for random bytes.
+    #[repr(C)]
+    struct Seed {
+        bits: i32,
+        size: i32,
+        bytes: [u8; 32],
+    }
+    let bytes = entropy
+        .get(..32)
+        .ok_or_else(|| io::Error::other("32 entropy bytes required"))?;
+    let seed = Seed {
+        bits: 256,
+        size: 32,
+        bytes: bytes.try_into().unwrap(),
+    };
+    // SAFETY: Seed matches rand_pool_info with a 32-byte inline payload; the
+    // descriptor and seed live through both synchronous ioctls.
+    if unsafe { libc::ioctl(file.as_raw_fd(), 0x40085203, &seed) } != 0
+        || unsafe { libc::ioctl(file.as_raw_fd(), 0x5207) } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn validate_identity(request: &InitializeRequest) -> Result<(), String> {
@@ -90,6 +129,24 @@ impl<I: Initializer> Agent<I> {
             barrier: Mutex::new(Barrier::Uninitialized),
             executions: Arc::new(Semaphore::new(max_concurrency.max(1))),
         }
+    }
+
+    pub fn from_boot_marker(
+        initializer: Arc<I>,
+        max_concurrency: usize,
+        marker: &Path,
+    ) -> io::Result<Self> {
+        let identity = std::fs::read_to_string(marker)?;
+        let id = identity.trim_end_matches('\n');
+        if id.len() != 32
+            || !id.bytes().all(|b| b.is_ascii_hexdigit())
+            || id.bytes().all(|b| b == b'0')
+        {
+            return Err(io::Error::other("invalid bootstrap handoff identity"));
+        }
+        let mut agent = Self::new(initializer, max_concurrency);
+        agent.barrier = Mutex::new(Barrier::Initialized);
+        Ok(agent)
     }
 
     pub async fn handle(&self, request: Request) -> Response {
@@ -300,5 +357,15 @@ impl Agent<FakeInitializer> {
             barrier: Mutex::new(Barrier::Initialized),
             executions: Arc::new(Semaphore::new(max_concurrency.max(1))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn entropy_injection_requires_rng_ioctl_not_just_a_successful_write() {
+        let file = tempfile::tempfile().unwrap();
+        assert!(super::seed_entropy(&file, &[17; 64]).is_err());
+        assert_eq!(file.metadata().unwrap().len(), 0);
     }
 }

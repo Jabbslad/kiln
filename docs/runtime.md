@@ -10,6 +10,20 @@ The runner originally had 1.16.0. Crash testing reproduced its permanent vsock f
 
 The fixture uses a checksum-pinned Linux 6.1.155 kernel from Firecracker's v1.15 CI artifacts, a statically linked Rust musl guest agent, and locally supplied static BusyBox. Its `inputs.json` records source URL and component hashes. `mkfs.ext4 -d` populates a 128 MiB root filesystem without host mounts or root. This is a test image, not a supported general-purpose distribution. Build instructions are in the [README](../README.md).
 
+## Ubuntu image contract
+
+`bash images/build-ubuntu.sh OUTPUT_DIRECTORY [ROOTFS_TARBALL]` builds an experimental Ubuntu Minimal 24.04 amd64 guest. The optional local tarball must match the same pinned SHA-256 as the downloaded input. The builder pins [release-20260905](https://cloud-images.ubuntu.com/minimal/releases/noble/release-20260905/) (`094dc0afc6ded1c3e5ce71f7d0b48d5db922155097bc8fb1ec19db2ebdd17ece`) and the fixture's Linux 6.1.155 kernel. It builds static `box-init`/`box-guest` binaries, preserves upstream numeric ownership with fakeroot, and uses `mkfs.ext4 -d` to create a 2 GiB disk without root, host mounts, chroot, or package scripts. `inputs.json` records upstream URLs/checksums and builder/guest binary hashes. Inputs are repeatable; filesystem timestamps/UUIDs mean this is not a bit-for-bit reproducible image claim. Existing output images are never overwritten.
+
+Included tools are the upstream systemd, Bash, Python 3, curl, and apt packages. There is no guest NIC, package-download connectivity, SSH server access, Docker, or compiler toolchain. The custom `boxd.target` starts basic systemd services and the agent; cloud-init is disabled and network/SSH units are masked. No host service is installed. Security updates require explicitly updating/revalidating the pinned input and rebuilding; an automatic image update/release process remains future work.
+
+Ubuntu manifests select `boot_mode: "systemd"`; missing `boot_mode` retains the fixture's `/sbin/init` behavior. Only these fixed boot modes are accepted, not arbitrary kernel arguments. Ubuntu boots `/sbin/box-init` as PID 1, mounts guest pseudo-filesystems, and waits at a host-vsock initialization barrier. It never executes workloads. Templates capture this state **before systemd starts**, avoiding systemd/D-Bus caching a shared template machine ID. On initialization the guest mixes 32 bytes of host entropy into the kernel pool with `RNDADDENTROPY`, explicitly reseeds the CRNG, sets the hostname (including `/etc/hostname`), writes `/etc/machine-id`, and creates a boot-local handoff marker. The bootstrap closes its listener before acknowledging, then execs systemd. The host waits up to 30 seconds for the initialized systemd-managed agent; initialization is never replayed to compensate for a lost response.
+
+The service requires the valid handoff marker and resumes initialized after a service restart. `/run` is recreated on cold boot, so a normal stop/start provisions again using the existing box ID; same-box checkpoint restore resumes captured service state. The prepared kernel boot ID is deliberately shared by clones and is not the per-instance identity. SSH keys, machine ID, cloud-init state, persistent journals, and the stored random seed are cleared in the image. Workloads and credentials added afterward must not be promoted into shared templates.
+
+On `ser7`, all six development-mode lifecycle tests passed against this Ubuntu image, including Python output, systemd-run service execution, systemd's D-Bus machine ID matching each independent clone, agent restart without reinitialization, disk persistence, memory restore, and crash recovery. The freshly rebuilt BusyBox fixture also passes the shared suite. Image checks confirmed preserved root/shadow ownership, empty initial machine ID, required binaries/service configuration, refusal to overwrite an image, and rejection of a wrong input checksum. On 2026-10-01 the privileged Ubuntu suite also passed all six tests in 54.51 seconds, followed by 92 successful isolated benchmark launches. The script exited 0 without remaining child cgroups, and a fresh process check found no Firecracker processes. The separate installation/results remain available for inspection. Earlier fixture timings must not be reported as Ubuntu results.
+
+Run the shared suite with `BOXD_TEST_IMAGE` set to the Ubuntu manifest; all other development/isolated test flags below are unchanged. For measurement, build a template from that same image and use `box benchmark` with 30 samples at concurrency 1 and 16 at concurrency 4. Benchmark JSON now records `profile` alongside cache assumptions, versions, per-sample phases/failures, and first-command latency. The 2 GiB disk's integrity scan, private copies, and post-resume systemd startup remain inside the measured path; this bootstrap template is not a snapshot of an already running systemd system.
+
 ## CLI contracts
 
 For brevity, commands below use `box`; the built executable is `target/release/box`. All commands accept `--state-dir PATH`; the parent directory must already exist. The default is `.boxd`. Existing state directories must be owned by the operator and have no group/other permissions. State and guest secrets are stored **unencrypted**.
@@ -114,6 +128,25 @@ All 184 launches succeeded. Sequential template disk-copy median fell from 41 to
 
 Raw results are retained locally as `.amp/in/artifacts/perf-{before,after}-{sequential,concurrent}.json`, not committed. No sub-10ms end-to-end claim is made. A disposable-file `FS_IOC_ENABLE_VERITY` probe returned `EOPNOTSUPP` on this host; kernel feature support alone does not mean the filesystem has verity enabled. No filesystem features were changed. A future host service should evaluate verified immutable artifact storage (for example, fs-verity where available) and reflink-capable disks before adding a custom memory pager. Metadata-only checksum caches are not implemented.
 
+### Ubuntu isolated launch measurements
+
+Measured 2026-10-01 on `ser7`: Ubuntu Minimal 24.04 release-20260905, Linux guest 6.1.155, Firecracker/jailer 1.17.0, release host/guest binaries, Ryzen 7 7840HS, 256 MiB / 1 vCPU, 2 GiB root disk, host ext4 sparse-copy fallback (`Copy`, not reflink). Every operation uses the isolated profile, private jail files, full artifact checksums, and first-command completion. OS page cache is uncontrolled; no cache eviction was performed. These are local samples, not an SLA or a comparison against boxd.sh.
+
+| Mode | Samples | Concurrency | p50 | p95 | p99 | Failures |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cold boot | 30 | 1 | 2,800 ms | 2,836 ms | 2,841 ms | 0 |
+| Template restore | 30 | 1 | 2,037 ms | 2,054 ms | 2,064 ms | 0 |
+| Cold boot | 16 | 4 | 3,374 ms | 3,452 ms | 3,452 ms | 0 |
+| Template restore | 16 | 4 | 2,553 ms | 3,900 ms | 3,900 ms | 0 |
+
+All 92 sample records, success counts, and nearest-rank percentiles were independently checked against the raw JSON in `.amp/in/artifacts/ubuntu-isolated-validation.log`. Each sample's phases sum to within 0.18 ms of its launch time, with first-exec latency accounted for separately. The original reports are also retained under `/var/lib/boxd-ubuntu-test/results/`.
+
+Sequential template phase medians: snapshot verification 1,081 ms; guest initialization/systemd startup 523 ms; private disk copy 208 ms; jail input staging/VMM startup 198 ms; VMM configuration/snapshot load 5 ms; guest readiness 2 ms; first exec 4 ms. Phase medians describe different samples and should not be summed into a percentile. Snapshot verification still scans the entire disk/state/memory, and the template intentionally predates systemd startup. These costs, rather than the snapshot-load API alone, dominate end-to-end readiness.
+
+At concurrency four, two slow restore samples spent 1,603–1,621 ms in allocation wait, and another spent 1,590 ms in VMM configuration/snapshot load. The cause of that stall is not established by these phase timings. Restore improved median latency but had a worse p95 than cold boot; with 16 samples, nearest-rank p95 and p99 both select the maximum. Do not infer a stable tail-latency SLA or attribute the difference versus BusyBox solely to jailer: image size, guest initialization, and isolation changed together.
+
+Known reporting caveat: nested `versions.isolated_ready` is `false` because the benchmark embeds `host::check()`, a generic probe with no isolation policy. It is not the launch profile. The reports explicitly record `profile: "isolated"`; the preceding policy-aware doctor check passed, lifecycle tests inspected actual jail/cgroup state, and each benchmark launch enforced the runtime isolation checks. The raw metadata has not been rewritten.
+
 ## Verification and remaining milestones
 
 The README lists exact commands. The normal suite checks protocol limits, guest initialization/execution/cancellation/output, API faults/timeouts, image integrity, file ownership/copy/locking, process identity, CLI rejection, and percentile calculation. Opt-in real-KVM tests verify:
@@ -125,7 +158,7 @@ The README lists exact commands. The normal suite checks protocol limits, guest 
 5. Per-request, non-overlapping phase timings during concurrent benchmarks and cleanup of measured boxes.
 6. A clone blocked in verification releases the allocation lock while its quota/reference remain durable, prevents snapshot deletion, and rejects corrupt contents without spawning a VMM.
 
-All six scenarios also pass with jailed launch and cgroup enforcement on the development runner. Still not implemented: Ubuntu/systemd/Docker image, public API, PostgreSQL operations/idempotency, network/SSH/preview access, web UI, SDK, fleet scheduling, or hosted tenancy. Privileged host setup and validation require separate approval.
+All six scenarios also pass with jailed launch and cgroup enforcement for both BusyBox and Ubuntu on the development runner. Still not implemented: Docker support, public API, PostgreSQL operations/idempotency, network/SSH/preview access, web UI, SDK, fleet scheduling, or hosted tenancy. Privileged host setup and validation require separate approval.
 
 ## Experimental isolated profile
 

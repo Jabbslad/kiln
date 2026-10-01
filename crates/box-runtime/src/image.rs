@@ -4,6 +4,14 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::{fs, io::Read};
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BootMode {
+    #[default]
+    Init,
+    Systemd,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -14,6 +22,21 @@ pub struct Manifest {
     pub rootfs_path: PathBuf,
     pub rootfs_sha256: String,
     pub agent_protocol_version: u32,
+    #[serde(default)]
+    pub boot_mode: BootMode,
+}
+
+impl Manifest {
+    pub fn boot_args(&self) -> &'static str {
+        match self.boot_mode {
+            BootMode::Init => {
+                "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/sbin/init quiet"
+            }
+            BootMode::Systemd => {
+                "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/sbin/box-init quiet"
+            }
+        }
+    }
 }
 
 pub fn sha256(path: &Path) -> Result<String> {
@@ -66,6 +89,23 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn boot_mode_is_explicit_and_legacy_images_keep_their_init() {
+        let value = serde_json::json!({
+            "schema_version":1,"architecture":"x86_64","kernel_path":"kernel",
+            "kernel_sha256":"abc","rootfs_path":"disk","rootfs_sha256":"def",
+            "agent_protocol_version":1
+        });
+        let legacy: Manifest = serde_json::from_value(value.clone()).unwrap();
+        assert!(legacy.boot_args().contains("init=/sbin/init"));
+        let mut ubuntu = value;
+        ubuntu["boot_mode"] = "systemd".into();
+        let manifest: Manifest = serde_json::from_value(ubuntu.clone()).unwrap();
+        assert!(manifest.boot_args().contains("init=/sbin/box-init"));
+        ubuntu["boot_mode"] = "init=/bin/sh".into();
+        assert!(serde_json::from_value::<Manifest>(ubuntu).is_err());
+    }
+
+    #[test]
     fn resolves_paths_and_rejects_corruption() {
         let dir = tempfile::tempdir().unwrap();
         // Independently known SHA-256 of the ASCII bytes "abc".
@@ -80,6 +120,7 @@ mod tests {
             rootfs_path: "disk".into(),
             rootfs_sha256: hash.into(),
             agent_protocol_version: 1,
+            boot_mode: BootMode::Init,
         };
         let path = dir.path().join("image.json");
         fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();

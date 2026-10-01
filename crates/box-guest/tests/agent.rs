@@ -12,6 +12,66 @@ fn exec(argv: &[&str]) -> Request {
 }
 
 #[tokio::test]
+async fn bootstrap_never_executes_workloads_and_service_requires_handoff() {
+    let init = Arc::new(FakeInitializer::default());
+    let agent = Agent::new(init.clone(), 2);
+    let root = tempfile::tempdir().unwrap();
+    let marker = root.path().join("initialized");
+    assert!(Agent::from_boot_marker(init.clone(), 2, &marker).is_err());
+    let request = InitializeRequest {
+        hostname: "box-17".into(),
+        machine_id: "17abcdef0123456789abcdef01234567".into(),
+        entropy: vec![19; 64],
+    };
+    assert!(matches!(
+        box_guest::bootstrap::handle(&agent, Request::Initialize(request.clone()), &marker).await,
+        Response::Initialized { .. }
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        format!("{}\n", request.machine_id)
+    );
+    assert!(matches!(
+        box_guest::bootstrap::handle(&agent, exec(&["/bin/true"]), &marker).await,
+        Response::Error(e) if e.code == ErrorCode::NotInitialized
+    ));
+    let service = Agent::from_boot_marker(init.clone(), 2, &marker).unwrap();
+    assert!(
+        matches!(service.handle(exec(&["/bin/sh", "-c", "exit 17"])).await,
+        Response::Exec(result) if result.exit_code == Some(17))
+    );
+    assert!(matches!(service.handle(Request::Initialize(request)).await,
+        Response::Error(e) if e.code == ErrorCode::AlreadyInitialized));
+    assert_eq!(init.calls(), 1);
+    std::fs::write(&marker, b"not-an-identity\n").unwrap();
+    assert!(Agent::from_boot_marker(init, 2, &marker).is_err());
+}
+
+#[tokio::test]
+async fn failed_handoff_never_advertises_a_ready_guest() {
+    let agent = Agent::new(Arc::new(FakeInitializer::default()), 1);
+    let root = tempfile::tempdir().unwrap();
+    let marker = root.path().join("absent/marker");
+    let request = Request::Initialize(InitializeRequest {
+        hostname: "box-3".into(),
+        machine_id: "123456789abcdef0123456789abcdef0".into(),
+        entropy: vec![3; 32],
+    });
+    assert!(
+        matches!(box_guest::bootstrap::handle(&agent, request, &marker).await,
+        Response::Error(e) if e.code == ErrorCode::InitializationFailed)
+    );
+    assert!(matches!(
+        box_guest::bootstrap::handle(&agent, Request::Hello { version: 1 }, &marker).await,
+        Response::Hello {
+            initialized: false,
+            ..
+        }
+    ));
+    assert!(!marker.exists());
+}
+
+#[tokio::test]
 async fn initialization_is_a_one_way_barrier() {
     let init = Arc::new(FakeInitializer::default());
     let agent = Agent::new(init.clone(), 2);

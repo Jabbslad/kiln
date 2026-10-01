@@ -110,7 +110,7 @@ impl Runtime {
             );
         }
         Ok(
-            json!({"schema_version":1,"samples_per_mode":samples,"concurrency":concurrency,"cache_condition":"uncontrolled OS page cache; all checksums verified on every launch; no cache eviction", "build_profile":if cfg!(debug_assertions) {"debug"} else {"release"},"clock_scope":"runtime request through first successful guest command; excludes benchmark startup and cleanup", "host":host::fingerprint()?,"versions":host::check(),"image":image,"template":template,"results":groups}),
+            json!({"schema_version":1,"profile":if self.is_isolated() {"isolated"} else {"development"},"samples_per_mode":samples,"concurrency":concurrency,"cache_condition":"uncontrolled OS page cache; all checksums verified on every launch; no cache eviction", "build_profile":if cfg!(debug_assertions) {"debug"} else {"release"},"clock_scope":"runtime request through first successful guest command; excludes benchmark startup and cleanup", "host":host::fingerprint()?,"versions":host::check(),"image":image,"template":template,"results":groups}),
         )
     }
 }

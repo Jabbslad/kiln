@@ -709,7 +709,13 @@ impl Runtime {
                     json!({"vcpu_count":record.vcpus,"mem_size_mib":record.memory_mib,"smt":false}),
                 )
                 .await?;
-            client.request("PUT", "/boot-source", json!({"kernel_image_path":kernel,"boot_args":"console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/sbin/init quiet"})).await?;
+            client
+                .request(
+                    "PUT",
+                    "/boot-source",
+                    json!({"kernel_image_path":kernel,"boot_args":record.image.boot_args()}),
+                )
+                .await?;
             client.request("PUT", "/drives/rootfs", json!({"drive_id":"rootfs","path_on_host":"disk.ext4","is_root_device":true,"is_read_only":false})).await?;
             client
                 .request(
@@ -773,6 +779,36 @@ impl Runtime {
             return Err(Error::Invalid(
                 "unexpected guest initialization response".into(),
             ));
+        }
+        if initialize && record.image.boot_mode == image::BootMode::Systemd {
+            // Initialize acknowledges identity provisioning, not systemd startup.
+            // The bootstrap closes its listener before that acknowledgement.
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                if matches!(
+                    self.guest(
+                        record,
+                        &Request::Hello {
+                            version: PROTOCOL_VERSION
+                        },
+                        Duration::from_secs(1)
+                    )
+                    .await,
+                    Ok(Response::Hello {
+                        version: PROTOCOL_VERSION,
+                        initialized: true
+                    })
+                ) {
+                    break;
+                }
+                if Instant::now() >= deadline || process::identify(pid).is_err() {
+                    return Err(Error::Invalid(format!(
+                        "systemd guest agent handoff failed; see {}",
+                        log.display()
+                    )));
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
         }
         record.state = "running".into();
         Ok(())

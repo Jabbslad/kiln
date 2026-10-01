@@ -8,8 +8,17 @@ use tokio_vsock::{VsockAddr, VsockListener};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    let agent = match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
+        [] => Agent::new(Arc::new(SystemInitializer), 8),
+        [flag] if flag == "--systemd-service" => Agent::from_boot_marker(
+            Arc::new(SystemInitializer),
+            8,
+            std::path::Path::new(box_guest::bootstrap::MARKER),
+        )?,
+        _ => return Err(io::Error::other("usage: box-guest [--systemd-service]")),
+    };
     let listener = VsockListener::bind(VsockAddr::new(libc::VMADDR_CID_ANY, VSOCK_PORT))?;
-    let agent = Arc::new(Agent::new(Arc::new(SystemInitializer), 8));
+    let agent = Arc::new(agent);
     let connections = Arc::new(tokio::sync::Semaphore::new(32));
     loop {
         let (stream, peer) = listener.accept().await?;

@@ -525,6 +525,96 @@ fn prepared_clones_have_private_identity_disks_and_lifetimes() {
             success(state.path(), &["exec", id, "--", "/bin/hostname"])["stdout"],
             format!("box-{}\n", &id[..12])
         );
+        if a["image"]["boot_mode"] == "systemd" {
+            let script = "set -e; test \"$(cat /proc/1/comm)\" = systemd; . /etc/os-release; test \"$ID:$VERSION_ID\" = ubuntu:24.04; systemd-run --quiet --wait --pipe /bin/cat /etc/machine-id; python3 -c 'print(sum([17, 93, -8]))'";
+            let result = success(
+                state.path(),
+                &[
+                    "exec",
+                    id,
+                    "--timeout-ms",
+                    "10000",
+                    "--",
+                    "/bin/sh",
+                    "-c",
+                    script,
+                ],
+            );
+            assert_eq!(result["exit_code"], 0, "{result}");
+            assert_eq!(result["stdout"], format!("{id}\n102\n"));
+            let result = success(
+                state.path(),
+                &[
+                    "exec",
+                    id,
+                    "--",
+                    "/usr/bin/busctl",
+                    "--system",
+                    "call",
+                    "org.freedesktop.systemd1",
+                    "/org/freedesktop/systemd1",
+                    "org.freedesktop.DBus.Peer",
+                    "GetMachineId",
+                ],
+            );
+            assert_eq!(result["exit_code"], 0, "{result}");
+            assert_eq!(
+                result["stdout"],
+                format!("s \"{id}\"\n"),
+                "systemd must not cache the template identity"
+            );
+        }
+    }
+    if a["image"]["boot_mode"] == "systemd" {
+        let args = [
+            "exec",
+            aid,
+            "--",
+            "/bin/systemctl",
+            "show",
+            "--property=MainPID",
+            "--value",
+            "box-guest.service",
+        ];
+        let before = success(state.path(), &args)["stdout"].clone();
+        let restart = success(
+            state.path(),
+            &[
+                "exec",
+                aid,
+                "--",
+                "/usr/bin/systemd-run",
+                "--quiet",
+                "--on-active=1s",
+                "/bin/systemctl",
+                "restart",
+                "box-guest.service",
+            ],
+        );
+        assert_eq!(restart["exit_code"], 0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let output = invoke(state.path(), &args);
+            if output.status.success() {
+                let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+                if value["exit_code"] == 0 && value["stdout"] != before && value["stdout"] != "0\n"
+                {
+                    break;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "systemd agent did not restart ready"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(
+            success(
+                state.path(),
+                &["exec", aid, "--", "/bin/cat", "/etc/machine-id"]
+            )["stdout"],
+            format!("{aid}\n")
+        );
     }
     let arandom = success(
         state.path(),
@@ -709,6 +799,14 @@ fn benchmark_reports_nonoverlapping_phases_per_concurrent_launch() {
             "2",
             "--allow-unsafe-development",
         ],
+    );
+    assert_eq!(
+        report["profile"],
+        if template["isolated"] == true {
+            "isolated"
+        } else {
+            "development"
+        }
     );
     for mode in ["cold_boot", "template_restore"] {
         let samples = report["results"][mode]["samples"].as_array().unwrap();
