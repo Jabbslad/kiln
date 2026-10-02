@@ -155,4 +155,4 @@ jobs:
           test "$(gh api "repos/$GH_REPO" --jq .private)" = true
           (cd dist && sha256sum -c ./*.sha256)
           gh release create "$TAG" dist/* --verify-tag --draft --title "$TAG" \
-            --notes 'Private pilot. Native client tests and Linux build checks passed. The installer requires Ubuntu 24.04 x86-64/KVM. No deployment was performed. Review the release and real-host validation before publishing. Binaries are not signed or notarized.'
+            --notes 'Private pilot. Native client tests and Linux build checks passed. The installer requires Ubuntu 24.04 or 26.04 x86-64/KVM. No deployment was performed. Review the release and real-host validation before publishing. Binaries are not signed or notarized.'

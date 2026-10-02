@@ -10,13 +10,12 @@ release or real server installation has succeeded. Check the Actions run for the
 version you download. macOS binaries are not signed/notarized, and Windows
 binaries are not Authenticode-signed.
 
-**Ubuntu 26.04 delivery status:** the source installers now admit Ubuntu 24.04
-and 26.04 x86-64 while retaining all capability and fresh-install checks. The
-corrected provisioner passed read-only preflight on `ser7` with the release image
-and its private IPv4 address; full provisioning/reboot remains unverified. The
-published `v0.1.0` package and public bootstrap still require Ubuntu 24.04. A
-corrected private server package and updated pinned bootstrap must be published
-before the curl command works on 26.04; changing only the shell gate is not enough.
+**Ubuntu host support:** starting with `v0.1.1`, both installer layers admit Ubuntu
+24.04 and 26.04 x86-64 while retaining capability and fresh-install checks. The
+provisioner passed read-only preflight on `ser7` with the release image and its
+private IPv4 address; full provisioning/reboot remains unverified. The older
+`v0.1.0` server package accepts only Ubuntu 24.04; changing its shell gate alone
+does not add support for 26.04. The guest image remains Ubuntu 24.04 on either host.
 
 ## One-command installation
 
@@ -26,14 +25,14 @@ On a macOS or supported Linux laptop, run in a terminal:
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh
 ```
 
-On a dedicated **Ubuntu 24.04 x86-64/KVM** server:
+On a dedicated **Ubuntu 24.04 or 26.04 x86-64/KVM** server:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh -s -- server
 ```
 
 Only the bootstrap is public. It prompts for a GitHub token to download pinned
-private `v0.1.0` release assets. Create a short-lived
+private release assets. Create a short-lived
 [fine-grained token](https://github.com/settings/personal-access-tokens/new),
 select owner `Jabbslad`, repository `boxd`, and repository permission
 **Contents: Read-only**. Paste it into the hidden terminal prompt, not the command
@@ -46,7 +45,7 @@ The server bootstrap prompts for its private IPv4 address and permission to
 install Ubuntu system packages (including Python) through sudo, then invokes the
 existing installer. You do not install dependencies or invoke Python yourself.
 The server still needs the resources and LAN/VPN connectivity described below;
-this does not add support for Ubuntu 26.04, containers or non-KVM hosts.
+containers and non-KVM hosts are not supported.
 
 The script checks archive digests before extraction and sends your GitHub token
 only to `api.github.com`. It removes temporary credentials on normal exit and
@@ -64,7 +63,7 @@ administrator credentials automatically.
 
 Install [GitHub CLI](https://cli.github.com/) and run `gh auth login`. Use an
 account with access to the private repository. Set `REPO` to its `OWNER/NAME` and
-`VERSION` to a published release tag (for example `v0.1.0`). A maintainer can also
+`VERSION` to a published release tag (for example `v0.1.1`). A maintainer can also
 download a draft; other readers need the release published within the private
 repository first. Publishing a release **does not** make the repository public.
 
@@ -81,7 +80,7 @@ For macOS/Linux, in a new download directory:
 
 ```sh
 REPO=OWNER/NAME
-VERSION=v0.1.0
+VERSION=v0.1.1
 TARGET=aarch64-apple-darwin
 gh release download "$VERSION" --repo "$REPO" \
   --pattern "boxctl-$VERSION-$TARGET.tar.gz*"
@@ -104,11 +103,11 @@ implemented yet. Do not paste a GitHub token into a URL or installer command.
 
 ## Server requirements and manual installation
 
-Start with a **dedicated Ubuntu 24.04 x86-64 systemd host** with usable `/dev/kvm`,
+Start with a **dedicated Ubuntu 24.04 or 26.04 x86-64 systemd host** with usable `/dev/kvm`,
 cgroup v2, at least 6 GiB currently available RAM and 24 GiB free on `/var/lib`
 after extracting the package. A 16 GiB+ host is recommended. Allow additional
 temporary space for the downloaded archive and extracted image (about 3 GiB).
-The shell bootstrap manages Python 3.12, OpenSSL, curl, CA certificates, tar and
+The shell bootstrap manages the system Python 3, OpenSSL, curl, CA certificates, tar and
 Ubuntu account tools. For manual installation, supply these dependencies yourself;
 the underlying Python provisioner only checks them.
 It downloads checksum-pinned Firecracker/jailer 1.17.0 from GitHub. The package
@@ -124,7 +123,7 @@ files to the server). Do not copy your GitHub credentials into the service:
 
 ```sh
 REPO=OWNER/NAME
-VERSION=v0.1.0
+VERSION=v0.1.1
 PACKAGE="boxd-server-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
 gh release download "$VERSION" --repo "$REPO" --pattern "$PACKAGE*"
 sha256sum -c "$PACKAGE.sha256"
