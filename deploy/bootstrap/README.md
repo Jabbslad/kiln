@@ -104,9 +104,16 @@ Windows supports management commands only. Existing servers/templates need a
 controlled update; reinstalling the client alone does not update guest images.
 Server certificates need manual renewal within one year.
 
+Version 0.2.1 fixes login readiness in newly built guest images, removing the
+stale "System is booting up" warning. Existing boxes need a guest-side repair
+or migration; a client upgrade cannot change their disks. Networkless boxes
+also cannot gain a virtual NIC in place. Internet access requires explicitly
+provisioned network-enabled replacements, with existing data preserved during
+a reviewed migration.
+
 ## Trust and maintenance
 
-The bootstrap pins v0.2.0 asset IDs and SHA-256 digests, validates archive contents,
+The bootstrap pins v0.2.1 asset IDs and SHA-256 digests, validates archive contents,
 and authenticates only to GitHub's API. Redirected asset requests do not receive
 the GitHub token. Temporary secrets are removed on normal exit and handled
 signals. A checksum protects integrity under trust in this bootstrap publisher;

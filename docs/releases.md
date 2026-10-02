@@ -41,7 +41,7 @@ is required on the laptop. GitHub authentication is unrelated to boxd enrollment
 
 **v0.2.0 guest-access additions:** packages include interactive SSH,
 SFTP, editor SSH configuration, and optional isolated guest IPv4 egress. The
-public installer pins v0.2.0. These features require the new client, server,
+public installer pins v0.2.1. These features require the new client, server,
 and updated Ubuntu guest agent. Existing templates/boxes are not
 upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
 management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
