@@ -68,7 +68,7 @@ filtered IPv4 egress by setting the host's uplink interface (replace `enp1s0`):
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | BOXD_NETWORK_UPLINK=enp1s0 sh -s -- server
 ```
 
-This additionally installs iproute2/nftables and, after confirmation, enables
+This additionally installs iproute2/nftables/util-linux and, after confirmation, enables
 forwarding, a guest bridge, NAT/filter rules and a boot service. Host/LAN/metadata
 and peer-guest access are blocked. Review coexistence with any host firewall
 manager. This option cannot retrofit an existing immutable runtime store.
@@ -111,9 +111,13 @@ also cannot gain a virtual NIC in place. Internet access requires explicitly
 provisioned network-enabled replacements, with existing data preserved during
 a reviewed migration.
 
+Version 0.2.2 fixes network-enabled VM launches on hosts where entering the
+network namespace previously hid the cgroup hierarchy from Firecracker jailer.
+It remains compatible with the 0.2.1 guest image.
+
 ## Trust and maintenance
 
-The bootstrap pins v0.2.1 asset IDs and SHA-256 digests, validates archive contents,
+The bootstrap pins v0.2.2 asset IDs and SHA-256 digests, validates archive contents,
 and authenticates only to GitHub's API. Redirected asset requests do not receive
 the GitHub token. Temporary secrets are removed on normal exit and handled
 signals. A checksum protects integrity under trust in this bootstrap publisher;

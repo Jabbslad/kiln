@@ -20,10 +20,10 @@ assets() {
     # Updated only after reviewing the private release and its checksums.
     cat <<'ASSETS'
 # BEGIN RELEASE ASSETS
-client:x86_64-unknown-linux-gnu 606663267 49a90cf7ad0e8661f4e2833e4f0e62487be08fd6487b56a6edbf03bff4414c5d
-client:x86_64-apple-darwin 606663253 068f020d9732fc453984508f5492784a73b6143134d9f1019cefe3cb4ce97a28
-client:aarch64-apple-darwin 606663254 9895546ec65e8c6abed03745d9b41f12147a59f414f3be0f9f2c6a7cd1f425f1
-server:x86_64-unknown-linux-gnu 606663275 1985ae4a06ff9178c1a55ee305cfe48f4512b665c882498038b5f031b3db1385
+client:x86_64-unknown-linux-gnu 606701398 f51e2abd251dcbfca23ae8ed2789864eb0cb02e2f4a822e67aa6b7cd1f9a5db0
+client:x86_64-apple-darwin 606701383 c95e27006c1e2e2d9d98ac40b766ad44d4160e680e7971bc01edbacf7e4c36e2
+client:aarch64-apple-darwin 606701381 5140041033a1a2437811c3920599d24e58bcc5b8a1529d58aa77c17128070561
+server:x86_64-unknown-linux-gnu 606701399 1f2ac59e496949471ac289b65063ca3d23c3132fa14ea0179ea98b84c284bb69
 # END RELEASE ASSETS
 ASSETS
 }
@@ -233,7 +233,7 @@ install_server() {
 }
 
 main() {
-    version=0.2.1
+    version=0.2.2
     work='' staged='' backup_staged='' tty_state='' lock='' upgrade=false
     trap cleanup EXIT
     trap 'exit 130' INT

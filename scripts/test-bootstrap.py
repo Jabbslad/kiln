@@ -134,7 +134,7 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
 
     def package(self, members=None, server=False):
         if members is None:
-            members = {"boxctl": b"#!/bin/sh\necho 'box-client 0.2.1'\n"}
+            members = {"boxctl": b"#!/bin/sh\necho 'box-client 0.2.2'\n"}
         if server:
             members = dict.fromkeys(SERVER_FILES, b"fixture\n")
             members["install.py"] = (
@@ -264,7 +264,7 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
                 binary = self.root / "home/.local/bin/boxctl"
                 self.assertEqual(
                     subprocess.check_output([binary, "--version"], text=True),
-                    "box-client 0.2.1\n",
+                    "box-client 0.2.2\n",
                 )
                 request = self.requests()[-1]
                 self.assertTrue(request["private_config"])
@@ -357,7 +357,7 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
         profile.write_text("preserve profile and credential references")
         code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"))
         self.assertEqual(code, 0, out)
-        self.assertEqual(subprocess.check_output([binary, "--version"], text=True), "box-client 0.2.1\n")
+        self.assertEqual(subprocess.check_output([binary, "--version"], text=True), "box-client 0.2.2\n")
         self.assertEqual(binary.with_name("boxctl.previous").read_bytes(), original)
         self.assertEqual(profile.read_text(), "preserve profile and credential references")
         self.assertEqual(sorted(p.name for p in binary.parent.iterdir()), ["boxctl", "boxctl.previous"])
