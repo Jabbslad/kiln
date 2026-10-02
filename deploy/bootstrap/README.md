@@ -24,7 +24,7 @@ choose owner **Jabbslad**, repository **boxd**, permission **Contents: Read-only
 Paste it at the hidden prompt, never into the command itself. You can revoke it
 after installation. Tokens are not saved in the installed application.
 
-## Server: dedicated Ubuntu 24.04 x86-64/KVM
+## Server: dedicated Ubuntu 24.04 or 26.04 x86-64/KVM
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh -s -- server
@@ -32,7 +32,8 @@ curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.
 
 Use a systemd host with usable `/dev/kvm`, cgroup v2, 6 GiB currently available
 RAM and 24 GiB free on `/var/lib`, plus about 3 GiB temporary extraction space.
-16 GiB+ total RAM is recommended. Ubuntu 26.04 and containers are not supported.
+16 GiB+ total RAM is recommended. Containers are not supported. The guest image
+remains Ubuntu 24.04 regardless of the supported host Ubuntu version.
 
 The script downloads and verifies the package, prompts for a stable private/VPN
 IPv4 address assigned to the server, and requests permission to install required
@@ -68,7 +69,7 @@ Server certificates need manual renewal within one year.
 
 ## Trust and maintenance
 
-The bootstrap pins v0.1.0 asset IDs and SHA-256 digests, validates archive contents,
+The bootstrap pins v0.1.1 asset IDs and SHA-256 digests, validates archive contents,
 and authenticates only to GitHub's API. Redirected asset requests do not receive
 the GitHub token. Temporary secrets are removed on normal exit and handled
 signals. A checksum protects integrity under trust in this bootstrap publisher;

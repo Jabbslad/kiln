@@ -134,7 +134,7 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
 
     def package(self, members=None, server=False):
         if members is None:
-            members = {"boxctl": b"#!/bin/sh\necho 'box-client 0.1.0'\n"}
+            members = {"boxctl": b"#!/bin/sh\necho 'box-client 0.1.1'\n"}
         if server:
             members = dict.fromkeys(SERVER_FILES, b"fixture\n")
             members["install.py"] = (
@@ -264,7 +264,7 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
                 binary = self.root / "home/.local/bin/boxctl"
                 self.assertEqual(
                     subprocess.check_output([binary, "--version"], text=True),
-                    "box-client 0.1.0\n",
+                    "box-client 0.1.1\n",
                 )
                 request = self.requests()[-1]
                 self.assertTrue(request["private_config"])
