@@ -20,18 +20,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TOKEN = "github_pat_test_not_a_real_credential"
 SERVER_FILES = [
-    "bin/box",
-    "bin/boxctl",
-    "bin/boxd-host",
-    "bin/boxd-api",
+    "bin/kiln-runtime",
+    "bin/kiln",
+    "bin/kiln-host",
+    "bin/kiln-api",
     "install.py",
     "fetch-firecracker.sh",
     "README.md",
     "docs/releases.md",
     "docs/remote-client.md",
     "docs/runtime.md",
-    "deploy/boxd-host.service",
-    "deploy/boxd-api.service",
+    "deploy/kiln-host.service",
+    "deploy/kiln-api.service",
     "deploy/host.example.json",
     "image/image.json",
     "image/inputs.json",
@@ -90,7 +90,7 @@ if '--config' in args:
     record['private_config'] = config.stat().st_mode & 0o777 == 0o600
     record['has_auth'] = 'Authorization: Bearer github_pat_test_not_a_real_credential' in config.read_text()
     if record['has_auth']:
-        assert args[-1].startswith('https://api.github.com/repos/Jabbslad/boxd/releases/assets/')
+        assert args[-1].startswith('https://api.github.com/repos/Jabbslad/kiln/releases/assets/')
     else:
         assert config.read_text().startswith('url = "https://release-assets.githubusercontent.com/')
         assert 'Authorization' not in config.read_text()
@@ -134,7 +134,7 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
 
     def package(self, members=None, server=False):
         if members is None:
-            members = {"boxctl": b"#!/bin/sh\necho 'box-client 0.2.2'\n"}
+            members = {"kiln": b"#!/bin/sh\necho 'kiln 0.3.0'\n"}
         if server:
             members = dict.fromkeys(SERVER_FILES, b"fixture\n")
             members["install.py"] = (
@@ -261,10 +261,10 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
                 self.env.update(OS=system, ARCH=arch)
                 code, out = self.run_bootstrap(self.package())
                 self.assertEqual(code, 0, out)
-                binary = self.root / "home/.local/bin/boxctl"
+                binary = self.root / "home/.local/bin/kiln"
                 self.assertEqual(
                     subprocess.check_output([binary, "--version"], text=True),
-                    "box-client 0.2.2\n",
+                    "kiln 0.3.0\n",
                 )
                 request = self.requests()[-1]
                 self.assertTrue(request["private_config"])
@@ -290,29 +290,29 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
         code, out = self.run_bootstrap("0" * 64)
         self.assertNotEqual(code, 0, out)
         self.assertIn("checksum", out.lower())
-        self.assertFalse((self.root / "home/.local/bin/boxctl").exists())
+        self.assertFalse((self.root / "home/.local/bin/kiln").exists())
 
     def test_http_error_never_installs(self):
         self.env["HTTP"] = "404"
         code, out = self.run_bootstrap(self.package())
         self.assertNotEqual(code, 0, out)
         self.assertIn("404", out)
-        self.assertFalse((self.root / "home/.local/bin/boxctl").exists())
+        self.assertFalse((self.root / "home/.local/bin/kiln").exists())
 
     def test_unsafe_archives_are_rejected_even_with_correct_digest(self):
         for members in [
             {"../escaped": b"bad"},
-            {"boxctl": ("/bin/sh",)},
-            {"boxctl": b"ok", "extra": b"bad"},
+            {"kiln": ("/bin/sh",)},
+            {"kiln": b"ok", "extra": b"bad"},
         ]:
             with self.subTest(members=members):
                 code, out = self.run_bootstrap(self.package(members))
                 self.assertNotEqual(code, 0, out)
                 self.assertIn("archive", out.lower())
-                self.assertFalse((self.root / "home/.local/bin/boxctl").exists())
+                self.assertFalse((self.root / "home/.local/bin/kiln").exists())
 
     def test_existing_client_is_preserved_without_downloading(self):
-        binary = self.root / "home/.local/bin/boxctl"
+        binary = self.root / "home/.local/bin/kiln"
         binary.parent.mkdir(parents=True)
         binary.write_text("preserve")
         code, out = self.run_bootstrap(self.package(), answers=[])
@@ -343,44 +343,44 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
                 self.env = old
 
     def old_client(self):
-        binary = self.root / "home/.local/bin/boxctl"
+        binary = self.root / "home/.local/bin/kiln"
         binary.parent.mkdir(parents=True, exist_ok=True)
-        binary.write_text("#!/bin/sh\necho 'box-client 0.1.1'\n")
+        binary.write_text("#!/bin/sh\necho 'kiln 0.1.1'\n")
         binary.chmod(0o755)
         return binary
 
     def test_explicit_upgrade_replaces_client_and_keeps_previous_and_profiles(self):
         binary = self.old_client()
         original = binary.read_bytes()
-        profile = self.root / "home/.config/boxd/profiles.json"
+        profile = self.root / "home/.config/kiln/profiles.json"
         profile.parent.mkdir(parents=True)
         profile.write_text("preserve profile and credential references")
         code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"))
         self.assertEqual(code, 0, out)
-        self.assertEqual(subprocess.check_output([binary, "--version"], text=True), "box-client 0.2.2\n")
-        self.assertEqual(binary.with_name("boxctl.previous").read_bytes(), original)
+        self.assertEqual(subprocess.check_output([binary, "--version"], text=True), "kiln 0.3.0\n")
+        self.assertEqual(binary.with_name("kiln.previous").read_bytes(), original)
         self.assertEqual(profile.read_text(), "preserve profile and credential references")
-        self.assertEqual(sorted(p.name for p in binary.parent.iterdir()), ["boxctl", "boxctl.previous"])
+        self.assertEqual(sorted(p.name for p in binary.parent.iterdir()), ["kiln", "kiln.previous"])
 
     def test_failed_upgrade_preserves_current_and_previous_clients(self):
         binary = self.old_client()
         original = binary.read_bytes()
-        previous = binary.with_name("boxctl.previous")
+        previous = binary.with_name("kiln.previous")
         previous.write_bytes(b"older backup")
         for failure in ("checksum", "version", "HTTP"):
             with self.subTest(failure=failure):
                 self.env["HTTP"] = "403" if failure == "HTTP" else "200"
-                digest = self.package({"boxctl": b"#!/bin/sh\necho wrong-version\n"}) if failure == "version" else self.package()
+                digest = self.package({"kiln": b"#!/bin/sh\necho wrong-version\n"}) if failure == "version" else self.package()
                 code, out = self.run_bootstrap("0" * 64 if failure == "checksum" else digest, args=("client", "--upgrade"))
                 self.assertNotEqual(code, 0, out)
                 self.assertIn(failure.lower(), out.lower())
                 self.assertEqual(binary.read_bytes(), original)
                 self.assertEqual(previous.read_bytes(), b"older backup")
-                self.assertFalse((binary.parent / ".boxctl-install.lock").exists())
+                self.assertFalse((binary.parent / ".kiln-install.lock").exists())
 
     def test_upgrade_rejects_symlinks_and_busy_lock_before_downloading(self):
         binary = self.old_client()
-        for unsafe in (binary, binary.with_name("boxctl.previous")):
+        for unsafe in (binary, binary.with_name("kiln.previous")):
             if unsafe.exists():
                 unsafe.unlink()
             unsafe.symlink_to("missing-target")
@@ -391,7 +391,7 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
             self.assertEqual(self.requests(), [])
             unsafe.unlink()
             self.old_client()
-        lock = binary.parent / ".boxctl-install.lock"
+        lock = binary.parent / ".kiln-install.lock"
         lock.mkdir()
         code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"), answers=[])
         self.assertNotEqual(code, 0, out)
@@ -403,13 +403,13 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
         binary = self.old_client()
         original = binary.read_bytes()
         real_mv = subprocess.check_output(["sh", "-c", "command -v mv"], text=True).strip()
-        self.executable("mv", f'#!/bin/sh\nfor arg do last=$arg; done\ncase "$last" in */boxctl) exit 1;; esac\nexec "{real_mv}" "$@"\n')
+        self.executable("mv", f'#!/bin/sh\nfor arg do last=$arg; done\ncase "$last" in */kiln) exit 1;; esac\nexec "{real_mv}" "$@"\n')
         code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"))
         self.assertNotEqual(code, 0, out)
         self.assertIn("replace", out.lower())
         self.assertEqual(binary.read_bytes(), original)
-        self.assertEqual(binary.with_name("boxctl.previous").read_bytes(), original)
-        self.assertEqual(sorted(p.name for p in binary.parent.iterdir()), ["boxctl", "boxctl.previous"])
+        self.assertEqual(binary.with_name("kiln.previous").read_bytes(), original)
+        self.assertEqual(sorted(p.name for p in binary.parent.iterdir()), ["kiln", "kiln.previous"])
 
     def test_cancelled_upgrade_preserves_client_and_releases_lock(self):
         binary = self.old_client()
@@ -417,7 +417,7 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
         code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"), interrupt=True)
         self.assertNotEqual(code, 0, out)
         self.assertEqual(binary.read_bytes(), original)
-        self.assertEqual(sorted(p.name for p in binary.parent.iterdir()), ["boxctl"])
+        self.assertEqual(sorted(p.name for p in binary.parent.iterdir()), ["kiln"])
         self.assertEqual(self.requests(), [])
 
     def test_upgrade_flag_is_client_only_and_requires_existing_file(self):
@@ -482,8 +482,8 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
         self.test_server_dependency_and_provisioner_confirmation_use_tty()
 
     def test_network_opt_in_requires_capable_package_and_passes_explicit_uplink(self):
-        self.env["BOXD_NETWORK_UPLINK"] = "eth0"
-        members = dict.fromkeys([*SERVER_FILES, "bin/boxd-network"], b"fixture\n")
+        self.env["KILN_NETWORK_UPLINK"] = "eth0"
+        members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
         members["install.py"] = (
             b"import sys\nassert sys.argv[1:] == ['--address', '192.168.50.7', '--apply', '--network-uplink', 'eth0']\nassert input('Type INSTALL: ') == 'INSTALL'\n"
         )
@@ -526,11 +526,11 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
 
     def test_wrong_binary_version_is_not_installed(self):
         code, out = self.run_bootstrap(
-            self.package({"boxctl": b"#!/bin/sh\necho 'box-client 9.9.9'\n"})
+            self.package({"kiln": b"#!/bin/sh\necho 'kiln 9.9.9'\n"})
         )
         self.assertNotEqual(code, 0, out)
         self.assertIn("version", out)
-        self.assertFalse((self.root / "home/.local/bin/boxctl").exists())
+        self.assertFalse((self.root / "home/.local/bin/kiln").exists())
 
     def test_token_config_injection_is_rejected(self):
         code, out = self.run_bootstrap(

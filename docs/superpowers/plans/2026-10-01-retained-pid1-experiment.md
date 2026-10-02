@@ -9,7 +9,7 @@ then compare an opt-in retained-PID1 mode without weakening the default.
   the public preparation machine ID, including cold boots/restarts. Host box IDs
   and hostnames remain unique. Existing modes and serialized snapshots keep
   their meanings; no protocol change.
-- Only template preparation adds `boxd.retain_pid1=1`. The guest rejects a
+- Only template preparation adds `kiln.retain_pid1=1`. The guest rejects a
   mismatched initialization identity before mutation. Retained PID1 uses
   daemon-reload rather than reexec; stopped daemons still start fresh.
 - Preserve quiescence/credential/FD admission, private writable disks, checked
@@ -24,7 +24,7 @@ then compare an opt-in retained-PID1 mode without weakening the default.
 ## Execution
 
 - [x] Add failing manifest/cold-boot and guest identity-policy tests; run targeted
-  `cargo test -p box-runtime image::tests` and `cargo test -p box-guest warm::tests`.
+  `cargo test -p kiln-runtime image::tests` and `cargo test -p kiln-guest warm::tests`.
 - [x] Implement the mode in image/runtime/builder and guest warm reset. Record
   audit, provisioning, unmask, manager refresh, daemon startup and identity checks.
   Run unit tests, formatter and Clippy.
@@ -54,8 +54,8 @@ then compare an opt-in retained-PID1 mode without weakening the default.
   unknown, and its failed log remains separate from successful benchmark data.
 - Measurements and independent validation: `.amp/in/artifacts/retained-pid1-*`.
   New images: `images/output/ubuntu-warm-{profile,shared}` with matching pinned
-  source/builder/binary hashes. Isolated production CLI:
-  `/opt/boxd-overlay-test/box-retained` (no fault injection).
+  source/builder/binary hashes. The isolated production CLI remains in the
+  pre-rename overlay validation installation (no fault injection).
 - Disposable boxes/templates removed; no Firecracker processes, test child
   cgroups, snapshot mappings or task-owned loop mappings remained. Pool unmounted.
   Final images/binaries and evidence retained. No vendor resources were launched.

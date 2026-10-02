@@ -1,10 +1,14 @@
 # Single-host runtime
 
+Commands and configuration names use Kiln v0.3.0. Historical measurements below
+predate the rename; their retained evidence and installations have not been moved
+or regenerated. Rebuild guest images/templates before using the renamed runtime.
+
 ## Safety and prerequisites
 
 This is a trusted-workload prototype. The default development profile runs Firecracker as the invoking user with its normal seccomp policy, **without jailer, per-VM host cgroups, or guest networking**. Do not run that profile as root. Guest vCPU/RAM configuration and local inventory quotas are not complete host resource isolation. The experimental isolated profile below passes the privileged lifecycle suite on the development runner with the trusted fixture. Neither profile is advertised as production-ready or approved for customer/adversarial workloads.
 
-Linux x86_64, accessible KVM, cgroup v2, and matching Firecracker/jailer **1.17.0** binaries on `PATH` are required. `box doctor` is read-only and reports `isolated_ready: false` unless an explicit, valid `--isolation-config` passes privileged preflight. That flag reports configuration readiness, not a completed VM isolation test. There is no silent unjailed fallback.
+Linux x86_64, accessible KVM, cgroup v2, and matching Firecracker/jailer **1.17.0** binaries on `PATH` are required. `kiln-runtime doctor` is read-only and reports `isolated_ready: false` unless an explicit, valid `--isolation-config` passes privileged preflight. That flag reports configuration readiness, not a completed VM isolation test. There is no silent unjailed fallback.
 
 The runner originally had 1.16.0. Crash testing reproduced its permanent vsock failure after bare pause/resume. [Firecracker 1.17.0 fixes this](https://github.com/firecracker-microvm/firecracker/releases/tag/v1.17.0) in PR #6100. `scripts/fetch-firecracker.sh` pins and verifies the official x86_64 release archive SHA-256 and installs into an explicitly selected local directory. No system binaries, services, users, cgroups, firewall rules, or filesystems are provisioned automatically.
 
@@ -12,17 +16,17 @@ The fixture uses a checksum-pinned Linux 6.1.155 kernel from Firecracker's v1.15
 
 ## Ubuntu image contract
 
-`bash images/build-ubuntu.sh OUTPUT_DIRECTORY [ROOTFS_TARBALL]` builds an experimental Ubuntu Minimal 24.04 amd64 guest. The optional local tarball must match the same pinned SHA-256 as the downloaded input. The builder pins [release-20260905](https://cloud-images.ubuntu.com/minimal/releases/noble/release-20260905/) (`094dc0afc6ded1c3e5ce71f7d0b48d5db922155097bc8fb1ec19db2ebdd17ece`) and the fixture's Linux 6.1.155 kernel. It builds static `box-init`/`box-guest` binaries, preserves upstream numeric ownership with fakeroot, and uses `mkfs.ext4 -d` to create a 2 GiB disk without root, host mounts, chroot, or package scripts. `inputs.json` records upstream URLs/checksums and builder/guest binary hashes. Inputs are repeatable; filesystem timestamps/UUIDs mean this is not a bit-for-bit reproducible image claim. Existing output images are never overwritten.
+`bash images/build-ubuntu.sh OUTPUT_DIRECTORY [ROOTFS_TARBALL]` builds an experimental Ubuntu Minimal 24.04 amd64 guest. The optional local tarball must match the same pinned SHA-256 as the downloaded input. The builder pins [release-20260905](https://cloud-images.ubuntu.com/minimal/releases/noble/release-20260905/) (`094dc0afc6ded1c3e5ce71f7d0b48d5db922155097bc8fb1ec19db2ebdd17ece`) and the fixture's Linux 6.1.155 kernel. It builds static `kiln-init`/`kiln-guest` binaries, preserves upstream numeric ownership with fakeroot, and uses `mkfs.ext4 -d` to create a 2 GiB disk without root, host mounts, chroot, or package scripts. `inputs.json` records upstream URLs/checksums and builder/guest binary hashes. Inputs are repeatable; filesystem timestamps/UUIDs mean this is not a bit-for-bit reproducible image claim. Existing output images are never overwritten.
 
-Included tools are the upstream systemd, Bash, Python 3, curl, and apt packages. There is no guest NIC, package-download connectivity, SSH server access, Docker, or compiler toolchain. The custom `boxd.target` starts basic systemd services and the agent; cloud-init is disabled and network/SSH units are masked. No host service is installed. Security updates require explicitly updating/revalidating the pinned input and rebuilding; an automatic image update/release process remains future work.
+Included tools are the upstream systemd, Bash, Python 3, curl, and apt packages. There is no guest NIC, package-download connectivity, SSH server access, Docker, or compiler toolchain. The custom `kiln.target` starts basic systemd services and the agent; cloud-init is disabled and network/SSH units are masked. No host service is installed. Security updates require explicitly updating/revalidating the pinned input and rebuilding; an automatic image update/release process remains future work.
 
-Ubuntu manifests default to `boot_mode: "systemd"`; missing `boot_mode` retains the fixture's `/sbin/init` behavior. The opt-in `systemd_warm` mode is described below. Only fixed boot modes are accepted, not arbitrary kernel arguments. In the default mode Ubuntu boots `/sbin/box-init` as PID 1, mounts guest pseudo-filesystems, and waits at a host-vsock initialization barrier. It never executes workloads. Templates capture this state **before systemd starts**, avoiding systemd/D-Bus caching a shared template machine ID. On initialization the guest mixes 32 bytes of host entropy into the kernel pool with `RNDADDENTROPY`, explicitly reseeds the CRNG, sets the hostname (including `/etc/hostname`), writes `/etc/machine-id`, and creates a boot-local handoff marker. The bootstrap closes its listener before acknowledging, then execs systemd. The host waits up to 30 seconds for the initialized systemd-managed agent; initialization is never replayed to compensate for a lost response.
+Ubuntu manifests default to `boot_mode: "systemd"`; missing `boot_mode` retains the fixture's `/sbin/init` behavior. The opt-in `systemd_warm` mode is described below. Only fixed boot modes are accepted, not arbitrary kernel arguments. In the default mode Ubuntu boots `/sbin/kiln-init` as PID 1, mounts guest pseudo-filesystems, and waits at a host-vsock initialization barrier. It never executes workloads. Templates capture this state **before systemd starts**, avoiding systemd/D-Bus caching a shared template machine ID. On initialization the guest mixes 32 bytes of host entropy into the kernel pool with `RNDADDENTROPY`, explicitly reseeds the CRNG, sets the hostname (including `/etc/hostname`), writes `/etc/machine-id`, and creates a boot-local handoff marker. The bootstrap closes its listener before acknowledging, then execs systemd. The host waits up to 30 seconds for the initialized systemd-managed agent; initialization is never replayed to compensate for a lost response.
 
 The service requires the valid handoff marker and resumes initialized after a service restart. `/run` is recreated on cold boot, so a normal stop/start provisions again using the existing box ID; same-box checkpoint restore resumes captured service state. The prepared kernel boot ID is deliberately shared by clones and is not the per-instance identity. SSH keys, machine ID, cloud-init state, persistent journals, and the stored random seed are cleared in the image. Workloads and credentials added afterward must not be promoted into shared templates.
 
 On `ser7`, all six development-mode lifecycle tests passed against this Ubuntu image, including Python output, systemd-run service execution, systemd's D-Bus machine ID matching each independent clone, agent restart without reinitialization, disk persistence, memory restore, and crash recovery. The freshly rebuilt BusyBox fixture also passes the shared suite. Image checks confirmed preserved root/shadow ownership, empty initial machine ID, required binaries/service configuration, refusal to overwrite an image, and rejection of a wrong input checksum. On 2026-10-01 the privileged Ubuntu suite also passed all six tests in 54.51 seconds, followed by 92 successful isolated benchmark launches. The script exited 0 without remaining child cgroups, and a fresh process check found no Firecracker processes. The separate installation/results remain available for inspection. Earlier fixture timings must not be reported as Ubuntu results.
 
-Run the shared suite with `BOXD_TEST_IMAGE` set to the Ubuntu manifest; all other development/isolated test flags below are unchanged. For measurement, build a template from that same image and use `box benchmark` with 30 samples at concurrency 1 and 16 at concurrency 4. Benchmark JSON now records `profile` alongside cache assumptions, versions, per-sample phases/failures, and first-command latency. The 2 GiB disk's integrity scan, private copies, and post-resume systemd startup remain inside the measured path; this bootstrap template is not a snapshot of an already running systemd system.
+Run the shared suite with `KILN_TEST_IMAGE` set to the Ubuntu manifest; all other development/isolated test flags below are unchanged. For measurement, build a template from that same image and use `kiln-runtime benchmark` with 30 samples at concurrency 1 and 16 at concurrency 4. Benchmark JSON now records `profile` alongside cache assumptions, versions, per-sample phases/failures, and first-command latency. The 2 GiB disk's integrity scan, private copies, and post-resume systemd startup remain inside the measured path; this bootstrap template is not a snapshot of an already running systemd system.
 
 ## Opt-in warm systemd templates
 
@@ -80,7 +84,7 @@ The standard warm mode retains fresh machine identities. The inspected systemd
 v255 random helpers normally call kernel RNG interfaces, but this is not an audit
 of every library or retained PID1 field, nor a multi-tenant security guarantee.
 
-Both warm policies emit one `boxd_warm_reset {JSON}` line in the host generation's
+Both warm policies emit one `kiln_warm_reset {JSON}` line in the host generation's
 `console.log`. It includes `retain_pid1`, `success`, `total_ms`, and nonoverlapping
 `phases_ms`: `audit`, `provision`, `unmask`, `manager_refresh`, `start_services`,
 `verify_identity`. A failed step is timed too; later phases are absent. These are
@@ -110,7 +114,7 @@ All **92 attempts succeeded**, with no retries or replaced samples. Create p50
 improved **8.1% sequentially / 6.0% concurrently**; first-command p50 improved
 **8.0% / 6.0%**. Timers include CLI/sudo/env startup; template construction, log
 collection and resource deletion are outside the measured interval. The command
-is `/bin/printf boxd-ready` with a five-second guest deadline. With 16 samples,
+is a fixed printf readiness probe with a five-second guest deadline. With 16 samples,
 nearest-rank p95 is the maximum. These are modest single-host improvements, not
 proof of better hosted performance. The older boxd.sh sequential create median
 was 408 ms; the new 475 ms local result does not close that observed gap, and
@@ -165,7 +169,7 @@ Raw evidence remains in `.amp/in/artifacts/warm-final-{before,after}-{sequential
 
 ### Fresh boxd.sh comparison at 4 GiB / one vCPU
 
-On 2026-10-01, repeated the hosted comparison with **4096 MiB / one vCPU on both sides**, 30 sequential and 16 concurrency-four launches each. Both restore prepared snapshots and run `/bin/printf boxd-ready` with a five-second guest-command deadline. The timer begins before spawning the create/clone CLI and ends after the first successful exec CLI returns. Local timings include `sudo`/`env` startup. Template creation, resource probes and deletion are outside the timer. No failed request is retried. The earlier 256 MiB and runtime-only timings are not pooled into this comparison.
+On 2026-10-01, repeated the hosted comparison with **4096 MiB / one vCPU on both sides**, 30 sequential and 16 concurrency-four launches each. Both restore prepared snapshots and run a fixed printf readiness probe with a five-second guest-command deadline. The timer begins before spawning the create/clone CLI and ends after the first successful exec CLI returns. Local timings include `sudo`/`env` startup. Template creation, resource probes and deletion are outside the timer. No failed request is retried. The earlier 256 MiB and runtime-only timings are not pooled into this comparison.
 
 | CLI launch through first successful command | Our local isolated runtime | boxd.sh hosted CLI |
 | --- | --- | --- |
@@ -183,22 +187,22 @@ Order: hosted sequential, local sequential, local concurrent, hosted concurrent.
 
 ## CLI contracts
 
-For brevity, commands below use `box`; the built executable is `target/release/box`. All commands accept `--state-dir PATH`; the parent directory must already exist. The default is `.boxd`. Existing state directories must be owned by the operator and have no group/other permissions. State and guest secrets are stored **unencrypted**.
+For brevity, commands below use `kiln-runtime`; the built executable is `target/release/kiln-runtime`. All commands accept `--state-dir PATH`; the parent directory must already exist. The default is `.kiln`. Existing state directories must be owned by the operator and have no group/other permissions. State and guest secrets are stored **unencrypted**.
 
 Output is always JSON (`--json` is accepted for scripting compatibility). Diagnostics go to stderr. Exit codes: 0 success, 1 runtime/transport failure, 2 argument-parser failure. `exec` returns the guest exit code, 124 on command timeout, or 125 for a signal termination without a numeric exit code. Its JSON distinguishes command failure from transport failure. CLI output decodes stdout/stderr as UTF-8 with replacement; this is not a binary file-transfer protocol.
 
 ```sh
-box create --image IMAGE_MANIFEST --name NAME --allow-unsafe-development
-box list
-box inspect BOX_ID
-box exec BOX_ID --timeout-ms 10000 --cwd /workspace --env KEY=value \
+kiln-runtime create --image IMAGE_MANIFEST --name NAME --allow-unsafe-development
+kiln-runtime list
+kiln-runtime inspect BOX_ID
+kiln-runtime exec BOX_ID --timeout-ms 10000 --cwd /workspace --env KEY=value \
   -- /bin/sh -c 'printf "%s" "$KEY"'
-box pause BOX_ID
-box resume BOX_ID
-box stop BOX_ID
-box start BOX_ID
-box stop BOX_ID --force
-box delete BOX_ID
+kiln-runtime pause BOX_ID
+kiln-runtime resume BOX_ID
+kiln-runtime stop BOX_ID
+kiln-runtime start BOX_ID
+kiln-runtime stop BOX_ID --force
+kiln-runtime delete BOX_ID
 ```
 
 - VM lifetime is independent of the CLI process that launches it.
@@ -216,10 +220,10 @@ The wire protocol is one length-framed request per vsock connection. Arguments a
 ## Checkpoints restore both memory and disk
 
 ```sh
-box checkpoint save BOX_ID
-box checkpoint list
-box checkpoint restore BOX_ID CHECKPOINT_ID --acknowledge-external-state-replay
-box checkpoint delete CHECKPOINT_ID
+kiln-runtime checkpoint save BOX_ID
+kiln-runtime checkpoint list
+kiln-runtime checkpoint restore BOX_ID CHECKPOINT_ID --acknowledge-external-state-replay
+kiln-runtime checkpoint delete CHECKPOINT_ID
 ```
 
 Capture holds the box lock, records intent, pauses execution, creates a full Firecracker snapshot, explicitly syncs the disk backing file, copies it while paused, syncs and hashes all artifacts, and publishes the manifest last. A previously running source resumes; a previously paused source stays paused. Snapshot files are private and read-only. Firecracker maps memory from the retained snapshot file; it must remain immutable for the restored VM's lifetime.
@@ -233,17 +237,17 @@ Snapshot deletion checks durable box references under the allocation lock. It re
 ## Prepared templates are not arbitrary live-workload forks
 
 ```sh
-box template build --image IMAGE_MANIFEST --allow-unsafe-development
-box template list
-box clone TEMPLATE_ID --name alpha --allow-unsafe-development
-box clone TEMPLATE_ID --name beta --allow-unsafe-development
+kiln-runtime template build --image IMAGE_MANIFEST --allow-unsafe-development
+kiln-runtime template list
+kiln-runtime clone TEMPLATE_ID --name alpha --allow-unsafe-development
+kiln-runtime clone TEMPLATE_ID --name beta --allow-unsafe-development
 ```
 
 Template build accepts `--memory-mib` and `--vcpus` (defaults: 256 MiB and one vCPU). Use `--memory-mib 4096 --vcpus 1` for the 4 GiB configuration; clones inherit the template's resources. Four such allocated boxes fill the 16 GiB guest-memory quota. This is not a reservation of host RAM: check available memory and allow for VMM/page-cache overhead before increasing guest sizes.
 
 The builder boots a trusted image to the guest agent's pre-initialization barrier, snapshots it, and deletes its temporary VM. Only those template records are cloneable. Every clone receives an independent writable disk, distinct hostname/machine ID, and fresh host entropy before execution is allowed. The kernel boot ID is intentionally inherited from the prepared boot and is **not** a clone identity.
 
-Clone validates snapshot metadata and reserves quota plus a durable snapshot reference under the allocation lock, then releases that lock before verifying artifact integrity. The per-box lock remains held through verification and launch; snapshot deletion refuses the durable reference. A verification failure leaves a failed reservation that counts against quota and pins the snapshot until `box delete BOX_ID`; `box list` reconciles it to stopped. Same-box checkpoint restore checks artifact identity before stopping the source VM. With fs-verity, damaged data blocks can instead fail when read, as described below.
+Clone validates snapshot metadata and reserves quota plus a durable snapshot reference under the allocation lock, then releases that lock before verifying artifact integrity. The per-box lock remains held through verification and launch; snapshot deletion refuses the durable reference. A verification failure leaves a failed reservation that counts against quota and pins the snapshot until `kiln-runtime delete BOX_ID`; `kiln-runtime list` reconciles it to stopped. Same-box checkpoint restore checks artifact identity before stopping the source VM. With fs-verity, damaged data blocks can instead fail when read, as described below.
 
 The image author must keep workload daemons, credentials, and userspace random state out of the prepared image. The minimal fixture satisfies that contract; arbitrary Linux images may not. VMGenID and entropy injection do not magically rewrite application-level credentials or cached random values.
 
@@ -263,22 +267,22 @@ Unlike a full pre-launch scan, fs-verity can detect latent corruption only when 
 
 Cold-image checks and guest/systemd initialization are unchanged. Benchmark JSON records `template_verification` as `sha256` or `fs_verity` for each template artifact. Verification and authenticated disk reads remain within launch timings. The original benchmark tables used full scans; the matched fs-verity comparison below measures digest verification before the subsequent shared-staging and disk-authentication changes.
 
-**Initial digest-path validation:** 52 ordinary tests and all six Ubuntu development KVM lifecycle tests passed. The explicit real-fs-verity test correctly refused to pass on the runner's original unsupported filesystem. On 2026-10-01, operator execution of `.amp/in/verity-validation/run.sh` passed the real sealing/replacement test, all six isolated Ubuntu lifecycle tests (60.02 seconds), and all 184 matched benchmark launches. This used only new `boxd-verity-test` installation paths, a 16 GiB sparse loop image formatted as ext4 with verity, UID 74000–74007 / GID 75000–75007, and a separate cgroup. Root-filesystem features and existing installations were not modified. The script exited 0, reported no remaining child cgroups, and unmounted the test filesystem; fresh checks found no Firecracker processes and no mount at the test mountpoint. The installation, loop image, and results remain for inspection. Do not rerun the one-shot setup over that installation.
+**Initial digest-path validation:** 52 ordinary tests and all six Ubuntu development KVM lifecycle tests passed. The explicit real-fs-verity test correctly refused to pass on the runner's original unsupported filesystem. On 2026-10-01, operator execution of `.amp/in/verity-validation/run.sh` passed the real sealing/replacement test, all six isolated Ubuntu lifecycle tests (60.02 seconds), and all 184 matched benchmark launches. This used only new dedicated pre-rename verity-test installation paths, a 16 GiB sparse loop image formatted as ext4 with verity, UID 74000–74007 / GID 75000–75007, and a separate cgroup. Root-filesystem features and existing installations were not modified. The script exited 0, reported no remaining child cgroups, and unmounted the test filesystem; fresh checks found no Firecracker processes and no mount at the test mountpoint. The installation, loop image, and results remain for inspection. Do not rerun the one-shot setup over that installation.
 
 To exercise the storage contract on an **already provisioned** supported filesystem:
 
 ```sh
-BOXD_TEST_VERITY_DIR=/path/to/private/verity-test-directory \
-  cargo test --release --locked -p box-runtime --lib \
+KILN_TEST_VERITY_DIR=/path/to/private/verity-test-directory \
+  cargo test --release --locked -p kiln-runtime --lib \
   storage::verity::tests::real_seal_enforces_immutability_and_rejects_replacements \
   -- --ignored --exact --nocapture
 ```
 
-For isolated lifecycle validation, use the isolated test procedure below with `BOXD_TEST_STATE_PARENT` on that filesystem and `BOXD_TEST_REQUIRE_VERITY=1`. The flag makes a missing seal fail the test rather than silently validating fallback. The storage test separately verifies a known kernel digest, write rejection, independent writable copies, and rejection of both unsealed and differently sealed replacements.
+For isolated lifecycle validation, use the isolated test procedure below with `KILN_TEST_STATE_PARENT` on that filesystem and `KILN_TEST_REQUIRE_VERITY=1`. The flag makes a missing seal fail the test rather than silently validating fallback. The storage test separately verifies a known kernel digest, write rejection, independent writable copies, and rejection of both unsealed and differently sealed replacements.
 
 **Shared-input/disk validation:** The follow-up passes 55 ordinary tests, all-feature Clippy, and all six Ubuntu development and isolated KVM scenarios (43.63 and 56.93 seconds respectively, including the cleanup unit test in each run). The isolated clone test proves shared sealed state/memory inode identity, root ownership, write rejection, independent guest identities/disks, and survival of one clone after deleting another. Three real-filesystem tests also pass on disposable Btrfs, including an explicit successful raw reflink followed by an authenticated copy that must instead read the entire logical file, including holes. Boundary tests for the optimized zero scan place a nonzero byte at every position around 32-byte boundaries and partial tails. These checks do not simulate latent block-device corruption; they verify sealing, replacement rejection, read coverage, and materialization semantics.
 
-The privileged run uses separate `boxd-sealed-link-test` installation paths, UID 76000–76007 / GID 77000–77007, a 512 MiB Btrfs unit-test image and a 16 GiB ext4-verity lifecycle/benchmark image. It does not change host-root filesystem features or previous installations. Build the fault-injection test binaries without root, then install and run the reviewed unit-test binary as root with `BOXD_TEST_VERITY_DIR` set to a private Btrfs test directory and `--ignored --test-threads=1 --nocapture`; all three ignored storage/isolation tests must pass. Do not treat an unsupported-filesystem fallback as a successful test.
+The privileged run uses separate dedicated pre-rename sealed-link installation paths, UID 76000–76007 / GID 77000–77007, a 512 MiB Btrfs unit-test image and a 16 GiB ext4-verity lifecycle/benchmark image. It does not change host-root filesystem features or previous installations. Build the fault-injection test binaries without root, then install and run the reviewed unit-test binary as root with `KILN_TEST_VERITY_DIR` set to a private Btrfs test directory and `--ignored --test-threads=1 --nocapture`; all three ignored storage/isolation tests must pass. Do not treat an unsupported-filesystem fallback as a successful test.
 
 ### Optional authenticated disk overlays
 
@@ -298,7 +302,7 @@ The existing `disk_copy` benchmark phase measures COW-file publication for this 
 
 ## Crash recovery and its limits
 
-`box inspect` and `box list` reconcile persisted records with actual processes. Process identity includes PID, Linux start ticks, executable, and working directory; pidfds pin termination targets. A reused PID is refused, never blindly killed. A process spawned before its PID was recorded is found by its unique run directory and executable. Multiple matching VMMs are a hard error.
+`kiln-runtime inspect` and `kiln-runtime list` reconcile persisted records with actual processes. Process identity includes PID, Linux start ticks, executable, and working directory; pidfds pin termination targets. A reused PID is refused, never blindly killed. A process spawned before its PID was recorded is found by its unique run directory and executable. Multiple matching VMMs are a hard error.
 
 - Interrupted launch: adopt an initialized running VM, or terminate only the identified incomplete VMM and leave its disk stopped for explicit `start`/restore. A pre-copy failure may require deleting the failed box and recreating it.
 - Interrupted capture of a running source: reconciliation resumes the paused source. An incomplete snapshot has no published manifest and is not listed as usable. Its directory can remain after abrupt death and counts against the snapshot limit. Once no capture is active, `checkpoint delete ID` also removes an unpublished directory whose ID you obtained from the private `snapshots/` directory.
@@ -310,14 +314,14 @@ Recovery runs on explicit commands, not an always-on supervisor. Abrupt process 
 ## Reproduce launch measurements
 
 ```sh
-cargo build --locked --release -p box-runtime --bin box
-box benchmark --image IMAGE_MANIFEST --template TEMPLATE_ID \
+cargo build --locked --release -p kiln-runtime --bin kiln-runtime
+kiln-runtime benchmark --image IMAGE_MANIFEST --template TEMPLATE_ID \
   --samples 30 --concurrency 1 --allow-unsafe-development
-box benchmark --image IMAGE_MANIFEST --template TEMPLATE_ID \
+kiln-runtime benchmark --image IMAGE_MANIFEST --template TEMPLATE_ID \
   --samples 16 --concurrency 4 --allow-unsafe-development
 ```
 
-The JSON includes each sample, failures, nearest-rank p50/p95/p99, launch-to-ready and first-exec timing, actual copy method, actual guest RAM/vCPU allocation, versions, host fingerprint, concurrency, and cache assumptions. Cold launches use the supplied template's RAM/vCPU allocation, just like restores; build a 4 GiB template to measure both paths at 4 GiB. It returns a failure status if any measured operation fails. Measurement starts at the runtime call, includes validation/allocation waits/disk preparation/VMM/guest initialization, and ends after `/bin/printf boxd-ready` returns the expected bytes and exit code. It excludes benchmark program startup and cleanup. Only boxes with this benchmark invocation's unique name prefix are removed.
+The JSON includes each sample, failures, nearest-rank p50/p95/p99, launch-to-ready and first-exec timing, actual copy method, actual guest RAM/vCPU allocation, versions, host fingerprint, concurrency, and cache assumptions. Cold launches use the supplied template's RAM/vCPU allocation, just like restores; build a 4 GiB template to measure both paths at 4 GiB. It returns a failure status if any measured operation fails. Measurement starts at the runtime call, includes validation/allocation waits/disk preparation/VMM/guest initialization, and ends after `/bin/printf kiln-ready` returns the expected bytes and exit code. It excludes benchmark program startup and cleanup. Only boxes with this benchmark invocation's unique name prefix are removed.
 
 Each sample includes non-overlapping wall-clock `phases_ms`: image or snapshot verification (including validation/preflight), allocation wait, durable reservation, disk copy, boot preflight, VMM spawn/API readiness, VMM configuration/snapshot load, guest readiness, initialization, and launch commit. Timings are task-local, so concurrent requests do not share counters. Failed attempts include completed/failed phase timings but no successful `total_ms`; phases that were never reached are absent. Phase sums exclude small bookkeeping gaps and the separately reported first exec.
 
@@ -347,7 +351,7 @@ Measured 2026-10-01 on `ser7`: Ubuntu Minimal 24.04 release-20260905, Linux gues
 | Cold boot | 16 | 4 | 3,374 ms | 3,452 ms | 3,452 ms | 0 |
 | Template restore | 16 | 4 | 2,553 ms | 3,900 ms | 3,900 ms | 0 |
 
-All 92 sample records, success counts, and nearest-rank percentiles were independently checked against the raw JSON in `.amp/in/artifacts/ubuntu-isolated-validation.log`. Each sample's phases sum to within 0.18 ms of its launch time, with first-exec latency accounted for separately. The original reports are also retained under `/var/lib/boxd-ubuntu-test/results/`.
+All 92 sample records, success counts, and nearest-rank percentiles were independently checked against the raw JSON in `.amp/in/artifacts/ubuntu-isolated-validation.log`. Each sample's phases sum to within 0.18 ms of its launch time, with first-exec latency accounted for separately. The original reports are also retained in the pre-rename Ubuntu validation installation.
 
 Sequential template phase medians: snapshot verification 1,081 ms; guest initialization/systemd startup 523 ms; private disk copy 208 ms; jail input staging/VMM startup 198 ms; VMM configuration/snapshot load 5 ms; guest readiness 2 ms; first exec 4 ms. Phase medians describe different samples and should not be summed into a percentile. Snapshot verification still scans the entire disk/state/memory, and the template intentionally predates systemd startup. These costs, rather than the snapshot-load API alone, dominate end-to-end readiness.
 
@@ -366,7 +370,7 @@ Measured 2026-10-01 on the same runner and Ubuntu image, 256 MiB / 1 vCPU / 2 Gi
 | Cold boot | 16 | 4 | 3,506 / 3,576 ms | 3,532 / 4,094 ms |
 | Template restore | 16 | 4 | 2,724 / 2,760 ms | 1,594 / 1,619 ms |
 
-All 184 launches succeeded. Sample counts, unique indices, nearest-rank percentiles, shared image/template/host, verification methods, and launch-plus-exec accounting were independently checked from `.amp/in/artifacts/verity-isolated-validation.log`. Phase sums differ from launch times by at most 0.126 ms. Root-owned original reports remain under `/var/lib/boxd-verity-test/results/` outside the unmounted pool.
+All 184 launches succeeded. Sample counts, unique indices, nearest-rank percentiles, shared image/template/host, verification methods, and launch-plus-exec accounting were independently checked from `.amp/in/artifacts/verity-isolated-validation.log`. Phase sums differ from launch times by at most 0.126 ms. Root-owned original reports remain in the pre-rename verity validation installation, outside the unmounted pool.
 
 Sequential template p50 fell 51.3% (2.05× faster); concurrency-four p50 fell 41.5% (1.71× faster). Sequential snapshot-verification phase median fell from 1,083.25 to 6.71 ms, including metadata/preflight overhead, not just the kernel ioctl. Remaining sequential phase medians are guest initialization/systemd 519 ms, private disk copy 258 ms, jail input staging/VMM startup 214 ms, and first exec 4 ms. At concurrency four disk-copy median is 597 ms and guest initialization is 635 ms. Phase medians are not additive percentiles.
 
@@ -387,7 +391,7 @@ All 184 final-comparison launches succeeded. Sequential template median improved
 
 The first implementation was slower: before optimizing the zero scan, its matched sequential template p50 rose from 1,043 to 1,252 ms, despite faster jail staging. Those 184 initial samples are retained separately; they are not pooled with the final results. The optimized scan still reads and checks every byte, including partial tails; it changes CPU scanning cost, not the authentication boundary.
 
-Raw reports are `.amp/in/artifacts/sealed-links-final-{before,after}-{sequential,concurrent}.json`; initial reports omit `final-`. Original root-owned reports remain under `/var/lib/boxd-sealed-link-test/results/`. All 368 initial/final samples were independently checked for counts, unique indices, failures, copy/verification methods, matching image/template/host within each comparison, nearest-rank percentiles, and launch-plus-exec accounting. Final phase sums differ from launch time by at most 0.085 ms. The privileged scripts exited 0; both test filesystems are unmounted, with no child cgroups or Firecracker processes remaining. Installations and loop images are retained for inspection.
+Raw reports are `.amp/in/artifacts/sealed-links-final-{before,after}-{sequential,concurrent}.json`; initial reports omit `final-`. Original root-owned reports remain in the pre-rename sealed-link validation installation. All 368 initial/final samples were independently checked for counts, unique indices, failures, copy/verification methods, matching image/template/host within each comparison, nearest-rank percentiles, and launch-plus-exec accounting. Final phase sums differ from launch time by at most 0.085 ms. The privileged scripts exited 0; both test filesystems are unmounted, with no child cgroups or Firecracker processes remaining. Installations and loop images are retained for inspection.
 
 Order in each comparison was before-sequential, after-sequential, after-concurrent, before-concurrent. Cache and background load were uncontrolled, with no cache eviction. These are small local samples, not a stable tail-latency SLA or a matched boxd.sh comparison. The nested readiness-metadata caveat above still applies. Removing the remaining full disk materialization requires an authenticated base/overlay architecture; avoiding systemd startup requires a separate safe guest-initialization design.
 
@@ -404,7 +408,7 @@ Measured 2026-10-01 on `ser7`, same Ubuntu Minimal 24.04 image, isolated release
 
 All 184 launches succeeded. Template median improved **24.5% sequentially and 40.7% at concurrency four**. Sequential disk preparation fell from 343 to 27 ms; staging/VMM start rose from 34 to 82 ms because it now includes mapper allocation and validation. Guest initialization rose from 521 to 556 ms in this sample and dominates the remaining path. Concurrency-four disk preparation fell from 765 to 50 ms, with staging at 112 ms and guest initialization at 651 ms. These are separate phase medians, not additive percentiles. Cold creates still copy their disks and are not optimized here; their concurrent tail worsened in this run.
 
-Order: copy sequential, overlay sequential, overlay concurrent, copy concurrent. Cache and background load were uncontrolled; no eviction was performed. The 16-sample p95/p99 select the maximum. Results do not establish a tail-latency SLA or a matched advantage over boxd.sh. Its earlier hosted CLI measurements use different resources, infrastructure, and timer boundaries. Raw reports are `.amp/in/artifacts/overlays-{before,after}-{sequential,concurrent}.json`, with root-owned originals in `/var/lib/boxd-overlay-test/results/`. Counts, unique indices, failures, shared host/image/template, actual backend, nearest-rank percentiles, phase non-overlap, and launch-plus-exec accounting were independently checked.
+Order: copy sequential, overlay sequential, overlay concurrent, copy concurrent. Cache and background load were uncontrolled; no eviction was performed. The 16-sample p95/p99 select the maximum. Results do not establish a tail-latency SLA or a matched advantage over boxd.sh. Its earlier hosted CLI measurements use different resources, infrastructure, and timer boundaries. Raw reports are `.amp/in/artifacts/overlays-{before,after}-{sequential,concurrent}.json`, with root-owned originals in the pre-rename overlay validation installation. Counts, unique indices, failures, shared host/image/template, actual backend, nearest-rank percentiles, phase non-overlap, and launch-plus-exec accounting were independently checked.
 
 The isolated Ubuntu suite passed all seven checks on both backends (67.75 seconds overlay, 63.71 seconds copy), including cleanup, block-node type/ownership, private writes, layer persistence across jail generations, independent disk-base references, coordinated capture/restore, and crashes after layer publication/mapping. Real storage tests exercise authenticated base reads, asymmetric private writes, detach/remap persistence, flattening, substituted COW-file rejection, bad seals, and refusal to remove a foreign mapping. They do not simulate host power loss, latent physical corruption, or exhaust the whole pool. A test-fixture teardown encountered transient `EBUSY` after creating its synthetic foreign device; fixture removal uses bounded `dmsetup --retry`, never forced or deferred removal. Runtime ownership checks and fail-busy cleanup remain unchanged.
 
@@ -449,30 +453,30 @@ getent group | awk -F: '$3 >= 71000 && $3 <= 71007'
 cat /etc/subuid /etc/subgid
 
 # Run from the reviewed checkout. Build as the ordinary user, never with sudo.
-cargo build --release --locked -p box-runtime --bin box
-test ! -e /opt/boxd-test && test ! -e /var/lib/boxd-test && \
-  test ! -e /etc/boxd-test.json && test ! -e /sys/fs/cgroup/boxd-test || exit 1
-sudo install -d -o root -g root -m 0755 /opt/boxd-test
-sudo install -d -o root -g root -m 0700 /var/lib/boxd-test \
-  /var/lib/boxd-test/image /var/lib/boxd-test/states
-sudo install -o root -g root -m 0755 target/release/box \
-  .tools/firecracker-1.17.0/firecracker .tools/firecracker-1.17.0/jailer /opt/boxd-test/
-sudo install -o root -g root -m 0444 images/output/fixture-v2/image.json \
-  images/output/fixture-v2/vmlinux images/output/fixture-v2/rootfs.ext4 /var/lib/boxd-test/image/
-sudo mkdir /sys/fs/cgroup/boxd-test
-printf '+cpu +memory +pids\n' | sudo tee /sys/fs/cgroup/boxd-test/cgroup.subtree_control >/dev/null
-sudo install -o root -g root -m 0600 /dev/null /etc/boxd-test.json
-sudo tee /etc/boxd-test.json >/dev/null <<'JSON'
+cargo build --release --locked -p kiln-runtime --bin kiln-runtime
+test ! -e /opt/kiln-test && test ! -e /var/lib/kiln-test && \
+  test ! -e /etc/kiln-test.json && test ! -e /sys/fs/cgroup/kiln-test || exit 1
+sudo install -d -o root -g root -m 0755 /opt/kiln-test
+sudo install -d -o root -g root -m 0700 /var/lib/kiln-test \
+  /var/lib/kiln-test/image /var/lib/kiln-test/states
+sudo install -o root -g root -m 0755 target/release/kiln-runtime \
+  .tools/firecracker-1.17.0/firecracker .tools/firecracker-1.17.0/jailer /opt/kiln-test/
+sudo install -o root -g root -m 0444 images/output/fixture-kiln/image.json \
+  images/output/fixture-kiln/vmlinux images/output/fixture-kiln/rootfs.ext4 /var/lib/kiln-test/image/
+sudo mkdir /sys/fs/cgroup/kiln-test
+printf '+cpu +memory +pids\n' | sudo tee /sys/fs/cgroup/kiln-test/cgroup.subtree_control >/dev/null
+sudo install -o root -g root -m 0600 /dev/null /etc/kiln-test.json
+sudo tee /etc/kiln-test.json >/dev/null <<'JSON'
 {
-  "firecracker": "/opt/boxd-test/firecracker",
-  "jailer": "/opt/boxd-test/jailer",
-  "cgroup_parent": "boxd-test",
+  "firecracker": "/opt/kiln-test/firecracker",
+  "jailer": "/opt/kiln-test/jailer",
+  "cgroup_parent": "kiln-test",
   "uid_base": 70000,
   "gid_base": 71000
 }
 JSON
-sudo env PATH=/opt/boxd-test:/usr/sbin:/usr/bin:/sbin:/bin \
-  /opt/boxd-test/box doctor --isolation-config /etc/boxd-test.json
+sudo env PATH=/opt/kiln-test:/usr/sbin:/usr/bin:/sbin:/bin \
+  /opt/kiln-test/kiln-runtime doctor --isolation-config /etc/kiln-test.json
 ```
 
 No host accounts are created by these commands. Account/service/subordinate-ID reservations must be managed separately. Test setup is ephemeral across reboot for cgroups; production service provisioning remains future work.
@@ -482,7 +486,7 @@ No host accounts are created by these commands. Account/service/subordinate-ID r
 After approval/setup, build the fault-injection test harness without privileges, copy the reviewed outputs into the trusted installation, and execute only those binaries as root. Tests create disposable state stores under the supplied root-owned parent. **Run serially and do not run other stores using this UID range concurrently.** Missing prerequisites fail, rather than skip, this opt-in run.
 
 ```sh
-test_bin=$(cargo test --release --locked -p box-runtime --features fault-injection \
+test_bin=$(cargo test --release --locked -p kiln-runtime --features fault-injection \
   --test lifecycle --no-run --message-format=json | python3 -c '
 import json, sys
 for line in sys.stdin:
@@ -491,20 +495,20 @@ for line in sys.stdin:
         print(item["executable"])
 ')
 test -x "$test_bin" || exit 1
-sudo install -o root -g root -m 0755 "$test_bin" /opt/boxd-test/lifecycle-tests
-sudo install -o root -g root -m 0755 target/release/box /opt/boxd-test/box-test
-sudo env PATH=/opt/boxd-test:/usr/sbin:/usr/bin:/sbin:/bin \
-  BOXD_TEST_BOX=/opt/boxd-test/box-test \
-  BOXD_TEST_IMAGE=/var/lib/boxd-test/image/image.json \
-  BOXD_TEST_ISOLATION_CONFIG=/etc/boxd-test.json \
-  BOXD_TEST_STATE_PARENT=/var/lib/boxd-test/states \
-  /opt/boxd-test/lifecycle-tests --ignored --nocapture --test-threads=1
+sudo install -o root -g root -m 0755 "$test_bin" /opt/kiln-test/lifecycle-tests
+sudo install -o root -g root -m 0755 target/release/kiln-runtime /opt/kiln-test/kiln-runtime-test
+sudo env PATH=/opt/kiln-test:/usr/sbin:/usr/bin:/sbin:/bin \
+  KILN_TEST_RUNTIME=/opt/kiln-test/kiln-runtime-test \
+  KILN_TEST_IMAGE=/var/lib/kiln-test/image/image.json \
+  KILN_TEST_ISOLATION_CONFIG=/etc/kiln-test.json \
+  KILN_TEST_STATE_PARENT=/var/lib/kiln-test/states \
+  /opt/kiln-test/lifecycle-tests --ignored --nocapture --test-threads=1
 # Restore the local CLI build without crash failpoints afterward.
-cargo build --release --locked -p box-runtime --bin box
+cargo build --release --locked -p kiln-runtime --bin kiln-runtime
 ```
 
 The suite exercises persistence, killed-process memory restoration, independent clones, concurrent starts, force-stop, and manager crashes. Isolated runs additionally inspect actual process identity, jail root, seccomp/capabilities, cgroup limits, private backing inodes, distinct host UIDs/GIDs, and a guest with only loopback and no management socket.
 
 On 2026-10-01, the privileged retry on `ser7` passed all six tests in 18.10 seconds with Firecracker/jailer 1.17.0 and the trusted fixture. The first run had failed on namespace-relative procfs path checks and left six test VMMs/cgroups after failed cleanup. The retry verified and stopped those processes before testing the correction: followed device/inode ownership checks retain PID/start-time protection, and the harness preserves unfinished state if cleanup fails. The privileged script reported no remaining child cgroups; a subsequent unprivileged process check found no processes in the reserved test UID/GID range. The test installation remains available for inspection. This is single-host lifecycle evidence, not isolated launch latency characterization or adversarial security validation. Do not rerun the one-shot setup over an existing installation.
 
-For manual use after validation, initialize a separate empty state store with `--state-dir /var/lib/boxd-test/manual --isolation-config /etc/boxd-test.json create --profile isolated --image /var/lib/boxd-test/image/image.json`. Later commands only need that `--state-dir`; create/template build/clone/benchmark also require `--profile isolated`. Do not run the manual store concurrently with the test suite. To remove test setup, first delete every test box and verify the test cgroup contains no children or processes; only then remove the dedicated test paths. Never recursively remove live state.
+For manual use after validation, initialize a separate empty state store with `--state-dir /var/lib/kiln-test/manual --isolation-config /etc/kiln-test.json create --profile isolated --image /var/lib/kiln-test/image/image.json`. Later commands only need that `--state-dir`; create/template build/clone/benchmark also require `--profile isolated`. Do not run the manual store concurrently with the test suite. To remove test setup, first delete every test box and verify the test cgroup contains no children or processes; only then remove the dedicated test paths. Never recursively remove live state.

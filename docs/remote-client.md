@@ -5,21 +5,21 @@ For prebuilt downloads and the guided first-install workflow, start with the
 for custom hosts and development; they are not required when installing a release
 package on a supported Ubuntu host.
 
-`boxctl` manages boxes over **verified HTTPS**. Only the server needs Linux,
+`kiln` manages boxes over **verified HTTPS**. Only the server needs Linux,
 Firecracker and KVM. This is a single-administrator, trusted-workload pilot:
 lifecycle management, buffered commands, SSH terminals, SFTP and opt-in isolated
 IPv4 egress are implemented. Previews and multi-tenant security are not included.
 SSH/networking require matching v0.2.0 client/server/guest builds; v0.1.1
 packages and existing templates do not include them.
 
-The existing `box` binary remains the local Linux operator tool. It is not the
+The existing `kiln-runtime` binary remains the local Linux operator tool. It is not the
 laptop client. Do not run local mutations against the runtime while its host
 service is managing it; stop the host service first for template administration.
 
 ```text
-Laptop boxctl → HTTPS + bearer token → boxd-api (unprivileged)
+Laptop kiln → HTTPS + bearer token → kiln-api (unprivileged)
                                        ↓ restricted Unix socket
-                                    boxd-host (root, isolated profile)
+                                    kiln-host (root, isolated profile)
                                        ↓ existing Firecracker/jailer runtime
                                     Linux guest via vsock
 ```
@@ -35,13 +35,13 @@ not host paths, jail identities, host fingerprints or Firecracker sockets.
 From this checkout on a laptop with the pinned Rust 1.95.0 toolchain:
 
 ```sh
-cargo build --release --locked -p box-client --bin boxctl
+cargo build --release --locked -p kiln-client --bin kiln
 # Or install only the client into your Cargo bin directory:
-cargo install --locked --path crates/box-client
+cargo install --locked --path crates/kiln-client
 ```
 
 Build natively on the laptop OS/architecture. The client crate does not depend on
-`box-runtime`, SQLite, Firecracker or Linux/vsock APIs. This repository does not
+`kiln-runtime`, SQLite, Firecracker or Linux/vsock APIs. This repository does not
 yet provide signed installers. Release automation builds downloadable binaries
 once the source is published to GitHub and the workflow succeeds. On Windows,
 restrict token-file ACLs to your account; Unix builds additionally enforce mode
@@ -52,8 +52,8 @@ environment variables are not used).
 On the Linux x86_64 host:
 
 ```sh
-cargo build --release --locked -p box-runtime --bin box \
-  -p box-server --bin boxd-host --bin boxd-api
+cargo build --release --locked -p kiln-runtime --bin kiln-runtime \
+  -p kiln-server --bin kiln-host --bin kiln-api
 ```
 
 ## Prepare the server before exposing the API
@@ -66,30 +66,30 @@ public Internet endpoint.
 1. Follow the [isolated-runtime setup](runtime.md#experimental-isolated-profile):
    matching root-owned Firecracker/jailer 1.17.0, KVM, pre-enabled cgroup v2
    controllers, a dedicated unused eight-identity UID/GID range and trusted images.
-   Keep these binaries in `/opt/boxd/bin`; the isolation policy and service PATH
+   Keep these binaries in `/opt/kiln/bin`; the isolation policy and service PATH
    must select exactly those binaries. Optional snapshot overlays require the
    separately documented storage setup. The services never provision host routing,
    firewall rules, cgroup controllers or storage pools automatically.
-2. Create an unprivileged system account/group named `boxd-api`. Install
-   `boxd-host` and `boxd-api` as root-owned executables in `/usr/local/libexec`,
-   and `box` in `/opt/boxd/bin`. Create root-owned `/etc/boxd` (0755) and
-   `/var/lib/boxd` (0700). Keep all runtime/image path ancestors root-owned and
+2. Create an unprivileged system account/group named `kiln-api`. Install
+   `kiln-host` and `kiln-api` as root-owned executables in `/usr/local/libexec`,
+   and `kiln-runtime` in `/opt/kiln/bin`. Create root-owned `/etc/kiln` (0755) and
+   `/var/lib/kiln` (0700). Keep all runtime/image path ancestors root-owned and
    not group/other writable; a directory under your home is not suitable.
-3. Put the trusted isolation policy in `/etc/boxd/isolation.json`. Copy
+3. Put the trusted isolation policy in `/etc/kiln/isolation.json`. Copy
    [`deploy/host.example.json`](../deploy/host.example.json) to
-   `/etc/boxd/host.json` (root-owned, 0600). The initially empty catalog is valid.
+   `/etc/kiln/host.json` (root-owned, 0600). The initially empty catalog is valid.
 4. Build templates **on this host**, in this runtime store, using the local tool.
    Snapshots are host-specific; copying a template from the development runner
    does not make it portable. For a prepared, root-owned Ubuntu image:
 
    ```sh
-   sudo env PATH=/opt/boxd/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-     /opt/boxd/bin/box --state-dir /var/lib/boxd/runtime \
-     --isolation-config /etc/boxd/isolation.json doctor
-   sudo env PATH=/opt/boxd/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-     /opt/boxd/bin/box --state-dir /var/lib/boxd/runtime \
-     --isolation-config /etc/boxd/isolation.json template build \
-     --image /var/lib/boxd/images/ubuntu/image.json \
+   sudo env PATH=/opt/kiln/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+     /opt/kiln/bin/kiln-runtime --state-dir /var/lib/kiln/runtime \
+     --isolation-config /etc/kiln/isolation.json doctor
+   sudo env PATH=/opt/kiln/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+     /opt/kiln/bin/kiln-runtime --state-dir /var/lib/kiln/runtime \
+     --isolation-config /etc/kiln/isolation.json template build \
+     --image /var/lib/kiln/images/ubuntu/image.json \
      --memory-mib 4096 --vcpus 1 --profile isolated
    ```
 
@@ -106,16 +106,16 @@ public Internet endpoint.
 5. Provision a TLS certificate/key whose SAN matches the hostname used by the
    laptop. Use a trusted issuer or a private CA whose public certificate you copy
    to the laptop. The server certificate must be a leaf (`CA:FALSE`), not the CA's
-   signing certificate itself. Store `tls.crt` and `tls.key` in `/etc/boxd`, readable by
-   `boxd-api`; keep the key owner-only. Certificate issuance/renewal is an operator
+   signing certificate itself. Store `tls.crt` and `tls.key` in `/etc/kiln`, readable by
+   `kiln-api`; keep the key owner-only. Certificate issuance/renewal is an operator
    responsibility. The service has no HTTP fallback and does not obtain ACME
    certificates automatically.
 6. Generate a 256-bit random token without displaying it:
 
    ```sh
-   sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/boxd/admin.token'
-   sudo chown boxd-api:boxd-api /etc/boxd/admin.token
-   sudo chmod 600 /etc/boxd/admin.token
+   sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/kiln/admin.token'
+   sudo chown kiln-api:kiln-api /etc/kiln/admin.token
+   sudo chmod 600 /etc/kiln/admin.token
    ```
 
    Transfer it securely to a private file on your laptop (not via chat, command
@@ -124,8 +124,8 @@ public Internet endpoint.
 7. Check the configuration while the host service is stopped:
 
    ```sh
-   sudo env PATH=/opt/boxd/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-     /usr/local/libexec/boxd-host --config /etc/boxd/host.json --check
+   sudo env PATH=/opt/kiln/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+     /usr/local/libexec/kiln-host --config /etc/kiln/host.json --check
    ```
 
    This opens/initializes private state, verifies catalog references and recovers
@@ -134,15 +134,15 @@ public Internet endpoint.
    by the runtime when launched. A second host service using the same runtime or
    journal refuses to start.
 8. Review and install the two [example systemd units](../deploy/). The host unit
-   creates `/run/boxd` as root:`boxd-api` 0750 and a socket with mode 0660. The
+   creates `/run/kiln` as root:`kiln-api` 0750 and a socket with mode 0660. The
    gateway cannot read root-owned VM state. Its sample listener is loopback-only;
    replace `--listen` with the chosen private-interface address and review the
    firewall before enabling laptop access. Then, with deployment approval:
 
    ```sh
-   sudo install -m 644 deploy/boxd-host.service deploy/boxd-api.service /etc/systemd/system/
+   sudo install -m 644 deploy/kiln-host.service deploy/kiln-api.service /etc/systemd/system/
    sudo systemctl daemon-reload
-   sudo systemctl enable --now boxd-host boxd-api
+   sudo systemctl enable --now kiln-host kiln-api
    ```
 
    Do not remove `KillMode=process` from the host unit without changing the VM
@@ -152,27 +152,27 @@ public Internet endpoint.
 ## Configure the laptop and use it
 
 ```sh
-chmod 600 "$HOME/.config/boxd/server.token"
-boxctl profile add default --url https://boxes.example.net:8443 \
-  --token-file "$HOME/.config/boxd/server.token" \
-  --ca-file "$HOME/.config/boxd/server-ca.pem"
+chmod 600 "$HOME/.config/kiln/server.token"
+kiln profile add default --url https://boxes.example.net:8443 \
+  --token-file "$HOME/.config/kiln/server.token" \
+  --ca-file "$HOME/.config/kiln/server-ca.pem"
 # Omit --ca-file for a certificate signed by a bundled public CA.
-boxctl templates
-boxctl create --template ubuntu-4g --name my-dev-box
-boxctl list
-boxctl inspect BOX_ID
-boxctl exec BOX_ID -- /bin/sh -c 'printf hello; exit 37'
+kiln templates
+kiln create --template ubuntu-4g --name my-dev-box
+kiln list
+kiln inspect BOX_ID
+kiln exec BOX_ID -- /bin/sh -c 'printf hello; exit 37'
 # Shell exit status above is 37, not merely success because HTTP succeeded.
-boxctl pause BOX_ID
-boxctl resume BOX_ID
-boxctl stop BOX_ID
-boxctl start BOX_ID
-boxctl delete BOX_ID
+kiln pause BOX_ID
+kiln resume BOX_ID
+kiln stop BOX_ID
+kiln start BOX_ID
+kiln delete BOX_ID
 ```
 
 Use `--profile NAME` to select another server and `--config PATH` for a separate
-profile store. Default location is `$XDG_CONFIG_HOME/boxd/profiles.json`,
-`%APPDATA%/boxd/profiles.json`, or `$HOME/.config/boxd/profiles.json`. Profiles
+profile store. Default location is `$XDG_CONFIG_HOME/kiln/profiles.json`,
+`%APPDATA%/kiln/profiles.json`, or `$HOME/.config/kiln/profiles.json`. Profiles
 contain URL and absolute token/CA **file references**, not token bytes. Existing
 names are not overwritten by `profile add`; edit the JSON or use another name.
 
@@ -182,15 +182,15 @@ On Linux/macOS, install the platform's OpenSSH client (`ssh`, `scp`, `ssh-keygen
 The profile directory must be private (0700). Use the full box ID:
 
 ```sh
-boxctl ssh BOX_ID
-boxctl ssh BOX_ID -- 'uname -a; exit 37'
-boxctl cp ./local-file BOX_ID:/workspace/remote-file
-boxctl cp BOX_ID:/workspace/remote-file ./downloaded-file
-boxctl ssh-config BOX_ID > "$HOME/.ssh/boxd-config"
-ssh -F "$HOME/.ssh/boxd-config" boxd-default-BOX_ID
+kiln ssh BOX_ID
+kiln ssh BOX_ID -- 'uname -a; exit 37'
+kiln cp ./local-file BOX_ID:/workspace/remote-file
+kiln cp BOX_ID:/workspace/remote-file ./downloaded-file
+kiln ssh-config BOX_ID > "$HOME/.ssh/kiln-config"
+ssh -F "$HOME/.ssh/kiln-config" kiln-default-BOX_ID
 ```
 
-Add `Include ~/.ssh/boxd-config` to `~/.ssh/config` to use the generated host
+Add `Include ~/.ssh/kiln-config` to `~/.ssh/config` to use the generated host
 entry in VS Code Remote-SSH or another OpenSSH-based editor. This supports
 loopback-only guest TCP forwarding for editor servers; agent, X11 and remote
 forwarding are disabled. Regenerate the entry when changing profiles or moving
@@ -231,9 +231,9 @@ their minimal target never starts `systemd-user-sessions`. As root **inside the
 guest**, install this dependency and start the oneshot (no guest reboot needed):
 
 ```sh
-mkdir -p /etc/systemd/system/box-guest.service.d
-test ! -e /etc/systemd/system/box-guest.service.d/login-readiness.conf &&
-printf '%s\n' '[Unit]' 'Requires=systemd-user-sessions.service' 'After=systemd-user-sessions.service' > /etc/systemd/system/box-guest.service.d/login-readiness.conf
+mkdir -p /etc/systemd/system/kiln-guest.service.d
+test ! -e /etc/systemd/system/kiln-guest.service.d/login-readiness.conf &&
+printf '%s\n' '[Unit]' 'Requires=systemd-user-sessions.service' 'After=systemd-user-sessions.service' > /etc/systemd/system/kiln-guest.service.d/login-readiness.conf
 systemctl daemon-reload
 systemctl start systemd-user-sessions.service
 test ! -e /run/nologin
@@ -253,8 +253,8 @@ Every mutation prints a 32-hex request ID **before submission**. To submit and
 disconnect immediately, use `--no-wait`. Resume observation with:
 
 ```sh
-boxctl operation REQUEST_ID --wait
-boxctl --json operation REQUEST_ID
+kiln operation REQUEST_ID --wait
+kiln --json operation REQUEST_ID
 ```
 
 If submission loses its response, check that ID first. A 404 means it has not
@@ -304,12 +304,12 @@ and checks no replay. It retains unfinished VM state on failure for diagnosis:
 
 ```sh
 PATH="$PWD/.tools/firecracker-1.17.0:$PATH" \
-BOXD_TEST_IMAGE="$PWD/images/output/fixture-v3/image.json" \
-cargo test --locked -p box-server --test lifecycle -- --ignored --nocapture --test-threads=1
+KILN_TEST_IMAGE="$PWD/images/output/fixture-kiln/image.json" \
+cargo test --locked -p kiln-server --test lifecycle -- --ignored --nocapture --test-threads=1
 ```
 
-For approved isolated tests, additionally set `BOXD_TEST_ISOLATION_CONFIG` and a
-trusted `BOXD_TEST_STATE_PARENT`, and use a root-owned `BOXD_TEST_HOST` executable.
+For approved isolated tests, additionally set `KILN_TEST_ISOLATION_CONFIG` and a
+trusted `KILN_TEST_STATE_PARENT`, and use a root-owned `KILN_TEST_HOST` executable.
 Run only one state store at a time with a given isolated UID/GID allocation.
 
 Validated on `ser7` on 2026-10-01: 82 ordinary tests, Clippy with warnings denied,

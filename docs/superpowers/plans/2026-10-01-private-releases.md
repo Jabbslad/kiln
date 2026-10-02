@@ -77,7 +77,7 @@ private enrollment bundle. No live accounts/services/cgroups were provisioned.
 The installer correctly refuses this Ubuntu 26.04 runner; a complete fresh-host
 Ubuntu 24.04/KVM install and reboot test remain outstanding. Native macOS/Windows
 execution and the hosted workflow need the first GitHub run. After local review,
-the owner approved creating private `Jabbslad/boxd`, committing/pushing this work
+the owner approved creating private `Jabbslad/kiln`, committing/pushing this work
 and following the first build. The repository was created and its private
 visibility verified. Publish to GitHub `main` through a separate `github` remote,
 preserving Amp `origin` and leaving unrelated dashboard work out. This approval

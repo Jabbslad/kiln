@@ -14,8 +14,8 @@ if [ ! -f "$output/vmlinux" ]; then
     curl --fail --location --retry 3 "$kernel_url" -o "$output/vmlinux"
 fi
 printf '%s  %s\n' "$kernel_sha" "$output/vmlinux" | sha256sum -c -
-cargo build --manifest-path "$repo/Cargo.toml" --locked --release -p box-guest --target x86_64-unknown-linux-musl
-agent="$repo/target/x86_64-unknown-linux-musl/release/box-guest"
+cargo build --manifest-path "$repo/Cargo.toml" --locked --release -p kiln-guest --target x86_64-unknown-linux-musl
+agent="$repo/target/x86_64-unknown-linux-musl/release/kiln-guest"
 if readelf -l "$agent" | grep -q INTERP; then echo 'Guest has a dynamic interpreter' >&2; exit 1; fi
 root=$(mktemp -d "$output/.root.XXXXXX")
 trap 'rm -rf -- "$root"' EXIT
@@ -26,13 +26,13 @@ for applet in sh mount umount mkdir sleep cat printf echo sync reboot poweroff h
     ln -s busybox "$root/bin/$applet"
 done
 ln -s ../bin/busybox "$root/sbin/init"
-cp "$agent" "$root/sbin/box-guest"
+cp "$agent" "$root/sbin/kiln-guest"
 touch "$root/etc/machine-id"
 printf 'root:x:0:0:root:/root:/bin/sh\n' > "$root/etc/passwd"
 printf 'root:x:0:\n' > "$root/etc/group"
 cat > "$root/etc/inittab" <<'EOF'
 ::sysinit:/etc/init.d/rcS
-::respawn:/sbin/box-guest
+::respawn:/sbin/kiln-guest
 ::ctrlaltdel:/bin/reboot
 ::shutdown:/bin/sync
 EOF

@@ -27,9 +27,9 @@ def package(repo, bins, output, version, target, kind, image):
         raise ValueError("unsupported target or package kind")
     windows = target.endswith("windows-msvc")
     if kind == "client":
-        binary = "boxctl.exe" if windows else "boxctl"
+        binary = "kiln.exe" if windows else "kiln"
         files = {binary: bins / binary}
-        name = f"boxctl-{version}-{target}"
+        name = f"kiln-{version}-{target}"
     else:
         if target != "x86_64-unknown-linux-gnu" or image is None:
             raise ValueError(
@@ -37,12 +37,12 @@ def package(repo, bins, output, version, target, kind, image):
             )
         files = {
             f"bin/{name}": bins / name
-            for name in ("box", "boxd-host", "boxd-api", "boxctl")
+            for name in ("kiln-runtime", "kiln-host", "kiln-api", "kiln")
         }
         files.update(
             {
                 "install.py": repo / "deploy/install.py",
-                "bin/boxd-network": repo / "deploy/boxd-network",
+                "bin/kiln-network": repo / "deploy/kiln-network",
                 "fetch-firecracker.sh": repo / "scripts/fetch-firecracker.sh",
                 "README.md": repo / "README.md",
                 "docs/releases.md": repo / "docs/releases.md",
@@ -54,8 +54,8 @@ def package(repo, bins, output, version, target, kind, image):
             {
                 f"deploy/{name}": repo / "deploy" / name
                 for name in (
-                    "boxd-host.service",
-                    "boxd-api.service",
+                    "kiln-host.service",
+                    "kiln-api.service",
                     "host.example.json",
                 )
             }
@@ -71,7 +71,7 @@ def package(repo, bins, output, version, target, kind, image):
                 )
             }
         )
-        name = f"boxd-server-{version}-{target}"
+        name = f"kiln-server-{version}-{target}"
     for path in files.values():
         if path.is_symlink() or not path.is_file():
             raise FileNotFoundError(f"missing regular package input: {path}")
@@ -94,7 +94,7 @@ def package(repo, bins, output, version, target, kind, image):
                     info.uname = info.gname = ""
                     info.mode = (
                         0o755
-                        if relative == "boxctl" or relative.startswith("bin/")
+                        if relative == "kiln" or relative.startswith("bin/")
                         else 0o644
                     )
                     with path.open("rb") as source:

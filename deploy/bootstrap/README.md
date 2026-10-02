@@ -1,44 +1,52 @@
-# boxd installer
+# Kiln installer
 
-Public bootstrap for **private** boxd pilot packages. This repository contains
+Public bootstrap for **private** Kiln pilot packages. This repository contains
 only installation instructions and a shell script, not the platform source,
-binaries, or credentials. You need access to `Jabbslad/boxd` to download packages.
+binaries, or credentials. You need access to `Jabbslad/kiln` to download packages.
+
+**v0.3.0 requires matching Kiln client, server and freshly built guest templates.**
+It is not an in-place upgrade from v0.2.x. Existing services, profiles, disks,
+snapshots and networking are left untouched. Plan migration separately; do not
+reuse an old runtime store or install beside it on the same server.
+`--upgrade` replaces only an existing `kiln` client, not a differently named
+older client. Fresh installation uses new configuration paths and requires
+explicit enrollment with a matching server.
 
 ## Laptop: macOS or Linux
 
 Run in a terminal:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
 ```
 
 Supports Apple Silicon/Intel macOS and x86-64 Linux with glibc 2.39+. Installs
-`~/.local/bin/boxctl` without sudo. Add that directory to PATH if prompted. No
+`~/.local/bin/kiln` without sudo. Add that directory to PATH if prompted. No
 GitHub CLI, Python, Rust, or JSON parser is required. Standard shell tools, curl,
 tar and a SHA-256 utility must be present. Native Windows users should download
-the `boxctl` zip from the private release instead; this is not a PowerShell installer.
+the `kiln` zip from the private release instead; this is not a PowerShell installer.
 
 The script asks for a GitHub token with read access to the private release.
 Create a short-lived [fine-grained token](https://github.com/settings/personal-access-tokens/new):
-choose owner **Jabbslad**, repository **boxd**, permission **Contents: Read-only**.
+choose owner **Jabbslad**, repository **kiln**, permission **Contents: Read-only**.
 Paste it at the hidden prompt, never into the command itself. You can revoke it
 after installation. Tokens are not saved in the installed application.
 
 ### Upgrade an existing laptop client
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh -s -- client --upgrade
-boxctl --version
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- client --upgrade
+kiln --version
 ```
 
 The explicit upgrade verifies the package checksum and executable version before
-atomically replacing `~/.local/bin/boxctl`. The previous binary is retained as
-`~/.local/bin/boxctl.previous` (replaced on the next upgrade); profiles, tokens and
+atomically replacing `~/.local/bin/kiln`. The previous binary is retained as
+`~/.local/bin/kiln.previous` (replaced on the next upgrade); profiles, tokens and
 CA files are untouched. Failed downloads or validation leave both binaries alone.
-To roll back, run `mv ~/.local/bin/boxctl.previous ~/.local/bin/boxctl`.
+To roll back, run `mv ~/.local/bin/kiln.previous ~/.local/bin/kiln`.
 
 Symbolic links and non-regular destinations are refused. Concurrent installers
-are blocked by `~/.local/bin/.boxctl-install.lock`; if an installer was forcibly
+are blocked by `~/.local/bin/.kiln-install.lock`; if an installer was forcibly
 killed, confirm it is no longer running before removing that empty directory.
 Plain installation still refuses to overwrite an existing client. This option
 does not upgrade a server or its guest images.
@@ -46,7 +54,7 @@ does not upgrade a server or its guest images.
 ## Server: dedicated Ubuntu 24.04 or 26.04 x86-64/KVM
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- server
 ```
 
 Use a systemd host with usable `/dev/kvm`, cgroup v2, 6 GiB currently available
@@ -65,7 +73,7 @@ Guest networking is off by default. On a fresh host, explicitly opt in to
 filtered IPv4 egress by setting the host's uplink interface (replace `enp1s0`):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | BOXD_NETWORK_UPLINK=enp1s0 sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | KILN_NETWORK_UPLINK=enp1s0 sh -s -- server
 ```
 
 This additionally installs iproute2/nftables/util-linux and, after confirmation, enables
@@ -82,19 +90,19 @@ or blindly rerun setup.
 
 ## Connect
 
-After server setup, securely transfer `/etc/boxd/laptop.tar.gz` to the laptop
+After server setup, securely transfer `/etc/kiln/laptop.tar.gz` to the laptop
 using existing SSH/SFTP. It contains an administrator token: treat it as a
 password and never upload it to a repository, issue, or chat. Extract into a
 permanent private directory and follow `CONNECT.txt`, then run:
 
 ```sh
-boxctl templates
-boxctl create --template ubuntu-4g --name first-box
-boxctl list
-boxctl exec BOX_ID -- /bin/sh -c 'printf hello'
-boxctl ssh BOX_ID
-boxctl cp ./local-file BOX_ID:/workspace/remote-file
-boxctl ssh-config BOX_ID
+kiln templates
+kiln create --template ubuntu-4g --name first-box
+kiln list
+kiln exec BOX_ID -- /bin/sh -c 'printf hello'
+kiln ssh BOX_ID
+kiln cp ./local-file BOX_ID:/workspace/remote-file
+kiln ssh-config BOX_ID
 ```
 
 Keep the extracted credential files; profiles reference them. Version 0.2.0 adds
@@ -126,7 +134,7 @@ it is not independent signing. macOS/Windows binaries are not signed/notarized.
 To review rather than pipe directly into a shell:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh -o install.sh
 less install.sh
 sh install.sh
 ```

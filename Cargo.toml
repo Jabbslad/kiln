@@ -1,9 +1,9 @@
 [workspace]
-members = ["crates/box-runtime", "crates/box-protocol", "crates/box-guest", "crates/box-api", "crates/box-server", "crates/box-client"]
+members = ["crates/kiln-runtime", "crates/kiln-protocol", "crates/kiln-guest", "crates/kiln-api", "crates/kiln-server", "crates/kiln-client"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 publish = false

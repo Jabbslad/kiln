@@ -10,6 +10,29 @@ release or real server installation has succeeded. Check the Actions run for the
 version you download. macOS binaries are not signed/notarized, and Windows
 binaries are not Authenticode-signed.
 
+## v0.3.0 compatibility
+
+Kiln v0.3.0 renames the client to `kiln`, the operator tool to `kiln-runtime`,
+and the host/API services to `kiln-host` and `kiln-api`. Rust crates, release
+archives, guest units, SSH upgrade headers and `KILN_*` environment variables
+use the new identity. The private source is `Jabbslad/kiln`; only the bootstrap
+and its README are public in `Jabbslad/kiln-install`.
+
+This is **not an in-place upgrade from v0.2.x**. Use matching v0.3.0 client,
+server and rebuilt guest images/templates. New installs use `/etc/kiln`,
+`/var/lib/kiln`, `/opt/kiln`, `/run/kiln`, and client profiles under
+`~/.config/kiln` (or the platform's config directory). Old profiles, SSH aliases,
+services, networking and runtime stores are not discovered, moved or deleted.
+Do not point the new runtime at an old store or reuse old snapshots/templates.
+Preserve the existing installation until a separately reviewed data migration
+is complete. Do not install a second networked store alongside it on the same
+host: address pools, ports and reserved UID/GID ranges are still shared.
+
+The bootstrap's `--upgrade` only replaces an existing `kiln` client; it does not
+rename an older client or migrate its configuration. Use a fresh client install
+and explicitly enroll it with a matching Kiln server. Earlier release notes and
+benchmark results below describe pre-rename versions; commands use current names.
+
 **Ubuntu host support:** starting with `v0.1.1`, both installer layers admit Ubuntu
 24.04 and 26.04 x86-64 while retaining capability and fresh-install checks. The
 provisioner passed read-only preflight on `ser7` with the release image and its
@@ -22,22 +45,22 @@ does not add support for 26.04. The guest image remains Ubuntu 24.04 on either h
 On a macOS or supported Linux laptop, run in a terminal:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
 ```
 
 On a dedicated **Ubuntu 24.04 or 26.04 x86-64/KVM** server:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- server
 ```
 
 Only the bootstrap is public. It prompts for a GitHub token to download pinned
 private release assets. Create a short-lived
 [fine-grained token](https://github.com/settings/personal-access-tokens/new),
-select owner `Jabbslad`, repository `boxd`, and repository permission
+select owner `Jabbslad`, repository `kiln`, and repository permission
 **Contents: Read-only**. Paste it into the hidden terminal prompt, not the command
 line. You can revoke it after installation. No `gh`, Python, Rust, or JSON parser
-is required on the laptop. GitHub authentication is unrelated to boxd enrollment.
+is required on the laptop. GitHub authentication is unrelated to kiln enrollment.
 
 **v0.2.0 guest-access additions:** packages include interactive SSH,
 SFTP, editor SSH configuration, and optional isolated guest IPv4 egress. The
@@ -61,15 +84,15 @@ This fixes `CgroupHierarchyMissing` on ordinary hosts. Networking installation
 now explicitly requires util-linux. The guest image and wire protocol remain
 compatible with v0.2.1; existing networkless stores still require migration.
 
-The client installs to `~/.local/bin/boxctl` without sudo and prints PATH setup
+The client installs to `~/.local/bin/kiln` without sudo and prints PATH setup
 instructions if needed. Plain installation preserves existing clients. To upgrade:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh -s -- client --upgrade
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- client --upgrade
 ```
 
 This verifies the downloaded checksum and executable version before atomic
-replacement, retaining the old binary as `~/.local/bin/boxctl.previous`. It leaves
+replacement, retaining the old binary as `~/.local/bin/kiln.previous`. It leaves
 profiles and credentials unchanged. Server upgrades are not supported by this
 flag; see the [bootstrap upgrade details](../deploy/bootstrap/README.md#upgrade-an-existing-laptop-client).
 
@@ -95,7 +118,7 @@ administrator credentials automatically.
 
 Install [GitHub CLI](https://cli.github.com/) and run `gh auth login`. Use an
 account with access to the private repository. Set `REPO` to its `OWNER/NAME` and
-`VERSION` to a published release tag (for example `v0.1.1`). A maintainer can also
+`VERSION` to a published release tag (for example `v0.3.0`). A maintainer can also
 download a draft; other readers need the release published within the private
 repository first. Publishing a release **does not** make the repository public.
 
@@ -106,27 +129,27 @@ Choose one target:
 | Apple Silicon Mac | `aarch64-apple-darwin` |
 | Intel Mac | `x86_64-apple-darwin` |
 | Linux x86-64, glibc 2.39+ | `x86_64-unknown-linux-gnu` |
-| Windows x86-64 | `x86_64-pc-windows-msvc` (`.zip`, contains `boxctl.exe`) |
+| Windows x86-64 | `x86_64-pc-windows-msvc` (`.zip`, contains `kiln.exe`) |
 
 For macOS/Linux, in a new download directory:
 
 ```sh
 REPO=OWNER/NAME
-VERSION=v0.1.1
+VERSION=v0.3.0
 TARGET=aarch64-apple-darwin
 gh release download "$VERSION" --repo "$REPO" \
-  --pattern "boxctl-$VERSION-$TARGET.tar.gz*"
-shasum -a 256 -c "boxctl-$VERSION-$TARGET.tar.gz.sha256"
-tar -xzf "boxctl-$VERSION-$TARGET.tar.gz"
+  --pattern "kiln-$VERSION-$TARGET.tar.gz*"
+shasum -a 256 -c "kiln-$VERSION-$TARGET.tar.gz.sha256"
+tar -xzf "kiln-$VERSION-$TARGET.tar.gz"
 mkdir -p "$HOME/.local/bin"
-install -m 755 boxctl "$HOME/.local/bin/boxctl"
-"$HOME/.local/bin/boxctl" --version
+install -m 755 kiln "$HOME/.local/bin/kiln"
+"$HOME/.local/bin/kiln" --version
 ```
 
 Put `$HOME/.local/bin` on your shell's PATH if it is not already there. On Windows,
 download the matching `.zip` and `.zip.sha256` with `gh release download`, compare
 `Get-FileHash -Algorithm SHA256` to the checksum, then `Expand-Archive` and place
-`boxctl.exe` in a directory on your user PATH. Verify downloads before execution;
+`kiln.exe` in a directory on your user PATH. Verify downloads before execution;
 do not disable system-wide OS security policies to run an unsigned pilot binary.
 
 Checksums detect corruption, not a compromised publisher. The trust boundary is
@@ -158,13 +181,13 @@ files to the server). Do not copy your GitHub credentials into the service:
 
 ```sh
 REPO=OWNER/NAME
-VERSION=v0.1.1
-PACKAGE="boxd-server-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+VERSION=v0.3.0
+PACKAGE="kiln-server-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
 gh release download "$VERSION" --repo "$REPO" --pattern "$PACKAGE*"
 sha256sum -c "$PACKAGE.sha256"
-mkdir boxd-server
-tar -xzf "$PACKAGE" -C boxd-server
-sudo python3 boxd-server/install.py --address 192.168.1.20 --apply
+mkdir kiln-server
+tar -xzf "$PACKAGE" -C kiln-server
+sudo python3 kiln-server/install.py --address 192.168.1.20 --apply
 ```
 
 Replace `192.168.1.20` with the server's private/VPN address. Review the displayed
@@ -191,24 +214,24 @@ runtime's numeric allocation. The installer checks accounts, subordinate ranges
 and running processes, but cannot discover an arbitrary inactive runtime policy.
 Use a dedicated host. Partial failures retain files/accounts/VM state for
 diagnosis. Never delete state to force a rerun: inspect the host log and stop any
-retained VM using the local `box` tool first. Upgrades/uninstall are not automated.
+retained VM using the local `kiln-runtime` tool first. Upgrades/uninstall are not automated.
 
 ## Connect the laptop
 
-The installer creates `/etc/boxd/laptop.tar.gz` with the public CA certificate,
+The installer creates `/etc/kiln/laptop.tar.gz` with the public CA certificate,
 administrator token and `CONNECT.txt`. **Treat this bundle as a password.**
 Transfer it over an existing trusted SSH/SFTP connection, using a private staging
 file if your SSH account cannot read root files. Never attach it to an issue,
 release, chat or repository. GitHub credentials are unrelated to this token.
 
 Extract into a private, permanent directory on your laptop and run the one
-`boxctl profile add` command in `CONNECT.txt`, then:
+`kiln profile add` command in `CONNECT.txt`, then:
 
 ```sh
-boxctl templates
-boxctl create --template ubuntu-4g --name first-box
-boxctl list
-boxctl exec BOX_ID -- /bin/sh -c 'printf hello'
+kiln templates
+kiln create --template ubuntu-4g --name first-box
+kiln list
+kiln exec BOX_ID -- /bin/sh -c 'printf hello'
 ```
 
 Profiles reference the extracted token/CA files; do not delete them after setup.
@@ -218,7 +241,7 @@ while v0.1.1 does not include an interactive shell, SSH, file transfer, or guest
 internet access. Those additions require the new builds described above.
 
 The server leaf certificate expires after **one year**. Renew it before expiry,
-using the retained private CA and the same IP SAN, and restart `boxd-api` after
+using the retained private CA and the same IP SAN, and restart `kiln-api` after
 replacing the certificate/key. There is no automatic certificate renewal yet.
 See [operation recovery and service details](remote-client.md) for interrupted
 requests, backups, token rotation, quotas and the operation-journal capacity.
@@ -248,7 +271,7 @@ Changing repository visibility later is a separate decision; this workflow never
 makes that change.
 
 The public installer is maintained in `deploy/bootstrap/`. Only `install.sh` and
-its public `README.md` may be copied to `Jabbslad/boxd-install`. After an approved
+its public `README.md` may be copied to `Jabbslad/kiln-install`. After an approved
 private release is published, update the script's pinned asset IDs and SHA-256
 values from verified packages, run `scripts/test-bootstrap.py` and ShellCheck,
 and verify a real authenticated download before publishing the public copy.

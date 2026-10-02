@@ -1,0 +1,25 @@
+[Unit]
+Description=kiln privileged microVM host service
+After=local-fs.target
+
+[Service]
+Type=simple
+User=root
+Group=kiln-api
+Environment=PATH=/opt/kiln/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/libexec/kiln-host --config /etc/kiln/host.json
+RuntimeDirectory=kiln
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+StateDirectory=kiln
+StateDirectoryMode=0700
+UMask=0077
+# VMMs have independent durable identities; restarting the manager must not
+# terminate them. Explicit box stop/delete performs controlled VM shutdown.
+KillMode=process
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

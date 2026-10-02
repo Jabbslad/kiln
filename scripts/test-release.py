@@ -27,7 +27,7 @@ class ReleaseTests(unittest.TestCase):
         self.repo.mkdir()
         self.bins = self.root / "bin"
         self.bins.mkdir()
-        for name in ["boxctl", "boxctl.exe", "box", "boxd-host", "boxd-api"]:
+        for name in ["kiln", "kiln.exe", "kiln-runtime", "kiln-host", "kiln-api"]:
             (self.bins / name).write_bytes(b"binary-" + name.encode())
         self.out = self.root / "dist"
 
@@ -39,11 +39,11 @@ class ReleaseTests(unittest.TestCase):
     def test_client_allowlist_permissions_checksum_and_no_overwrite(self):
         (self.bins / "admin.token").write_text("secret")
         path = self.package()
-        self.assertEqual(path.name, "boxctl-v0.1.0-x86_64-unknown-linux-gnu.tar.gz")
+        self.assertEqual(path.name, "kiln-v0.1.0-x86_64-unknown-linux-gnu.tar.gz")
         with tarfile.open(path) as archive:
-            self.assertEqual(archive.getnames(), ["boxctl"])
-            self.assertEqual(archive.getmember("boxctl").mode, 0o755)
-            self.assertEqual(archive.extractfile("boxctl").read(), b"binary-boxctl")
+            self.assertEqual(archive.getnames(), ["kiln"])
+            self.assertEqual(archive.getmember("kiln").mode, 0o755)
+            self.assertEqual(archive.extractfile("kiln").read(), b"binary-kiln")
         expected = hashlib.sha256(path.read_bytes()).hexdigest()
         self.assertEqual(
             Path(str(path) + ".sha256").read_text(), f"{expected}  {path.name}\n"
@@ -53,8 +53,8 @@ class ReleaseTests(unittest.TestCase):
 
     def test_windows_zip_contains_only_exe(self):
         with zipfile.ZipFile(self.package(target="x86_64-pc-windows-msvc")) as archive:
-            self.assertEqual(archive.namelist(), ["boxctl.exe"])
-            self.assertEqual(archive.read("boxctl.exe"), b"binary-boxctl.exe")
+            self.assertEqual(archive.namelist(), ["kiln.exe"])
+            self.assertEqual(archive.read("kiln.exe"), b"binary-kiln.exe")
 
     def test_invalid_version_target_and_missing_binary_make_no_archive(self):
         for version, target in [
@@ -65,7 +65,7 @@ class ReleaseTests(unittest.TestCase):
                 self.release.package(
                     self.repo, self.bins, self.out, version, target, "client", None
                 )
-        (self.bins / "boxctl").unlink()
+        (self.bins / "kiln").unlink()
         with self.assertRaises(FileNotFoundError):
             self.package()
         self.assertFalse(self.out.exists())
@@ -73,9 +73,9 @@ class ReleaseTests(unittest.TestCase):
     def test_server_contains_prebuilt_image_not_host_snapshots_or_secrets(self):
         for name in [
             "deploy/install.py",
-            "deploy/boxd-network",
-            "deploy/boxd-host.service",
-            "deploy/boxd-api.service",
+            "deploy/kiln-network",
+            "deploy/kiln-host.service",
+            "deploy/kiln-api.service",
             "deploy/host.example.json",
             "scripts/fetch-firecracker.sh",
             "README.md",
@@ -98,14 +98,14 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(
                 names,
                 {
-                    "bin/box",
-                    "bin/boxd-host",
-                    "bin/boxd-api",
-                    "bin/boxctl",
-                    "bin/boxd-network",
+                    "bin/kiln-runtime",
+                    "bin/kiln-host",
+                    "bin/kiln-api",
+                    "bin/kiln",
+                    "bin/kiln-network",
                     "install.py",
-                    "deploy/boxd-host.service",
-                    "deploy/boxd-api.service",
+                    "deploy/kiln-host.service",
+                    "deploy/kiln-api.service",
                     "deploy/host.example.json",
                     "fetch-firecracker.sh",
                     "README.md",

@@ -1,6 +1,12 @@
-# boxd
+# Kiln
 
 A self-hosted-first platform for persistent Linux microVMs, implemented in Rust.
+
+**v0.3.0 is a breaking product rename.** Use `kiln` for the laptop client and
+`kiln-runtime` for local host operations. Install matching client/server/guest
+builds and rebuild templates. Existing installations, profiles, disks and
+snapshots are not migrated or renamed automatically; see the
+[release compatibility notes](docs/releases.md#v030-compatibility).
 
 **Current delivery: working single-host runtime plus a laptop client and authenticated HTTPS service for trusted development workloads. Not a hosted service or a safe sandbox for untrusted code.** The runtime boots real Firecracker/KVM guests, executes commands over vsock, preserves writable disks, restores coordinated memory/disk checkpoints, and launches independent boxes from prepared templates. No marketing-site mockups or simulated VM operations.
 
@@ -11,7 +17,7 @@ An experimental isolated profile now integrates jailer, per-box host identities,
 Install the macOS/Linux client from a terminal:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
 ```
 
 The script prompts for a GitHub token with read access to the private packages;
@@ -19,7 +25,7 @@ no GitHub CLI, Python or Rust installation is needed on the laptop. See the
 [installation guide](docs/releases.md) for token permissions, the one-command
 Ubuntu server setup, platform requirements and optional manual/Windows downloads.
 To build from source instead, use
-`cargo install --locked --path crates/box-client`.
+`cargo install --locked --path crates/kiln-client`.
 It manages templates, create/list/inspect, exec, pause/resume, stop/start and delete
 over verified HTTPS. Only the server needs Linux/KVM. The single-host service uses
 embedded SQLite, a separate unprivileged TLS gateway and a restricted Unix socket
@@ -29,8 +35,8 @@ automatic replay of interrupted commands.
 See the [server setup and laptop guide](docs/remote-client.md). Installing the
 client does not provision server services. Server setup requires confirmation
 and binds only to the chosen private address. This pilot has one administrator.
-Version 0.2.0 includes `boxctl ssh`, SFTP via `boxctl cp`,
-editor configuration via `boxctl ssh-config`, and opt-in isolated IPv4 egress.
+Version 0.2.0 includes `kiln ssh`, SFTP via `kiln cp`,
+editor configuration via `kiln ssh-config`, and opt-in isolated IPv4 egress.
 These require matching client/server/Ubuntu guest builds; existing installations
 and templates are **not upgraded automatically**. SSH uses authenticated HTTPS/vsock, without a public SSH port;
 internet access requires separate [network provisioning](docs/runtime-networking.md).
@@ -44,18 +50,18 @@ Requires Linux x86_64, read/write access to `/dev/kvm`, cgroup v2, Rust/rustup, 
 bash scripts/fetch-firecracker.sh .tools/firecracker-1.17.0
 export PATH="$PWD/.tools/firecracker-1.17.0:$PATH"
 rustup target add --toolchain 1.95.0 x86_64-unknown-linux-musl
-cargo build --locked --release -p box-runtime --bin box
+cargo build --locked --release -p kiln-runtime --bin kiln-runtime
 bash images/build-fixture.sh images/output/fixture
 
-target/release/box doctor
-target/release/box create --image images/output/fixture/image.json \
+target/release/kiln-runtime doctor
+target/release/kiln-runtime create --image images/output/fixture/image.json \
   --name first-box --allow-unsafe-development
 # Use the returned ID:
-target/release/box exec BOX_ID -- /bin/sh -c 'printf hello'
-target/release/box delete BOX_ID
+target/release/kiln-runtime exec BOX_ID -- /bin/sh -c 'printf hello'
+target/release/kiln-runtime delete BOX_ID
 ```
 
-The fixture builder refuses to overwrite existing images; use a new output directory when rebuilding. State defaults to a private `.boxd/` directory. Commands accept `--state-dir PATH` and emit versioned JSON. See the [operator guide](docs/runtime.md) for templates, checkpoints, benchmarks, recovery, and limitations.
+The fixture builder refuses to overwrite existing images; use a new output directory when rebuilding. State defaults to a private `.kiln/` directory. Commands accept `--state-dir PATH` and emit versioned JSON. See the [operator guide](docs/runtime.md) for templates, checkpoints, benchmarks, recovery, and limitations.
 
 ## Ubuntu development guest
 
@@ -63,9 +69,9 @@ The fixture builder refuses to overwrite existing images; use a new output direc
 
 ```sh
 bash images/build-ubuntu.sh images/output/ubuntu
-target/release/box create --image images/output/ubuntu/image.json \
+target/release/kiln-runtime create --image images/output/ubuntu/image.json \
   --name ubuntu --allow-unsafe-development
-target/release/box exec BOX_ID -- /usr/bin/python3 -c 'print(17 + 93)'
+target/release/kiln-runtime exec BOX_ID -- /usr/bin/python3 -c 'print(17 + 93)'
 ```
 
 Templates pause at a Rust bootstrap before systemd starts. Each clone receives fresh identity and a kernel RNG reseed before systemd or workload services run. The host waits for the systemd-managed agent before returning a usable box. All six development and privileged isolated KVM lifecycle tests pass with Ubuntu, including systemd identity and agent-restart checks. See the [Ubuntu image contract](docs/runtime.md#ubuntu-image-contract). Fresh Ubuntu images support SSH over vsock; networking remains opt-in. Docker and a general-purpose compiler toolchain are not included.
@@ -148,8 +154,8 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --locked
 PATH="$PWD/.tools/firecracker-1.17.0:$PATH" \
-  BOXD_TEST_IMAGE="$PWD/images/output/fixture/image.json" \
-  cargo test --release --locked -p box-runtime --features fault-injection \
+  KILN_TEST_IMAGE="$PWD/images/output/fixture/image.json" \
+  cargo test --release --locked -p kiln-runtime --features fault-injection \
   --test lifecycle -- --ignored --test-threads=1 --nocapture
 ```
 
@@ -157,4 +163,4 @@ The opt-in integration suite launches disposable VMs and deliberately crashes CL
 
 ## Path to the platform
 
-The [architecture](docs/superpowers/specs/2026-09-30-boxd-platform-design.md) and [runtime plan](docs/superpowers/plans/2026-09-30-runtime-engine.md) describe the wider product. The [laptop-first service slice](docs/remote-client.md) uses embedded SQLite rather than requiring PostgreSQL. Still outstanding: signed client releases, an image security-update/release process, operation-history retention, scoped authentication, preview routing, dashboard, SDK, and fleet scheduling. Both guest images remain intended for trusted development workloads, not a hosted multi-tenant environment.
+The [architecture](docs/superpowers/specs/2026-09-30-kiln-platform-design.md) and [runtime plan](docs/superpowers/plans/2026-09-30-runtime-engine.md) describe the wider product. The [laptop-first service slice](docs/remote-client.md) uses embedded SQLite rather than requiring PostgreSQL. Still outstanding: signed client releases, an image security-update/release process, operation-history retention, scoped authentication, preview routing, dashboard, SDK, and fleet scheduling. Both guest images remain intended for trusted development workloads, not a hosted multi-tenant environment.

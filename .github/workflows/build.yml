@@ -56,10 +56,10 @@ jobs:
           shellcheck scripts/fetch-firecracker.sh images/build-ubuntu.sh deploy/bootstrap/install.sh
       - name: Build production server and local client
         run: |
-          cargo build --release --locked -p box-server --bins -p box-runtime --bin box -p box-client --bin boxctl
-          target/release/boxd-host --help
-          target/release/boxd-api --help
-          target/release/boxctl --version
+          cargo build --release --locked -p kiln-server --bins -p kiln-runtime --bin kiln-runtime -p kiln-client --bin kiln
+          target/release/kiln-host --help
+          target/release/kiln-api --help
+          target/release/kiln --version
       - name: Build pinned warm guest image without root
         run: |
           sudo apt-get update
@@ -111,14 +111,14 @@ jobs:
       - name: Toolchain
         run: rustup show
       - name: Native client TLS and CLI tests
-        run: cargo test --locked -p box-api -p box-client --target ${{ matrix.target }}
+        run: cargo test --locked -p kiln-api -p kiln-client --target ${{ matrix.target }}
       - name: Native shell bootstrap tests
         if: runner.os != 'Windows'
         run: python scripts/test-bootstrap.py
       - name: Production binary
         run: |
-          cargo build --release --locked -p box-client --bin boxctl --target ${{ matrix.target }}
-          target/${{ matrix.target }}/release/boxctl${{ matrix.suffix }} --version
+          cargo build --release --locked -p kiln-client --bin kiln --target ${{ matrix.target }}
+          target/${{ matrix.target }}/release/kiln${{ matrix.suffix }} --version
       - name: Package client
         run: |
           VERSION=$(python -c "import tomllib; print('v' + tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")

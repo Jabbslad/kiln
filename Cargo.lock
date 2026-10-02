@@ -229,100 +229,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "box-api"
-version = "0.2.2"
-dependencies = [
- "box-protocol",
- "serde",
- "serde_json",
- "tempfile",
- "uuid",
-]
-
-[[package]]
-name = "box-client"
-version = "0.2.2"
-dependencies = [
- "anyhow",
- "axum",
- "axum-server",
- "box-api",
- "clap",
- "rcgen",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "box-guest"
-version = "0.2.2"
-dependencies = [
- "box-protocol",
- "libc",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-vsock",
-]
-
-[[package]]
-name = "box-protocol"
-version = "0.2.2"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "box-runtime"
-version = "0.2.2"
-dependencies = [
- "box-protocol",
- "clap",
- "libc",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "box-server"
-version = "0.2.2"
-dependencies = [
- "anyhow",
- "axum",
- "axum-server",
- "box-api",
- "box-client",
- "box-runtime",
- "clap",
- "hyper",
- "hyper-util",
- "libc",
- "rcgen",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "subtle",
- "tempfile",
- "tokio",
- "tower",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -987,6 +893,100 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kiln-api"
+version = "0.3.0"
+dependencies = [
+ "kiln-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
+name = "kiln-client"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "axum-server",
+ "clap",
+ "kiln-api",
+ "rcgen",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "kiln-guest"
+version = "0.3.0"
+dependencies = [
+ "kiln-protocol",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-vsock",
+]
+
+[[package]]
+name = "kiln-protocol"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "kiln-runtime"
+version = "0.3.0"
+dependencies = [
+ "clap",
+ "kiln-protocol",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "kiln-server"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "axum-server",
+ "clap",
+ "hyper",
+ "hyper-util",
+ "kiln-api",
+ "kiln-client",
+ "kiln-runtime",
+ "libc",
+ "rcgen",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "tower",
 ]
 
 [[package]]

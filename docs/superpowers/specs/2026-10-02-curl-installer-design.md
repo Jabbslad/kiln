@@ -7,13 +7,13 @@ without asking the user to install GitHub CLI, Python, Rust, or a JSON parser.
 The owner approved a public bootstrap script while keeping source and packages
 private. No server deployment or private package release has been approved.
 
-Proposed public location: a separate `Jabbslad/boxd-install` repository. Publish
+Proposed public location: a separate `Jabbslad/kiln-install` repository. Publish
 only reviewed bootstrap files and installation metadata, never a copy of the
 private repository. The command shapes are:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- server
 ```
 
 These URLs are proposed, not currently available installations.

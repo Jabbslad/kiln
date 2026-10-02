@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""First-install setup for a verified boxd server release, not an upgrader."""
+"""First-install setup for a verified kiln server release, not an upgrader."""
 
 import argparse
 import grp
@@ -22,13 +22,13 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-ETC = Path("/etc/boxd")
-STATE = Path("/var/lib/boxd")
-OPT = Path("/opt/boxd")
+ETC = Path("/etc/kiln")
+STATE = Path("/var/lib/kiln")
+OPT = Path("/opt/kiln")
 LIBEXEC = Path("/usr/local/libexec")
 UNITS = Path("/etc/systemd/system")
-CGROUP = Path("/sys/fs/cgroup/boxd")
-SERVICES = ("boxd-cgroup.service", "boxd-host.service", "boxd-api.service")
+CGROUP = Path("/sys/fs/cgroup/kiln")
+SERVICES = ("kiln-cgroup.service", "kiln-host.service", "kiln-api.service")
 
 
 def run(*args):
@@ -124,12 +124,12 @@ def preflight(bundle, address):
         STATE,
         OPT,
         CGROUP,
-        Path("/run/boxd"),
-        LIBEXEC / "boxd-host",
-        LIBEXEC / "boxd-api",
+        Path("/run/kiln"),
+        LIBEXEC / "kiln-host",
+        LIBEXEC / "kiln-api",
         *(UNITS / service for service in SERVICES),
-        UNITS / "boxd-host.service.d",
-        UNITS / "boxd-api.service.d",
+        UNITS / "kiln-host.service.d",
+        UNITS / "kiln-api.service.d",
     ]
     require_absent(destinations)
     for path in destinations:
@@ -146,16 +146,16 @@ def preflight(bundle, address):
         ):
             raise ValueError(f"an existing {service} unit is installed")
     users, groups = pwd.getpwall(), grp.getgrall()
-    names = {"boxd-api", *(f"boxd-vm{i}" for i in range(8))}
+    names = {"kiln-api", *(f"kiln-vm{i}" for i in range(8))}
     if any(user.pw_name in names or 70000 <= user.pw_uid <= 70007 for user in users):
         raise ValueError(
-            "boxd account name or UID range 70000..70007 is already allocated"
+            "kiln account name or UID range 70000..70007 is already allocated"
         )
     if any(
         group.gr_name in names or 71000 <= group.gr_gid <= 71007 for group in groups
     ):
         raise ValueError(
-            "boxd group name or GID range 71000..71007 is already allocated"
+            "kiln group name or GID range 71000..71007 is already allocated"
         )
     for path, base in [(Path("/etc/subuid"), 70000), (Path("/etc/subgid"), 71000)]:
         if path.exists():
@@ -186,14 +186,14 @@ def preflight(bundle, address):
     with socket.socket() as probe:
         probe.bind((address, 8443))  # Must be assigned locally, with an unused port.
     for relative in (
-        "bin/box",
-        "bin/boxctl",
-        "bin/boxd-host",
-        "bin/boxd-api",
-        "bin/boxd-network",
+        "bin/kiln-runtime",
+        "bin/kiln",
+        "bin/kiln-host",
+        "bin/kiln-api",
+        "bin/kiln-network",
         "fetch-firecracker.sh",
-        "deploy/boxd-host.service",
-        "deploy/boxd-api.service",
+        "deploy/kiln-host.service",
+        "deploy/kiln-api.service",
         "image/image.json",
         "image/inputs.json",
     ):
@@ -235,7 +235,7 @@ def network_preflight(uplink):
         if not shutil.which(tool):
             raise ValueError("networking requires iproute2, nftables and util-linux packages")
     run("ip", "link", "show", "dev", uplink)
-    require_absent([Path("/sys/class/net/boxd0"), UNITS / "boxd-network.service"])
+    require_absent([Path("/sys/class/net/kiln0"), UNITS / "kiln-network.service"])
 
 
 def write_config(directory, template_id=None, network=False):
@@ -243,17 +243,17 @@ def write_config(directory, template_id=None, network=False):
         directory / "isolation.json",
         json.dumps(
             {
-                "firecracker": "/opt/boxd/bin/firecracker",
-                "jailer": "/opt/boxd/bin/jailer",
-                "cgroup_parent": "boxd",
+                "firecracker": "/opt/kiln/bin/firecracker",
+                "jailer": "/opt/kiln/bin/jailer",
+                "cgroup_parent": "kiln",
                 "uid_base": 70000,
                 "gid_base": 71000,
                 "disk_backend": "copy",
                 **(
                     {
                         "network": {
-                            "helper": "/opt/boxd/bin/boxd-network",
-                            "namespace_scope": "boxd",
+                            "helper": "/opt/kiln/bin/kiln-network",
+                            "namespace_scope": "kiln",
                             "resolver": "1.1.1.1",
                         }
                     }
@@ -269,10 +269,10 @@ def write_config(directory, template_id=None, network=False):
         directory / "host.json",
         json.dumps(
             {
-                "runtime_dir": "/var/lib/boxd/runtime",
-                "journal_dir": "/var/lib/boxd/journal",
-                "socket": "/run/boxd/host.sock",
-                "isolation_config": "/etc/boxd/isolation.json",
+                "runtime_dir": "/var/lib/kiln/runtime",
+                "journal_dir": "/var/lib/kiln/journal",
+                "socket": "/run/kiln/host.sock",
+                "isolation_config": "/etc/kiln/isolation.json",
                 "allow_unsafe_development": False,
                 "templates": {"ubuntu-4g": template_id} if template_id else {},
             },
@@ -295,7 +295,7 @@ def credentials(directory, uid, gid, address):
         "-days",
         "3650",
         "-subj",
-        "/CN=boxd private CA",
+        "/CN=kiln private CA",
         "-addext",
         "basicConstraints=critical,CA:TRUE,pathlen:0",
         "-addext",
@@ -357,9 +357,9 @@ def credentials(directory, uid, gid, address):
         directory / "CONNECT.txt",
         (
             "This bundle grants administrator access. Store it privately; never upload it to GitHub.\n"
-            "Run from this extracted directory on your laptop with boxctl on PATH:\n\n"
-            f"boxctl profile add default --url https://{address}:8443 --token-file admin.token --ca-file ca.crt\n"
-            "boxctl templates\nboxctl create --template ubuntu-4g --name first-box\n\n"
+            "Run from this extracted directory on your laptop with kiln on PATH:\n\n"
+            f"kiln profile add default --url https://{address}:8443 --token-file admin.token --ca-file ca.crt\n"
+            "kiln templates\nkiln create --template ubuntu-4g --name first-box\n\n"
             "Keep this directory: the profile stores file references, not copies.\n"
             "Unix: chmod 700 .; chmod 600 admin.token\n"
             "Windows: restrict this directory and token's ACL to your own account.\n"
@@ -372,7 +372,7 @@ def credentials(directory, uid, gid, address):
         tarfile.open(fileobj=stream, mode="w:gz") as archive,
     ):
         for name in ("admin.token", "ca.crt", "CONNECT.txt"):
-            info = archive.gettarinfo(str(directory / name), f"boxd-connection/{name}")
+            info = archive.gettarinfo(str(directory / name), f"kiln-connection/{name}")
             info.uid = info.gid = 0
             info.uname = info.gname = ""
             info.mode = 0o600
@@ -384,36 +384,36 @@ def credentials(directory, uid, gid, address):
 def write_units(directory, address):
     private_address(address)
     write(
-        directory / "boxd-cgroup.service",
+        directory / "kiln-cgroup.service",
         """[Unit]
-Description=Prepare boxd cgroup v2 controllers
+Description=Prepare kiln cgroup v2 controllers
 After=local-fs.target
-Before=boxd-host.service
+Before=kiln-host.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -ec 'printf "+cpu +memory +pids\\n" > /sys/fs/cgroup/cgroup.subtree_control; mkdir -p /sys/fs/cgroup/boxd; printf "+cpu +memory +pids\\n" > /sys/fs/cgroup/boxd/cgroup.subtree_control'
+ExecStart=/bin/sh -ec 'printf "+cpu +memory +pids\\n" > /sys/fs/cgroup/cgroup.subtree_control; mkdir -p /sys/fs/cgroup/kiln; printf "+cpu +memory +pids\\n" > /sys/fs/cgroup/kiln/cgroup.subtree_control'
 
 [Install]
 WantedBy=multi-user.target
 """,
         0o644,
     )
-    for service in ("boxd-host", "boxd-api"):
+    for service in ("kiln-host", "kiln-api"):
         (directory / f"{service}.service.d").mkdir(mode=0o755)
     write(
-        directory / "boxd-host.service.d/installer.conf",
-        "[Unit]\nRequires=boxd-cgroup.service\nAfter=boxd-cgroup.service\n",
+        directory / "kiln-host.service.d/installer.conf",
+        "[Unit]\nRequires=kiln-cgroup.service\nAfter=kiln-cgroup.service\n",
         0o644,
     )
     write(
-        directory / "boxd-api.service.d/installer.conf",
+        directory / "kiln-api.service.d/installer.conf",
         (
             "[Service]\nExecStart=\n"
-            f"ExecStart=/usr/local/libexec/boxd-api --listen {address}:8443 "
-            "--host-socket /run/boxd/host.sock --token-file /etc/boxd/admin.token "
-            "--tls-cert /etc/boxd/tls.crt --tls-key /etc/boxd/tls.key\n"
+            f"ExecStart=/usr/local/libexec/kiln-api --listen {address}:8443 "
+            "--host-socket /run/kiln/host.sock --token-file /etc/kiln/admin.token "
+            "--tls-cert /etc/kiln/tls.crt --tls-key /etc/kiln/tls.key\n"
         ),
         0o644,
     )
@@ -442,7 +442,7 @@ def healthcheck(address):
         except (urllib.error.URLError, TimeoutError):
             time.sleep(1)
     raise ValueError(
-        "HTTPS readiness failed; inspect journalctl -u boxd-host -u boxd-api"
+        "HTTPS readiness failed; inspect journalctl -u kiln-host -u kiln-api"
     )
 
 
@@ -460,7 +460,7 @@ def install(bundle, address, network_uplink=None):
     if not LIBEXEC.exists():
         LIBEXEC.mkdir(mode=0o755)
         LIBEXEC.chmod(0o755)
-    for name in ("box", "boxctl", "boxd-network"):
+    for name in ("kiln-runtime", "kiln", "kiln-network"):
         run(
             "install",
             "-o",
@@ -472,7 +472,7 @@ def install(bundle, address, network_uplink=None):
             bundle / "bin" / name,
             OPT / "bin" / name,
         )
-    for name in ("boxd-host", "boxd-api"):
+    for name in ("kiln-host", "kiln-api"):
         run(
             "install",
             "-o",
@@ -486,21 +486,21 @@ def install(bundle, address, network_uplink=None):
         )
     print("Downloading checksum-pinned Firecracker 1.17.0…", flush=True)
     run("bash", bundle / "fetch-firecracker.sh", OPT / "bin")
-    run("groupadd", "--system", "boxd-api")
+    run("groupadd", "--system", "kiln-api")
     run(
         "useradd",
         "--system",
         "--gid",
-        "boxd-api",
+        "kiln-api",
         "--no-create-home",
         "--home-dir",
         "/nonexistent",
         "--shell",
         "/usr/sbin/nologin",
-        "boxd-api",
+        "kiln-api",
     )
     for slot in range(8):
-        name = f"boxd-vm{slot}"
+        name = f"kiln-vm{slot}"
         run("groupadd", "--gid", str(71000 + slot), name)
         run(
             "useradd",
@@ -518,7 +518,7 @@ def install(bundle, address, network_uplink=None):
             "!",
             name,
         )
-    account = pwd.getpwnam("boxd-api")
+    account = pwd.getpwnam("kiln-api")
     credentials(ETC, account.pw_uid, account.pw_gid, address)
     image = STATE / "image"
     image.mkdir(mode=0o700)
@@ -540,18 +540,18 @@ def install(bundle, address, network_uplink=None):
         # Uplink was validated before INSTALL. This is an explicit fresh-host
         # routing/firewall change, never a side effect of ordinary runtime use.
         write(
-            UNITS / "boxd-network.service",
+            UNITS / "kiln-network.service",
             (
-                "[Unit]\nDescription=boxd internet egress policy\n"
+                "[Unit]\nDescription=kiln internet egress policy\n"
                 "Wants=network-online.target\nAfter=network-online.target\n"
-                "Before=boxd-host.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\n"
-                f"ExecStart=/opt/boxd/bin/boxd-network provision {network_uplink}\n"
+                "Before=kiln-host.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\n"
+                f"ExecStart=/opt/kiln/bin/kiln-network provision {network_uplink}\n"
                 "\n[Install]\nWantedBy=multi-user.target\n"
             ),
             0o644,
         )
-        services = ("boxd-network.service", *SERVICES)
-    for service in ("boxd-host.service", "boxd-api.service"):
+        services = ("kiln-network.service", *SERVICES)
+    for service in ("kiln-host.service", "kiln-api.service"):
         run(
             "install",
             "-o",
@@ -566,18 +566,18 @@ def install(bundle, address, network_uplink=None):
     write_units(UNITS, address)
     if network_uplink is not None:
         write(
-            UNITS / "boxd-host.service.d/network.conf",
-            "[Unit]\nRequires=boxd-network.service\nAfter=boxd-network.service\n",
+            UNITS / "kiln-host.service.d/network.conf",
+            "[Unit]\nRequires=kiln-network.service\nAfter=kiln-network.service\n",
             0o644,
         )
     run("systemd-analyze", "verify", *(UNITS / service for service in services))
     run("systemctl", "daemon-reload")
     if network_uplink is not None:
-        run("systemctl", "start", "boxd-network.service")
-    run("systemctl", "start", "boxd-cgroup.service")
-    os.environ["PATH"] = "/opt/boxd/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        run("systemctl", "start", "kiln-network.service")
+    run("systemctl", "start", "kiln-cgroup.service")
+    os.environ["PATH"] = "/opt/kiln/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     local = [
-        OPT / "bin/box",
+        OPT / "bin/kiln-runtime",
         "--state-dir",
         STATE / "runtime",
         "--isolation-config",
@@ -605,7 +605,7 @@ def install(bundle, address, network_uplink=None):
     config = json.loads((ETC / "host.json").read_text())
     config["templates"] = {"ubuntu-4g": template["id"]}
     (ETC / "host.json").write_text(json.dumps(config, indent=2) + "\n")
-    run(LIBEXEC / "boxd-host", "--config", ETC / "host.json", "--check")
+    run(LIBEXEC / "kiln-host", "--config", ETC / "host.json", "--check")
     # A failed health check must not leave services enabled at the next reboot.
     try:
         run("systemctl", "enable", "--now", *services)
@@ -619,7 +619,7 @@ def install(bundle, address, network_uplink=None):
             )
         raise
     print(
-        f"Ready: https://{address}:8443\nSecurely copy /etc/boxd/laptop.tar.gz to your laptop.\n"
+        f"Ready: https://{address}:8443\nSecurely copy /etc/kiln/laptop.tar.gz to your laptop.\n"
         "It contains an administrator token; do not upload it to GitHub or paste it into chat.\n"
         "Extract it into a private directory and follow CONNECT.txt. TLS renewal is due within one year."
     )
@@ -652,8 +652,8 @@ def main():
         print(
             f"Checks passed. Proposed installation:\n"
             f"  Ubuntu / KVM, endpoint https://{address}:8443\n"
-            "  /opt/boxd, /usr/local/libexec/boxd-*, /etc/boxd, /var/lib/boxd\n"
-            "  boxd-api and eight locked VM accounts; UID 70000..70007 / GID 71000..71007\n"
+            "  /opt/kiln, /usr/local/libexec/kiln-*, /etc/kiln, /var/lib/kiln\n"
+            "  kiln-api and eight locked VM accounts; UID 70000..70007 / GID 71000..71007\n"
             "  Enable cpu/memory/pids cgroup controllers and three systemd services\n"
             "  Generate private CA, one-year server certificate and administrator token\n"
             "  Build a 4 GiB / 1-vCPU warm Ubuntu template using the copy disk backend\n"

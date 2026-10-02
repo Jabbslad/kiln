@@ -1,12 +1,12 @@
 #!/bin/sh
-# Public bootstrap only. Packages and source remain in private Jabbslad/boxd.
+# Public bootstrap only. Packages and source remain in private Jabbslad/kiln.
 # Keep all execution inside main: a truncated curl pipe must not start setup.
 set +x
 set -eu
 umask 077
 export LC_ALL=C
 
-fail() { printf 'boxd: %s\n' "$*" >&2; exit 1; }
+fail() { printf 'kiln: %s\n' "$*" >&2; exit 1; }
 
 cleanup() {
     if [ -n "$tty_state" ]; then stty "$tty_state" < /dev/tty || :; fi
@@ -20,10 +20,6 @@ assets() {
     # Updated only after reviewing the private release and its checksums.
     cat <<'ASSETS'
 # BEGIN RELEASE ASSETS
-client:x86_64-unknown-linux-gnu 606701398 f51e2abd251dcbfca23ae8ed2789864eb0cb02e2f4a822e67aa6b7cd1f9a5db0
-client:x86_64-apple-darwin 606701383 c95e27006c1e2e2d9d98ac40b766ad44d4160e680e7971bc01edbacf7e4c36e2
-client:aarch64-apple-darwin 606701381 5140041033a1a2437811c3920599d24e58bcc5b8a1529d58aa77c17128070561
-server:x86_64-unknown-linux-gnu 606701399 1f2ac59e496949471ac289b65063ca3d23c3132fa14ea0179ea98b84c284bb69
 # END RELEASE ASSETS
 ASSETS
 }
@@ -62,7 +58,7 @@ platform() {
 }
 
 download() {
-    printf '%s\n' 'Private package: use a fine-grained GitHub token for Jabbslad/boxd with Contents: read.'
+    printf '%s\n' 'Private package: use a fine-grained GitHub token for Jabbslad/kiln with Contents: read.'
     tty_state=$(stty -g < /dev/tty)
     stty -echo < /dev/tty
     printf 'GitHub token: ' > /dev/tty
@@ -73,13 +69,13 @@ download() {
     case "$token" in ''|*[!A-Za-z0-9_]*) fail 'Invalid GitHub token format.' ;; esac
     printf 'header = "Authorization: Bearer %s"\n' "$token" > "$work/auth.conf"
     unset token
-    printf 'Downloading boxd %s (%s)…\n' "$version" "$mode"
+    printf 'Downloading kiln %s (%s)…\n' "$version" "$mode"
     # Never follow a redirect with the credential-bearing curl configuration.
     status=$(curl -q --silent --show-error --proto '=https' --connect-timeout 30 --max-time 900 \
         --config "$work/auth.conf" --header 'Accept: application/octet-stream' \
         --header 'X-GitHub-Api-Version: 2022-11-28' \
         --dump-header "$work/headers" --output "$work/package.tar.gz" --write-out '%{http_code}' \
-        "https://api.github.com/repos/Jabbslad/boxd/releases/assets/$asset") || fail 'Package download failed.'
+        "https://api.github.com/repos/Jabbslad/kiln/releases/assets/$asset") || fail 'Package download failed.'
     rm -f "$work/auth.conf"
     case "$status" in
         200) ;;
@@ -98,7 +94,7 @@ download() {
             rm -f "$work/asset.conf"
             [ "$status" = 200 ] || fail "Asset download returned HTTP $status."
             ;;
-        *) fail "GitHub returned HTTP $status. Check token access to Jabbslad/boxd and release availability." ;;
+        *) fail "GitHub returned HTTP $status. Check token access to Jabbslad/kiln and release availability." ;;
     esac
     rm -f "$work/headers"
     if command -v sha256sum >/dev/null 2>&1; then
@@ -114,21 +110,21 @@ extract() {
     # The packager emits only these regular files. Reject links, extra/duplicate
     # entries and path traversal before extraction, even after digest verification.
     if [ "$mode" = client ]; then
-        printf 'boxctl\n' > "$work/expected"
+        printf 'kiln\n' > "$work/expected"
     else
         cat > "$work/expected" <<'FILES'
-bin/box
-bin/boxctl
-bin/boxd-host
-bin/boxd-api
+bin/kiln-runtime
+bin/kiln
+bin/kiln-host
+bin/kiln-api
 install.py
 fetch-firecracker.sh
 README.md
 docs/releases.md
 docs/remote-client.md
 docs/runtime.md
-deploy/boxd-host.service
-deploy/boxd-api.service
+deploy/kiln-host.service
+deploy/kiln-api.service
 deploy/host.example.json
 image/image.json
 image/inputs.json
@@ -140,8 +136,8 @@ FILES
     tar -tzf "$work/package.tar.gz" > "$work/names" || fail 'Invalid package archive.'
     # Guest-access releases add one fixed-purpose network helper. Older pinned
     # packages remain installable, but cannot opt in to networking.
-    if [ "$mode" = server ] && grep -qx 'bin/boxd-network' "$work/names"; then
-        printf 'bin/boxd-network\n' >> "$work/expected"
+    if [ "$mode" = server ] && grep -qx 'bin/kiln-network' "$work/names"; then
+        printf 'bin/kiln-network\n' >> "$work/expected"
     fi
     sort "$work/expected" > "$work/expected.sorted"
     sort "$work/names" > "$work/names.sorted"
@@ -158,7 +154,7 @@ as_root() {
 
 check_upgrade_paths() {
     if [ ! -f "$destination" ] || [ -L "$destination" ]; then
-        fail 'Upgrade requires an existing regular file at ~/.local/bin/boxctl; symbolic links are refused.'
+        fail 'Upgrade requires an existing regular file at ~/.local/bin/kiln; symbolic links are refused.'
     fi
     if [ -e "$destination.previous" ] || [ -L "$destination.previous" ]; then
         if [ ! -f "$destination.previous" ] || [ -L "$destination.previous" ]; then
@@ -168,15 +164,15 @@ check_upgrade_paths() {
 }
 
 install_client() {
-    found=$("$work/package/boxctl" --version) || fail 'Downloaded client cannot run on this machine.'
-    [ "$found" = "box-client $version" ] || fail 'Downloaded client version does not match release.'
+    found=$("$work/package/kiln" --version) || fail 'Downloaded client cannot run on this machine.'
+    [ "$found" = "kiln $version" ] || fail 'Downloaded client version does not match release.'
     mkdir -p "$HOME/.local/bin"
-    staged=$(mktemp "$HOME/.local/bin/.boxctl.XXXXXXXX")
-    cp "$work/package/boxctl" "$staged"
+    staged=$(mktemp "$HOME/.local/bin/.kiln.XXXXXXXX")
+    cp "$work/package/kiln" "$staged"
     chmod 755 "$staged"
     if [ "$upgrade" = true ]; then
         check_upgrade_paths
-        backup_staged=$(mktemp "$HOME/.local/bin/.boxctl-backup.XXXXXXXX")
+        backup_staged=$(mktemp "$HOME/.local/bin/.kiln-backup.XXXXXXXX")
         cp -p "$destination" "$backup_staged" || fail 'Cannot back up existing client; nothing replaced.'
         mv -f "$backup_staged" "$destination.previous" || fail 'Cannot publish client backup; nothing replaced.'
         backup_staged=
@@ -189,7 +185,7 @@ install_client() {
         rm -f "$staged"
     fi
     staged=
-    printf 'Installed %s at %s/.local/bin/boxctl\n' "$found" "$HOME"
+    printf 'Installed %s at %s/.local/bin/kiln\n' "$found" "$HOME"
     # shellcheck disable=SC2016
     case ":$PATH:" in
         *":$HOME/.local/bin:"*) ;;
@@ -208,16 +204,16 @@ install_server() {
             if($1==10 || ($1==172 && $2>=16 && $2<=31) || ($1==192 && $2==168) ||
                ($1==100 && $2>=64 && $2<=127) || ($1==127 && $2==0 && $3==0 && $4==1)) ok=1
         } END { exit !ok }' || fail 'Use a private/VPN IPv4 address assigned to this server.'
-    uplink=${BOXD_NETWORK_UPLINK:-}
+    uplink=${KILN_NETWORK_UPLINK:-}
     if [ -n "$uplink" ]; then
         printf '%s\n' "$uplink" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}$' || fail 'Invalid network uplink interface.'
-        [ -f "$work/package/bin/boxd-network" ] || fail 'This pinned release has no guest networking; a guest-access release is required.'
+        [ -f "$work/package/bin/kiln-network" ] || fail 'This pinned release has no guest networking; a guest-access release is required.'
         printf 'Networking requested: enable host IPv4 forwarding and filtered NAT via %s.\n' "$uplink"
     fi
     printf '%s\n' \
         'This is a fresh-install pilot, not an upgrader. Fresh-host/reboot validation is outstanding.' \
         'Setup will use sudo to install Ubuntu packages: python3 openssl curl ca-certificates tar passwd.' \
-        'It will then check resources/conflicts and ask INSTALL before creating boxd accounts and services.' \
+        'It will then check resources/conflicts and ask INSTALL before creating kiln accounts and services.' \
         'A failed setup retains runtime state for diagnosis; do not delete it and blindly retry.'
     printf 'Type SETUP to install prerequisites and continue: ' > /dev/tty
     IFS= read -r confirmation < /dev/tty || fail 'Setup cancelled.'
@@ -233,7 +229,7 @@ install_server() {
 }
 
 main() {
-    version=0.2.2
+    version=0.3.0
     work='' staged='' backup_staged='' tty_state='' lock='' upgrade=false
     trap cleanup EXIT
     trap 'exit 130' INT
@@ -258,15 +254,15 @@ main() {
     command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || fail 'Missing system SHA-256 tool.'
     if [ "$mode" = client ]; then
         [ -n "${HOME:-}" ] || fail 'HOME must be set.'
-        destination="$HOME/.local/bin/boxctl"
+        destination="$HOME/.local/bin/kiln"
         if [ "$upgrade" = true ]; then
             check_upgrade_paths
         elif [ -e "$destination" ] || [ -L "$destination" ]; then
-            fail 'Existing boxctl preserved; rerun with: sh -s -- client --upgrade'
+            fail 'Existing kiln preserved; rerun with: sh -s -- client --upgrade'
         fi
         mkdir -p "$HOME/.local/bin"
-        mkdir "$HOME/.local/bin/.boxctl-install.lock" 2>/dev/null || fail 'Cannot lock client destination; another installer may be running. Inspect ~/.local/bin/.boxctl-install.lock before removing a stale lock.'
-        lock="$HOME/.local/bin/.boxctl-install.lock"
+        mkdir "$HOME/.local/bin/.kiln-install.lock" 2>/dev/null || fail 'Cannot lock client destination; another installer may be running. Inspect ~/.local/bin/.kiln-install.lock before removing a stale lock.'
+        lock="$HOME/.local/bin/.kiln-install.lock"
     elif [ "$(id -u)" != 0 ]; then
         command -v sudo >/dev/null 2>&1 || fail 'Server setup needs sudo or a root shell.'
     fi
@@ -278,7 +274,7 @@ main() {
     [ "${#digest}" = 64 ] || fail 'Invalid pinned release digest.'
     # Verify a controlling terminal before making private temporary files.
     ( : < /dev/tty ) 2>/dev/null || fail 'Run interactively in a terminal to enter your GitHub token.'
-    work=$(mktemp -d "${TMPDIR:-/tmp}/boxd-install.XXXXXXXX")
+    work=$(mktemp -d "${TMPDIR:-/tmp}/kiln-install.XXXXXXXX")
     download
     extract
     if [ "$mode" = client ]; then install_client; else install_server; fi

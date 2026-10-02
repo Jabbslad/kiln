@@ -17,7 +17,7 @@
 ## 1. Establish the pinned image's quiescence policy
 
 - [x] Inspect active units, jobs, activation sources, manager environment and retained FD stores on a disposable local Ubuntu box. Identify the fixed service/unit allowlist and stopped activation units to restore later.
-- [x] Implement `crates/box-guest/src/warm.rs`: bounded systemctl operations; parse and validate unit/property inventories; stop activators before daemons; drain jobs and confirm only PID1/bootstrap remain; check FD stores and credential properties. Expose the listener only after this invariant holds. Store activation names in boot-local state, not arbitrary shell commands.
+- [x] Implement `crates/kiln-guest/src/warm.rs`: bounded systemctl operations; parse and validate unit/property inventories; stop activators before daemons; drain jobs and confirm only PID1/bootstrap remain; check FD stores and credential properties. Expose the listener only after this invariant holds. Store activation names in boot-local state, not arbitrary shell commands.
 - [x] Add failing tests first for unexpected service/process, malformed or missing inventory fields, nonempty FD stores/credentials, pending jobs and activators. Verify stability after delaying at the KVM preparation barrier; separately exercise captured templates in the lifecycle suite.
 
 ## 2. Add the reset and fresh-agent handoff
@@ -29,7 +29,7 @@
 
 ## 3. Integrate explicit image/runtime policy
 
-- [x] Add/test `BootMode::SystemdWarm` in `crates/box-runtime/src/image.rs`; version it through the existing strict manifest enum. Extend only the relevant host readiness branches in `runtime.rs` and template capture as needed.
+- [x] Add/test `BootMode::SystemdWarm` in `crates/kiln-runtime/src/image.rs`; version it through the existing strict manifest enum. Extend only the relevant host readiness branches in `runtime.rs` and template capture as needed.
 - [x] Extend `images/build-ubuntu.sh` with an explicit warm mode; default remains legacy systemd. Generate a separate console-logging bootstrap unit ordered after basic startup and a fresh marker-gated workload service. Preserve image checksum/ownership/no-overwrite behavior. Do not silently remove systemd functionality or permanently disable activation sources to pass admission.
 - [x] Build a new pinned Ubuntu image without modifying existing images. Run ordinary tests and the full development/isolated lifecycle suite for old and warm images.
 

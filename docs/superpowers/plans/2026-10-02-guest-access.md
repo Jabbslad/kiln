@@ -21,11 +21,11 @@ Linux network namespaces/TAP and nftables.
 
 ## Implementation units
 
-- [x] Guest SSH: extend `box-protocol`, `box-guest` and Ubuntu image configuration.
+- [x] Guest SSH: extend `kiln-protocol`, `kiln-guest` and Ubuntu image configuration.
   Fixed vsock port, framed key admission, fresh host keys and bounded OpenSSH children.
   Tests reject malformed keys and pre-initialization access; real SSH/SFTP test
   verifies binary content, exit status and host key behavior.
-- [x] Runtime egress: extend `box-runtime` device provisioning and restoration;
+- [x] Runtime egress: extend `kiln-runtime` device provisioning and restoration;
   add a reviewed operator network helper/policy. Test address allocation, hostile
   destinations, cleanup and networkless compatibility. Privileged tests use a
   disposable enclosing namespace, never shared host networking.
@@ -77,5 +77,5 @@ All five downloaded packages match their SHA-256 files. The updated bootstrap
 passed 17 tests and ShellCheck, plus real authenticated Linux-client installation
 and server-download/archive validation; server setup was cancelled before any
 system changes. Only the bootstrap script and its public README were published
-to `Jabbslad/boxd-install`, with verified v0.2.0 asset IDs and digests. No live
+to `Jabbslad/kiln-install`, with verified v0.2.0 asset IDs and digests. No live
 server or existing VM was upgraded.

@@ -52,8 +52,8 @@ Files: `.github/workflows/build.yml`, `docs/releases.md`, `README.md`,
   explicit pilot/fresh-host-validation caveats. Inspect state before any retry.
 - [x] Read release asset IDs/digests and pin them in the bootstrap; rerun tests.
 - [x] Exercise real authenticated client download and install in a disposable
-  HOME, including `boxctl --version`. Never log or persist GitHub credentials.
-- [x] Create public Jabbslad/boxd-install and publish only reviewed install.sh and
+  HOME, including `kiln --version`. Never log or persist GitHub credentials.
+- [x] Create public Jabbslad/kiln-install and publish only reviewed install.sh and
   README.md. Check visibility of both repos. Fetch the public script and compare
   its digest to the tested local copy, then exercise that copy with real assets.
 - [x] Commit only this task's local changes. Do not push the private source
@@ -62,14 +62,14 @@ Files: `.github/workflows/build.yml`, `docs/releases.md`, `README.md`,
 
 ## Delivery and evidence
 
-Published the private [v0.1.0 prerelease](https://github.com/Jabbslad/boxd/releases/tag/v0.1.0)
+Published the private [v0.1.0 prerelease](https://github.com/Jabbslad/kiln/releases/tag/v0.1.0)
 with all five original archives and their checksum files. All ten uploaded asset
 digests match the verified successful build. Publishing the tag triggered a
 redundant build (36996784311); it was cancelled before its release job could try
 to recreate the existing release. The original successful run remains 36944964317.
 
 Published only `install.sh` and `README.md` in public
-[Jabbslad/boxd-install](https://github.com/Jabbslad/boxd-install), with independent
+[Jabbslad/kiln-install](https://github.com/Jabbslad/kiln-install), with independent
 Git history. Verified the public script is byte-identical to the tested copy,
 the source repository remains private, and unauthenticated asset access returns
 404. Real Linux installs passed both before and after publication, including

@@ -1,8 +1,8 @@
 {
-  "runtime_dir": "/var/lib/boxd/runtime",
-  "journal_dir": "/var/lib/boxd/journal",
-  "socket": "/run/boxd/host.sock",
-  "isolation_config": "/etc/boxd/isolation.json",
+  "runtime_dir": "/var/lib/kiln/runtime",
+  "journal_dir": "/var/lib/kiln/journal",
+  "socket": "/run/kiln/host.sock",
+  "isolation_config": "/etc/kiln/isolation.json",
   "allow_unsafe_development": false,
   "templates": {}
 }

@@ -68,7 +68,7 @@ def check_case(image_path, firecracker, output, case):
     image = json.loads(image_path.read_text())
     assert image["boot_mode"] in ("systemd_warm", "systemd_warm_shared")
     shared = image["boot_mode"] == "systemd_warm_shared"
-    with tempfile.TemporaryDirectory(prefix="boxd-warm-") as directory:
+    with tempfile.TemporaryDirectory(prefix="kiln-warm-") as directory:
         scratch = Path(directory)
         disk = scratch / "disk.ext4"
         subprocess.run(["cp", "--reflink=auto", "--sparse=always",
@@ -95,7 +95,7 @@ s.sendmsg([b'FDSTORE=1\\nFDNAME=synthetic'], [(socket.SOL_SOCKET, socket.SCM_RIG
 """)
                 settings = "ExecStart=\nExecStart=/usr/bin/python3 /fdstore.py\nNotifyAccess=all\nFileDescriptorStoreMax=1\nFileDescriptorStorePreserve=yes\n"
             else:
-                settings = "SetCredential=boxd-probe:synthetic-test-only\n"
+                settings = "SetCredential=kiln-probe:synthetic-test-only\n"
             inject(disk, scratch, "/etc/systemd/system/systemd-sysctl.service.d/probe.conf",
                    "[Service]\n" + settings)
         if case in ("reset-failure", "marker-failure"):
@@ -107,13 +107,13 @@ s.sendmsg([b'FDSTORE=1\\nFDNAME=synthetic'], [(socket.SOL_SOCKET, socket.SCM_RIG
             if case == "reset-failure":
                 hook = 'if [ "$1" = call ]; then echo injected-reset-failure >&2; exit 42; fi\n'
             else:
-                hook = 'if [ "$1" = call ] && [ "$2" = org.freedesktop.DBus ]; then mkdir /run/boxd-initialized; fi\n'
+                hook = 'if [ "$1" = call ] && [ "$2" = org.freedesktop.DBus ]; then mkdir /run/kiln-initialized; fi\n'
             inject(disk, scratch, "/usr/bin/busctl", "#!/bin/sh\n" + hook + 'exec /usr/bin/busctl.real "$@"\n', True)
         vsock = scratch / "vsock"
         config = scratch / "config.json"
         config.write_text(json.dumps({
             "boot-source": {"kernel_image_path": str(image_path.parent / image["kernel_path"]),
-                            "boot_args": "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/sbin/box-init boxd.warm=1 initcall_blacklist=load_umh quiet" + (" boxd.retain_pid1=1" if shared else "")},
+                            "boot_args": "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/sbin/kiln-init kiln.warm=1 initcall_blacklist=load_umh quiet" + (" kiln.retain_pid1=1" if shared else "")},
             "machine-config": {"vcpu_count": 1, "mem_size_mib": 256},
             "drives": [{"drive_id": "rootfs", "path_on_host": str(disk), "is_root_device": True, "is_read_only": False}],
             "vsock": {"guest_cid": 3, "uds_path": str(vsock)},
@@ -177,8 +177,8 @@ s.sendmsg([b'FDSTORE=1\\nFDNAME=synthetic'], [(socket.SOL_SOCKET, socket.SCM_RIG
                     assert result["code"] == "initialization_failed", result
                     wait_hello(vsock, False)
                     assert request(vsock, execute)["code"] == "not_initialized"
-                timings = [json.loads(line.split("boxd_warm_reset ", 1)[1]) for line in log.read_text().splitlines()
-                           if "boxd_warm_reset " in line]
+                timings = [json.loads(line.split("kiln_warm_reset ", 1)[1]) for line in log.read_text().splitlines()
+                           if "kiln_warm_reset " in line]
                 assert len(timings) == 1, timings
                 timing = timings[0]
                 assert timing["retain_pid1"] == shared

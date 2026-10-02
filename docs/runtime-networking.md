@@ -5,19 +5,19 @@ Networking is available only for isolated state stores whose immutable
 
 ```json
 "network": {
-  "helper": "/opt/boxd/bin/boxd-network",
-  "namespace_scope": "boxd",
+  "helper": "/opt/kiln/bin/kiln-network",
+  "namespace_scope": "kiln",
   "resolver": "1.1.1.1"
 }
 ```
 
-The only supported `namespace_scope` is `boxd`. The fixed host transit pool
+The only supported `namespace_scope` is `kiln`. The fixed host transit pool
 supports exactly one network-enabled state store per host; a second store is
 rejected rather than risking duplicate transit addresses. Omitting `network`
 preserves networkless behavior (including existing immutable stores). NIC
 topology is recorded in each box and snapshot; it is never inferred later.
 
-The installer must copy `deploy/boxd-network` as a root-owned, non-writable
+The installer must copy `deploy/kiln-network` as a root-owned, non-writable
 executable at the configured path and install `iproute2`, `nftables`, and
 `util-linux` (for `nsenter`). The VMM launcher enters only the network namespace;
 it must preserve the cgroup2 mount for jailer, which establishes its own mount
@@ -27,11 +27,11 @@ accidentally masked the problem with a second cgroup mount outside `/sys`.
 
 The fresh-install provisioner supports this through its explicit
 `--network-uplink INTERFACE` option. After reviewing the plan, `INSTALL` authorizes
-creation of the bridge/firewall and a `boxd-network.service` boot prerequisite.
+creation of the bridge/firewall and a `kiln-network.service` boot prerequisite.
 Omitting the option makes no networking changes. This is not an upgrade path
 for an existing immutable state store.
 
-The shell bootstrap accepts `BOXD_NETWORK_UPLINK=INTERFACE` and installs the
+The shell bootstrap accepts `KILN_NETWORK_UPLINK=INTERFACE` and installs the
 additional prerequisites only after `SETUP` confirmation. It refuses old
 packages without the helper. The v0.2.0 bootstrap and server package include
 this option; it is not enabled merely by installing the client.
@@ -40,11 +40,11 @@ An operator must explicitly enable host forwarding/NAT once, choosing the
 public uplink:
 
 ```sh
-sudo /opt/boxd/bin/boxd-network provision eth0
+sudo /opt/kiln/bin/kiln-network provision eth0
 ```
 
-This is intentionally not run by the runtime. It creates `boxd0`, enables IPv4
-forwarding, and installs the `boxd_global` nftables table. Review integration
+This is intentionally not run by the runtime. It creates `kiln0`, enables IPv4
+forwarding, and installs the `kiln_global` nftables table. Review integration
 with the host's firewall manager and persistence mechanism before production
 use. Per-box lifecycle calls create only owned namespaces/TAPs and refuse to
 adopt or remove resources whose ownership marker differs.

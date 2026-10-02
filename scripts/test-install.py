@@ -106,8 +106,8 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(
             policy["network"],
             {
-                "helper": "/opt/boxd/bin/boxd-network",
-                "namespace_scope": "boxd",
+                "helper": "/opt/kiln/bin/kiln-network",
+                "namespace_scope": "kiln",
                 "resolver": "1.1.1.1",
             },
         )
@@ -172,26 +172,26 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(
                 set(archive.getnames()),
                 {
-                    "boxd-connection/admin.token",
-                    "boxd-connection/ca.crt",
-                    "boxd-connection/CONNECT.txt",
+                    "kiln-connection/admin.token",
+                    "kiln-connection/ca.crt",
+                    "kiln-connection/CONNECT.txt",
                 },
             )
             self.assertIn(
                 b"https://100.70.80.90:8443",
-                archive.extractfile("boxd-connection/CONNECT.txt").read(),
+                archive.extractfile("kiln-connection/CONNECT.txt").read(),
             )
             self.assertNotIn(token, (self.root / "CONNECT.txt").read_text())
 
     def test_units_restore_cgroups_at_boot_and_do_not_enable_guest_network(self):
         self.install.write_units(self.root, "192.168.50.2")
-        group = (self.root / "boxd-cgroup.service").read_text()
+        group = (self.root / "kiln-cgroup.service").read_text()
         self.assertIn("+cpu +memory +pids", group)
         self.assertIn("RemainAfterExit=yes", group)
-        host = (self.root / "boxd-host.service.d/installer.conf").read_text()
-        self.assertIn("Requires=boxd-cgroup.service", host)
-        self.assertIn("After=boxd-cgroup.service", host)
-        api = (self.root / "boxd-api.service.d/installer.conf").read_text()
+        host = (self.root / "kiln-host.service.d/installer.conf").read_text()
+        self.assertIn("Requires=kiln-cgroup.service", host)
+        self.assertIn("After=kiln-cgroup.service", host)
+        api = (self.root / "kiln-api.service.d/installer.conf").read_text()
         self.assertIn("ExecStart=\n", api)
         self.assertIn("--listen 192.168.50.2:8443", api)
         self.assertNotIn("0.0.0.0", api)
@@ -271,9 +271,9 @@ class InstallTests(unittest.TestCase):
                     capture_output=True,
                 )
                 for name in (
-                    "boxd-api.service",
-                    "boxd-host.service",
-                    "boxd-cgroup.service",
+                    "kiln-api.service",
+                    "kiln-host.service",
+                    "kiln-cgroup.service",
                 )
             ],
         )
