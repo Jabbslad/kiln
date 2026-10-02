@@ -30,6 +30,7 @@ def expect(value):
             raise AssertionError(f"missing {value!r}: {output[-3000:]!r}")
         if select.select([master], [], [], 0.1)[0]:
             output += os.read(master, 8192)
+            assert b"System is booting up" not in output, "ready guest still reports pam_nologin boot restriction"
     output = b""
 
 

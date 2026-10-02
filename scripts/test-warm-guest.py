@@ -166,6 +166,10 @@ s.sendmsg([b'FDSTORE=1\\nFDNAME=synthetic'], [(socket.SOL_SOCKET, socket.SCM_RIG
                     assert result["type"] == "initialized", result
                     wait_hello(vsock, True)
                     assert bytes(request(vsock, execute)["stdout"]).decode() == identity + "\n"
+                    login = request(vsock, dict(execute, argv=["/bin/sh", "-c",
+                        "test ! -e /run/nologin && systemctl is-active systemd-user-sessions.service"]))
+                    assert login["exit_code"] == 0, "initialized guest still blocks user logins: " + repr(login)
+                    assert bytes(login["stdout"]) == b"active\n", login
                     refresh = request(vsock, dict(execute, argv=["/bin/cat", "/run/test-manager-refresh"]))
                     assert refresh["exit_code"] == 0, refresh
                     assert bytes(refresh["stdout"]).decode() == ("daemon-reload\n" if shared else "daemon-reexec\n")

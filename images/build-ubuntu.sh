@@ -65,8 +65,8 @@ EOF
 cat > "$root/etc/systemd/system/box-guest.service" <<'EOF'
 [Unit]
 Description=boxd host-vsock guest agent
-Requires=basic.target
-After=basic.target
+Requires=basic.target systemd-user-sessions.service
+After=basic.target systemd-user-sessions.service
 ConditionPathExists=/run/boxd-initialized
 
 [Service]
@@ -104,7 +104,8 @@ EOF
     cat > "$root/etc/systemd/system/box-bootstrap.service" <<'EOF'
 [Unit]
 Description=boxd warm template barrier
-After=basic.target
+Requires=systemd-user-sessions.service
+After=basic.target systemd-user-sessions.service
 ConditionKernelCommandLine=boxd.warm=1
 ConditionPathExists=!/run/boxd-initialized
 

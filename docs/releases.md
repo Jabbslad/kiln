@@ -46,6 +46,15 @@ and updated Ubuntu guest agent. Existing templates/boxes are not
 upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
 management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
 
+**v0.2.1 guest login fix:** the image starts `systemd-user-sessions` before the
+warm preparation barrier and workload agent. Ready guests no longer retain
+`/run/nologin` or print the stale "System is booting up" PAM warning. Rebuild
+templates from the new image; installing a client or host binary does not change
+existing guest disks. See the [existing-guest repair](remote-client.md#repair-login-readiness-in-an-existing-guest).
+This release does not add network cards to old boxes or migrate networkless
+stores. Internet access still requires an explicitly provisioned network-enabled
+store and templates, with a reviewed migration for existing workloads.
+
 The client installs to `~/.local/bin/boxctl` without sudo and prints PATH setup
 instructions if needed. Plain installation preserves existing clients. To upgrade:
 

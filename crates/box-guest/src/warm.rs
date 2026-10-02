@@ -39,6 +39,7 @@ const COMPLETED: &[&str] = &[
     "systemd-udev-trigger.service",
     "systemd-update-done.service",
     "systemd-update-utmp.service",
+    "systemd-user-sessions.service",
 ];
 const ACTIVATORS: &[&str] = &[
     "proc-sys-fs-binfmt_misc.automount",
@@ -497,6 +498,17 @@ mod tests {
 
     fn service(name: &str, state: &str, sub: &str, fds: &str) -> String {
         format!("Id={name}\nActiveState={state}\nSubState={sub}\nNFileDescriptorStore={fds}\n")
+    }
+
+    #[test]
+    fn login_readiness_is_admitted_only_as_a_completed_oneshot() {
+        let name = "systemd-user-sessions.service";
+        assert_eq!(
+            services(&service(name, "active", "exited", "0"), true).unwrap(),
+            [name]
+        );
+        assert!(services(&service(name, "active", "running", "0"), true).is_err());
+        assert!(services(&service(name, "active", "exited", "1"), true).is_err());
     }
 
     #[test]

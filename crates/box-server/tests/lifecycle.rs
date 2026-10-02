@@ -339,6 +339,10 @@ async fn https_lifecycle_and_crashed_host_never_replay_exec() {
         b"retained"
     );
     if let Some(key) = &host_key {
+        assert_eq!(
+            output(action(&client, exec(&id, "test ! -e /run/nologin && systemctl is-active systemd-user-sessions.service")).await),
+            b"active\n"
+        );
         assert_eq!(&client.ssh_host_key(&id).await.unwrap(), key);
     }
     if std::env::var_os("BOXD_TEST_NETWORK").is_some() {

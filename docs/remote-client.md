@@ -224,6 +224,29 @@ Its guest deadline is `--timeout-ms` (1–3600000, default 10000). Client wait i
 separate: `--wait-seconds` (default 300); exceeding it does not cancel the server
 operation. Request IDs and diagnostics go to stderr.
 
+### Repair login readiness in an existing guest
+
+Older images can report "System is booting up" after the agent is ready because
+their minimal target never starts `systemd-user-sessions`. As root **inside the
+guest**, install this dependency and start the oneshot (no guest reboot needed):
+
+```sh
+mkdir -p /etc/systemd/system/box-guest.service.d
+test ! -e /etc/systemd/system/box-guest.service.d/login-readiness.conf &&
+printf '%s\n' '[Unit]' 'Requires=systemd-user-sessions.service' 'After=systemd-user-sessions.service' > /etc/systemd/system/box-guest.service.d/login-readiness.conf
+systemctl daemon-reload
+systemctl start systemd-user-sessions.service
+test ! -e /run/nologin
+```
+
+This preserves PAM's login policy, including shutdown-time login restrictions;
+do not disable `pam_nologin` or just delete its marker at every login. New v0.2.1
+images include the dependency and run the oneshot before warm snapshot creation.
+The repair does not enable internet access: networkless VMs have no virtual NIC,
+and their immutable store policy cannot be changed in place. Preserve old boxes
+and explicitly plan a migration to network-enabled replacements instead of
+editing runtime metadata or deleting existing state.
+
 ## Reconnect without accidentally repeating work
 
 Every mutation prints a 32-hex request ID **before submission**. To submit and
