@@ -4,7 +4,10 @@ set -euo pipefail
 output=${1:?usage: fetch-firecracker.sh OUTPUT_DIRECTORY}
 mkdir -p "$output"
 output=$(realpath "$output")
-test ! -e "$output/firecracker" && test ! -e "$output/jailer" || { echo 'Refusing to overwrite binaries' >&2; exit 1; }
+if [[ -e "$output/firecracker" || -e "$output/jailer" ]]; then
+  echo 'Refusing to overwrite binaries' >&2
+  exit 1
+fi
 archive=$(mktemp -d "$output/.download.XXXXXX")
 trap 'rm -rf -- "$archive"' EXIT
 curl --fail --location --retry 3 \

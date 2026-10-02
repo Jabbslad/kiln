@@ -12,7 +12,10 @@ if [[ ${BOXD_FAKEROOT:-} != 1 ]]; then
     mkdir -p "$output"
     output=$(realpath "$output")
     for file in image.json rootfs.ext4; do
-        test ! -e "$output/$file" && test ! -L "$output/$file" || { echo 'Refusing to overwrite an image' >&2; exit 1; }
+        if [[ -e "$output/$file" || -L "$output/$file" ]]; then
+            echo 'Refusing to overwrite an image' >&2
+            exit 1
+        fi
     done
     cargo build --manifest-path "$repo/Cargo.toml" --locked --release -p box-guest --bins --target x86_64-unknown-linux-musl
     if test -n "$archive"; then archive=$(realpath "$archive"); fi
