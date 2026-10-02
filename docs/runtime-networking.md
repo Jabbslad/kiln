@@ -27,8 +27,8 @@ for an existing immutable state store.
 
 The shell bootstrap accepts `BOXD_NETWORK_UPLINK=INTERFACE` and installs the
 additional prerequisites only after `SETUP` confirmation. It refuses old
-packages without the helper. **The published bootstrap still pins v0.1.1**;
-using this feature requires a new reviewed release and updated bootstrap pins.
+packages without the helper. The v0.2.0 bootstrap and server package include
+this option; it is not enabled merely by installing the client.
 
 An operator must explicitly enable host forwarding/NAT once, choosing the
 public uplink:

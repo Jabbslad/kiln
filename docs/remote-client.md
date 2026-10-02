@@ -9,8 +9,8 @@ package on a supported Ubuntu host.
 Firecracker and KVM. This is a single-administrator, trusted-workload pilot:
 lifecycle management, buffered commands, SSH terminals, SFTP and opt-in isolated
 IPv4 egress are implemented. Previews and multi-tenant security are not included.
-SSH/networking require matching new client/server/guest builds; the published
-v0.1.1 packages do not include them.
+SSH/networking require matching v0.2.0 client/server/guest builds; v0.1.1
+packages and existing templates do not include them.
 
 The existing `box` binary remains the local Linux operator tool. It is not the
 laptop client. Do not run local mutations against the runtime while its host

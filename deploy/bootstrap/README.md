@@ -40,7 +40,19 @@ IPv4 address assigned to the server, and requests permission to install required
 Ubuntu packages through sudo. These include Python; you do not install or invoke
 it yourself. The provisioner checks resources/conflicts and requests a separate
 `INSTALL` confirmation before creating accounts, services, TLS credentials, and
-a 4 GiB warm Ubuntu template. No firewall or VPN is configured.
+a 4 GiB warm Ubuntu template. No VPN or API firewall opening is configured.
+
+Guest networking is off by default. On a fresh host, explicitly opt in to
+filtered IPv4 egress by setting the host's uplink interface (replace `enp1s0`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | BOXD_NETWORK_UPLINK=enp1s0 sh -s -- server
+```
+
+This additionally installs iproute2/nftables and, after confirmation, enables
+forwarding, a guest bridge, NAT/filter rules and a boot service. Host/LAN/metadata
+and peer-guest access are blocked. Review coexistence with any host firewall
+manager. This option cannot retrofit an existing immutable runtime store.
 
 **This is a trusted-workload pilot, not a production multi-tenant sandbox.**
 Fresh-host setup and reboot validation remain outstanding. The initial server
@@ -61,15 +73,21 @@ boxctl templates
 boxctl create --template ubuntu-4g --name first-box
 boxctl list
 boxctl exec BOX_ID -- /bin/sh -c 'printf hello'
+boxctl ssh BOX_ID
+boxctl cp ./local-file BOX_ID:/workspace/remote-file
+boxctl ssh-config BOX_ID
 ```
 
-Keep the extracted credential files; profiles reference them. This release has
-buffered execution, not an interactive terminal, guest SSH or guest internet.
+Keep the extracted credential files; profiles reference them. Version 0.2.0 adds
+interactive SSH, SFTP and editor SSH configuration over the same HTTPS endpoint;
+no port 22 exposure is needed. Linux/macOS need OpenSSH (`ssh`, `scp`, `ssh-keygen`).
+Windows supports management commands only. Existing servers/templates need a
+controlled update; reinstalling the client alone does not update guest images.
 Server certificates need manual renewal within one year.
 
 ## Trust and maintenance
 
-The bootstrap pins v0.1.1 asset IDs and SHA-256 digests, validates archive contents,
+The bootstrap pins v0.2.0 asset IDs and SHA-256 digests, validates archive contents,
 and authenticates only to GitHub's API. Redirected asset requests do not receive
 the GitHub token. Temporary secrets are removed on normal exit and handled
 signals. A checksum protects integrity under trust in this bootstrap publisher;

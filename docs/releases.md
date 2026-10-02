@@ -39,11 +39,10 @@ select owner `Jabbslad`, repository `boxd`, and repository permission
 line. You can revoke it after installation. No `gh`, Python, Rust, or JSON parser
 is required on the laptop. GitHub authentication is unrelated to boxd enrollment.
 
-**Unreleased guest-access additions:** source builds now include interactive SSH,
+**v0.2.0 guest-access additions:** packages include interactive SSH,
 SFTP, editor SSH configuration, and optional isolated guest IPv4 egress. The
-public installer still pins v0.1.1 and does not deliver these additions. A new
-reviewed release must include the client, server, and updated Ubuntu guest agent,
-followed by updated bootstrap asset pins. Existing templates/boxes are not
+public installer pins v0.2.0. These features require the new client, server,
+and updated Ubuntu guest agent. Existing templates/boxes are not
 upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
 management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
 

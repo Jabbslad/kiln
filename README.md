@@ -29,10 +29,10 @@ automatic replay of interrupted commands.
 See the [server setup and laptop guide](docs/remote-client.md). Installing the
 client does not provision server services. Server setup requires confirmation
 and binds only to the chosen private address. This pilot has one administrator.
-The working tree additionally implements `boxctl ssh`, SFTP via `boxctl cp`,
+Version 0.2.0 includes `boxctl ssh`, SFTP via `boxctl cp`,
 editor configuration via `boxctl ssh-config`, and opt-in isolated IPv4 egress.
-These require new client/server/Ubuntu guest builds and are **not in the pinned
-v0.1.1 download**. SSH uses authenticated HTTPS/vsock, without a public SSH port;
+These require matching client/server/Ubuntu guest builds; existing installations
+and templates are **not upgraded automatically**. SSH uses authenticated HTTPS/vsock, without a public SSH port;
 internet access requires separate [network provisioning](docs/runtime-networking.md).
 
 ## Try the runtime

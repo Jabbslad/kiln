@@ -60,8 +60,22 @@ subsequently authorized commit, push and release after each iteration; follow
 - Disposable packet tests pass initialization gating, public IPv4 replies,
   host/LAN/metadata/peer denial, unsolicited ingress, spoofing and cleanup.
 - No live installation was replaced; no shared routes/firewall were changed.
-  The public bootstrap remains pinned to v0.1.1. Publishing, deployment and
-  migration of existing templates/stores are separate work.
-- Remaining validation limits: native macOS/Windows execution, actual VS Code
+  At initial local completion, the public bootstrap still pinned v0.1.1;
+  release delivery is recorded below. Deployment and migration remain separate.
+- Remaining validation limits: native macOS interactive sessions, actual VS Code
   UI integration, fresh-host provisioning/reboot and firewall-manager coexistence.
   Windows SSH/SFTP commands are explicitly unsupported; management still works.
+
+## Release delivery
+
+The owner authorized commit, push and release after every iteration. Version
+`v0.2.0` is published as a private pre-release. The tag workflow passed all four
+native client jobs (Linux, Apple Silicon, Intel Mac and Windows), server checks,
+production builds, the warm Ubuntu image build, packaging and checksum validation.
+
+All five downloaded packages match their SHA-256 files. The updated bootstrap
+passed 17 tests and ShellCheck, plus real authenticated Linux-client installation
+and server-download/archive validation; server setup was cancelled before any
+system changes. Only the bootstrap script and its public README were published
+to `Jabbslad/boxd-install`, with verified v0.2.0 asset IDs and digests. No live
+server or existing VM was upgraded.
