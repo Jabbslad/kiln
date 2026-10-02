@@ -3,6 +3,7 @@ pub mod guest;
 pub mod host;
 pub mod image;
 pub mod isolation;
+pub mod network;
 pub mod process;
 pub mod runtime;
 pub mod storage;

@@ -86,7 +86,7 @@ impl Runtime {
                 fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
                 File::open(&path)?.sync_all()?;
             }
-            let snapshot = Snapshot {schema_version:1,id:snapshot_id.clone(),source_box:box_id.into(),template,image:record.image.clone(),host:record.host.clone(),memory_mib:record.memory_mib,vcpus:record.vcpus,hashes,seals,isolated:self.is_isolated()};
+            let snapshot = Snapshot {schema_version:1,id:snapshot_id.clone(),source_box:box_id.into(),template,image:record.image.clone(),host:record.host.clone(),memory_mib:record.memory_mib,vcpus:record.vcpus,hashes,seals,isolated:self.is_isolated(),network:record.network.clone()};
             storage::atomic_json(&directory.join("snapshot.json"), &snapshot)?;
             File::open(self.root.join("snapshots"))?.sync_all()?;
             failpoint("after-snapshot-publication");
@@ -182,8 +182,20 @@ impl Runtime {
             || snapshot.id != snapshot_id
             || snapshot.host != host::fingerprint()?
             || snapshot.isolated != self.is_isolated()
+            || snapshot.network.is_some()
+                != self
+                    .isolation
+                    .as_ref()
+                    .and_then(|c| c.network.as_ref())
+                    .is_some()
         {
             return Err(Error::Invalid("snapshot compatibility mismatch".into()));
+        }
+        if let (Some(config), Some(topology)) = (
+            self.isolation.as_ref().and_then(|c| c.network.as_ref()),
+            &snapshot.network,
+        ) {
+            topology.validate(&config.namespace_scope)?;
         }
         Ok(snapshot)
     }
@@ -309,6 +321,11 @@ impl Runtime {
             disk_copy: String::new(),
             disk_layer: None,
             jail: self.allocate_identity(&records)?,
+            network: if snapshot.network.is_some() {
+                self.allocate_network(&records)?
+            } else {
+                None
+            },
         };
         use std::os::unix::fs::DirBuilderExt;
         fs::DirBuilder::new()

@@ -190,6 +190,7 @@ def preflight(bundle, address):
         "bin/boxctl",
         "bin/boxd-host",
         "bin/boxd-api",
+        "bin/boxd-network",
         "fetch-firecracker.sh",
         "deploy/boxd-host.service",
         "deploy/boxd-api.service",
@@ -227,7 +228,17 @@ def write(path, text, mode=0o600):
     path.chmod(mode)
 
 
-def write_config(directory, template_id=None):
+def network_preflight(uplink):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}", uplink):
+        raise ValueError("network uplink must be a Linux interface name")
+    for tool in ("ip", "nft", "sysctl"):
+        if not shutil.which(tool):
+            raise ValueError("networking requires iproute2 and nftables packages")
+    run("ip", "link", "show", "dev", uplink)
+    require_absent([Path("/sys/class/net/boxd0"), UNITS / "boxd-network.service"])
+
+
+def write_config(directory, template_id=None, network=False):
     write(
         directory / "isolation.json",
         json.dumps(
@@ -238,6 +249,17 @@ def write_config(directory, template_id=None):
                 "uid_base": 70000,
                 "gid_base": 71000,
                 "disk_backend": "copy",
+                **(
+                    {
+                        "network": {
+                            "helper": "/opt/boxd/bin/boxd-network",
+                            "namespace_scope": "boxd",
+                            "resolver": "1.1.1.1",
+                        }
+                    }
+                    if network
+                    else {}
+                ),
             },
             indent=2,
         )
@@ -424,7 +446,7 @@ def healthcheck(address):
     )
 
 
-def install(bundle, address):
+def install(bundle, address, network_uplink=None):
     # preflight has already rejected all existing destinations. No automatic rollback
     # of accounts/disks/VMs: retain evidence if template preparation fails partway.
     os.umask(0o077)
@@ -438,7 +460,7 @@ def install(bundle, address):
     if not LIBEXEC.exists():
         LIBEXEC.mkdir(mode=0o755)
         LIBEXEC.chmod(0o755)
-    for name in ("box", "boxctl"):
+    for name in ("box", "boxctl", "boxd-network"):
         run(
             "install",
             "-o",
@@ -512,7 +534,23 @@ def install(bundle, address):
             bundle / "image" / name,
             image / name,
         )
-    write_config(ETC)
+    write_config(ETC, network=network_uplink is not None)
+    services = SERVICES
+    if network_uplink is not None:
+        # Uplink was validated before INSTALL. This is an explicit fresh-host
+        # routing/firewall change, never a side effect of ordinary runtime use.
+        write(
+            UNITS / "boxd-network.service",
+            (
+                "[Unit]\nDescription=boxd internet egress policy\n"
+                "Wants=network-online.target\nAfter=network-online.target\n"
+                "Before=boxd-host.service\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\n"
+                f"ExecStart=/opt/boxd/bin/boxd-network provision {network_uplink}\n"
+                "\n[Install]\nWantedBy=multi-user.target\n"
+            ),
+            0o644,
+        )
+        services = ("boxd-network.service", *SERVICES)
     for service in ("boxd-host.service", "boxd-api.service"):
         run(
             "install",
@@ -526,8 +564,16 @@ def install(bundle, address):
             UNITS / service,
         )
     write_units(UNITS, address)
-    run("systemd-analyze", "verify", *(UNITS / service for service in SERVICES))
+    if network_uplink is not None:
+        write(
+            UNITS / "boxd-host.service.d/network.conf",
+            "[Unit]\nRequires=boxd-network.service\nAfter=boxd-network.service\n",
+            0o644,
+        )
+    run("systemd-analyze", "verify", *(UNITS / service for service in services))
     run("systemctl", "daemon-reload")
+    if network_uplink is not None:
+        run("systemctl", "start", "boxd-network.service")
     run("systemctl", "start", "boxd-cgroup.service")
     os.environ["PATH"] = "/opt/boxd/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     local = [
@@ -562,10 +608,10 @@ def install(bundle, address):
     run(LIBEXEC / "boxd-host", "--config", ETC / "host.json", "--check")
     # A failed health check must not leave services enabled at the next reboot.
     try:
-        run("systemctl", "enable", "--now", *SERVICES)
+        run("systemctl", "enable", "--now", *services)
         healthcheck(address)
     except Exception:
-        for service in reversed(SERVICES):
+        for service in reversed(services):
             subprocess.run(
                 ["systemctl", "disable", "--now", service],
                 check=False,
@@ -591,12 +637,18 @@ def main():
         action="store_true",
         help="apply after preflight and interactive confirmation",
     )
+    parser.add_argument(
+        "--network-uplink",
+        help="opt in to isolated internet egress via this host interface",
+    )
     args = parser.parse_args()
     os.environ["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin"
     try:
         bundle = Path(__file__).resolve().parent
         address = private_address(args.address)
         preflight(bundle, address)
+        if args.network_uplink is not None:
+            network_preflight(args.network_uplink)
         print(
             f"Checks passed. Proposed installation:\n"
             f"  Ubuntu / KVM, endpoint https://{address}:8443\n"
@@ -605,8 +657,13 @@ def main():
             "  Enable cpu/memory/pids cgroup controllers and three systemd services\n"
             "  Generate private CA, one-year server certificate and administrator token\n"
             "  Build a 4 GiB / 1-vCPU warm Ubuntu template using the copy disk backend\n"
-            "  No firewall, routing, overlay-pool or guest-network changes\n"
+            "  No overlay-pool changes\n"
             "Review any other runtime's numeric ID reservations before proceeding."
+        )
+        print(
+            f"  Enable IPv4 forwarding, filtered guest NAT via {args.network_uplink} and a network service."
+            if args.network_uplink is not None
+            else "  No firewall, routing or guest-network changes."
         )
         if not args.apply:
             print(
@@ -618,7 +675,7 @@ def main():
         if input("Type INSTALL to apply these changes: ") != "INSTALL":
             print("Cancelled; no installation performed.")
             return 1
-        install(bundle, address)
+        install(bundle, address, args.network_uplink)
         return 0
     except (OSError, ValueError, subprocess.CalledProcessError, EOFError) as error:
         # Do not echo command output: future tools could include credentials in it.

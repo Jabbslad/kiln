@@ -136,6 +136,11 @@ release.json
 FILES
     fi
     tar -tzf "$work/package.tar.gz" > "$work/names" || fail 'Invalid package archive.'
+    # Guest-access releases add one fixed-purpose network helper. Older pinned
+    # packages remain installable, but cannot opt in to networking.
+    if [ "$mode" = server ] && grep -qx 'bin/boxd-network' "$work/names"; then
+        printf 'bin/boxd-network\n' >> "$work/expected"
+    fi
     sort "$work/expected" > "$work/expected.sorted"
     sort "$work/names" > "$work/names.sorted"
     cmp -s "$work/expected.sorted" "$work/names.sorted" || fail 'Unexpected archive contents.'
@@ -179,6 +184,12 @@ install_server() {
             if($1==10 || ($1==172 && $2>=16 && $2<=31) || ($1==192 && $2==168) ||
                ($1==100 && $2>=64 && $2<=127) || ($1==127 && $2==0 && $3==0 && $4==1)) ok=1
         } END { exit !ok }' || fail 'Use a private/VPN IPv4 address assigned to this server.'
+    uplink=${BOXD_NETWORK_UPLINK:-}
+    if [ -n "$uplink" ]; then
+        printf '%s\n' "$uplink" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}$' || fail 'Invalid network uplink interface.'
+        [ -f "$work/package/bin/boxd-network" ] || fail 'This pinned release has no guest networking; a guest-access release is required.'
+        printf 'Networking requested: enable host IPv4 forwarding and filtered NAT via %s.\n' "$uplink"
+    fi
     printf '%s\n' \
         'This is a fresh-install pilot, not an upgrader. Fresh-host/reboot validation is outstanding.' \
         'Setup will use sudo to install Ubuntu packages: python3 openssl curl ca-certificates tar passwd.' \
@@ -188,8 +199,13 @@ install_server() {
     IFS= read -r confirmation < /dev/tty || fail 'Setup cancelled.'
     [ "$confirmation" = SETUP ] || fail 'Cancelled; no system changes made.'
     as_root apt-get update < /dev/tty
-    as_root apt-get install --no-install-recommends -y python3 openssl curl ca-certificates tar passwd < /dev/tty
-    as_root python3 "$work/package/install.py" --address "$address" --apply < /dev/tty
+    if [ -n "$uplink" ]; then
+        as_root apt-get install --no-install-recommends -y python3 openssl curl ca-certificates tar passwd iproute2 nftables < /dev/tty
+        as_root python3 "$work/package/install.py" --address "$address" --apply --network-uplink "$uplink" < /dev/tty
+    else
+        as_root apt-get install --no-install-recommends -y python3 openssl curl ca-certificates tar passwd < /dev/tty
+        as_root python3 "$work/package/install.py" --address "$address" --apply < /dev/tty
+    fi
 }
 
 main() {
@@ -207,7 +223,7 @@ main() {
         *) fail 'Usage: sh install.sh [client|server]' ;;
     esac
     platform
-    for tool in curl tar awk sed tr sort cmp mktemp stty; do
+    for tool in curl tar awk sed tr sort cmp mktemp stty grep; do
         command -v "$tool" >/dev/null 2>&1 || fail "Missing standard system tool: $tool"
     done
     command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || fail 'Missing system SHA-256 tool.'

@@ -395,6 +395,22 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
         (self.root / "kvm").chmod(0)
         self.test_server_dependency_and_provisioner_confirmation_use_tty()
 
+    def test_network_opt_in_requires_capable_package_and_passes_explicit_uplink(self):
+        self.env["BOXD_NETWORK_UPLINK"] = "eth0"
+        members = dict.fromkeys([*SERVER_FILES, "bin/boxd-network"], b"fixture\n")
+        members["install.py"] = (
+            b"import sys\nassert sys.argv[1:] == ['--address', '192.168.50.7', '--apply', '--network-uplink', 'eth0']\nassert input('Type INSTALL: ') == 'INSTALL'\n"
+        )
+        code, out = self.run_bootstrap(self.package(members), args=("server",), answers=[
+            (b"GitHub token: ", TOKEN),
+            (b"Server private IPv4 address: ", "192.168.50.7"),
+            (b"Type SETUP", "SETUP"), (b"Type INSTALL", "INSTALL"),
+        ])
+        self.assertEqual(code, 0, out)
+        commands = [json.loads(line) for line in (self.root / "privileged").read_text().splitlines()]
+        self.assertIn("nftables", commands[1])
+        self.assertIn("iproute2", commands[1])
+
     def test_server_cancellation_and_invalid_addresses_do_not_run_sudo(self):
         for address in [
             "192.168.50.7",

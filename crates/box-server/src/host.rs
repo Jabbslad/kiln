@@ -47,6 +47,7 @@ pub struct Host {
     catalog: Vec<TemplateView>,
     journal: Mutex<Journal>,
     capacity: Arc<Semaphore>,
+    sessions: Arc<Semaphore>,
     _locks: [File; 2],
 }
 
@@ -127,6 +128,7 @@ impl Host {
             catalog,
             journal: Mutex::new(journal),
             capacity: Arc::new(Semaphore::new(8)),
+            sessions: Arc::new(Semaphore::new(32)),
             _locks: [runtime_lock, journal_lock],
         }))
     }
@@ -136,6 +138,8 @@ impl Host {
             .route("/v1/templates", get(templates))
             .route("/v1/boxes", get(boxes))
             .route("/v1/boxes/{id}", get(inspect))
+            .route("/v1/boxes/{id}/ssh-key", get(ssh_key))
+            .route("/v1/boxes/{id}/ssh", get(ssh_tunnel))
             .route("/v1/operations/{id}", get(operation))
             .route("/v1/operations", post(submit))
             .layer(DefaultBodyLimit::max(box_api::MAX_REQUEST_BYTES))
@@ -191,6 +195,42 @@ fn view(record: BoxRecord) -> BoxView {
 
 async fn templates(State(host): State<Arc<Host>>) -> Json<Vec<TemplateView>> {
     Json(host.catalog.clone())
+}
+
+async fn ssh_key(
+    State(host): State<Arc<Host>>,
+    Path(id): Path<String>,
+) -> Result<Json<box_api::SshReady>, Failure> {
+    host.owns(&id)?;
+    let _permit = host
+        .sessions
+        .try_acquire()
+        .map_err(|_| crate::ssh::busy())?;
+    host.runtime
+        .ssh_host_key(&id)
+        .await
+        .map(Json)
+        .map_err(Failure::internal)
+}
+
+async fn ssh_tunnel(
+    State(host): State<Arc<Host>>,
+    Path(id): Path<String>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, Failure> {
+    host.owns(&id)?;
+    let key = crate::ssh::admission(&request)?;
+    let permit = host
+        .sessions
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| crate::ssh::busy())?;
+    let stream = host
+        .runtime
+        .ssh_connect(&id, &key)
+        .await
+        .map_err(Failure::internal)?;
+    Ok(crate::ssh::upgrade(request, stream, permit))
 }
 
 async fn boxes(State(host): State<Arc<Host>>) -> Result<Json<Vec<BoxView>>, Failure> {

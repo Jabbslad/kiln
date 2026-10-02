@@ -1,5 +1,5 @@
 use anyhow::{Result, bail, ensure};
-use box_api::{ApiError, BoxView, Operation, Submit, TemplateView, valid_id};
+use box_api::{ApiError, BoxView, Operation, Submit, TemplateView, valid_id, valid_ssh_public_key};
 use reqwest::{Method, Url, header};
 use serde::de::DeserializeOwned;
 use std::time::Duration;
@@ -115,6 +115,45 @@ impl Client {
         request.action.validate().map_err(anyhow::Error::msg)?;
         self.request(Method::POST, "v1/operations", Some(request))
             .await
+    }
+
+    pub async fn ssh_host_key(&self, id: &str) -> Result<String> {
+        ensure!(valid_id(id), "invalid box ID");
+        let ready: box_api::SshReady = self
+            .request(Method::GET, &format!("v1/boxes/{id}/ssh-key"), None)
+            .await?;
+        ensure!(
+            valid_ssh_public_key(&ready.public_key),
+            "server returned an invalid SSH host key"
+        );
+        Ok(ready.public_key)
+    }
+
+    pub async fn ssh_tunnel(&self, id: &str, public_key: &str) -> Result<reqwest::Upgraded> {
+        ensure!(valid_id(id), "invalid box ID");
+        ensure!(valid_ssh_public_key(public_key), "invalid SSH public key");
+        let response = self
+            .http
+            .get(self.base.join(&format!("v1/boxes/{id}/ssh"))?)
+            .header(header::CONNECTION, "upgrade")
+            .header(header::UPGRADE, box_api::SSH_UPGRADE)
+            .header(box_api::SSH_KEY_HEADER, public_key)
+            .send()
+            .await?;
+        ensure!(
+            response.status() == reqwest::StatusCode::SWITCHING_PROTOCOLS,
+            "server refused SSH tunnel (HTTP {})",
+            response.status().as_u16()
+        );
+        ensure!(
+            response
+                .headers()
+                .get(header::UPGRADE)
+                .and_then(|v| v.to_str().ok())
+                == Some(box_api::SSH_UPGRADE),
+            "server returned an invalid SSH upgrade response"
+        );
+        Ok(response.upgrade().await?)
     }
 }
 

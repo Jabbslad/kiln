@@ -1,9 +1,16 @@
 mod profile;
+mod ssh;
 use anyhow::{Context, Result, bail};
 use box_api::{Action, BoxView, ExecRequest, Operation, OperationState, Outcome, Submit, new_id};
 use box_client::Client;
 use clap::{Parser, Subcommand};
-use std::{collections::BTreeMap, fs, io::Write, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 #[derive(Parser)]
 #[command(version, about = "Manage boxd microVMs over authenticated HTTPS")]
@@ -28,6 +35,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    Ssh {
+        id: String,
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+    Cp {
+        source: String,
+        destination: String,
+    },
+    SshConfig {
+        id: String,
+    },
+    #[command(hide = true)]
+    SshProxy {
+        id: String,
+    },
     Profile {
         #[command(subcommand)]
         command: ProfileCommand,
@@ -206,11 +229,84 @@ async fn run(cli: Cli) -> Result<i32> {
         return Ok(0);
     }
     let profiles = profile::load(&path)?;
-    let client = profiles
+    let selected = profiles
         .profiles
         .get(&cli.profile)
-        .context("profile not found; use `boxctl profile add`")?
-        .client()?;
+        .context("profile not found; use `boxctl profile add`")?;
+    let client = selected.client()?;
+    match &cli.command {
+        Command::SshProxy { id } => {
+            let (_, public) = ssh::ensure_key(&path, &cli.profile)?;
+            let tunnel = client.ssh_tunnel(id, &public).await?;
+            let (mut read, mut write) = tokio::io::split(tunnel);
+            let upload = tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                tokio::io::copy(&mut tokio::io::stdin(), &mut write).await?;
+                write.shutdown().await
+            });
+            tokio::io::copy(&mut read, &mut tokio::io::stdout()).await?;
+            upload.abort();
+            return Ok(0);
+        }
+        Command::Ssh { id, command } => {
+            let details = ssh_details(&path, &cli.profile, id, &client).await?;
+            let mut process = tokio::process::Command::new("ssh");
+            process.args(&details.options).arg(format!("root@{id}"));
+            if !command.is_empty() {
+                process.args(command);
+            }
+            let status = process
+                .status()
+                .await
+                .context("could not run OpenSSH ssh")?;
+            return Ok(status.code().unwrap_or(255));
+        }
+        Command::Cp {
+            source,
+            destination,
+        } => {
+            let source_remote = ssh::parse_copy_endpoint(source)?;
+            let destination_remote = ssh::parse_copy_endpoint(destination)?;
+            anyhow::ensure!(
+                source_remote.is_some() ^ destination_remote.is_some(),
+                "exactly one cp endpoint must be a box ID and absolute path"
+            );
+            let (id, _) = source_remote
+                .as_ref()
+                .or(destination_remote.as_ref())
+                .unwrap();
+            let details = ssh_details(&path, &cli.profile, id, &client).await?;
+            let render = |original: &str, remote: &Option<(String, String)>| {
+                remote.as_ref().map_or_else(
+                    || original.to_owned(),
+                    |(id, path)| format!("root@{id}:{path}"),
+                )
+            };
+            let status = tokio::process::Command::new("scp")
+                .args(&details.options)
+                .arg("--")
+                .arg(render(source, &source_remote))
+                .arg(render(destination, &destination_remote))
+                .status()
+                .await
+                .context("could not run OpenSSH scp")?;
+            return Ok(status.code().unwrap_or(255));
+        }
+        Command::SshConfig { id } => {
+            let details = ssh_details(&path, &cli.profile, id, &client).await?;
+            println!(
+                "Host {}\n  HostName {}\n  User root\n  IdentityFile \"{}\"\n  IdentitiesOnly yes\n  UserKnownHostsFile \"{}\"\n  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking yes\n  HostKeyAlias {}\n  ProxyCommand {} '%h'\n  ForwardAgent no\n  BatchMode yes",
+                details.alias,
+                id,
+                details.key.display(),
+                details.known_hosts.display(),
+                details.alias,
+                details.proxy
+            );
+            return Ok(0);
+        }
+        _ => {}
+    }
     let action = match cli.command {
         Command::Templates => {
             let templates = client.templates().await?;
@@ -282,6 +378,10 @@ async fn run(cli: Cli) -> Result<i32> {
             }
         }
         Command::Profile { .. } => unreachable!(),
+        Command::Ssh { .. }
+        | Command::Cp { .. }
+        | Command::SshConfig { .. }
+        | Command::SshProxy { .. } => unreachable!(),
     };
     action.validate().map_err(anyhow::Error::msg)?;
     let request = Submit {
@@ -295,6 +395,51 @@ async fn run(cli: Cli) -> Result<i32> {
         op = wait(&client, op, cli.wait_seconds).await?;
     }
     show_operation(&op, cli.json)
+}
+
+struct SshDetails {
+    alias: String,
+    key: PathBuf,
+    known_hosts: PathBuf,
+    proxy: String,
+    options: Vec<String>,
+}
+
+async fn ssh_details(path: &Path, profile: &str, id: &str, client: &Client) -> Result<SshDetails> {
+    anyhow::ensure!(box_api::valid_id(id), "invalid box ID");
+    let absolute = fs::canonicalize(path)?;
+    let path = absolute.as_path();
+    ssh::safe_config_value(profile)?;
+    let alias = format!("boxd-{profile}-{id}");
+    let (key, _) = ssh::ensure_key(path, profile)?;
+    let host_key = client.ssh_host_key(id).await?;
+    let known_hosts = ssh::write_known_hosts(path, profile, &alias, &host_key)?;
+    let executable = std::env::current_exe()?
+        .to_str()
+        .context("boxctl path is not UTF-8")?
+        .to_owned();
+    let proxy = ssh::proxy_command(path, profile, &executable)?;
+    let options = [
+        format!("IdentityFile=\"{}\"", key.display()),
+        "IdentitiesOnly=yes".into(),
+        format!("UserKnownHostsFile=\"{}\"", known_hosts.display()),
+        "GlobalKnownHostsFile=/dev/null".into(),
+        "BatchMode=yes".into(),
+        "StrictHostKeyChecking=yes".into(),
+        format!("HostKeyAlias={alias}"),
+        format!("ProxyCommand={proxy} '{id}'"),
+        "ForwardAgent=no".into(),
+    ]
+    .into_iter()
+    .flat_map(|v| ["-o".to_owned(), v])
+    .collect();
+    Ok(SshDetails {
+        alias,
+        key,
+        known_hosts,
+        proxy,
+        options,
+    })
 }
 
 #[tokio::main]

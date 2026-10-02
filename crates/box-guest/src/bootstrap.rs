@@ -10,7 +10,7 @@ pub const MARKER: &str = "/run/boxd-initialized";
 
 pub async fn handle<I: Initializer>(agent: &Agent<I>, request: Request, marker: &Path) -> Response {
     match request {
-        Request::Exec(_) => Response::Error(ProtocolError::new(
+        Request::Exec(_) | Request::SshHostKey => Response::Error(ProtocolError::new(
             ErrorCode::NotInitialized,
             "systemd initialization has not completed",
         )),
@@ -93,16 +93,21 @@ pub fn mount_filesystems() -> io::Result<()> {
         ("/run", "tmpfs"),
     ] {
         std::fs::create_dir_all(target)?;
+        let data = if target == "/run" {
+            c"mode=0755".as_ptr().cast()
+        } else {
+            std::ptr::null()
+        };
         let target = CString::new(target).unwrap();
         let kind = CString::new(kind).unwrap();
-        // SAFETY: strings are NUL terminated; no mount-specific data is passed.
+        // SAFETY: all strings are NUL terminated and live through mount.
         if unsafe {
             libc::mount(
                 kind.as_ptr(),
                 target.as_ptr(),
                 kind.as_ptr(),
                 libc::MS_NOSUID,
-                std::ptr::null(),
+                data,
             )
         } != 0
         {

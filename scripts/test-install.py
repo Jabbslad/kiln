@@ -100,6 +100,28 @@ class InstallTests(unittest.TestCase):
         for data in ["", "alice:69999:1\n", "alice:70008:9\n"]:
             self.install.check_subids(data, 70000)
 
+    def test_network_is_opt_in_and_uses_pinned_helper_not_client_commands(self):
+        self.install.write_config(self.root, network=True)
+        policy = json.loads((self.root / "isolation.json").read_text())
+        self.assertEqual(
+            policy["network"],
+            {
+                "helper": "/opt/boxd/bin/boxd-network",
+                "namespace_scope": "boxd",
+                "resolver": "1.1.1.1",
+            },
+        )
+
+    def test_network_preflight_rejects_interface_injection_before_commands(self):
+        for interface in ["", "eth0;id", "eth0\n", "../eth0", "a" * 16]:
+            with (
+                self.subTest(interface=interface),
+                patch.object(self.install, "run") as run,
+            ):
+                with self.assertRaises(ValueError):
+                    self.install.network_preflight(interface)
+                run.assert_not_called()
+
     def test_existing_and_symlink_destinations_fail_before_install(self):
         target = self.root / "existing"
         target.write_text("preserve")

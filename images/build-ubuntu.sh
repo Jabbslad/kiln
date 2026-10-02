@@ -35,6 +35,9 @@ printf '%s  %s\n' "$kernel_sha" "$output/vmlinux" | sha256sum -c -
 root=$(mktemp -d "$output/.root.XXXXXX")
 trap 'rm -rf -- "$root"' EXIT
 tar --extract --xz --numeric-owner --same-owner --preserve-permissions --file "$archive" --directory "$root"
+for file in usr/sbin/sshd usr/bin/ssh-keygen etc/pam.d/sshd; do
+    test -e "$root/$file" || { echo "Ubuntu rootfs lacks OpenSSH prerequisite: /$file" >&2; exit 1; }
+done
 mkdir -p "$root"/{workspace,run,proc,sys,dev,etc/systemd/system}
 for binary in box-guest box-init; do
     source="$repo/target/x86_64-unknown-linux-musl/release/$binary"
@@ -50,8 +53,8 @@ printf '127.0.0.1 localhost\n::1 localhost\n' > "$root/etc/hosts"
 printf '/dev/vda / ext4 defaults 0 0\n' > "$root/etc/fstab"
 touch "$root/etc/cloud/cloud-init.disabled"
 ln -s /etc/machine-id "$root/var/lib/dbus/machine-id"
-# Only explicitly wanted guest services start; no cloud-init, SSH, or login
-# console runs before/after provisioning. Networking is a later milestone.
+# OpenSSH is launched only in inetd mode by box-guest over vsock. Its network
+# service remains masked below; no cloud-init or login console is enabled.
 cat > "$root/etc/systemd/system/boxd.target" <<'EOF'
 [Unit]
 Description=boxd development guest
@@ -69,6 +72,8 @@ ConditionPathExists=/run/boxd-initialized
 [Service]
 Type=simple
 ExecStart=/sbin/box-guest --systemd-service
+RuntimeDirectory=sshd
+RuntimeDirectoryMode=0755
 Restart=on-failure
 RestartSec=100ms
 UMask=0077

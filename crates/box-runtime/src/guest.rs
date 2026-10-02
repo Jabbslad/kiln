@@ -10,7 +10,7 @@ pub async fn request(socket: &Path, request: &Request, timeout: Duration) -> Res
     let mut phase = "connect";
     tokio::time::timeout(timeout, async {
         phase = "handshake";
-        let mut stream = connect(socket).await?;
+        let mut stream = connect(socket, VSOCK_PORT).await?;
         phase = "send request";
         write_frame(&mut stream, request).await?;
         phase = "receive response";
@@ -28,10 +28,34 @@ pub async fn request(socket: &Path, request: &Request, timeout: Duration) -> Res
     })?
 }
 
-async fn connect(socket: &Path) -> Result<UnixStream> {
+pub async fn ssh(socket: &Path, public_key: &str) -> Result<(UnixStream, box_protocol::SshReady)> {
+    use box_protocol::{SSH_VSOCK_PORT, SshConnect, SshReady, valid_ssh_public_key};
+    if !valid_ssh_public_key(public_key) {
+        return Err(Error::Invalid("invalid SSH public key".into()));
+    }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut stream = connect(socket, SSH_VSOCK_PORT).await?;
+        write_frame(
+            &mut stream,
+            &SshConnect {
+                public_key: public_key.into(),
+            },
+        )
+        .await?;
+        let ready: SshReady = read_frame(&mut stream).await?;
+        if !valid_ssh_public_key(&ready.public_key) {
+            return Err(Error::Invalid("invalid SSH host key".into()));
+        }
+        Ok((stream, ready))
+    })
+    .await
+    .map_err(|_| Error::Invalid("guest SSH connection timed out".into()))?
+}
+
+async fn connect(socket: &Path, port: u32) -> Result<UnixStream> {
     let mut stream = UnixStream::connect(socket).await?;
     stream
-        .write_all(format!("CONNECT {VSOCK_PORT}\n").as_bytes())
+        .write_all(format!("CONNECT {port}\n").as_bytes())
         .await?;
     let mut line = Vec::new();
     loop {
@@ -57,6 +81,41 @@ async fn connect(socket: &Path) -> Result<UnixStream> {
 mod tests {
     use super::*;
     use tokio::net::UnixListener;
+
+    #[tokio::test]
+    async fn ssh_admission_preserves_first_raw_bytes_and_validates_host_key() {
+        use box_protocol::{SshConnect, SshReady};
+        let key =
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("ssh");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut handshake = [0; 13];
+            stream.read_exact(&mut handshake).await.unwrap();
+            assert_eq!(&handshake, b"CONNECT 1025\n");
+            stream.write_all(b"OK 123\n").await.unwrap();
+            let admission: SshConnect = read_frame(&mut stream).await.unwrap();
+            assert_eq!(admission.public_key, key);
+            write_frame(
+                &mut stream,
+                &SshReady {
+                    public_key: key.into(),
+                },
+            )
+            .await
+            .unwrap();
+            stream.write_all(b"SSH-2.0-fixture\r\n").await.unwrap();
+        });
+        let (mut stream, ready) = ssh(&socket, key).await.unwrap();
+        assert_eq!(ready.public_key, key);
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).await.unwrap();
+        assert_eq!(bytes, b"SSH-2.0-fixture\r\n");
+        server.await.unwrap();
+        assert!(ssh(&socket, "ssh-rsa junk").await.is_err());
+    }
 
     #[tokio::test]
     async fn never_replays_a_request_when_its_response_is_lost() {

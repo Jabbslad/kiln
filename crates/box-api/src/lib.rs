@@ -1,9 +1,11 @@
 //! Portable, public management contract. No runtime records or host paths.
-pub use box_protocol::{ExecRequest, ExecResult};
+pub use box_protocol::{ExecRequest, ExecResult, SshReady, valid_ssh_public_key};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_REQUEST_BYTES: usize = 128 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+pub const SSH_UPGRADE: &str = "boxd-ssh";
+pub const SSH_KEY_HEADER: &str = "x-boxd-ssh-key";
 
 /// Token bytes never appear in errors. On Windows, restrict the file's ACL to
 /// the current user; Unix additionally enforces owner-only mode here.

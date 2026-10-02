@@ -1,6 +1,7 @@
 use box_guest::{Agent, SystemInitializer};
 use box_protocol::{
-    ErrorCode, HOST_CID, ProtocolError, Request, Response, VSOCK_PORT, read_frame, write_frame,
+    ErrorCode, HOST_CID, ProtocolError, Request, Response, SSH_VSOCK_PORT, VSOCK_PORT, read_frame,
+    write_frame,
 };
 use std::{io, sync::Arc, time::Duration};
 use tokio::io::AsyncReadExt;
@@ -24,6 +25,27 @@ async fn main() -> io::Result<()> {
     };
     let listener = VsockListener::bind(VsockAddr::new(libc::VMADDR_CID_ANY, VSOCK_PORT))?;
     let agent = Arc::new(agent);
+    let ssh_listener = VsockListener::bind(VsockAddr::new(libc::VMADDR_CID_ANY, SSH_VSOCK_PORT))?;
+    let ssh_agent = agent.clone();
+    tokio::spawn(async move {
+        let sessions = Arc::new(tokio::sync::Semaphore::new(8));
+        loop {
+            let Ok((stream, peer)) = ssh_listener.accept().await else {
+                return;
+            };
+            if peer.cid() != HOST_CID {
+                continue;
+            }
+            let Ok(permit) = sessions.clone().try_acquire_owned() else {
+                continue;
+            };
+            let agent = ssh_agent.clone();
+            tokio::spawn(async move {
+                let _permit = permit;
+                let _ = box_guest::ssh::serve_session(stream, &agent).await;
+            });
+        }
+    });
     let connections = Arc::new(tokio::sync::Semaphore::new(32));
     loop {
         let (stream, peer) = listener.accept().await?;

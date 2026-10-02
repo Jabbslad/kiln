@@ -73,6 +73,7 @@ class ReleaseTests(unittest.TestCase):
     def test_server_contains_prebuilt_image_not_host_snapshots_or_secrets(self):
         for name in [
             "deploy/install.py",
+            "deploy/boxd-network",
             "deploy/boxd-host.service",
             "deploy/boxd-api.service",
             "deploy/host.example.json",
@@ -101,6 +102,7 @@ class ReleaseTests(unittest.TestCase):
                     "bin/boxd-host",
                     "bin/boxd-api",
                     "bin/boxctl",
+                    "bin/boxd-network",
                     "install.py",
                     "deploy/boxd-host.service",
                     "deploy/boxd-api.service",

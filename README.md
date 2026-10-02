@@ -28,9 +28,12 @@ automatic replay of interrupted commands.
 
 See the [server setup and laptop guide](docs/remote-client.md). Installing the
 client does not provision server services. Server setup requires confirmation
-and binds only to the chosen private address. This first slice has one
-administrator and buffered exec; guest SSH, interactive terminals and networking
-are subsequent work.
+and binds only to the chosen private address. This pilot has one administrator.
+The working tree additionally implements `boxctl ssh`, SFTP via `boxctl cp`,
+editor configuration via `boxctl ssh-config`, and opt-in isolated IPv4 egress.
+These require new client/server/Ubuntu guest builds and are **not in the pinned
+v0.1.1 download**. SSH uses authenticated HTTPS/vsock, without a public SSH port;
+internet access requires separate [network provisioning](docs/runtime-networking.md).
 
 ## Try the runtime
 
@@ -65,7 +68,7 @@ target/release/box create --image images/output/ubuntu/image.json \
 target/release/box exec BOX_ID -- /usr/bin/python3 -c 'print(17 + 93)'
 ```
 
-Templates pause at a Rust bootstrap before systemd starts. Each clone receives fresh identity and a kernel RNG reseed before systemd or workload services run. The host waits for the systemd-managed agent before returning a usable box. All six development and privileged isolated KVM lifecycle tests pass with Ubuntu, including systemd identity and agent-restart checks. See the [Ubuntu image contract](docs/runtime.md#ubuntu-image-contract). No network access, Docker, SSH login, or general-purpose compiler toolchain is included.
+Templates pause at a Rust bootstrap before systemd starts. Each clone receives fresh identity and a kernel RNG reseed before systemd or workload services run. The host waits for the systemd-managed agent before returning a usable box. All six development and privileged isolated KVM lifecycle tests pass with Ubuntu, including systemd identity and agent-restart checks. See the [Ubuntu image contract](docs/runtime.md#ubuntu-image-contract). Fresh Ubuntu images support SSH over vsock; networking remains opt-in. Docker and a general-purpose compiler toolchain are not included.
 
 ## Measured launch performance
 
@@ -154,4 +157,4 @@ The opt-in integration suite launches disposable VMs and deliberately crashes CL
 
 ## Path to the platform
 
-The [architecture](docs/superpowers/specs/2026-09-30-boxd-platform-design.md) and [runtime plan](docs/superpowers/plans/2026-09-30-runtime-engine.md) describe the wider product. The [laptop-first service slice](docs/remote-client.md) uses embedded SQLite rather than requiring PostgreSQL. Still outstanding: signed client releases, an image security-update/release process, operation-history retention, scoped authentication, networking/SSH/preview routing, dashboard, SDK, and fleet scheduling. Both guest images remain intended for trusted development workloads, not a hosted multi-tenant environment.
+The [architecture](docs/superpowers/specs/2026-09-30-boxd-platform-design.md) and [runtime plan](docs/superpowers/plans/2026-09-30-runtime-engine.md) describe the wider product. The [laptop-first service slice](docs/remote-client.md) uses embedded SQLite rather than requiring PostgreSQL. Still outstanding: signed client releases, an image security-update/release process, operation-history retention, scoped authentication, preview routing, dashboard, SDK, and fleet scheduling. Both guest images remain intended for trusted development workloads, not a hosted multi-tenant environment.

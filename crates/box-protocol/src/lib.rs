@@ -4,6 +4,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const VSOCK_PORT: u32 = 1024;
+pub const SSH_VSOCK_PORT: u32 = 1025;
 pub const HOST_CID: u32 = 2;
 pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
 pub const MAX_OUTPUT_SIZE: usize = 64 * 1024;
@@ -17,6 +18,7 @@ pub enum Request {
     Hello { version: u16 },
     Initialize(InitializeRequest),
     Exec(ExecRequest),
+    SshHostKey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,7 +45,57 @@ pub enum Response {
     Hello { version: u16, initialized: bool },
     Initialized { version: u16 },
     Exec(ExecResult),
+    SshHostKey { public_key: String },
     Error(ProtocolError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SshConnect {
+    pub public_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SshReady {
+    pub public_key: String,
+}
+
+/// Accepts exactly OpenSSH's canonical, comment-free Ed25519 public-key form.
+pub fn valid_ssh_public_key(key: &str) -> bool {
+    let Some(encoded) = key.strip_prefix("ssh-ed25519 ") else {
+        return false;
+    };
+    if encoded.len() != 68
+        || !encoded
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
+    {
+        return false;
+    }
+    let mut blob = [0_u8; 51];
+    for (source, target) in encoded
+        .as_bytes()
+        .chunks_exact(4)
+        .zip(blob.chunks_exact_mut(3))
+    {
+        let mut value = 0_u32;
+        for byte in source {
+            let digit = match byte {
+                b'A'..=b'Z' => byte - b'A',
+                b'a'..=b'z' => byte - b'a' + 26,
+                b'0'..=b'9' => byte - b'0' + 52,
+                b'+' => 62,
+                b'/' => 63,
+                _ => return false,
+            };
+            value = (value << 6) | u32::from(digit);
+        }
+        target.copy_from_slice(&value.to_be_bytes()[1..]);
+    }
+    blob[..4] == 11_u32.to_be_bytes()
+        && &blob[4..15] == b"ssh-ed25519"
+        && blob[15..19] == 32_u32.to_be_bytes()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

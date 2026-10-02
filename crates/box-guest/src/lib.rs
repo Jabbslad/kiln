@@ -15,6 +15,7 @@ use tokio::{
 };
 
 pub mod bootstrap;
+pub mod ssh;
 pub mod warm;
 
 pub trait Initializer: Send + Sync + 'static {
@@ -121,14 +122,24 @@ pub struct Agent<I: Initializer> {
     initializer: Arc<I>,
     barrier: Mutex<Barrier>,
     executions: Arc<Semaphore>,
+    ssh_host_keys: Arc<ssh::HostKeys>,
 }
 
 impl<I: Initializer> Agent<I> {
     pub fn new(initializer: Arc<I>, max_concurrency: usize) -> Self {
+        Self::new_with_ssh_directory(initializer, max_concurrency, ssh::HOST_KEY_DIRECTORY.into())
+    }
+
+    pub fn new_with_ssh_directory(
+        initializer: Arc<I>,
+        max_concurrency: usize,
+        ssh_directory: std::path::PathBuf,
+    ) -> Self {
         Self {
             initializer,
             barrier: Mutex::new(Barrier::Uninitialized),
             executions: Arc::new(Semaphore::new(max_concurrency.max(1))),
+            ssh_host_keys: Arc::new(ssh::HostKeys::new(ssh_directory)),
         }
     }
 
@@ -178,7 +189,35 @@ impl<I: Initializer> Agent<I> {
             }
             Request::Initialize(request) => self.initialize(request),
             Request::Exec(request) => self.exec(request, cancelled).await,
+            Request::SshHostKey => self.ssh_host_key().await,
         }
+    }
+
+    async fn ssh_host_key(&self) -> Response {
+        if !self.is_initialized() {
+            return error(
+                ErrorCode::NotInitialized,
+                "guest initialization is required",
+            );
+        }
+        match self.ssh_host_keys.public_key().await {
+            Ok(public_key) => Response::SshHostKey { public_key },
+            Err(cause) => error(ErrorCode::ExecutionFailed, cause.to_string()),
+        }
+    }
+
+    pub async fn ssh_credentials(&self) -> Result<(String, std::path::PathBuf), ProtocolError> {
+        if !self.is_initialized() {
+            return Err(ProtocolError::new(
+                ErrorCode::NotInitialized,
+                "guest initialization is required",
+            ));
+        }
+        self.ssh_host_keys
+            .public_key()
+            .await
+            .map(|key| (key, self.ssh_host_keys.private_key()))
+            .map_err(|cause| ProtocolError::new(ErrorCode::ExecutionFailed, cause.to_string()))
     }
 
     fn is_initialized(&self) -> bool {
@@ -358,6 +397,7 @@ impl Agent<FakeInitializer> {
             initializer: Arc::new(FakeInitializer::default()),
             barrier: Mutex::new(Barrier::Initialized),
             executions: Arc::new(Semaphore::new(max_concurrency.max(1))),
+            ssh_host_keys: Arc::new(ssh::HostKeys::new(ssh::HOST_KEY_DIRECTORY.into())),
         }
     }
 }

@@ -194,6 +194,121 @@ async fn https_lifecycle_and_crashed_host_never_replay_exec() {
     let created = finished(&client, first).await;
     let id = created.box_id;
     assert_eq!(client.list().await.unwrap().len(), 1);
+    let host_key = if std::env::var_os("BOXD_TEST_CLIENT").is_some() {
+        Some(client.ssh_host_key(&id).await.unwrap())
+    } else {
+        None
+    };
+    if let Some(binary) = std::env::var_os("BOXD_TEST_CLIENT") {
+        let token_path = root.join("admin.token");
+        fs::write(&token_path, &token).unwrap();
+        fs::set_permissions(&token_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let ca_path = root.join("ca.crt");
+        fs::write(&ca_path, &pem).unwrap();
+        let profile = root.join("profiles.json");
+        let output = tokio::process::Command::new(&binary)
+            .arg("--config")
+            .arg(&profile)
+            .args(["profile", "add", "default", "--url", &url, "--token-file"])
+            .arg(&token_path)
+            .arg("--ca-file")
+            .arg(&ca_path)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = tokio::process::Command::new(&binary)
+            .arg("--config")
+            .arg(&profile)
+            .args(["ssh", &id, "--", "printf ssh-connected; exit 37"])
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(37),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"ssh-connected");
+        let source = root.join("upload.bin");
+        let destination = root.join("download.bin");
+        let bytes: Vec<u8> = (0..200_123).map(|n| ((n * 37 + 13) % 256) as u8).collect();
+        fs::write(&source, &bytes).unwrap();
+        let remote = format!("{id}:/workspace/binary.dat");
+        for (from, to) in [
+            (source.to_str().unwrap(), remote.as_str()),
+            (remote.as_str(), destination.to_str().unwrap()),
+        ] {
+            let output = tokio::process::Command::new(&binary)
+                .arg("--config")
+                .arg(&profile)
+                .args(["cp", from, to])
+                .output()
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        assert_eq!(fs::read(&destination).unwrap(), bytes);
+        let ssh_config = root.join("ssh-config");
+        let output = tokio::process::Command::new(&binary)
+            .arg("--config")
+            .arg(&profile)
+            .args(["ssh-config", &id])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::write(&ssh_config, output.stdout).unwrap();
+        let alias = format!("boxd-default-{id}");
+        // Editors open direct-tcpip channels to their guest-local server.
+        output_of_forwarding_probe(&client, &id, &ssh_config, &alias).await;
+        let output = tokio::process::Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../scripts/test-ssh-pty.py"
+            ))
+            .arg(&ssh_config)
+            .arg(&alias)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        eprintln!("{}", String::from_utf8_lossy(&output.stdout));
+        let known_hosts = root.join(format!("ssh/default/known_hosts_{alias}"));
+        let original = fs::read(&known_hosts).unwrap();
+        fs::write(&known_hosts, format!("{alias} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n")).unwrap();
+        let output = tokio::process::Command::new("ssh")
+            .arg("-F")
+            .arg(&ssh_config)
+            .args([&alias, "true"])
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(output.status.code(), Some(255));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Host key verification failed"));
+        fs::write(known_hosts, original).unwrap();
+        eprintln!("PASS: real HTTPS SSH command/exit status and 200123-byte SFTP roundtrip");
+    }
+    if std::env::var_os("BOXD_TEST_NETWORK").is_some() {
+        assert_eq!(output(action(&client, exec(&id, "python3 -c 'import urllib.request; print(urllib.request.urlopen(\"http://8.8.8.8:8080/probe\", timeout=5).read().decode(), end=\"\")'")).await), b"boxd-egress\n");
+    }
     assert_eq!(
         output(
             action(
@@ -223,6 +338,29 @@ async fn https_lifecycle_and_crashed_host_never_replay_exec() {
         output(action(&client, exec(&id, "cat /root/remote-data")).await),
         b"retained"
     );
+    if let Some(key) = &host_key {
+        assert_eq!(&client.ssh_host_key(&id).await.unwrap(), key);
+    }
+    if std::env::var_os("BOXD_TEST_NETWORK").is_some() {
+        assert_eq!(output(action(&client, exec(&id, "python3 -c 'import urllib.request; print(urllib.request.urlopen(\"http://8.8.8.8:8080/probe\", timeout=5).read().decode(), end=\"\")'")).await), b"boxd-egress\n");
+        let second = action(
+            &client,
+            Action::Create {
+                template: "test".into(),
+                name: "second-clone".into(),
+            },
+        )
+        .await
+        .box_id;
+        if let Some(key) = &host_key {
+            assert_ne!(&client.ssh_host_key(&second).await.unwrap(), key);
+        }
+        assert_eq!(output(action(&client, exec(&second, "python3 -c 'import urllib.request; print(urllib.request.urlopen(\"http://8.8.8.8:8080/probe\", timeout=5).read().decode(), end=\"\")'")).await), b"boxd-egress\n");
+        action(&client, Action::Delete { id: second }).await;
+        eprintln!(
+            "PASS: persistent SSH host key, distinct clone keys, egress after restart and on another network slot"
+        );
+    }
     let side_effect = Submit {
         id: new_id(),
         action: exec(&id, "printf x >> /root/once; sleep 2"),
@@ -260,4 +398,50 @@ async fn https_lifecycle_and_crashed_host_never_replay_exec() {
     eprintln!(
         "PASS: HTTPS create/retry/disconnect, exec, pause/resume, persistent stop/start, host-crash unknown/no-replay, delete/tombstone"
     );
+}
+
+async fn output_of_forwarding_probe(
+    client: &Client,
+    id: &str,
+    config: &std::path::Path,
+    alias: &str,
+) {
+    use tokio::io::AsyncWriteExt;
+    output(action(client, exec(id, "mkdir -p /tmp/editor-probe; printf editor-forwarded > /tmp/editor-probe/probe; nohup python3 -m http.server 8081 --bind 127.0.0.1 --directory /tmp/editor-probe >/tmp/editor-probe.log 2>&1 </dev/null &")).await);
+    let mut ssh = tokio::process::Command::new("ssh")
+        .arg("-F")
+        .arg(config)
+        .args(["-W", "127.0.0.1:8081", alias])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    ssh.stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"GET /probe HTTP/1.0\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let output = tokio::time::timeout(Duration::from_secs(15), ssh.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.ends_with(b"editor-forwarded"));
+    let denied = tokio::process::Command::new("ssh")
+        .arg("-F")
+        .arg(config)
+        .args(["-W", "192.168.50.1:80", alias])
+        .output()
+        .await
+        .unwrap();
+    assert!(!denied.status.success());
+    assert!(String::from_utf8_lossy(&denied.stderr).contains("administratively prohibited"));
+    eprintln!("PASS: editor loopback forwarding and non-loopback forwarding rejection");
 }

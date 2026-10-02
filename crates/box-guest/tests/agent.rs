@@ -111,6 +111,41 @@ async fn initialization_is_a_one_way_barrier() {
 }
 
 #[tokio::test]
+async fn ssh_host_key_is_denied_before_initialization_and_created_lazily() {
+    let root = tempfile::tempdir().unwrap();
+    let agent = Agent::new_with_ssh_directory(
+        Arc::new(FakeInitializer::default()),
+        1,
+        root.path().to_path_buf(),
+    );
+    assert!(matches!(
+        agent.handle(Request::SshHostKey).await,
+        Response::Error(e) if e.code == ErrorCode::NotInitialized
+    ));
+    assert!(root.path().read_dir().unwrap().next().is_none());
+
+    let request = InitializeRequest {
+        hostname: "box-ssh".into(),
+        machine_id: "0123456789abcdef0123456789abcdef".into(),
+        entropy: vec![7; 32],
+    };
+    assert!(matches!(
+        agent.handle(Request::Initialize(request)).await,
+        Response::Initialized { .. }
+    ));
+    let Response::SshHostKey { public_key: first } = agent.handle(Request::SshHostKey).await else {
+        panic!("host key lookup failed")
+    };
+    assert!(box_protocol::valid_ssh_public_key(&first));
+    let Response::SshHostKey { public_key: second } = agent.handle(Request::SshHostKey).await
+    else {
+        panic!("second host key lookup failed")
+    };
+    assert_eq!(first, second);
+    assert!(root.path().join("ssh_host_ed25519_key").exists());
+}
+
+#[tokio::test]
 async fn exec_separates_and_caps_output() {
     let agent = Agent::initialized_for_test(2);
     let script = "printf out; printf err >&2; head -c 70000 /dev/zero";

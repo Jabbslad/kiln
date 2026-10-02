@@ -16,6 +16,8 @@ pub struct Config {
     pub gid_base: u32,
     #[serde(default, skip_serializing_if = "DiskBackend::is_copy")]
     pub disk_backend: DiskBackend,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<crate::network::Config>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +90,9 @@ impl Config {
                 "invalid isolated UID/GID range, binary path, or cgroup parent".into(),
             ));
         }
+        if let Some(network) = &self.network {
+            network.validate()?;
+        }
         Ok(())
     }
 
@@ -104,6 +109,15 @@ impl Config {
                 return Err(Error::Invalid(format!(
                     "PATH must select the configured, executable {name}"
                 )));
+            }
+        }
+        if let Some(network) = &self.network {
+            trusted_path(&network.helper)?;
+            let metadata = fs::metadata(&network.helper)?;
+            if !metadata.is_file() || metadata.mode() & 0o111 == 0 {
+                return Err(Error::Invalid(
+                    "network helper must be a trusted executable".into(),
+                ));
             }
         }
         let parent = self.parent();
@@ -420,6 +434,7 @@ mod tests {
             uid_base: 70000,
             gid_base: 71000,
             disk_backend: DiskBackend::Copy,
+            network: None,
         }
     }
 

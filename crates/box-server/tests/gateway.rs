@@ -9,6 +9,25 @@ use box_server::{
 use tower::ServiceExt;
 
 #[tokio::test]
+async fn ssh_routes_require_authentication_before_connecting() {
+    let token = "a".repeat(64);
+    let router = gateway::router(std::path::Path::new("/missing/host.sock"), &token).unwrap();
+    for suffix in ["ssh", "ssh-key"] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/boxes/{}/{suffix}", "b".repeat(32)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[tokio::test]
 async fn authentication_precedes_proxying_and_credentials_never_reach_the_host() {
     let root = tempfile::tempdir().unwrap();
     use std::os::unix::fs::PermissionsExt;

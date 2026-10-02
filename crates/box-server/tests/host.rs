@@ -82,6 +82,16 @@ async fn only_catalog_resources_and_owned_boxes_are_accessible() {
         let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
         assert!(!String::from_utf8_lossy(&bytes).contains(root.path().to_str().unwrap()));
     }
+    for suffix in ["ssh", "ssh-key"] {
+        let response = router.clone().oneshot(
+            Request::get(format!("/v1/boxes/{}/{suffix}", new_id()))
+                .header("connection", "upgrade")
+                .header("upgrade", box_api::SSH_UPGRADE)
+                .header(box_api::SSH_KEY_HEADER, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+                .body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
     let response = router
         .oneshot(
             Request::post("/v1/operations")

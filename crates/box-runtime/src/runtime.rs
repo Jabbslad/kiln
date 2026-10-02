@@ -4,6 +4,7 @@ use crate::{
     guest, host,
     image::{self, Manifest},
     isolation::{self, Config, JailIdentity},
+    network::{self, Topology},
     process::{self, Identity},
     storage,
 };
@@ -26,6 +27,7 @@ use std::{
 mod benchmark;
 mod checkpoint;
 mod disk;
+mod ssh;
 use benchmark::Phase;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +50,8 @@ pub struct BoxRecord {
     pub disk_layer: Option<String>,
     #[serde(default)]
     pub jail: Option<JailIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<Topology>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +69,8 @@ pub struct Snapshot {
     pub seals: std::collections::BTreeMap<String, storage::verity::Seal>,
     #[serde(default)]
     pub isolated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<Topology>,
 }
 
 pub struct Runtime {
@@ -167,6 +173,21 @@ impl Runtime {
             .transpose()
     }
 
+    fn allocate_network(&self, records: &[BoxRecord]) -> Result<Option<Topology>> {
+        let Some(config) = self.isolation.as_ref().and_then(|c| c.network.as_ref()) else {
+            return Ok(None);
+        };
+        config.validate()?;
+        let slot = (0..8)
+            .find(|slot| {
+                !records
+                    .iter()
+                    .any(|r| r.network.as_ref().is_some_and(|n| n.slot == *slot))
+            })
+            .ok_or_else(|| Error::Invalid("network slot pool exhausted".into()))?;
+        Ok(Some(Topology::allocate(&config.namespace_scope, slot)?))
+    }
+
     fn directory(&self, id: &str) -> Result<PathBuf> {
         if !storage::valid_id(id) {
             return Err(Error::Invalid("invalid box ID".into()));
@@ -236,6 +257,21 @@ impl Runtime {
                     "box isolation policy mismatch; refusing unjailed fallback".into(),
                 ));
             }
+        }
+        if record.network.is_some()
+            != self
+                .isolation
+                .as_ref()
+                .and_then(|c| c.network.as_ref())
+                .is_some()
+        {
+            return Err(Error::Invalid("box network policy mismatch".into()));
+        }
+        if let (Some(config), Some(topology)) = (
+            self.isolation.as_ref().and_then(|c| c.network.as_ref()),
+            &record.network,
+        ) {
+            topology.validate(&config.namespace_scope)?;
         }
         Ok(record)
     }
@@ -347,6 +383,14 @@ impl Runtime {
         record.process = None;
         if let Some(config) = &self.isolation {
             config.cleanup_cgroup(&record.run)?;
+            if let (Some(network), Some(topology)) = (&config.network, &record.network) {
+                network.helper(
+                    "cleanup",
+                    &record.run,
+                    topology,
+                    record.jail.as_ref().map_or(0, |j| j.uid),
+                )?;
+            }
         }
         Ok(())
     }
@@ -372,6 +416,17 @@ impl Runtime {
         self.identify_process(record)?;
         if record.process.is_none() {
             record.state = "stopped".into();
+            if let (Some(network), Some(topology)) = (
+                self.isolation.as_ref().and_then(|c| c.network.as_ref()),
+                &record.network,
+            ) {
+                network.helper(
+                    "cleanup",
+                    &record.run,
+                    topology,
+                    record.jail.as_ref().map_or(0, |j| j.uid),
+                )?;
+            }
             return Ok(());
         }
         let (_directory, client) = self.connection(record)?;
@@ -412,7 +467,8 @@ impl Runtime {
             // A crash before API configuration leaves a real but unusable VMM.
             // Stop only that identified process; retain its disk for explicit
             // start/retry. Adopt a fully initialized running VM instead.
-            let ready = record.state == "running"
+            let ready = record.network.is_none()
+                && record.state == "running"
                 && matches!(
                     self.guest(
                         &record,
@@ -532,6 +588,7 @@ impl Runtime {
             disk_copy: String::new(),
             disk_layer: None,
             jail: self.allocate_identity(&records)?,
+            network: self.allocate_network(&records)?,
         };
         storage::private_dir(&self.root.join("boxes").join(&record.id))?;
         let _lock = storage::lock(&self.directory(&record.id)?)?;
@@ -592,6 +649,17 @@ impl Runtime {
         drop(phase);
         let phase = Phase::start("vmm_start");
         let run = self.run(record)?;
+        if let (Some(config), Some(topology)) = (
+            self.isolation.as_ref().and_then(|c| c.network.as_ref()),
+            &record.network,
+        ) {
+            config.helper(
+                "prepare",
+                &record.run,
+                topology,
+                record.jail.as_ref().map_or(0, |j| j.uid),
+            )?;
+        }
         let mut kernel = record.image.kernel_path.clone();
         let mut snapshot_directory = snapshot.map(|s| self.root.join("snapshots").join(&s.id));
         let mut command = if let (Some(config), Some(identity)) = (&self.isolation, &record.jail) {
@@ -631,15 +699,33 @@ impl Runtime {
                 kernel = "kernel".into();
             }
             fs::create_dir(config.cgroup(&record.run)?)?;
-            let mut command = Command::new(&config.jailer);
-            command.args(config.args(
+            let jailer_args = config.args(
                 &self.generation(record)?,
                 &record.run,
                 identity,
                 record.memory_mib,
                 record.vcpus,
-            )?);
+            )?;
+            let mut command =
+                if let (Some(network), Some(topology)) = (&config.network, &record.network) {
+                    let mut command = Command::new(&network.helper);
+                    command.args([
+                        "run",
+                        &record.run,
+                        &topology.namespace,
+                        config
+                            .jailer
+                            .to_str()
+                            .ok_or_else(|| Error::Invalid("non-UTF-8 jailer path".into()))?,
+                    ]);
+                    command.env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin");
+                    command
+                } else {
+                    Command::new(&config.jailer)
+                };
+            command.args(jailer_args);
             command.env_clear();
+            command.env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin");
             command
         } else {
             let mut command = Command::new(host::executable("firecracker")?);
@@ -720,7 +806,12 @@ impl Runtime {
         drop(phase);
         let phase = Phase::start("vmm_configure");
         if let Some(directory) = snapshot_directory {
-            client.request("PUT", "/snapshot/load", json!({"snapshot_path":directory.join("state.snap"), "mem_backend":{"backend_type":"File", "backend_path": directory.join("memory.snap")}, "resume_vm":false, "track_dirty_pages":false})).await?;
+            let overrides = record
+                .network
+                .as_ref()
+                .map(|_| json!([{"iface_id":network::IFACE_ID,"host_dev_name":"tap0"}]))
+                .unwrap_or_else(|| json!([]));
+            client.request("PUT", "/snapshot/load", json!({"snapshot_path":directory.join("state.snap"), "mem_backend":{"backend_type":"File", "backend_path": directory.join("memory.snap")}, "resume_vm":false, "track_dirty_pages":false, "network_overrides":overrides})).await?;
             client
                 .request("PATCH", "/vm", json!({"state":"Resumed"}))
                 .await?;
@@ -735,6 +826,9 @@ impl Runtime {
                     json!({"vcpu_count":record.vcpus,"mem_size_mib":record.memory_mib,"smt":false}),
                 )
                 .await?;
+            if let Some(topology) = &record.network {
+                client.request("PUT", "/network-interfaces/eth0", json!({"iface_id":network::IFACE_ID,"guest_mac":topology.mac,"host_dev_name":topology.tap})).await?;
+            }
             client
                 .request(
                     "PUT",
@@ -824,8 +918,7 @@ impl Runtime {
                     | image::BootMode::SystemdWarmShared
             )
         {
-            // Initialize acknowledges identity provisioning, not systemd startup.
-            // The bootstrap closes its listener before that acknowledgement.
+            // Identity acknowledgement precedes the systemd agent handoff.
             let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 if matches!(
@@ -852,6 +945,74 @@ impl Runtime {
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
+        }
+        if initialize && let Some(topology) = &record.network {
+            let resolver = self
+                .isolation
+                .as_ref()
+                .and_then(|config| config.network.as_ref())
+                .ok_or_else(|| Error::Invalid("network policy missing".into()))?
+                .resolver
+                .to_string();
+            for argv in [
+                vec!["/sbin/ip", "link", "set", "eth0", "address", &topology.mac],
+                vec![
+                    "/sbin/ip",
+                    "address",
+                    "replace",
+                    &format!("{}/24", topology.guest_ipv4),
+                    "dev",
+                    "eth0",
+                ],
+                vec!["/sbin/ip", "link", "set", "eth0", "up"],
+                vec![
+                    "/sbin/ip",
+                    "route",
+                    "replace",
+                    "default",
+                    "via",
+                    &topology.gateway_ipv4,
+                ],
+                vec![
+                    "/bin/sh",
+                    "-c",
+                    "umask 022; rm -f /etc/resolv.conf; printf 'nameserver %s\\n' \"$1\" > /etc/resolv.conf",
+                    "boxd-network",
+                    &resolver,
+                ],
+            ] {
+                let request = ExecRequest {
+                    argv: argv.into_iter().map(String::from).collect(),
+                    cwd: None,
+                    env: Default::default(),
+                    timeout_ms: 5000,
+                };
+                if !matches!(
+                    self.guest(record, &Request::Exec(request), Duration::from_secs(7))
+                        .await?,
+                    Response::Exec(ExecResult {
+                        exit_code: Some(0),
+                        timed_out: false,
+                        ..
+                    })
+                ) {
+                    return Err(Error::Invalid("guest network initialization failed".into()));
+                }
+            }
+        }
+        if (initialize || initialized)
+            && let Some(topology) = &record.network
+        {
+            self.isolation
+                .as_ref()
+                .and_then(|config| config.network.as_ref())
+                .ok_or_else(|| Error::Invalid("network policy missing".into()))?
+                .helper(
+                    "activate",
+                    &record.run,
+                    topology,
+                    record.jail.as_ref().map_or(0, |j| j.uid),
+                )?;
         }
         record.state = "running".into();
         Ok(())
@@ -1032,6 +1193,7 @@ mod tests {
             uid_base: uid,
             gid_base: gid,
             disk_backend: isolation::DiskBackend::Copy,
+            network: None,
         });
         let mut record: BoxRecord = serde_json::from_value(json!({
             "schema_version":1, "id":id().unwrap(), "run":id().unwrap(),

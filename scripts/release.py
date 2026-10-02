@@ -42,6 +42,7 @@ def package(repo, bins, output, version, target, kind, image):
         files.update(
             {
                 "install.py": repo / "deploy/install.py",
+                "bin/boxd-network": repo / "deploy/boxd-network",
                 "fetch-firecracker.sh": repo / "scripts/fetch-firecracker.sh",
                 "README.md": repo / "README.md",
                 "docs/releases.md": repo / "docs/releases.md",

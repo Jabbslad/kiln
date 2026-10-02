@@ -7,8 +7,10 @@ package on a supported Ubuntu host.
 
 `boxctl` manages boxes over **verified HTTPS**. Only the server needs Linux,
 Firecracker and KVM. This is a single-administrator, trusted-workload pilot:
-lifecycle management and buffered commands work; guest SSH, interactive terminals,
-files, internet networking, previews and multi-tenant security are not included.
+lifecycle management, buffered commands, SSH terminals, SFTP and opt-in isolated
+IPv4 egress are implemented. Previews and multi-tenant security are not included.
+SSH/networking require matching new client/server/guest builds; the published
+v0.1.1 packages do not include them.
 
 The existing `box` binary remains the local Linux operator tool. It is not the
 laptop client. Do not run local mutations against the runtime while its host
@@ -22,9 +24,10 @@ Laptop boxctl → HTTPS + bearer token → boxd-api (unprivileged)
                                     Linux guest via vsock
 ```
 
-There is no mandatory SSH tunnel for management. Guest SSH/editor integration is
-a subsequent networking slice. SQLite is embedded; no PostgreSQL or Redis is
-required. The service exposes only catalog aliases and sanitized box records,
+There is no mandatory SSH tunnel for management. Guest SSH streams use the same
+authenticated HTTPS endpoint and a fixed vsock service, without opening port 22
+or requiring a guest IP reachable from the laptop. SQLite is embedded; no
+PostgreSQL or Redis is required. The service exposes only catalog aliases and sanitized box records,
 not host paths, jail identities, host fingerprints or Firecracker sockets.
 
 ## Build the binaries
@@ -172,6 +175,46 @@ profile store. Default location is `$XDG_CONFIG_HOME/boxd/profiles.json`,
 `%APPDATA%/boxd/profiles.json`, or `$HOME/.config/boxd/profiles.json`. Profiles
 contain URL and absolute token/CA **file references**, not token bytes. Existing
 names are not overwritten by `profile add`; edit the JSON or use another name.
+
+### Interactive terminal, files and editors
+
+On Linux/macOS, install the platform's OpenSSH client (`ssh`, `scp`, `ssh-keygen`).
+The profile directory must be private (0700). Use the full box ID:
+
+```sh
+boxctl ssh BOX_ID
+boxctl ssh BOX_ID -- 'uname -a; exit 37'
+boxctl cp ./local-file BOX_ID:/workspace/remote-file
+boxctl cp BOX_ID:/workspace/remote-file ./downloaded-file
+boxctl ssh-config BOX_ID > "$HOME/.ssh/boxd-config"
+ssh -F "$HOME/.ssh/boxd-config" boxd-default-BOX_ID
+```
+
+Add `Include ~/.ssh/boxd-config` to `~/.ssh/config` to use the generated host
+entry in VS Code Remote-SSH or another OpenSSH-based editor. This supports
+loopback-only guest TCP forwarding for editor servers; agent, X11 and remote
+forwarding are disabled. Regenerate the entry when changing profiles or moving
+the client binary. Paths with shell/config expansion characters are rejected.
+`cp` uses SFTP and accepts one local endpoint and one `BOX_ID:/absolute/path`.
+
+The client creates a private per-profile Ed25519 key. It retrieves the guest's
+host key through verified HTTPS and uses strict host-key checking, never an
+insecure first-connect prompt. Guest host keys are generated after clone
+initialization and persist on the box disk. Authentication authorizes root
+access inside the selected box. The administrator token is never sent to the
+guest; terminal/file payloads do not enter the operation journal.
+
+SSH sessions are separate from buffered `exec`: Ctrl-C and terminal resizing
+work through OpenSSH, with no automatic command replay or session reconnect.
+There are at most 32 tunnels per service, eight sessions per guest, and a 24-hour
+tunnel lifetime. Windows management commands remain supported, but these new
+SSH/SFTP commands are currently Unix-only. Native macOS editor execution still
+needs validation; Linux OpenSSH protocol integration is tested.
+
+Existing images/templates do not acquire a new agent when the host is updated.
+Build a new Ubuntu image and template for SSH. Internet access additionally
+requires an explicitly provisioned network-enabled isolated runtime; see
+[network setup and limits](runtime-networking.md). It is not necessary for SSH.
 
 `--json` emits structured JSON on stdout. Text-mode exec preserves byte-exact
 stdout/stderr; JSON encodes them as byte arrays (including non-UTF-8 data).

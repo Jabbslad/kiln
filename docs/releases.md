@@ -39,6 +39,14 @@ select owner `Jabbslad`, repository `boxd`, and repository permission
 line. You can revoke it after installation. No `gh`, Python, Rust, or JSON parser
 is required on the laptop. GitHub authentication is unrelated to boxd enrollment.
 
+**Unreleased guest-access additions:** source builds now include interactive SSH,
+SFTP, editor SSH configuration, and optional isolated guest IPv4 egress. The
+public installer still pins v0.1.1 and does not deliver these additions. A new
+reviewed release must include the client, server, and updated Ubuntu guest agent,
+followed by updated bootstrap asset pins. Existing templates/boxes are not
+upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
+management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
+
 The client installs to `~/.local/bin/boxctl` without sudo and prints PATH setup
 instructions if needed. Existing installations are preserved, not upgraded.
 The server bootstrap prompts for its private IPv4 address and permission to
@@ -114,7 +122,10 @@ It downloads checksum-pinned Firecracker/jailer 1.17.0 from GitHub. The package
 already contains the kernel, Ubuntu filesystem and guest agent.
 
 The server must be reachable over your existing LAN or VPN. The installer does
-not configure a VPN, firewall or guest networking. Pick a stable IPv4 address
+not configure a VPN or open the host API firewall. Guest networking is off by
+default; new source packages support explicit `--network-uplink INTERFACE`
+provisioning, including NAT/filtering and a boot unit (see
+[networking](runtime-networking.md)). Pick a stable IPv4 address
 assigned to that private interface. Public addresses and `0.0.0.0` are refused;
 omitting the address installs a **local-only** endpoint at `127.0.0.1`.
 
@@ -179,7 +190,8 @@ boxctl exec BOX_ID -- /bin/sh -c 'printf hello'
 Profiles reference the extracted token/CA files; do not delete them after setup.
 Unix token permissions must be 0600 or 0400. On Windows, restrict the directory
 and token ACL to your account. The service currently supports buffered exec,
-not an interactive shell, SSH, file transfer, or guest internet access.
+while v0.1.1 does not include an interactive shell, SSH, file transfer, or guest
+internet access. Those additions require the new builds described above.
 
 The server leaf certificate expires after **one year**. Renew it before expiry,
 using the retained private CA and the same IP SAN, and restart `boxd-api` after
