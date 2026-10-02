@@ -1,0 +1,87 @@
+# boxd installer
+
+Public bootstrap for **private** boxd pilot packages. This repository contains
+only installation instructions and a shell script, not the platform source,
+binaries, or credentials. You need access to `Jabbslad/boxd` to download packages.
+
+## Laptop: macOS or Linux
+
+Run in a terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh
+```
+
+Supports Apple Silicon/Intel macOS and x86-64 Linux with glibc 2.39+. Installs
+`~/.local/bin/boxctl` without sudo. Add that directory to PATH if prompted. No
+GitHub CLI, Python, Rust, or JSON parser is required. Standard shell tools, curl,
+tar and a SHA-256 utility must be present. Native Windows users should download
+the `boxctl` zip from the private release instead; this is not a PowerShell installer.
+
+The script asks for a GitHub token with read access to the private release.
+Create a short-lived [fine-grained token](https://github.com/settings/personal-access-tokens/new):
+choose owner **Jabbslad**, repository **boxd**, permission **Contents: Read-only**.
+Paste it at the hidden prompt, never into the command itself. You can revoke it
+after installation. Tokens are not saved in the installed application.
+
+## Server: dedicated Ubuntu 24.04 x86-64/KVM
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh -s -- server
+```
+
+Use a systemd host with usable `/dev/kvm`, cgroup v2, 6 GiB currently available
+RAM and 24 GiB free on `/var/lib`, plus about 3 GiB temporary extraction space.
+16 GiB+ total RAM is recommended. Ubuntu 26.04 and containers are not supported.
+
+The script downloads and verifies the package, prompts for a stable private/VPN
+IPv4 address assigned to the server, and requests permission to install required
+Ubuntu packages through sudo. These include Python; you do not install or invoke
+it yourself. The provisioner checks resources/conflicts and requests a separate
+`INSTALL` confirmation before creating accounts, services, TLS credentials, and
+a 4 GiB warm Ubuntu template. No firewall or VPN is configured.
+
+**This is a trusted-workload pilot, not a production multi-tenant sandbox.**
+Fresh-host setup and reboot validation remain outstanding. The initial server
+uses the copy disk backend, not the faster overlay benchmark configuration.
+There is no automated upgrade/uninstall. Existing destinations are refused.
+If provisioning fails, retain the state and inspect logs; do not delete VM state
+or blindly rerun setup.
+
+## Connect
+
+After server setup, securely transfer `/etc/boxd/laptop.tar.gz` to the laptop
+using existing SSH/SFTP. It contains an administrator token: treat it as a
+password and never upload it to a repository, issue, or chat. Extract into a
+permanent private directory and follow `CONNECT.txt`, then run:
+
+```sh
+boxctl templates
+boxctl create --template ubuntu-4g --name first-box
+boxctl list
+boxctl exec BOX_ID -- /bin/sh -c 'printf hello'
+```
+
+Keep the extracted credential files; profiles reference them. This release has
+buffered execution, not an interactive terminal, guest SSH or guest internet.
+Server certificates need manual renewal within one year.
+
+## Trust and maintenance
+
+The bootstrap pins v0.1.0 asset IDs and SHA-256 digests, validates archive contents,
+and authenticates only to GitHub's API. Redirected asset requests do not receive
+the GitHub token. Temporary secrets are removed on normal exit and handled
+signals. A checksum protects integrity under trust in this bootstrap publisher;
+it is not independent signing. macOS/Windows binaries are not signed/notarized.
+
+To review rather than pipe directly into a shell:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh -o install.sh
+less install.sh
+sh install.sh
+```
+
+The authoritative files live under `deploy/bootstrap/` in the private source
+repository. Maintainers publish only `install.sh` and this README after testing
+and verifying the release assets. No private checkout history belongs here.

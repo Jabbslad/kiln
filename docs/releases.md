@@ -10,7 +10,49 @@ release or real server installation has succeeded. Check the Actions run for the
 version you download. macOS binaries are not signed/notarized, and Windows
 binaries are not Authenticode-signed.
 
-## Download the client
+## One-command installation
+
+On a macOS or supported Linux laptop, run in a terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh
+```
+
+On a dedicated **Ubuntu 24.04 x86-64/KVM** server:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh -s -- server
+```
+
+Only the bootstrap is public. It prompts for a GitHub token to download pinned
+private `v0.1.0` release assets. Create a short-lived
+[fine-grained token](https://github.com/settings/personal-access-tokens/new),
+select owner `Jabbslad`, repository `boxd`, and repository permission
+**Contents: Read-only**. Paste it into the hidden terminal prompt, not the command
+line. You can revoke it after installation. No `gh`, Python, Rust, or JSON parser
+is required on the laptop. GitHub authentication is unrelated to boxd enrollment.
+
+The client installs to `~/.local/bin/boxctl` without sudo and prints PATH setup
+instructions if needed. Existing installations are preserved, not upgraded.
+The server bootstrap prompts for its private IPv4 address and permission to
+install Ubuntu system packages (including Python) through sudo, then invokes the
+existing installer. You do not install dependencies or invoke Python yourself.
+The server still needs the resources and LAN/VPN connectivity described below;
+this does not add support for Ubuntu 26.04, containers or non-KVM hosts.
+
+The script checks archive digests before extraction and sends your GitHub token
+only to `api.github.com`. It removes temporary credentials on normal exit and
+handled signals. Checksums assume trust in the public bootstrap publisher, not
+independent package signing. To inspect before execution, download the script
+with `curl -fsSL URL -o install.sh`, read it, then run `sh install.sh [server]`.
+Native Windows continues to use the private release zip described below.
+
+**Fresh-host provisioning and reboot remain unverified.** The pilot uses the copy
+disk backend, not the faster overlay benchmark configuration. After server setup,
+follow [Connect the laptop](#connect-the-laptop); installation does not transfer
+administrator credentials automatically.
+
+## Manual client download (optional)
 
 Install [GitHub CLI](https://cli.github.com/) and run `gh auth login`. Use an
 account with access to the private repository. Set `REPO` to its `OWNER/NAME` and
@@ -52,13 +94,15 @@ Checksums detect corruption, not a compromised publisher. The trust boundary is
 your authenticated GitHub repository and the reviewed workflow; signing is not
 implemented yet. Do not paste a GitHub token into a URL or installer command.
 
-## Install the server
+## Server requirements and manual installation
 
 Start with a **dedicated Ubuntu 24.04 x86-64 systemd host** with usable `/dev/kvm`,
 cgroup v2, at least 6 GiB currently available RAM and 24 GiB free on `/var/lib`
-after extracting the package. A 16 GiB+ host is recommended. You need Python
-3.12, OpenSSL, curl, CA certificates, tar and standard Ubuntu account/systemd tools.
-The installer checks dependencies instead of modifying your apt repositories.
+after extracting the package. A 16 GiB+ host is recommended. Allow additional
+temporary space for the downloaded archive and extracted image (about 3 GiB).
+The shell bootstrap manages Python 3.12, OpenSSL, curl, CA certificates, tar and
+Ubuntu account tools. For manual installation, supply these dependencies yourself;
+the underlying Python provisioner only checks them.
 It downloads checksum-pinned Firecracker/jailer 1.17.0 from GitHub. The package
 already contains the kernel, Ubuntu filesystem and guest agent.
 
@@ -159,3 +203,11 @@ code. Keep runtime directories, tokens and enrollment bundles out of Git. The
 packager includes only named binaries, installer files and pristine image files.
 Changing repository visibility later is a separate decision; this workflow never
 makes that change.
+
+The public installer is maintained in `deploy/bootstrap/`. Only `install.sh` and
+its public `README.md` may be copied to `Jabbslad/boxd-install`. After an approved
+private release is published, update the script's pinned asset IDs and SHA-256
+values from verified packages, run `scripts/test-bootstrap.py` and ShellCheck,
+and verify a real authenticated download before publishing the public copy.
+Never publish this private checkout, server state, or GitHub credentials there.
+The ordinary build workflow has no cross-repository publishing credentials.

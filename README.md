@@ -8,11 +8,17 @@ An experimental isolated profile now integrates jailer, per-box host identities,
 
 ## Use a laptop client
 
-For prebuilt clients and a guided Ubuntu server installer, use the
-[private GitHub release guide](docs/releases.md). GitHub Actions builds the server
-and native macOS, Linux and Windows clients; a successful build/release must be
-published before downloads are available. No Rust compiler is needed to install
-those packages. To build from source instead, use
+Install the macOS/Linux client from a terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh
+```
+
+The script prompts for a GitHub token with read access to the private packages;
+no GitHub CLI, Python or Rust installation is needed on the laptop. See the
+[installation guide](docs/releases.md) for token permissions, the one-command
+Ubuntu server setup, platform requirements and optional manual/Windows downloads.
+To build from source instead, use
 `cargo install --locked --path crates/box-client`.
 It manages templates, create/list/inspect, exec, pause/resume, stop/start and delete
 over verified HTTPS. Only the server needs Linux/KVM. The single-host service uses
@@ -20,8 +26,9 @@ embedded SQLite, a separate unprivileged TLS gateway and a restricted Unix socke
 to the existing runtime. Durable request IDs survive disconnection and prevent
 automatic replay of interrupted commands.
 
-See the [server setup and laptop guide](docs/remote-client.md). No persistent
-service or public listener is installed automatically. This first slice has one
+See the [server setup and laptop guide](docs/remote-client.md). Installing the
+client does not provision server services. Server setup requires confirmation
+and binds only to the chosen private address. This first slice has one
 administrator and buffered exec; guest SSH, interactive terminals and networking
 are subsequent work.
 
