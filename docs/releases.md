@@ -55,6 +55,12 @@ This release does not add network cards to old boxes or migrate networkless
 stores. Internet access still requires an explicitly provisioned network-enabled
 store and templates, with a reviewed migration for existing workloads.
 
+**v0.2.2 networking launch fix:** the privileged helper uses `nsenter` to enter
+only the VM network namespace, retaining the cgroup2 hierarchy needed by jailer.
+This fixes `CgroupHierarchyMissing` on ordinary hosts. Networking installation
+now explicitly requires util-linux. The guest image and wire protocol remain
+compatible with v0.2.1; existing networkless stores still require migration.
+
 The client installs to `~/.local/bin/boxctl` without sudo and prints PATH setup
 instructions if needed. Plain installation preserves existing clients. To upgrade:
 

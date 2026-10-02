@@ -18,8 +18,14 @@ preserves networkless behavior (including existing immutable stores). NIC
 topology is recorded in each box and snapshot; it is never inferred later.
 
 The installer must copy `deploy/boxd-network` as a root-owned, non-writable
-executable at the configured path and install `iproute2` and `nftables`. This
-is supported by the fresh-install provisioner's explicit
+executable at the configured path and install `iproute2`, `nftables`, and
+`util-linux` (for `nsenter`). The VMM launcher enters only the network namespace;
+it must preserve the cgroup2 mount for jailer, which establishes its own mount
+isolation. `ip netns exec` is unsuitable for launch because its `/sys` remount
+hides that hierarchy. Version 0.2.2 fixes this on ordinary hosts; older tests
+accidentally masked the problem with a second cgroup mount outside `/sys`.
+
+The fresh-install provisioner supports this through its explicit
 `--network-uplink INTERFACE` option. After reviewing the plan, `INSTALL` authorizes
 creation of the bridge/firewall and a `boxd-network.service` boot prerequisite.
 Omitting the option makes no networking changes. This is not an upgrade path

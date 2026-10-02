@@ -122,6 +122,16 @@ class InstallTests(unittest.TestCase):
                     self.install.network_preflight(interface)
                 run.assert_not_called()
 
+    def test_network_preflight_requires_nsenter_before_commands(self):
+        with (
+            patch.object(self.install.shutil, "which", side_effect=lambda tool: None if tool == "nsenter" else f"/usr/bin/{tool}"),
+            patch.object(self.install, "run") as run,
+            patch.object(self.install, "require_absent"),
+        ):
+            with self.assertRaisesRegex(ValueError, "util-linux"):
+                self.install.network_preflight("eth0")
+            run.assert_not_called()
+
     def test_existing_and_symlink_destinations_fail_before_install(self):
         target = self.root / "existing"
         target.write_text("preserve")

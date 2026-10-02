@@ -14,7 +14,10 @@ mount -t tmpfs -o mode=0755 tmpfs /run
 mkdir /run/host-cgroups
 mount --bind /sys/fs/cgroup /run/host-cgroups
 mount -t sysfs sysfs /sys
-mount --bind /run/host-cgroups /sys/fs/cgroup
+# Keep only the normal mount: an alias outside /sys masks launchers which
+# accidentally hide /sys/fs/cgroup when entering a network namespace.
+mount --move /run/host-cgroups /sys/fs/cgroup
+rmdir /run/host-cgroups
 base=/run/boxd-test
 mkdir -m 0700 "$base"
 mkdir "$base/bin" "$base/image" "$base/state"

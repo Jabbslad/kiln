@@ -224,7 +224,7 @@ install_server() {
     [ "$confirmation" = SETUP ] || fail 'Cancelled; no system changes made.'
     as_root apt-get update < /dev/tty
     if [ -n "$uplink" ]; then
-        as_root apt-get install --no-install-recommends -y python3 openssl curl ca-certificates tar passwd iproute2 nftables < /dev/tty
+        as_root apt-get install --no-install-recommends -y python3 openssl curl ca-certificates tar passwd iproute2 nftables util-linux < /dev/tty
         as_root python3 "$work/package/install.py" --address "$address" --apply --network-uplink "$uplink" < /dev/tty
     else
         as_root apt-get install --no-install-recommends -y python3 openssl curl ca-certificates tar passwd < /dev/tty

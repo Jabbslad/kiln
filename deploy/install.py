@@ -231,9 +231,9 @@ def write(path, text, mode=0o600):
 def network_preflight(uplink):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}", uplink):
         raise ValueError("network uplink must be a Linux interface name")
-    for tool in ("ip", "nft", "sysctl"):
+    for tool in ("ip", "nft", "sysctl", "nsenter"):
         if not shutil.which(tool):
-            raise ValueError("networking requires iproute2 and nftables packages")
+            raise ValueError("networking requires iproute2, nftables and util-linux packages")
     run("ip", "link", "show", "dev", uplink)
     require_absent([Path("/sys/class/net/boxd0"), UNITS / "boxd-network.service"])
 

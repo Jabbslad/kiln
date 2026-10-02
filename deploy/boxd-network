@@ -122,7 +122,9 @@ run)
   owner=$2 ns=$3 marker="/run/boxd-network/$3.owner"
   [ -f "$marker" ] && [ "$(cat "$marker")" = "$owner" ] || die "namespace ownership mismatch"
   shift 3
-  exec ip netns exec "$ns" "$@"
+  # ip netns exec remounts /sys and hides the cgroup2 hierarchy from jailer.
+  # Enter only the network namespace; jailer establishes its own mount jail.
+  exec nsenter --net="/run/netns/$ns" -- "$@"
   ;;
 *) die "expected provision, prepare, activate, cleanup, or run" ;;
 esac

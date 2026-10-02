@@ -9,7 +9,11 @@ if [ "${BOXD_NETWORK_TEST_CHILD:-}" != 1 ]; then
 fi
 mount --make-rprivate /
 mount -t tmpfs tmpfs /run
+mkdir /run/host-cgroups
+mount --bind /sys/fs/cgroup /run/host-cgroups
 mount -t sysfs sysfs /sys
+mount --move /run/host-cgroups /sys/fs/cgroup
+rmdir /run/host-cgroups
 helper="$repo/deploy/boxd-network"
 ip link set lo up
 ip netns add wan
@@ -29,6 +33,13 @@ for slot in 0 1; do
     owner=$(printf '%032d' "$((slot + 1))")
     sh "$helper" prepare "$owner" "bd-boxd-$slot" "100.96.$slot.2" "100.96.$slot.1" 1.1.1.1 80000
     ip -n "bd-boxd-$slot" tuntap show tap0 | grep -q 'user 80000'
+    # The jailer needs the original mount namespace and its cgroup hierarchy,
+    # but must execute in the VM's network namespace, not the host network.
+    sh "$helper" run "$owner" "bd-boxd-$slot" sh -ec '
+        test "$(readlink /proc/self/ns/net)" = "$1"
+        test "$(readlink /proc/self/ns/mnt)" = "$2"
+        test -f /sys/fs/cgroup/cgroup.controllers
+    ' test "net:[$(stat -Lc %i "/run/netns/bd-boxd-$slot")]" "$(readlink /proc/self/ns/mnt)"
     ip netns add "guest$slot"
     ip -n "bd-boxd-$slot" link add test0 type veth peer name eth0 netns "guest$slot"
     ip -n "bd-boxd-$slot" link set test0 master br0

@@ -496,6 +496,7 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
         commands = [json.loads(line) for line in (self.root / "privileged").read_text().splitlines()]
         self.assertIn("nftables", commands[1])
         self.assertIn("iproute2", commands[1])
+        self.assertIn("util-linux", commands[1])
 
     def test_server_cancellation_and_invalid_addresses_do_not_run_sudo(self):
         for address in [
