@@ -11,7 +11,9 @@ fail() { printf 'boxd: %s\n' "$*" >&2; exit 1; }
 cleanup() {
     if [ -n "$tty_state" ]; then stty "$tty_state" < /dev/tty || :; fi
     if [ -n "$staged" ]; then rm -f "$staged"; fi
+    if [ -n "$backup_staged" ]; then rm -f "$backup_staged"; fi
     if [ -n "$work" ]; then rm -rf "$work"; fi
+    if [ -n "$lock" ]; then rmdir "$lock" || :; fi
 }
 
 assets() {
@@ -154,6 +156,13 @@ as_root() {
     if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi
 }
 
+check_upgrade_paths() {
+    [ -f "$destination" ] && [ ! -L "$destination" ] || fail 'Upgrade requires an existing regular file at ~/.local/bin/boxctl; symbolic links are refused.'
+    if [ -e "$destination.previous" ] || [ -L "$destination.previous" ]; then
+        [ -f "$destination.previous" ] && [ ! -L "$destination.previous" ] || fail 'Backup destination must be a regular file, not a symbolic link or directory.'
+    fi
+}
+
 install_client() {
     found=$("$work/package/boxctl" --version) || fail 'Downloaded client cannot run on this machine.'
     [ "$found" = "box-client $version" ] || fail 'Downloaded client version does not match release.'
@@ -161,9 +170,20 @@ install_client() {
     staged=$(mktemp "$HOME/.local/bin/.boxctl.XXXXXXXX")
     cp "$work/package/boxctl" "$staged"
     chmod 755 "$staged"
-    # Atomic, no-overwrite publication on the destination filesystem.
-    ln "$staged" "$HOME/.local/bin/boxctl" || fail 'Client destination exists; refusing to overwrite.'
-    rm -f "$staged"
+    if [ "$upgrade" = true ]; then
+        check_upgrade_paths
+        backup_staged=$(mktemp "$HOME/.local/bin/.boxctl-backup.XXXXXXXX")
+        cp -p "$destination" "$backup_staged" || fail 'Cannot back up existing client; nothing replaced.'
+        mv -f "$backup_staged" "$destination.previous" || fail 'Cannot publish client backup; nothing replaced.'
+        backup_staged=
+        # Same-filesystem rename: readers see either the old or verified binary.
+        mv -f "$staged" "$destination" || fail 'Cannot replace client; existing binary preserved.'
+        printf 'Previous client retained at %s.previous\n' "$destination"
+    else
+        # Fresh installs never overwrite a file created by another process.
+        ln "$staged" "$destination" || fail 'Client destination exists; refusing to overwrite.'
+        rm -f "$staged"
+    fi
     staged=
     printf 'Installed %s at %s/.local/bin/boxctl\n' "$found" "$HOME"
     # shellcheck disable=SC2016
@@ -210,18 +230,23 @@ install_server() {
 
 main() {
     version=0.2.0
-    work='' staged='' tty_state=''
+    work='' staged='' backup_staged='' tty_state='' lock='' upgrade=false
     trap cleanup EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
     trap 'exit 129' HUP
-    [ "$#" -le 1 ] || fail 'Usage: sh install.sh [client|server]'
+    usage='Usage: sh install.sh [client [--upgrade]|server]'
+    [ "$#" -le 2 ] || fail "$usage"
     mode=${1:-client}
     case "$mode" in
         client|server) ;;
-        --help|-h) printf '%s\n' 'Usage: sh install.sh [client|server]. Requires a terminal and private GitHub package access.'; return ;;
-        *) fail 'Usage: sh install.sh [client|server]' ;;
+        --help|-h) printf '%s\n' "$usage. Requires a terminal and private GitHub package access."; return ;;
+        *) fail "$usage" ;;
     esac
+    if [ "$#" = 2 ]; then
+        [ "$mode" = client ] && [ "$2" = --upgrade ] || fail "$usage"
+        upgrade=true
+    fi
     platform
     for tool in curl tar awk sed tr sort cmp mktemp stty grep; do
         command -v "$tool" >/dev/null 2>&1 || fail "Missing standard system tool: $tool"
@@ -229,9 +254,15 @@ main() {
     command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || fail 'Missing system SHA-256 tool.'
     if [ "$mode" = client ]; then
         [ -n "${HOME:-}" ] || fail 'HOME must be set.'
-        if [ -e "$HOME/.local/bin/boxctl" ] || [ -L "$HOME/.local/bin/boxctl" ]; then
-            fail 'Existing boxctl preserved; automatic upgrades are not supported.'
+        destination="$HOME/.local/bin/boxctl"
+        if [ "$upgrade" = true ]; then
+            check_upgrade_paths
+        elif [ -e "$destination" ] || [ -L "$destination" ]; then
+            fail 'Existing boxctl preserved; rerun with: sh -s -- client --upgrade'
         fi
+        mkdir -p "$HOME/.local/bin"
+        mkdir "$HOME/.local/bin/.boxctl-install.lock" 2>/dev/null || fail 'Cannot lock client destination; another installer may be running. Inspect ~/.local/bin/.boxctl-install.lock before removing a stale lock.'
+        lock="$HOME/.local/bin/.boxctl-install.lock"
     elif [ "$(id -u)" != 0 ]; then
         command -v sudo >/dev/null 2>&1 || fail 'Server setup needs sudo or a root shell.'
     fi

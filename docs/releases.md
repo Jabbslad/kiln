@@ -47,7 +47,17 @@ upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
 management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
 
 The client installs to `~/.local/bin/boxctl` without sudo and prints PATH setup
-instructions if needed. Existing installations are preserved, not upgraded.
+instructions if needed. Plain installation preserves existing clients. To upgrade:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh -s -- client --upgrade
+```
+
+This verifies the downloaded checksum and executable version before atomic
+replacement, retaining the old binary as `~/.local/bin/boxctl.previous`. It leaves
+profiles and credentials unchanged. Server upgrades are not supported by this
+flag; see the [bootstrap upgrade details](../deploy/bootstrap/README.md#upgrade-an-existing-laptop-client).
+
 The server bootstrap prompts for its private IPv4 address and permission to
 install Ubuntu system packages (including Python) through sudo, then invokes the
 existing installer. You do not install dependencies or invoke Python yourself.

@@ -24,6 +24,25 @@ choose owner **Jabbslad**, repository **boxd**, permission **Contents: Read-only
 Paste it at the hidden prompt, never into the command itself. You can revoke it
 after installation. Tokens are not saved in the installed application.
 
+### Upgrade an existing laptop client
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/boxd-install/main/install.sh | sh -s -- client --upgrade
+boxctl --version
+```
+
+The explicit upgrade verifies the package checksum and executable version before
+atomically replacing `~/.local/bin/boxctl`. The previous binary is retained as
+`~/.local/bin/boxctl.previous` (replaced on the next upgrade); profiles, tokens and
+CA files are untouched. Failed downloads or validation leave both binaries alone.
+To roll back, run `mv ~/.local/bin/boxctl.previous ~/.local/bin/boxctl`.
+
+Symbolic links and non-regular destinations are refused. Concurrent installers
+are blocked by `~/.local/bin/.boxctl-install.lock`; if an installer was forcibly
+killed, confirm it is no longer running before removing that empty directory.
+Plain installation still refuses to overwrite an existing client. This option
+does not upgrade a server or its guest images.
+
 ## Server: dedicated Ubuntu 24.04 or 26.04 x86-64/KVM
 
 ```sh
@@ -57,7 +76,7 @@ manager. This option cannot retrofit an existing immutable runtime store.
 **This is a trusted-workload pilot, not a production multi-tenant sandbox.**
 Fresh-host setup and reboot validation remain outstanding. The initial server
 uses the copy disk backend, not the faster overlay benchmark configuration.
-There is no automated upgrade/uninstall. Existing destinations are refused.
+There is no automated server upgrade/uninstall. Existing server destinations are refused.
 If provisioning fails, retain the state and inspect logs; do not delete VM state
 or blindly rerun setup.
 

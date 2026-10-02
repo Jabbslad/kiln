@@ -342,6 +342,92 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
                 self.assertEqual(self.requests(), [])
                 self.env = old
 
+    def old_client(self):
+        binary = self.root / "home/.local/bin/boxctl"
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text("#!/bin/sh\necho 'box-client 0.1.1'\n")
+        binary.chmod(0o755)
+        return binary
+
+    def test_explicit_upgrade_replaces_client_and_keeps_previous_and_profiles(self):
+        binary = self.old_client()
+        original = binary.read_bytes()
+        profile = self.root / "home/.config/boxd/profiles.json"
+        profile.parent.mkdir(parents=True)
+        profile.write_text("preserve profile and credential references")
+        code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(subprocess.check_output([binary, "--version"], text=True), "box-client 0.2.0\n")
+        self.assertEqual(binary.with_name("boxctl.previous").read_bytes(), original)
+        self.assertEqual(profile.read_text(), "preserve profile and credential references")
+        self.assertEqual(sorted(p.name for p in binary.parent.iterdir()), ["boxctl", "boxctl.previous"])
+
+    def test_failed_upgrade_preserves_current_and_previous_clients(self):
+        binary = self.old_client()
+        original = binary.read_bytes()
+        previous = binary.with_name("boxctl.previous")
+        previous.write_bytes(b"older backup")
+        for failure in ("checksum", "version", "HTTP"):
+            with self.subTest(failure=failure):
+                self.env["HTTP"] = "403" if failure == "HTTP" else "200"
+                digest = self.package({"boxctl": b"#!/bin/sh\necho wrong-version\n"}) if failure == "version" else self.package()
+                code, out = self.run_bootstrap("0" * 64 if failure == "checksum" else digest, args=("client", "--upgrade"))
+                self.assertNotEqual(code, 0, out)
+                self.assertIn(failure.lower(), out.lower())
+                self.assertEqual(binary.read_bytes(), original)
+                self.assertEqual(previous.read_bytes(), b"older backup")
+                self.assertFalse((binary.parent / ".boxctl-install.lock").exists())
+
+    def test_upgrade_rejects_symlinks_and_busy_lock_before_downloading(self):
+        binary = self.old_client()
+        for unsafe in (binary, binary.with_name("boxctl.previous")):
+            if unsafe.exists():
+                unsafe.unlink()
+            unsafe.symlink_to("missing-target")
+            code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"), answers=[])
+            self.assertNotEqual(code, 0, out)
+            self.assertIn("regular file", out)
+            self.assertTrue(unsafe.is_symlink())
+            self.assertEqual(self.requests(), [])
+            unsafe.unlink()
+            self.old_client()
+        lock = binary.parent / ".boxctl-install.lock"
+        lock.mkdir()
+        code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"), answers=[])
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("another installer", out)
+        self.assertTrue(lock.exists())
+        self.assertEqual(self.requests(), [])
+
+    def test_upgrade_failed_publication_preserves_working_client(self):
+        binary = self.old_client()
+        original = binary.read_bytes()
+        real_mv = subprocess.check_output(["sh", "-c", "command -v mv"], text=True).strip()
+        self.executable("mv", f'#!/bin/sh\nfor arg do last=$arg; done\ncase "$last" in */boxctl) exit 1;; esac\nexec "{real_mv}" "$@"\n')
+        code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("replace", out.lower())
+        self.assertEqual(binary.read_bytes(), original)
+        self.assertEqual(binary.with_name("boxctl.previous").read_bytes(), original)
+        self.assertEqual(sorted(p.name for p in binary.parent.iterdir()), ["boxctl", "boxctl.previous"])
+
+    def test_cancelled_upgrade_preserves_client_and_releases_lock(self):
+        binary = self.old_client()
+        original = binary.read_bytes()
+        code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"), interrupt=True)
+        self.assertNotEqual(code, 0, out)
+        self.assertEqual(binary.read_bytes(), original)
+        self.assertEqual(sorted(p.name for p in binary.parent.iterdir()), ["boxctl"])
+        self.assertEqual(self.requests(), [])
+
+    def test_upgrade_flag_is_client_only_and_requires_existing_file(self):
+        for args in [("server", "--upgrade"), ("client", "--upgrade")]:
+            with self.subTest(args=args):
+                code, out = self.run_bootstrap(self.package(), args=args, answers=[])
+                self.assertNotEqual(code, 0, out)
+                self.assertEqual(self.requests(), [])
+                self.assertFalse((self.root / "privileged").exists())
+
     def test_cancelled_token_prompt_restores_echo(self):
         code, out = self.run_bootstrap(self.package(), interrupt=True)
         self.assertNotEqual(code, 0, out)
