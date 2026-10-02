@@ -1,13 +1,13 @@
 # Self-hosted box platform
 
 Date: 2026-09-30
-Status: Architecture and Rust selection approved; user authorized implementation. The development runtime is implemented and KVM-tested; isolated runtime and subsequent platform milestones remain outstanding. See [actual delivery and limitations](../../runtime.md).
+Status: Architecture and Rust selection approved; user authorized implementation. The development and experimental isolated runtimes are implemented and KVM-tested. The laptop-first service slice is implemented locally; networking and later platform milestones remain outstanding. See [runtime delivery and limitations](../../runtime.md) and [remote-client setup](../../remote-client.md).
 
 ## Outcome
 
 Build a working, self-hosted platform for persistent Linux computers, then extend it to a hosted multi-tenant service. Real VM operations and measured time to useful work take priority over the dashboard. The reference product is boxd.sh, not just its marketing website.
 
-The first milestone is a single-host runtime with a CLI and real KVM integration tests. The second milestone adds the service API, PostgreSQL-backed control plane, network access, and dashboard. The third adds fleet scheduling and advanced lifecycle operations. Each milestone has its own implementation plan; this specification fixes their boundaries rather than claiming they can all ship together.
+The first milestone is a single-host runtime with a CLI and real KVM integration tests. The second milestone starts with a laptop client and authenticated single-server API backed by embedded SQLite, then adds network access and the dashboard. The third adds fleet scheduling and advanced lifecycle operations. Each milestone has its own implementation plan; this specification fixes their boundaries rather than claiming they can all ship together.
 
 ## Established environment
 
@@ -69,7 +69,7 @@ Commands cover host preflight, cold create, list/inspect, exec, pause/resume, st
 
 Guest command execution uses structured argv, environment, working directory, a deadline, and bounded output. It reports stdout, stderr, exit code, truncation, and transport failure separately. A lost connection does not automatically retry a potentially side-effecting command. A vsock timeout is not proof that the command never ran.
 
-Store private host inventory and per-operation intent in a locked local state directory. Use atomic, synchronized records and per-box mutation exclusion. This inventory is local runtime bookkeeping, not a second service-level database. Milestone two makes PostgreSQL authoritative for desired state while retaining host records for observed processes and recovery.
+Store private host inventory and per-operation intent in a locked local state directory. Use atomic, synchronized records and per-box mutation exclusion. This inventory remains authoritative for VM processes and recovery. The single-host service database tracks accepted API requests and their outcomes, not a competing copy of VM state. A fleet control plane can introduce a desired-state database when scheduling requires it.
 
 On restart, identify owned processes by more than PID: verify process start identity and expected executable/socket before attachment or termination. Inspect the actual VMM state and resolve interrupted operations. Do not create replacement VMs merely because the managing CLI exited. Do not delete unrecognized processes or paths.
 
@@ -82,7 +82,20 @@ Milestone one needs vsock only. Guest networking, SSH, preview routes, a public 
 
 ## Milestone two: single-host product
 
-Use a Rust API and host service, PostgreSQL, a React/TypeScript dashboard, and a TypeScript SDK. Axum and SQLx are the default service-layer choices, to be validated when that milestone is planned. Start with one administrator, workspace-owned resources, and scoped API tokens. The API records intent; a reconciler performs operations and records observed results. Durable idempotency keys prevent duplicate boxes on retried creates. Resource reservation prevents concurrent requests from oversubscribing configured capacity.
+Use a Rust API and host service with embedded SQLite: a self-hosted installation must not require PostgreSQL or Redis. Deliver the laptop CLI first, then the React/TypeScript dashboard and TypeScript SDK. Axum is the HTTP layer; rusqlite supplies a small local operation journal. Start with one administrator in one workspace; scoped tokens and multiple workspaces follow before multi-tenancy. Durable idempotency keys prevent duplicate boxes on retried creates. The runtime remains responsible for capacity reservations and observed VM state.
+
+### Laptop-first delivery slice (approved 2026-10-01)
+
+- A portable `boxctl` client uses versioned JSON over verified HTTPS for management. SSH is a separate guest-access capability, not a required management tunnel. The existing Linux-only `box` remains an operator/runtime tool.
+- An unprivileged TLS gateway authenticates a single high-entropy administrator token. A privileged host service receives only validated resource operations through a permission-restricted Unix socket. Neither client nor gateway can supply arbitrary host image paths, commands or jailer arguments.
+- Operators build host-specific templates on the destination server and publish aliases in a trusted catalog. Remote create clones these prepared templates; resource sizes are visible in the catalog and fixed by the template. Existing runtime quota and isolation checks still apply.
+- Every mutation, including buffered exec, has a client-generated request ID. Persist acceptance before dispatch; repeated identical requests return the same operation, while a changed payload with the same ID conflicts. Persist the allocated box ID before create. Client disconnects do not cancel work. After service interruption, unfinished operations become `unknown` and are never automatically replayed. The user can inspect the box and explicitly choose recovery. This is at-most-once dispatch, not a claim of exactly-once execution.
+- SQLite stores request fingerprints, resource associations, operation states and bounded results, not argv/environment or tokens. Runtime records stay authoritative. Exec output can contain secrets, so the journal is private and must be treated as sensitive. Tokens live in separately permission-protected files; neither an OS credential vault nor encrypted-at-rest results are claimed by this slice.
+- Laptop profiles hold server URLs and token/CA file references. Preserve raw stdout/stderr and guest exit status in text mode; provide structured JSON for automation. TLS verification is mandatory; support a private CA without an insecure switch. Never follow redirects with credentials or automatically retry mutations.
+- Include operator preflight, example configuration/systemd units and build/install instructions. Deployment, host networking and public exposure still require explicit approval. No persistent service is installed by implementing this slice.
+- Acceptance: real HTTPS client-to-Unix-host-service lifecycle/exec, idempotency conflicts, disconnect/restart handling, authorization and input bounds, public-response redaction, and a separate real-KVM test. The laptop crate must not depend on the Linux runtime.
+
+Interactive PTY sessions, file transfer, guest internet egress, SSH/editor integration and preview routing are subsequent slices. This first slice is useful for lifecycle management and buffered commands, not yet a complete remote development environment. Browser login, scoped tokens, journal retention, encrypted backups and hosted tenant isolation remain outstanding.
 
 The host service's privileged surface accepts validated resource operations, never arbitrary host commands or paths. It is reachable through a permission-restricted Unix socket on a single-host installation. A later remote-host transport must authenticate both ends and scope host authority.
 

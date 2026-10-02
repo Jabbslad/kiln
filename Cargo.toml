@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/box-runtime", "crates/box-protocol", "crates/box-guest"]
+members = ["crates/box-runtime", "crates/box-protocol", "crates/box-guest", "crates/box-api", "crates/box-server", "crates/box-client"]
 resolver = "3"
 
 [workspace.package]

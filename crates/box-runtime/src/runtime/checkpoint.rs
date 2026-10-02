@@ -256,12 +256,29 @@ impl Runtime {
     }
 
     pub async fn clone_template(&self, snapshot_id: &str, name: &str) -> Result<BoxRecord> {
+        self.clone_template_with_id(snapshot_id, name, &id()?).await
+    }
+
+    /// Reserve a service-assigned identity. Existing directories (including
+    /// interrupted reservations) are never overwritten or silently reused.
+    pub async fn clone_template_with_id(
+        &self,
+        snapshot_id: &str,
+        name: &str,
+        box_id: &str,
+    ) -> Result<BoxRecord> {
+        if !storage::valid_id(box_id) {
+            return Err(Error::Invalid("invalid box ID".into()));
+        }
         if name.is_empty() || name.len() > 63 {
             return Err(Error::Invalid("name must be 1..63 bytes".into()));
         }
         let phase = Phase::start("allocation_wait");
         let allocation = self.allocation().await?;
         drop(phase);
+        if fs::symlink_metadata(self.root.join("boxes").join(box_id)).is_ok() {
+            return Err(Error::Invalid("box ID already reserved".into()));
+        }
         let snapshot = self.snapshot_metadata(snapshot_id)?;
         let phase = Phase::start("reservation");
         if !snapshot.template {
@@ -277,7 +294,7 @@ impl Runtime {
         }
         let mut record = BoxRecord {
             schema_version: 1,
-            id: id()?,
+            id: box_id.into(),
             name: name.into(),
             state: "creating".into(),
             run: id()?,
@@ -293,7 +310,11 @@ impl Runtime {
             disk_layer: None,
             jail: self.allocate_identity(&records)?,
         };
-        storage::private_dir(&self.root.join("boxes").join(&record.id))?;
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(self.root.join("boxes").join(&record.id))?;
+        File::open(self.root.join("boxes"))?.sync_all()?;
         let _lock = storage::lock(&self.directory(&record.id)?)?;
         self.save(&record)?;
         // The durable source reference prevents deletion of backing files;
@@ -319,6 +340,34 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn caller_ids_cannot_escape_or_reuse_a_box_directory() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = Runtime::open(root.path()).unwrap();
+        let invalid = runtime
+            .clone_template_with_id("missing", "box", "../outside")
+            .await
+            .unwrap_err();
+        assert!(invalid.to_string().contains("invalid box ID"), "{invalid}");
+        let existing = "b".repeat(32);
+        let directory = root.path().join("boxes").join(&existing);
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("sentinel"), "keep").unwrap();
+        let conflict = runtime
+            .clone_template_with_id("missing", "box", &existing)
+            .await
+            .unwrap_err();
+        assert!(
+            conflict.to_string().contains("already reserved"),
+            "{conflict}"
+        );
+        assert_eq!(
+            fs::read_to_string(directory.join("sentinel")).unwrap(),
+            "keep"
+        );
+    }
 
     #[test]
     fn snapshot_verification_honors_seals_and_accepts_legacy_manifests() {

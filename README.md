@@ -2,9 +2,28 @@
 
 A self-hosted-first platform for persistent Linux microVMs, implemented in Rust.
 
-**Current delivery: working single-host development runtime, not a hosted service or a safe sandbox for untrusted code.** The CLI boots real Firecracker/KVM guests, executes commands over vsock, preserves writable disks, restores coordinated memory/disk checkpoints, and launches independent boxes from prepared templates. No marketing-site mockups or simulated VM operations.
+**Current delivery: working single-host runtime plus a laptop client and authenticated HTTPS service for trusted development workloads. Not a hosted service or a safe sandbox for untrusted code.** The runtime boots real Firecracker/KVM guests, executes commands over vsock, preserves writable disks, restores coordinated memory/disk checkpoints, and launches independent boxes from prepared templates. No marketing-site mockups or simulated VM operations.
 
 An experimental isolated profile now integrates jailer, per-box host identities, cgroup limits, and jail-local snapshot handling. Unit checks, development-mode regression tests, and all six privileged isolated lifecycle tests pass with both BusyBox and Ubuntu on the development runner. See the [setup and validation procedure](docs/runtime.md#experimental-isolated-profile). This single-host validation is not a production security claim.
+
+## Use a laptop client
+
+For prebuilt clients and a guided Ubuntu server installer, use the
+[private GitHub release guide](docs/releases.md). GitHub Actions builds the server
+and native macOS, Linux and Windows clients; a successful build/release must be
+published before downloads are available. No Rust compiler is needed to install
+those packages. To build from source instead, use
+`cargo install --locked --path crates/box-client`.
+It manages templates, create/list/inspect, exec, pause/resume, stop/start and delete
+over verified HTTPS. Only the server needs Linux/KVM. The single-host service uses
+embedded SQLite, a separate unprivileged TLS gateway and a restricted Unix socket
+to the existing runtime. Durable request IDs survive disconnection and prevent
+automatic replay of interrupted commands.
+
+See the [server setup and laptop guide](docs/remote-client.md). No persistent
+service or public listener is installed automatically. This first slice has one
+administrator and buffered exec; guest SSH, interactive terminals and networking
+are subsequent work.
 
 ## Try the runtime
 
@@ -128,4 +147,4 @@ The opt-in integration suite launches disposable VMs and deliberately crashes CL
 
 ## Path to the platform
 
-The [architecture](docs/superpowers/specs/2026-09-30-boxd-platform-design.md) and [runtime plan](docs/superpowers/plans/2026-09-30-runtime-engine.md) describe the wider product. Still outstanding: an image security-update/release process, launch-latency optimization, broader failure/cancellation coverage, authenticated host service, PostgreSQL control plane, networking/SSH/preview routing, dashboard, SDK, and fleet scheduling. Both guest images remain intended for trusted development workloads, not a hosted multi-tenant environment.
+The [architecture](docs/superpowers/specs/2026-09-30-boxd-platform-design.md) and [runtime plan](docs/superpowers/plans/2026-09-30-runtime-engine.md) describe the wider product. The [laptop-first service slice](docs/remote-client.md) uses embedded SQLite rather than requiring PostgreSQL. Still outstanding: signed client releases, an image security-update/release process, operation-history retention, scoped authentication, networking/SSH/preview routing, dashboard, SDK, and fleet scheduling. Both guest images remain intended for trusted development workloads, not a hosted multi-tenant environment.
