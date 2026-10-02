@@ -157,9 +157,13 @@ as_root() {
 }
 
 check_upgrade_paths() {
-    [ -f "$destination" ] && [ ! -L "$destination" ] || fail 'Upgrade requires an existing regular file at ~/.local/bin/boxctl; symbolic links are refused.'
+    if [ ! -f "$destination" ] || [ -L "$destination" ]; then
+        fail 'Upgrade requires an existing regular file at ~/.local/bin/boxctl; symbolic links are refused.'
+    fi
     if [ -e "$destination.previous" ] || [ -L "$destination.previous" ]; then
-        [ -f "$destination.previous" ] && [ ! -L "$destination.previous" ] || fail 'Backup destination must be a regular file, not a symbolic link or directory.'
+        if [ ! -f "$destination.previous" ] || [ -L "$destination.previous" ]; then
+            fail 'Backup destination must be a regular file, not a symbolic link or directory.'
+        fi
     fi
 }
 
@@ -244,7 +248,7 @@ main() {
         *) fail "$usage" ;;
     esac
     if [ "$#" = 2 ]; then
-        [ "$mode" = client ] && [ "$2" = --upgrade ] || fail "$usage"
+        if [ "$mode" != client ] || [ "$2" != --upgrade ]; then fail "$usage"; fi
         upgrade=true
     fi
     platform
