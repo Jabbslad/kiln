@@ -10,6 +10,14 @@ release or real server installation has succeeded. Check the Actions run for the
 version you download. macOS binaries are not signed/notarized, and Windows
 binaries are not Authenticode-signed.
 
+**Ubuntu 26.04 delivery status:** the source installers now admit Ubuntu 24.04
+and 26.04 x86-64 while retaining all capability and fresh-install checks. The
+corrected provisioner passed read-only preflight on `ser7` with the release image
+and its private IPv4 address; full provisioning/reboot remains unverified. The
+published `v0.1.0` package and public bootstrap still require Ubuntu 24.04. A
+corrected private server package and updated pinned bootstrap must be published
+before the curl command works on 26.04; changing only the shell gate is not enough.
+
 ## One-command installation
 
 On a macOS or supported Linux laptop, run in a terminal:

@@ -25,6 +25,48 @@ class InstallTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
 
+    def test_supported_ubuntu_hosts_continue_to_capability_checks(self):
+        for version in ("24.04", "26.04"):
+            with (
+                self.subTest(version=version),
+                patch.object(self.install.platform, "machine", return_value="x86_64"),
+                patch.object(
+                    self.install.platform,
+                    "freedesktop_os_release",
+                    return_value={"ID": "ubuntu", "VERSION_ID": version},
+                ),
+                patch.object(
+                    self.install.Path, "is_dir", return_value=False
+                ) as systemd,
+                self.assertRaisesRegex(ValueError, "booted systemd host"),
+            ):
+                self.install.preflight(self.root, "127.0.0.1")
+            systemd.assert_called_once()
+
+    def test_other_distros_releases_and_architectures_still_fail_first(self):
+        for distro, version, architecture in (
+            ("ubuntu", "22.04", "x86_64"),
+            ("ubuntu", "24.10", "x86_64"),
+            ("ubuntu", "26.10", "x86_64"),
+            ("debian", "26.04", "x86_64"),
+            ("ubuntu", "26.04", "aarch64"),
+        ):
+            with (
+                self.subTest(distro=distro, version=version, architecture=architecture),
+                patch.object(
+                    self.install.platform, "machine", return_value=architecture
+                ),
+                patch.object(
+                    self.install.platform,
+                    "freedesktop_os_release",
+                    return_value={"ID": distro, "VERSION_ID": version},
+                ),
+                patch.object(self.install.Path, "is_dir") as systemd,
+                self.assertRaisesRegex(ValueError, "supports Ubuntu"),
+            ):
+                self.install.preflight(self.root, "127.0.0.1")
+            systemd.assert_not_called()
+
     def test_bind_address_is_explicitly_private_not_merely_nonglobal(self):
         for value in [
             "10.2.3.4",

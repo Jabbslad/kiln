@@ -41,11 +41,14 @@ platform() {
             } END { exit !ok }' || fail 'Linux requires glibc 2.39 or newer.'
     fi
     if [ "$mode" = server ]; then
-        [ "$target" = x86_64-unknown-linux-gnu ] || fail 'Server requires Ubuntu 24.04 x86-64.'
+        [ "$target" = x86_64-unknown-linux-gnu ] || fail 'Server requires Ubuntu 24.04 or 26.04 x86-64.'
         [ -r /etc/os-release ] || fail 'Cannot identify server OS.'
         # shellcheck source=/dev/null
         . /etc/os-release
-        [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" = 24.04 ] || fail 'Server requires Ubuntu 24.04 x86-64.'
+        case "${ID:-}:${VERSION_ID:-}" in
+            ubuntu:24.04|ubuntu:26.04) ;;
+            *) fail 'Server requires Ubuntu 24.04 or 26.04 x86-64.' ;;
+        esac
         [ -d /run/systemd/system ] || fail 'Server requires a booted systemd host.'
         # The provisioner checks actual KVM access under sudo, not this user's groups.
         [ -e /dev/kvm ] || fail 'Server requires /dev/kvm.'

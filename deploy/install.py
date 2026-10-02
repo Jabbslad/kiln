@@ -91,9 +91,9 @@ def preflight(bundle, address):
     if (
         platform.machine() != "x86_64"
         or release.get("ID") != "ubuntu"
-        or release.get("VERSION_ID") != "24.04"
+        or release.get("VERSION_ID") not in ("24.04", "26.04")
     ):
-        raise ValueError("installer currently supports Ubuntu 24.04 x86-64 only")
+        raise ValueError("installer supports Ubuntu 24.04 and 26.04 x86-64 only")
     if not Path("/run/systemd/system").is_dir():
         raise ValueError("a booted systemd host is required (not a container)")
     for tool in (
@@ -599,7 +599,7 @@ def main():
         preflight(bundle, address)
         print(
             f"Checks passed. Proposed installation:\n"
-            f"  Ubuntu 24.04 / KVM, endpoint https://{address}:8443\n"
+            f"  Ubuntu / KVM, endpoint https://{address}:8443\n"
             "  /opt/boxd, /usr/local/libexec/boxd-*, /etc/boxd, /var/lib/boxd\n"
             "  boxd-api and eight locked VM accounts; UID 70000..70007 / GID 71000..71007\n"
             "  Enable cpu/memory/pids cgroup controllers and three systemd services\n"

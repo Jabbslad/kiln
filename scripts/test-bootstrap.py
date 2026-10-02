@@ -342,14 +342,27 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
         self.assertEqual(self.requests(), [])
 
     def test_server_unsupported_host_never_requests_privileges(self):
+        for distro, version in [
+            ("ubuntu", "22.04"),
+            ("ubuntu", "24.10"),
+            ("ubuntu", "26.10"),
+            ("debian", "26.04"),
+        ]:
+            with self.subTest(distro=distro, version=version):
+                (self.root / "os-release").write_text(
+                    f'ID={distro}\nVERSION_ID="{version}"\n'
+                )
+                code, out = self.run_bootstrap(
+                    self.package(server=True), args=("server",), answers=[]
+                )
+                self.assertNotEqual(code, 0, out)
+                self.assertIn("24.04", out)
+                self.assertEqual(self.requests(), [])
+                self.assertFalse((self.root / "privileged").exists())
+
+    def test_ubuntu_2604_reaches_server_provisioning(self):
         (self.root / "os-release").write_text('ID=ubuntu\nVERSION_ID="26.04"\n')
-        code, out = self.run_bootstrap(
-            self.package(server=True), args=("server",), answers=[]
-        )
-        self.assertNotEqual(code, 0, out)
-        self.assertIn("24.04", out)
-        self.assertEqual(self.requests(), [])
-        self.assertFalse((self.root / "privileged").exists())
+        self.test_server_dependency_and_provisioner_confirmation_use_tty()
 
     def test_server_dependency_and_provisioner_confirmation_use_tty(self):
         code, out = self.run_bootstrap(
