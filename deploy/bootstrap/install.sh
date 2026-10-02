@@ -213,7 +213,9 @@ main() {
     command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || fail 'Missing system SHA-256 tool.'
     if [ "$mode" = client ]; then
         [ -n "${HOME:-}" ] || fail 'HOME must be set.'
-        [ ! -e "$HOME/.local/bin/boxctl" ] && [ ! -L "$HOME/.local/bin/boxctl" ] || fail 'Existing boxctl preserved; automatic upgrades are not supported.'
+        if [ -e "$HOME/.local/bin/boxctl" ] || [ -L "$HOME/.local/bin/boxctl" ]; then
+            fail 'Existing boxctl preserved; automatic upgrades are not supported.'
+        fi
     elif [ "$(id -u)" != 0 ]; then
         command -v sudo >/dev/null 2>&1 || fail 'Server setup needs sudo or a root shell.'
     fi

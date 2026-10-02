@@ -319,6 +319,12 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
         self.assertNotEqual(code, 0, out)
         self.assertEqual(binary.read_text(), "preserve")
         self.assertEqual(self.requests(), [])
+        binary.unlink()
+        binary.symlink_to("missing-target")
+        code, out = self.run_bootstrap(self.package(), answers=[])
+        self.assertNotEqual(code, 0, out)
+        self.assertEqual(os.readlink(binary), "missing-target")
+        self.assertEqual(self.requests(), [])
 
     def test_platform_and_glibc_rejections_do_not_prompt_or_download(self):
         for values in [
