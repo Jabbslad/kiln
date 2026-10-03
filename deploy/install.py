@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""First-install setup for a verified kiln server release, not an upgrader."""
+"""Install or update a verified Kiln server release, preserving existing state."""
 
 import argparse
+import fcntl
 import grp
 import hashlib
 import ipaddress
@@ -13,13 +14,17 @@ import re
 import secrets
 import shutil
 import socket
+import sqlite3
 import ssl
+import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.request
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 ETC = Path("/etc/kiln")
@@ -28,6 +33,7 @@ OPT = Path("/opt/kiln")
 LIBEXEC = Path("/usr/local/libexec")
 UNITS = Path("/etc/systemd/system")
 CGROUP = Path("/sys/fs/cgroup/kiln")
+LOCK = Path("/run/lock/kiln-install.lock")
 SERVICES = ("kiln-cgroup.service", "kiln-host.service", "kiln-api.service")
 
 
@@ -233,7 +239,9 @@ def network_preflight(uplink):
         raise ValueError("network uplink must be a Linux interface name")
     for tool in ("ip", "nft", "sysctl", "nsenter"):
         if not shutil.which(tool):
-            raise ValueError("networking requires iproute2, nftables and util-linux packages")
+            raise ValueError(
+                "networking requires iproute2, nftables and util-linux packages"
+            )
     run("ip", "link", "show", "dev", uplink)
     require_absent([Path("/sys/class/net/kiln0"), UNITS / "kiln-network.service"])
 
@@ -419,7 +427,7 @@ WantedBy=multi-user.target
     )
 
 
-def healthcheck(address):
+def healthcheck(address, expected=None):
     context = ssl.create_default_context(cafile=str(ETC / "ca.crt"))
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context)
@@ -434,11 +442,13 @@ def healthcheck(address):
         try:
             with opener.open(request, timeout=2) as response:
                 catalog = json.load(response)
-            if catalog != [{"name": "ubuntu-4g", "memory_mib": 4096, "vcpus": 1}]:
+            if not isinstance(catalog, list) or (
+                expected is not None and catalog != expected
+            ):
                 raise ValueError(
                     "installed service returned an unexpected template catalog"
                 )
-            return
+            return catalog
         except (urllib.error.URLError, TimeoutError):
             time.sleep(1)
     raise ValueError(
@@ -609,7 +619,7 @@ def install(bundle, address, network_uplink=None):
     # A failed health check must not leave services enabled at the next reboot.
     try:
         run("systemctl", "enable", "--now", *services)
-        healthcheck(address)
+        healthcheck(address, [{"name": "ubuntu-4g", "memory_mib": 4096, "vcpus": 1}])
     except Exception:
         for service in reversed(services):
             subprocess.run(
@@ -625,12 +635,268 @@ def install(bundle, address, network_uplink=None):
     )
 
 
+@contextmanager
+def installer_lock():
+    # Keep the inode: unlinking a flock file allows two simultaneous owners.
+    fd = os.open(LOCK, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & 0o022
+        ):
+            raise ValueError("unsafe installer lock")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("another installer is running") from None
+        yield
+    finally:
+        os.close(fd)
+
+
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def atomic_copy(source, destination):
+    fd, temporary = tempfile.mkstemp(prefix=".kiln-update-", dir=destination.parent)
+    try:
+        with os.fdopen(fd, "wb") as output, source.open("rb") as stream:
+            shutil.copyfileobj(stream, output)
+            output.flush()
+            os.fchmod(output.fileno(), 0o755)
+            os.fsync(output.fileno())
+        os.replace(temporary, destination)
+        sync_directory(destination.parent)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def regular_file(path, executable=False):
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(
+            f"missing regular file: {path}; partial installs require recovery"
+        )
+    if executable:
+        info = path.stat()
+        if (
+            info.st_uid != os.geteuid()
+            or info.st_mode & 0o022
+            or not info.st_mode & 0o111
+        ):
+            raise ValueError(f"unsafe executable: {path}")
+
+
+def service_property(service, name):
+    return run("systemctl", "show", f"--property={name}", "--value", service).strip()
+
+
+def service_arguments(service, executable):
+    # Only installer-shaped units are supported. Never interpret shell commands
+    # or guess how a custom wrapper starts the service.
+    value = service_property(service, "ExecStart")
+    match = re.fullmatch(r"\{ path=([^;]+) ; argv\[\]=([^;]+) ; [^{}]*\}", value)
+    if not match or match[1] != str(executable):
+        raise ValueError(f"unsupported ExecStart for {service}")
+    return match[2].split()
+
+
+def wait_for_operations(journal):
+    # Stop the gateway first, then let accepted lifecycle/exec operations finish.
+    # Local operator commands must not run concurrently with an update.
+    regular_file(journal)
+    with closing(sqlite3.connect(journal.as_uri() + "?mode=ro", uri=True)) as db:
+        if db.execute("PRAGMA user_version").fetchone()[0] != 1:
+            raise ValueError("unsupported operation journal version")
+        for _ in range(60):
+            if (
+                db.execute(
+                    "SELECT count(*) FROM operations WHERE running=1"
+                ).fetchone()[0]
+                == 0
+            ):
+                return
+            time.sleep(1)
+    raise ValueError("operations are still running; retry once they have completed")
+
+
+def upgrade(bundle, address=None, network_uplink=None, network=False, apply=False):
+    pending = OPT / "pending-upgrade.json"
+    if pending.exists() or pending.is_symlink():
+        raise ValueError(f"pending update requires recovery: inspect {pending}")
+    for directory in (ETC, STATE, OPT, OPT / "bin", LIBEXEC):
+        if not directory.is_dir():
+            raise ValueError(f"incomplete installation: {directory}; recovery required")
+        trusted_ancestors(directory)
+    destinations = {
+        name: OPT / "bin" / name for name in ("kiln", "kiln-runtime", "kiln-network")
+    }
+    destinations.update({name: LIBEXEC / name for name in ("kiln-host", "kiln-api")})
+    release = json.loads((bundle / "release.json").read_text())
+    target = release.get("version", "").removeprefix("v")
+    # Binary-only compatibility was reviewed: runtime, journal, guest protocol,
+    # Firecracker and unit contracts are unchanged across these releases.
+    if target != "0.3.3" or release.get("target") != "x86_64-unknown-linux-gnu":
+        raise ValueError("unsupported update package")
+    versions = set()
+    for name, destination in destinations.items():
+        regular_file(destination, executable=True)
+        regular_file(bundle / "bin" / name)
+        if name == "kiln-network":  # Fixed-purpose shell helper has no --version.
+            continue
+        reported_name = "kiln-server" if name in ("kiln-host", "kiln-api") else name
+        found = run(destination, "--version").strip()
+        match = re.fullmatch(re.escape(reported_name) + r" (\d+\.\d+\.\d+)", found)
+        if not match:
+            raise ValueError(f"unrecognized installed binary: {name}")
+        versions.add(match[1])
+        if (
+            run(bundle / "bin" / name, "--version").strip()
+            != f"{reported_name} {target}"
+        ):
+            raise ValueError(f"package binary version mismatch: {name}")
+    if len(versions) != 1 or not versions <= {"0.3.0", "0.3.2", target}:
+        raise ValueError(
+            "incompatible or mixed installed versions; no downgrade or state migration is supported"
+        )
+    for service in ("kiln-host.service", "kiln-api.service"):
+        if service_property(service, "ActiveState") != "active":
+            raise ValueError(f"{service} must be healthy and active before updating")
+    if service_property("kiln-host.service", "KillMode") != "process":
+        raise ValueError("kiln-host KillMode must be process to preserve guest VMMs")
+    if service_arguments("kiln-host.service", LIBEXEC / "kiln-host") != [
+        str(LIBEXEC / "kiln-host"),
+        "--config",
+        str(ETC / "host.json"),
+    ]:
+        raise ValueError("unsupported host service configuration")
+    regular_file(ETC / "host.json")
+    config = json.loads((ETC / "host.json").read_text())
+    for key in ("runtime_dir", "journal_dir"):
+        if config.get(key) != str(STATE / key.removesuffix("_dir")):
+            raise ValueError("updates require standard runtime and journal directories")
+        if not Path(config[key]).is_dir():
+            raise ValueError(f"missing installed {key}")
+    if (
+        config.get("isolation_config") != str(ETC / "isolation.json")
+        or config.get("socket") != "/run/kiln/host.sock"
+    ):
+        raise ValueError("unsupported host paths")
+    api = service_arguments("kiln-api.service", LIBEXEC / "kiln-api")
+    if len(api) != 11 or api[1] != "--listen" or not api[2].endswith(":8443"):
+        raise ValueError("unsupported API service configuration")
+    installed_address = private_address(api[2].removesuffix(":8443"))
+    if api != [
+        str(LIBEXEC / "kiln-api"),
+        "--listen",
+        f"{installed_address}:8443",
+        "--host-socket",
+        config["socket"],
+        "--token-file",
+        str(ETC / "admin.token"),
+        "--tls-cert",
+        str(ETC / "tls.crt"),
+        "--tls-key",
+        str(ETC / "tls.key"),
+    ]:
+        raise ValueError("unsupported API service configuration")
+    if address is not None and private_address(address) != installed_address:
+        raise ValueError("update preserves the existing address and TLS identity")
+    regular_file(ETC / "isolation.json")
+    policy = json.loads((ETC / "isolation.json").read_text())
+    if network or network_uplink is not None:
+        if not policy.get("network"):
+            raise ValueError("update cannot enable networking in an existing store")
+        if network_uplink is not None and service_arguments(
+            "kiln-network.service", OPT / "bin/kiln-network"
+        ) != [str(OPT / "bin/kiln-network"), "provision", network_uplink]:
+            raise ValueError("update cannot change the installed network uplink")
+    catalog = healthcheck(installed_address)
+    if all(
+        path.read_bytes() == (bundle / "bin" / name).read_bytes()
+        for name, path in destinations.items()
+    ):
+        print(f"Kiln {target} is already current; nothing changed.")
+        return
+    print(
+        f"Kiln {next(iter(versions))} → {target}: preserve configuration and VM state; briefly disconnect API/SSH sessions.",
+        flush=True,
+    )
+    if not apply:
+        print("Check only: rerun with sudo and --apply to update.")
+        return
+    backups = OPT / "upgrades"
+    trusted_ancestors(backups)
+    backups.mkdir(mode=0o700, exist_ok=True)
+    backup = Path(tempfile.mkdtemp(prefix=f"{next(iter(versions))}-", dir=backups))
+    for name, destination in destinations.items():
+        atomic_copy(destination, backup / name)
+    sync_directory(backups)
+    # Write recovery information durably before stopping or replacing anything.
+    with pending.open("x") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        json.dump(
+            {
+                "from": next(iter(versions)),
+                "to": target,
+                "backup": str(backup),
+                "destinations": {
+                    name: str(path) for name, path in destinations.items()
+                },
+            },
+            stream,
+        )
+        stream.flush()
+        os.fsync(stream.fileno())
+    sync_directory(OPT)
+    host_stopped = False
+    try:
+        run("systemctl", "stop", "kiln-api.service")
+        wait_for_operations(STATE / "journal/operations.sqlite")
+        host_stopped = True
+        run("systemctl", "stop", "kiln-host.service")
+        for name, destination in destinations.items():
+            atomic_copy(bundle / "bin" / name, destination)
+        run("systemctl", "start", "kiln-host.service")
+        run("systemctl", "start", "kiln-api.service")
+        healthcheck(installed_address, catalog)
+    except Exception as error:
+        try:
+            if host_stopped:
+                run("systemctl", "stop", "kiln-api.service")
+                run("systemctl", "stop", "kiln-host.service")
+                for name, destination in destinations.items():
+                    atomic_copy(backup / name, destination)
+                run("systemctl", "start", "kiln-host.service")
+            run("systemctl", "start", "kiln-api.service")
+            healthcheck(installed_address, catalog)
+        except Exception:
+            raise ValueError(
+                f"update and rollback failed; manual recovery required using {pending} and {backup}"
+            ) from None
+        pending.unlink()
+        sync_directory(OPT)
+        raise ValueError(
+            f"update failed ({type(error).__name__}); previous binaries/services restored. Backup: {backup}"
+        ) from None
+    pending.unlink()
+    sync_directory(OPT)
+    print(
+        f"Updated to Kiln {target}. Ready: https://{installed_address}:8443\nPrevious binaries: {backup}"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--address",
-        default="127.0.0.1",
-        help="assigned private/VPN IPv4, default local-only",
+        help="assigned private/VPN IPv4; default local-only on fresh install, preserved on update",
     )
     parser.add_argument(
         "--apply",
@@ -641,46 +907,69 @@ def main():
         "--network-uplink",
         help="opt in to isolated internet egress via this host interface",
     )
+    parser.add_argument(
+        "--network",
+        action="store_true",
+        help="require existing guest networking when updating",
+    )
     args = parser.parse_args()
     os.environ["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin"
     try:
-        bundle = Path(__file__).resolve().parent
-        address = private_address(args.address)
-        preflight(bundle, address)
-        if args.network_uplink is not None:
-            network_preflight(args.network_uplink)
-        print(
-            f"Checks passed. Proposed installation:\n"
-            f"  Ubuntu / KVM, endpoint https://{address}:8443\n"
-            "  /opt/kiln, /usr/local/libexec/kiln-*, /etc/kiln, /var/lib/kiln\n"
-            "  kiln-api and eight locked VM accounts; UID 70000..70007 / GID 71000..71007\n"
-            "  Enable cpu/memory/pids cgroup controllers and three systemd services\n"
-            "  Generate private CA, one-year server certificate and administrator token\n"
-            "  Build a 4 GiB / 1-vCPU warm Ubuntu template using the copy disk backend\n"
-            "  No overlay-pool changes\n"
-            "Review any other runtime's numeric ID reservations before proceeding."
-        )
-        print(
-            f"  Enable IPv4 forwarding, filtered guest NAT via {args.network_uplink} and a network service."
-            if args.network_uplink is not None
-            else "  No firewall, routing or guest-network changes."
-        )
-        if not args.apply:
-            print(
-                "Check only: no installation performed. Rerun with sudo and --apply to install."
-            )
-            return 0
-        if os.geteuid() != 0:
+        if args.apply and os.geteuid() != 0:
             raise ValueError("--apply requires sudo/root")
-        install(bundle, address, args.network_uplink)
-        return 0
-    except (OSError, ValueError, subprocess.CalledProcessError, EOFError) as error:
+        with installer_lock():
+            return provision(args)
+    except (
+        OSError,
+        ValueError,
+        sqlite3.Error,
+        subprocess.CalledProcessError,
+        EOFError,
+    ) as error:
         # Do not echo command output: future tools could include credentials in it.
         print(
-            f"Setup stopped: {error}\nIf setup started, retain state and inspect logs; do not rerun or delete VM state blindly.",
+            f"Setup stopped: {error}\nRetain state and inspect logs; do not delete VM state or blindly retry an interrupted update.",
             file=sys.stderr,
         )
         return 1
+
+
+def provision(args):
+    bundle = Path(__file__).resolve().parent
+    if any(path.exists() or path.is_symlink() for path in (ETC, OPT, STATE)):
+        upgrade(bundle, args.address, args.network_uplink, args.network, args.apply)
+        return 0
+    if args.network:
+        raise ValueError("fresh manual installs need --network-uplink INTERFACE")
+    address = private_address(args.address or "127.0.0.1")
+    preflight(bundle, address)
+    if args.network_uplink is not None:
+        network_preflight(args.network_uplink)
+    print(
+        f"Checks passed. Proposed installation:\n"
+        f"  Ubuntu / KVM, endpoint https://{address}:8443\n"
+        "  /opt/kiln, /usr/local/libexec/kiln-*, /etc/kiln, /var/lib/kiln\n"
+        "  kiln-api and eight locked VM accounts; UID 70000..70007 / GID 71000..71007\n"
+        "  Enable cpu/memory/pids cgroup controllers and three systemd services\n"
+        "  Generate private CA, one-year server certificate and administrator token\n"
+        "  Build a 4 GiB / 1-vCPU warm Ubuntu template using the copy disk backend\n"
+        "  No overlay-pool changes\n"
+        "Review any other runtime's numeric ID reservations before proceeding."
+    )
+    print(
+        f"  Enable IPv4 forwarding, filtered guest NAT via {args.network_uplink} and a network service."
+        if args.network_uplink is not None
+        else "  No firewall, routing or guest-network changes."
+    )
+    if not args.apply:
+        print(
+            "Check only: no installation performed. Rerun with sudo and --apply to install."
+        )
+        return 0
+    if os.geteuid() != 0:
+        raise ValueError("--apply requires sudo/root")
+    install(bundle, address, args.network_uplink)
+    return 0
 
 
 if __name__ == "__main__":

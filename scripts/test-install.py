@@ -5,10 +5,12 @@ import importlib.util
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import tarfile
 import tempfile
 import unittest
+from contextlib import closing, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import call, patch
@@ -24,6 +26,11 @@ class InstallTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        paths = patch.multiple(
+            self.install, **{key: self.root / key for key in ("ETC", "OPT", "STATE")}
+        )
+        paths.start()
+        self.addCleanup(paths.stop)
 
     def test_supported_ubuntu_hosts_continue_to_capability_checks(self):
         for version in ("24.04", "26.04"):
@@ -219,6 +226,7 @@ class InstallTests(unittest.TestCase):
             with (
                 patch.object(self.install.sys, "argv", ["install.py", *arguments]),
                 patch.dict(os.environ),
+                patch.object(self.install, "installer_lock", side_effect=nullcontext),
                 patch.object(self.install, "preflight", side_effect=problem),
                 patch.object(self.install, "install") as apply,
                 patch.object(self.install.os, "geteuid", return_value=0),
@@ -237,6 +245,7 @@ class InstallTests(unittest.TestCase):
                 ["install.py", "--apply", "--address", "100.64.5.6"],
             ),
             patch.dict(os.environ),
+            patch.object(self.install, "installer_lock", side_effect=nullcontext),
             patch.object(self.install, "preflight") as preflight,
             patch.object(self.install, "install") as apply,
             patch.object(self.install.os, "geteuid", return_value=0),
@@ -315,6 +324,360 @@ class InstallTests(unittest.TestCase):
         self.assertLess(template_index, enable_index)
         self.assertIn("--profile", commands[template_index])
         self.assertIn("isolated", commands[template_index])
+
+
+class UpgradeTests(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location(
+            "installer", Path(__file__).resolve().parent.parent / "deploy/install.py"
+        )
+        self.installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.installer)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.paths = {
+            key: self.root / key for key in ("ETC", "OPT", "STATE", "LIBEXEC", "UNITS")
+        }
+        for path in self.paths.values():
+            path.mkdir(mode=0o700)
+        self.bundle = self.root / "package"
+        (self.bundle / "bin").mkdir(parents=True)
+        (self.paths["OPT"] / "bin").mkdir()
+        self.destinations = {
+            name: self.paths["OPT"] / "bin" / name
+            for name in ("kiln", "kiln-runtime", "kiln-network")
+        }
+        self.destinations.update(
+            {name: self.paths["LIBEXEC"] / name for name in ("kiln-host", "kiln-api")}
+        )
+        for name, path in self.destinations.items():
+            reported_name = "kiln-server" if name in ("kiln-host", "kiln-api") else name
+            path.write_text(f"#!/bin/sh\necho '{reported_name} 0.3.2'\n")
+            path.chmod(0o755)
+            new = self.bundle / "bin" / name
+            new.write_text(f"#!/bin/sh\necho '{reported_name} 0.3.3'\n")
+            new.chmod(0o755)
+        (self.bundle / "release.json").write_text(
+            json.dumps({"version": "v0.3.3", "target": "x86_64-unknown-linux-gnu"})
+        )
+        config = {
+            "runtime_dir": str(self.paths["STATE"] / "runtime"),
+            "journal_dir": str(self.paths["STATE"] / "journal"),
+            "socket": "/run/kiln/host.sock",
+            "isolation_config": str(self.paths["ETC"] / "isolation.json"),
+            "templates": {"custom": "a" * 32},
+        }
+        (self.paths["ETC"] / "host.json").write_text(json.dumps(config))
+        (self.paths["ETC"] / "isolation.json").write_text("{}")
+        for name in ("ca.crt", "tls.crt", "tls.key", "admin.token"):
+            (self.paths["ETC"] / name).write_text("synthetic-test-only")
+        for directory in ("runtime", "journal", "image"):
+            (self.paths["STATE"] / directory).mkdir()
+            (self.paths["STATE"] / directory / "preserve").write_text(directory)
+        self.journal = self.paths["STATE"] / "journal/operations.sqlite"
+        with closing(sqlite3.connect(self.journal)) as db, db:
+            db.executescript(
+                "PRAGMA user_version=1; CREATE TABLE operations(running INTEGER); INSERT INTO operations VALUES(0);"
+            )
+        self.catalog = [{"name": "custom", "memory_mib": 3072, "vcpus": 2}]
+        self.commands = []
+        self.active = {"kiln-host.service": "active", "kiln-api.service": "active"}
+        self.kill_mode = "process"
+        self.real_run = self.installer.run
+        for patcher in (
+            patch.multiple(self.installer, **self.paths),
+            patch.object(self.installer, "trusted_ancestors"),
+            patch.object(self.installer, "run", side_effect=self.fake_run),
+            patch("sys.stdout", new=io.StringIO()),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.health = patch.object(
+            self.installer, "healthcheck", return_value=self.catalog
+        ).start()
+        self.addCleanup(patch.stopall)
+        self.original = {
+            name: path.read_bytes() for name, path in self.destinations.items()
+        }
+        self.data = {
+            str(p.relative_to(self.root)): p.read_bytes()
+            for base in ("ETC", "STATE")
+            for p in self.paths[base].rglob("*")
+            if p.is_file()
+        }
+
+    def fake_run(self, *args):
+        args = [str(a) for a in args]
+        self.commands.append(args)
+        if args[0] != "systemctl":
+            if "--check" in args:
+                return "checked"
+            return self.real_run(*args)
+        if args[1] in ("stop", "start"):
+            for service in args[2:]:
+                self.active[service] = "inactive" if args[1] == "stop" else "active"
+            return ""
+        self.assertEqual(args[1], "show")
+        service = args[-1]
+        if "--property=ActiveState" in args:
+            return self.active[service]
+        if "--property=KillMode" in args:
+            return self.kill_mode
+        if "--property=ExecStart" in args:
+            name = service.removesuffix(".service")
+            path = self.destinations[name]
+            if name == "kiln-host":
+                argv = f"{path} --config {self.paths['ETC'] / 'host.json'}"
+            elif name == "kiln-network":
+                argv = f"{path} provision enp7s0"
+            else:
+                argv = f"{path} --listen 100.64.5.6:8443 --host-socket /run/kiln/host.sock --token-file {self.paths['ETC'] / 'admin.token'} --tls-cert {self.paths['ETC'] / 'tls.crt'} --tls-key {self.paths['ETC'] / 'tls.key'}"
+            return f"{{ path={path} ; argv[]={argv} ; ignore_errors=no ; }}"
+        self.fail(f"unexpected systemctl command: {args}")
+
+    def assert_data_preserved(self):
+        for relative, data in self.data.items():
+            self.assertEqual((self.root / relative).read_bytes(), data)
+
+    def assert_original_binaries(self):
+        for name, path in self.destinations.items():
+            self.assertEqual(path.read_bytes(), self.original[name])
+
+    def test_update_preserves_configuration_and_state_and_backs_up_binaries(self):
+        self.installer.upgrade(self.bundle, apply=True)
+        for name, path in self.destinations.items():
+            self.assertEqual(
+                path.read_bytes(), (self.bundle / "bin" / name).read_bytes()
+            )
+        self.assert_data_preserved()
+        actions = [
+            args
+            for args in self.commands
+            if args[:2] in (["systemctl", "stop"], ["systemctl", "start"])
+        ]
+        self.assertEqual(
+            actions,
+            [
+                ["systemctl", "stop", "kiln-api.service"],
+                ["systemctl", "stop", "kiln-host.service"],
+                ["systemctl", "start", "kiln-host.service"],
+                ["systemctl", "start", "kiln-api.service"],
+            ],
+        )
+        self.health.assert_has_calls(
+            [call("100.64.5.6"), call("100.64.5.6", self.catalog)]
+        )
+        backups = list((self.paths["OPT"] / "upgrades").glob("*/kiln-api"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), self.original["kiln-api"])
+        self.assertFalse((self.paths["OPT"] / "pending-upgrade.json").exists())
+        self.commands.clear()
+        self.installer.upgrade(self.bundle, apply=True)
+        self.assertFalse(any(args[1] == "stop" for args in self.commands))
+        self.assertEqual(
+            list((self.paths["OPT"] / "upgrades").glob("*/kiln-api")), backups
+        )
+
+    def test_check_only_does_not_mutate_or_stop_services(self):
+        self.installer.upgrade(self.bundle)
+        self.assert_original_binaries()
+        self.assert_data_preserved()
+        self.assertFalse((self.paths["OPT"] / "upgrades").exists())
+        self.assertFalse(any(args[1] == "stop" for args in self.commands))
+
+    def test_busy_operations_restore_gateway_without_stopping_host(self):
+        with closing(sqlite3.connect(self.journal)) as db, db:
+            db.execute("INSERT INTO operations VALUES(1)")
+        with (
+            patch.object(self.installer.time, "sleep"),
+            self.assertRaisesRegex(ValueError, "restored"),
+        ):
+            self.installer.upgrade(self.bundle, apply=True)
+        self.assertNotIn(["systemctl", "stop", "kiln-host.service"], self.commands)
+        self.assert_original_binaries()
+        self.assertEqual(set(self.active.values()), {"active"})
+
+    def test_operations_finish_before_host_is_stopped(self):
+        with closing(sqlite3.connect(self.journal)) as db, db:
+            db.execute("INSERT INTO operations VALUES(1)")
+
+        def finish(_):
+            self.assertNotIn(["systemctl", "stop", "kiln-host.service"], self.commands)
+            with closing(sqlite3.connect(self.journal)) as db, db:
+                db.execute("UPDATE operations SET running=0")
+
+        with patch.object(self.installer.time, "sleep", side_effect=finish) as sleep:
+            self.installer.upgrade(self.bundle, apply=True)
+        sleep.assert_called_once_with(1)
+
+    def test_start_failure_rolls_back_and_interrupt_retains_recovery_marker(self):
+        def fail_start(*args):
+            if args == ("systemctl", "start", "kiln-host.service") and not failed[0]:
+                failed[0] = True
+                raise subprocess.CalledProcessError(1, args)
+            return self.fake_run(*args)
+
+        failed = [False]
+        with (
+            patch.object(self.installer, "run", side_effect=fail_start),
+            self.assertRaisesRegex(ValueError, "restored"),
+        ):
+            self.installer.upgrade(self.bundle, apply=True)
+        self.assert_original_binaries()
+
+        def interrupt(*args):
+            if args == ("systemctl", "stop", "kiln-host.service"):
+                raise KeyboardInterrupt
+            return self.fake_run(*args)
+
+        with (
+            patch.object(self.installer, "run", side_effect=interrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            self.installer.upgrade(self.bundle, apply=True)
+        pending = self.paths["OPT"] / "pending-upgrade.json"
+        self.assertTrue(pending.exists())
+        recovery = json.loads(pending.read_text())
+        for name, data in self.original.items():
+            self.assertEqual((Path(recovery["backup"]) / name).read_bytes(), data)
+        with self.assertRaisesRegex(ValueError, "pending"):
+            self.installer.upgrade(self.bundle, apply=True)
+
+    def test_main_dispatches_existing_install_without_fresh_preflight(self):
+        with (
+            patch.object(self.installer, "installer_lock", side_effect=nullcontext),
+            patch.object(self.installer.sys, "argv", ["install.py", "--apply"]),
+            patch.object(self.installer.os, "geteuid", return_value=0),
+            patch.dict(os.environ),
+            patch.object(self.installer, "preflight") as fresh,
+            patch.object(self.installer, "upgrade") as upgrade,
+        ):
+            self.assertEqual(self.installer.main(), 0)
+        fresh.assert_not_called()
+        upgrade.assert_called_once_with(
+            Path(self.installer.__file__).parent, None, None, False, True
+        )
+
+    def test_readiness_failure_restores_old_binaries(self):
+        self.health.side_effect = [
+            self.catalog,
+            ValueError("new service unhealthy"),
+            self.catalog,
+        ]
+        with self.assertRaisesRegex(ValueError, "restored"):
+            self.installer.upgrade(self.bundle, apply=True)
+        self.assert_original_binaries()
+        self.assert_data_preserved()
+        self.assertEqual(set(self.active.values()), {"active"})
+        self.assertFalse((self.paths["OPT"] / "pending-upgrade.json").exists())
+
+    def test_partial_binary_replacement_is_rolled_back(self):
+        original_copy = self.installer.atomic_copy
+        failed = False
+
+        def copy(source, destination):
+            nonlocal failed
+            if source == self.bundle / "bin/kiln-api" and not failed:
+                failed = True
+                raise OSError("disk error")
+            return original_copy(source, destination)
+
+        with (
+            patch.object(self.installer, "atomic_copy", side_effect=copy),
+            self.assertRaisesRegex(ValueError, "restored"),
+        ):
+            self.installer.upgrade(self.bundle, apply=True)
+        self.assertTrue(failed)
+        self.assert_original_binaries()
+        self.assert_data_preserved()
+
+    def test_rollback_failure_retains_marker_and_prevents_retry(self):
+        self.health.side_effect = [
+            self.catalog,
+            ValueError("new failed"),
+            ValueError("old failed"),
+        ]
+        with self.assertRaisesRegex(ValueError, "recovery"):
+            self.installer.upgrade(self.bundle, apply=True)
+        self.assertTrue((self.paths["OPT"] / "pending-upgrade.json").is_file())
+        self.assert_original_binaries()
+        self.commands.clear()
+        with self.assertRaisesRegex(ValueError, "pending"):
+            self.installer.upgrade(self.bundle, apply=True)
+        self.assertEqual(self.commands, [])
+
+    def test_incompatible_versions_and_overrides_do_not_stop_services(self):
+        for value in ("0.2.2", "0.3.99"):
+            for name, path in self.destinations.items():
+                path.write_bytes(self.original[name].replace(b"0.3.2", value.encode()))
+            with self.assertRaisesRegex(ValueError, "incompatible"):
+                self.installer.upgrade(self.bundle, apply=True)
+        for name, path in self.destinations.items():
+            path.write_bytes(self.original[name])
+        for kwargs in (
+            {"address": "192.168.1.6"},
+            {"network": True},
+            {"network_uplink": "eth0"},
+        ):
+            with self.assertRaises(ValueError):
+                self.installer.upgrade(self.bundle, apply=True, **kwargs)
+        self.kill_mode = "control-group"
+        with self.assertRaisesRegex(ValueError, "KillMode"):
+            self.installer.upgrade(self.bundle, apply=True)
+        self.assertFalse(any(args[1] == "stop" for args in self.commands))
+        self.assert_data_preserved()
+
+    def test_missing_or_symlink_binary_refused_before_services_stop(self):
+        path = self.destinations["kiln-api"]
+        path.unlink()
+        with self.assertRaises(ValueError):
+            self.installer.upgrade(self.bundle, apply=True)
+        path.symlink_to(self.bundle / "bin/kiln-api")
+        with self.assertRaises(ValueError):
+            self.installer.upgrade(self.bundle, apply=True)
+        self.assertFalse(any(args[1] == "stop" for args in self.commands))
+
+    def test_mixed_versions_unhealthy_service_and_missing_state_are_refused(self):
+        binary = self.destinations["kiln-api"]
+        binary.write_bytes(self.original["kiln-api"].replace(b"0.3.2", b"0.3.0"))
+        with self.assertRaisesRegex(ValueError, "mixed"):
+            self.installer.upgrade(self.bundle, apply=True)
+        binary.write_bytes(self.original["kiln-api"])
+        self.active["kiln-host.service"] = "failed"
+        with self.assertRaisesRegex(ValueError, "healthy"):
+            self.installer.upgrade(self.bundle, apply=True)
+        self.active["kiln-host.service"] = "active"
+        (self.paths["STATE"] / "runtime").rename(self.root / "saved-runtime")
+        with self.assertRaisesRegex(ValueError, "missing installed runtime_dir"):
+            self.installer.upgrade(self.bundle, apply=True)
+        self.assertFalse(any(args[1] == "stop" for args in self.commands))
+
+    def test_v030_networked_update_preserves_explicit_matching_options(self):
+        for name, path in self.destinations.items():
+            path.write_bytes(self.original[name].replace(b"0.3.2", b"0.3.0"))
+        policy = self.paths["ETC"] / "isolation.json"
+        policy.write_text('{"network":{"namespace_scope":"kiln"}}')
+        with self.assertRaisesRegex(ValueError, "uplink"):
+            self.installer.upgrade(self.bundle, network_uplink="wrong0", apply=True)
+        self.installer.upgrade(
+            self.bundle,
+            address="100.64.5.6",
+            network=True,
+            network_uplink="enp7s0",
+            apply=True,
+        )
+        self.assertEqual(policy.read_text(), '{"network":{"namespace_scope":"kiln"}}')
+        self.assertNotIn(["systemctl", "stop", "kiln-network.service"], self.commands)
+
+    def test_installer_lock_refuses_concurrent_installers(self):
+        with patch.object(self.installer, "LOCK", self.root / "install.lock"):
+            with self.installer.installer_lock():
+                with self.assertRaisesRegex(ValueError, "another installer"):
+                    with self.installer.installer_lock():
+                        self.fail("lock was not exclusive")
+            with self.installer.installer_lock():
+                pass
 
 
 if __name__ == "__main__":

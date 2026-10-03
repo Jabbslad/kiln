@@ -172,6 +172,9 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
             ("/dev/kvm", "kvm"),
             ("/run/systemd/system", "systemd"),
             ("/sys/fs/cgroup/cgroup.controllers", "controllers"),
+            ("/etc/kiln", "etc-kiln"),
+            ("/opt/kiln", "opt-kiln"),
+            ("/var/lib/kiln", "state-kiln"),
         ]:
             source = source.replace(old, str(self.root / new))
         path = self.root / "install.sh"
@@ -299,13 +302,13 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
         binary.chmod(0o755)
         return binary
 
-    def test_explicit_upgrade_replaces_client_and_keeps_previous_and_profiles(self):
+    def test_rerun_replaces_client_and_keeps_previous_and_profiles(self):
         binary = self.old_client()
         original = binary.read_bytes()
         profile = self.root / "home/.config/kiln/profiles.json"
         profile.parent.mkdir(parents=True)
         profile.write_text("preserve profile and credential references")
-        code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"))
+        code, out = self.run_bootstrap(self.package())
         self.assertEqual(code, 0, out)
         self.assertEqual(
             subprocess.check_output([binary, "--version"], text=True), "kiln 0.3.2\n"
@@ -317,6 +320,12 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
         self.assertEqual(
             sorted(p.name for p in binary.parent.iterdir()), ["kiln", "kiln.previous"]
         )
+        installed = binary.stat().st_ino
+        code, out = self.run_bootstrap(self.package())
+        self.assertEqual(code, 0, out)
+        self.assertIn("already current", out)
+        self.assertEqual(binary.stat().st_ino, installed)
+        self.assertEqual(binary.with_name("kiln.previous").read_bytes(), original)
 
     def test_failed_upgrade_preserves_current_and_previous_clients(self):
         binary = self.old_client()
@@ -333,7 +342,6 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
                 )
                 code, out = self.run_bootstrap(
                     "0" * 64 if failure == "checksum" else digest,
-                    args=("client", "--upgrade"),
                 )
                 self.assertNotEqual(code, 0, out)
                 self.assertIn(failure.lower(), out.lower())
@@ -347,7 +355,7 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
             if unsafe.exists():
                 unsafe.unlink()
             unsafe.symlink_to("missing-target")
-            code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"))
+            code, out = self.run_bootstrap(self.package())
             self.assertNotEqual(code, 0, out)
             self.assertIn("regular file", out)
             self.assertTrue(unsafe.is_symlink())
@@ -356,7 +364,7 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
             self.old_client()
         lock = binary.parent / ".kiln-install.lock"
         lock.mkdir()
-        code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"))
+        code, out = self.run_bootstrap(self.package())
         self.assertNotEqual(code, 0, out)
         self.assertIn("another installer", out)
         self.assertTrue(lock.exists())
@@ -372,7 +380,7 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
             "mv",
             f'#!/bin/sh\nfor arg do last=$arg; done\ncase "$last" in */kiln) exit 1;; esac\nexec "{real_mv}" "$@"\n',
         )
-        code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"))
+        code, out = self.run_bootstrap(self.package())
         self.assertNotEqual(code, 0, out)
         self.assertIn("replace", out.lower())
         self.assertEqual(binary.read_bytes(), original)
@@ -381,13 +389,46 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
             sorted(p.name for p in binary.parent.iterdir()), ["kiln", "kiln.previous"]
         )
 
-    def test_upgrade_flag_is_client_only_and_requires_existing_file(self):
-        for args in [("server", "--upgrade"), ("client", "--upgrade")]:
-            with self.subTest(args=args):
-                code, out = self.run_bootstrap(self.package(), args=args)
-                self.assertNotEqual(code, 0, out)
-                self.assertEqual(self.requests(), [])
-                self.assertFalse((self.root / "privileged").exists())
+    def test_legacy_upgrade_flag_is_an_optional_client_alias(self):
+        code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"))
+        self.assertEqual(code, 0, out)
+
+    def test_newer_client_is_not_downgraded(self):
+        binary = self.old_client()
+        for version in ("0.3.10", "0.4.0", "1.0.0"):
+            binary.write_text(f"#!/bin/sh\necho 'kiln {version}'\n")
+            code, out = self.run_bootstrap(self.package())
+            self.assertNotEqual(code, 0, out)
+            self.assertIn("newer", out)
+            self.assertIn(version, binary.read_text())
+            self.assertFalse(binary.with_name("kiln.previous").exists())
+
+    def test_multiline_client_version_is_refused_before_download(self):
+        binary = self.old_client()
+        binary.write_text("#!/bin/sh\nprintf 'kiln 0.3.0\\nnot-a-version\\n'\n")
+        original = binary.read_bytes()
+        code, out = self.run_bootstrap(self.package())
+        self.assertNotEqual(code, 0, out)
+        self.assertEqual(binary.read_bytes(), original)
+        self.assertEqual(self.requests(), [])
+
+    def test_existing_server_skips_apt_and_route_detection(self):
+        (self.root / "etc-kiln").mkdir()
+        self.env["ROUTE"] = ""
+        members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
+        members["install.py"] = (
+            b"import sys\nassert sys.argv[1:] == ['--apply']\nprint('updated')\n"
+        )
+        code, out = self.run_bootstrap(self.package(members), args=("server",))
+        self.assertEqual(code, 0, out)
+        self.assertIn("updated", out)
+        commands = [
+            json.loads(line)
+            for line in (self.root / "privileged").read_text().splitlines()
+        ]
+        self.assertEqual(commands[0], ["true"])
+        self.assertEqual(commands[1][0], "python3")
+        self.assertEqual(len(commands), 2)
 
     def test_server_unsupported_host_never_requests_privileges(self):
         for distro, version in [

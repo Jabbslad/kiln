@@ -20,7 +20,8 @@ Install the macOS/Linux client without prompts or GitHub credentials:
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
 ```
 
-The script verifies pinned public release packages and works without a terminal;
+Rerun the same command to update; no upgrade flag is needed. The script verifies
+pinned public release packages and works without a terminal;
 no GitHub CLI, Python or Rust installation is needed on the laptop. See the
 [installation guide](docs/releases.md) for unattended Ubuntu server setup,
 automatic private-address detection, platform requirements and manual/Windows downloads.
@@ -34,12 +35,13 @@ automatic replay of interrupted commands.
 
 See the [server setup and laptop guide](docs/remote-client.md). Installing the
 client does not provision server services. Running the installer with `server`
-authorizes setup without confirmation and binds only to a detected or specified
-private address. Root or passwordless sudo is required. This pilot has one administrator.
+installs or updates without confirmation. Fresh installs bind only to a detected
+or specified private address; updates preserve the existing endpoint and state.
+Root or passwordless sudo is required. This pilot has one administrator.
 Version 0.2.0 includes `kiln ssh`, SFTP via `kiln cp`,
 editor configuration via `kiln ssh-config`, and opt-in isolated IPv4 egress.
-These require matching client/server/Ubuntu guest builds; existing installations
-and templates are **not upgraded automatically**. SSH uses authenticated HTTPS/vsock, without a public SSH port;
+These require matching client/server/Ubuntu guest builds; guest images and
+templates are **not upgraded automatically**. SSH uses authenticated HTTPS/vsock, without a public SSH port;
 internet access requires separate [network provisioning](docs/runtime-networking.md).
 
 ## Try the runtime

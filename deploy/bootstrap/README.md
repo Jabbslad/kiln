@@ -6,12 +6,10 @@ binaries, or credentials. Source and releases are public in
 [Jabbslad/kiln](https://github.com/Jabbslad/kiln). No GitHub account or PAT is needed.
 
 **v0.3.0 requires matching Kiln client, server and freshly built guest templates.**
-It is not an in-place upgrade from v0.2.x. Existing services, profiles, disks,
-snapshots and networking are left untouched. Plan migration separately; do not
-reuse an old runtime store or install beside it on the same server.
-`--upgrade` replaces only an existing `kiln` client, not a differently named
-older client. Fresh installation uses new configuration paths and requires
-explicit enrollment with a matching server.
+It is not an in-place upgrade from v0.2.x/boxd. No legacy migration is provided;
+start with a clean Kiln installation. Do not reuse an old runtime store or
+install beside it on the same server. Fresh installation uses new configuration
+paths and requires explicit enrollment with a matching server.
 
 ## Laptop: macOS or Linux
 
@@ -30,24 +28,25 @@ the `kiln` zip from the public release instead; this is not a PowerShell install
 The script downloads a versioned release over HTTPS and verifies its pinned
 SHA-256 checksum. It never asks for credentials or reads answers from stdin.
 
-### Upgrade an existing laptop client
+### Automatic client updates
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- client --upgrade
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
 kiln --version
 ```
 
-The explicit upgrade verifies the package checksum and executable version before
+Rerunning the same command verifies the package checksum and executable version before
 atomically replacing `~/.local/bin/kiln`. The previous binary is retained as
 `~/.local/bin/kiln.previous` (replaced on the next upgrade); profiles, tokens and
 CA files are untouched. Failed downloads or validation leave both binaries alone.
+An identical install is a no-op and preserves the previous backup. Downgrades are
+refused. No `--upgrade` flag is needed (the old client alias remains accepted).
 To roll back, run `mv ~/.local/bin/kiln.previous ~/.local/bin/kiln`.
 
 Symbolic links and non-regular destinations are refused. Concurrent installers
 are blocked by `~/.local/bin/.kiln-install.lock`; if an installer was forcibly
 killed, confirm it is no longer running before removing that empty directory.
-Plain installation still refuses to overwrite an existing client. This option
-does not upgrade a server or its guest images.
+The client command does not update a server or its guest images.
 
 ## Server: dedicated Ubuntu 24.04 or 26.04 x86-64/KVM
 
@@ -60,7 +59,7 @@ RAM and 24 GiB free on `/var/lib`, plus about 3 GiB temporary extraction space.
 16 GiB+ total RAM is recommended. Containers are not supported. The guest image
 remains Ubuntu 24.04 regardless of the supported host Ubuntu version.
 
-**Running `server` authorizes installation without further confirmation.** Use
+**Running `server` authorizes installation or updating without further confirmation.** Use
 a root shell or an account with passwordless sudo; the script uses `sudo -n` and
 fails instead of asking for a password. It installs required Ubuntu packages
 (including Python), then checks resources/conflicts before creating accounts,
@@ -68,7 +67,7 @@ services, TLS credentials, and a 4 GiB warm Ubuntu template. Package configurati
 is non-interactive and retains existing configuration files. No VPN or API
 firewall opening is configured.
 
-The server address is the source IPv4 selected by `ip -4 route get 1.1.1.1`
+On fresh installs, the server address is the source IPv4 selected by `ip -4 route get 1.1.1.1`
 (a local route lookup, not a network request). It must be private/VPN IPv4;
 public or ambiguous results fail with an error. Detection requires iproute2.
 For a VPN, multi-interface host, or no default route, override it explicitly:
@@ -97,9 +96,35 @@ manager. This option cannot retrofit an existing immutable runtime store.
 **This is a trusted-workload pilot, not a production multi-tenant sandbox.**
 Fresh-host setup and reboot validation remain outstanding. The initial server
 uses the copy disk backend, not the faster overlay benchmark configuration.
-There is no automated server upgrade/uninstall. Existing server destinations are refused.
+Uninstall is not automated. Partial or unhealthy installations require recovery.
 If provisioning fails, retain the state and inspect logs; do not delete VM state
 or blindly rerun setup.
+
+### Automatic server updates
+
+Rerun the same `server` command. v0.3.3 updates healthy, standard Kiln v0.3.0 or
+v0.3.2 installations and leaves identical v0.3.3 installations alone. It reuses
+the existing address and networking, skips apt, and preserves configuration,
+credentials, units, Firecracker, guest images, templates and VM disks. Explicit
+address/network options must agree with the installed configuration.
+
+The updater retains binaries under `/opt/kiln/upgrades/`, stops the gateway,
+waits up to 60 seconds for accepted operations, then restarts the management
+services with the new binaries. **API/SSH sessions disconnect briefly.** Guest
+VMMs are left running using the host unit's required `KillMode=process`. Do not
+run local `kiln-runtime` commands or change units/configuration during an update.
+If operations remain busy, the gateway is restored without stopping the host.
+
+Failed replacement/startup/readiness rolls back the binaries and checks the old
+service. A power loss, forced termination or failed rollback leaves
+`/opt/kiln/pending-upgrade.json` with backup locations; the next run refuses to
+proceed until recovery is reviewed. Do not delete that marker to force a retry.
+Use `journalctl -u kiln-host -u kiln-api` and the recorded backup for diagnosis.
+
+Updates are binary-only, not guest-image or state migrations. Compatibility must
+be reviewed for each release; unsupported versions and custom service commands
+are refused. File replacement/rollback and simulated service failures are tested;
+real-server update and reboot validation remain outstanding.
 
 ## Connect
 

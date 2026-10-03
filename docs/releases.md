@@ -25,13 +25,12 @@ server and rebuilt guest images/templates. New installs use `/etc/kiln`,
 `~/.config/kiln` (or the platform's config directory). Old profiles, SSH aliases,
 services, networking and runtime stores are not discovered, moved or deleted.
 Do not point the new runtime at an old store or reuse old snapshots/templates.
-Preserve the existing installation until a separately reviewed data migration
-is complete. Do not install a second networked store alongside it on the same
+No legacy boxd migration is provided; use a clean Kiln installation. Do not
+install a second networked store alongside the old installation on the same
 host: address pools, ports and reserved UID/GID ranges are still shared.
 
-The bootstrap's `--upgrade` only replaces an existing `kiln` client; it does not
-rename an older client or migrate its configuration. Use a fresh client install
-and explicitly enroll it with a matching Kiln server. Earlier release notes and
+The bootstrap does not rename an older client or migrate its configuration.
+Use a fresh client install and explicitly enroll it with a matching Kiln server. Earlier release notes and
 benchmark results below describe pre-rename versions; commands use current names.
 
 **Ubuntu host support:** starting with `v0.1.1`, both installer layers admit Ubuntu
@@ -59,8 +58,20 @@ curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.
 release URLs and pinned checksums. No `gh`, Python, Rust, or JSON parser is
 required on the laptop. Both bootstrap modes work without a controlling terminal.
 Running `server` authorizes setup: use root or passwordless sudo. There are no
-`SETUP`/`INSTALL` confirmations or password prompts. Existing installations remain
-protected; this is not an automated server upgrade.
+`SETUP`/`INSTALL` confirmations or password prompts.
+
+**v0.3.3 adds automatic client and server updates.** Rerun the same command;
+no upgrade flag is needed. Existing standard Kiln v0.3.0/v0.3.2 servers receive
+compatible application binaries, while configuration, credentials, networking,
+images, templates and VM disks are preserved. Identical installs are unchanged.
+The update reuses the installed address, skips apt, backs up binaries, drains
+accepted operations, restarts management services and checks HTTPS readiness.
+API/SSH connections briefly disconnect; guest VMMs are not stopped. Failure
+rolls back binaries; interrupted updates require recovery from retained backups.
+No old boxd migration, downgrade or guest-image migration is included. See
+[automatic server updates](../deploy/bootstrap/README.md#automatic-server-updates).
+Real-server update/reboot validation remains outstanding; tests use disposable
+files, real SQLite journals and simulated systemd operations.
 
 The bootstrap detects the source IPv4 from `ip -4 route get 1.1.1.1` without
 sending traffic, rejects non-private results, and fails rather than guessing
@@ -93,16 +104,17 @@ now explicitly requires util-linux. The guest image and wire protocol remain
 compatible with v0.2.1; existing networkless stores still require migration.
 
 The client installs to `~/.local/bin/kiln` without sudo and prints PATH setup
-instructions if needed. Plain installation preserves existing clients. To upgrade:
+instructions if needed. To update, rerun the original command:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- client --upgrade
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
 ```
 
 This verifies the downloaded checksum and executable version before atomic
 replacement, retaining the old binary as `~/.local/bin/kiln.previous`. It leaves
-profiles and credentials unchanged. Server upgrades are not supported by this
-flag; see the [bootstrap upgrade details](../deploy/bootstrap/README.md#upgrade-an-existing-laptop-client).
+profiles and credentials unchanged. Identical installs preserve the useful backup;
+newer installed versions are never downgraded. See the
+[bootstrap details](../deploy/bootstrap/README.md#automatic-client-updates).
 
 The server bootstrap installs Ubuntu system packages (including Python) without
 prompts using `sudo -n`, then invokes the provisioner. You do not install
@@ -202,7 +214,8 @@ sudo -n python3 kiln-server/install.py --address 192.168.1.20 --apply
 Replace `192.168.1.20` with the server's private/VPN address. `--apply` authorizes
 installation without a prompt. Omit `--apply` for prerequisite checks only. The installer:
 
-- Refuses existing installations, partial installs, unit overrides, conflicting
+- Updates supported existing Kiln installations without reprovisioning. For fresh
+  installs, refuses partial installs, unit overrides, conflicting
   account IDs, occupied ports and unsupported hosts before changing the host.
 - Installs binaries, a restricted API account, eight locked VM identities, and
   cgroup preparation that runs again on boot.
@@ -223,7 +236,7 @@ runtime's numeric allocation. The installer checks accounts, subordinate ranges
 and running processes, but cannot discover an arbitrary inactive runtime policy.
 Use a dedicated host. Partial failures retain files/accounts/VM state for
 diagnosis. Never delete state to force a rerun: inspect the host log and stop any
-retained VM using the local `kiln-runtime` tool first. Upgrades/uninstall are not automated.
+retained VM using the local `kiln-runtime` tool first. Uninstall is not automated.
 
 ## Connect the laptop
 
