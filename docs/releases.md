@@ -83,7 +83,7 @@ is supplied (explicit uplink). See the [bootstrap guide](../deploy/bootstrap/REA
 
 **v0.2.0 guest-access additions:** packages include interactive SSH,
 SFTP, editor SSH configuration, and optional isolated guest IPv4 egress. The
-public installer pins v0.3.2. These features require the new client, server,
+public installer pins v0.3.3. These features require the new client, server,
 and updated Ubuntu guest agent. Existing templates/boxes are not
 upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
 management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
@@ -152,7 +152,7 @@ For macOS/Linux, in a new download directory:
 
 ```sh
 REPO=Jabbslad/kiln
-VERSION=v0.3.2
+VERSION=v0.3.3
 TARGET=aarch64-apple-darwin
 BASE="https://github.com/$REPO/releases/download/$VERSION"
 curl -fL --proto '=https' --proto-redir '=https' -O "$BASE/kiln-$VERSION-$TARGET.tar.gz"
@@ -200,7 +200,7 @@ files to the server). No GitHub credentials are required:
 
 ```sh
 REPO=Jabbslad/kiln
-VERSION=v0.3.2
+VERSION=v0.3.3
 PACKAGE="kiln-server-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
 BASE="https://github.com/$REPO/releases/download/$VERSION"
 curl -fL --proto '=https' --proto-redir '=https' -O "$BASE/$PACKAGE"

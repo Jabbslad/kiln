@@ -88,7 +88,7 @@ assert '--proto' in args and args[args.index('--proto') + 1] == '=https'
 assert args[args.index('--proto-redir') + 1] == '=https'
 assert '--netrc' not in args and '--config' not in args and '--user' not in args
 assert not any('Authorization' in arg for arg in args)
-assert args[-1].startswith('https://github.com/Jabbslad/kiln/releases/download/v0.3.2/kiln-')
+assert args[-1].startswith('https://github.com/Jabbslad/kiln/releases/download/v0.3.3/kiln-')
 record = {'args': args}
 with (root / 'requests').open('a') as f:
     f.write(json.dumps(record) + '\\n')
@@ -128,7 +128,7 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
 
     def package(self, members=None, server=False):
         if members is None:
-            members = {"kiln": b"#!/bin/sh\necho 'kiln 0.3.2'\n"}
+            members = {"kiln": b"#!/bin/sh\necho 'kiln 0.3.3'\n"}
         if server:
             members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
             members["install.py"] = (
@@ -229,12 +229,12 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
                 binary = self.root / "home/.local/bin/kiln"
                 self.assertEqual(
                     subprocess.check_output([binary, "--version"], text=True),
-                    "kiln 0.3.2\n",
+                    "kiln 0.3.3\n",
                 )
                 request = self.requests()[-1]
                 self.assertEqual(
                     request["args"][-1],
-                    f"https://github.com/Jabbslad/kiln/releases/download/v0.3.2/kiln-v0.3.2-{expected}.tar.gz",
+                    f"https://github.com/Jabbslad/kiln/releases/download/v0.3.3/kiln-v0.3.3-{expected}.tar.gz",
                 )
                 binary.unlink()
 
@@ -311,7 +311,7 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
         code, out = self.run_bootstrap(self.package())
         self.assertEqual(code, 0, out)
         self.assertEqual(
-            subprocess.check_output([binary, "--version"], text=True), "kiln 0.3.2\n"
+            subprocess.check_output([binary, "--version"], text=True), "kiln 0.3.3\n"
         )
         self.assertEqual(binary.with_name("kiln.previous").read_bytes(), original)
         self.assertEqual(
@@ -470,7 +470,7 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
         self.assertEqual(commands[3][0], "python3")
         self.assertTrue(
             self.requests()[0]["args"][-1].endswith(
-                "/kiln-server-v0.3.2-x86_64-unknown-linux-gnu.tar.gz"
+                "/kiln-server-v0.3.3-x86_64-unknown-linux-gnu.tar.gz"
             )
         )
 
