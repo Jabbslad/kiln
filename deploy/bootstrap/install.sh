@@ -19,10 +19,10 @@ assets() {
     # Updated only after reviewing the release and its checksums.
     cat <<'ASSETS'
 # BEGIN RELEASE ASSETS
-client:x86_64-unknown-linux-gnu 74d534eda055742951a2bf2c7b3ebc3a51d88905abd12e845e02d3a40ea0d629
-client:x86_64-apple-darwin 230dd28f9237c21504c3a09f21eaf60904baf7a6e69562dc013d2e37d0102cb1
-client:aarch64-apple-darwin 79c5e2d79c9c83cd749c812b2c9338cd8adfc311bcf0da35045d560a43464502
-server:x86_64-unknown-linux-gnu 749b4bd568cd970a9df5d652329bf8e05d2774f03acbb56bb8d908dc6847063b
+client:x86_64-unknown-linux-gnu 0f333b72dea810d976cc15b14dd6c43e8995de41fc20b1b54e43e9897a048a68
+client:x86_64-apple-darwin 70d60d96d55e92371e1950b2f44ee7cc15705f5f9119a9702bd818d4b51e6a1e
+client:aarch64-apple-darwin 88e0bddb889155db223ffcbcc3fe19c43ee4b88800adc0cd8c3fd55ea005a719
+server:x86_64-unknown-linux-gnu ff00fea59b99f5523ef69b75dd890b916da58cc88b57dfa8e0f13051374520b8
 # END RELEASE ASSETS
 ASSETS
 }
