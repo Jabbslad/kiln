@@ -20,6 +20,10 @@ assets() {
     # Updated only after reviewing the private release and its checksums.
     cat <<'ASSETS'
 # BEGIN RELEASE ASSETS
+client:x86_64-unknown-linux-gnu 606745950 74d534eda055742951a2bf2c7b3ebc3a51d88905abd12e845e02d3a40ea0d629
+client:x86_64-apple-darwin 606745907 230dd28f9237c21504c3a09f21eaf60904baf7a6e69562dc013d2e37d0102cb1
+client:aarch64-apple-darwin 606745911 79c5e2d79c9c83cd749c812b2c9338cd8adfc311bcf0da35045d560a43464502
+server:x86_64-unknown-linux-gnu 606745906 749b4bd568cd970a9df5d652329bf8e05d2774f03acbb56bb8d908dc6847063b
 # END RELEASE ASSETS
 ASSETS
 }
