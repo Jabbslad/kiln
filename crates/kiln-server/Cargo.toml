@@ -23,8 +23,12 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rusqlite = { version = "0.38", features = ["bundled"] }
 subtle = "2"
 tower = { version = "0.5", features = ["limit", "util"] }
+jsonwebtoken = { version = "10.4.0", default-features = false, features = ["use_pem", "rust_crypto"] }
+tempfile.workspace = true
+x509-parser = "0.18"
 
 [dev-dependencies]
-tempfile.workspace = true
 rcgen = "0.14"
 kiln-client = { path = "../kiln-client" }
+p256 = { version = "0.13", features = ["pem", "pkcs8"] }
+base64 = "0.22"

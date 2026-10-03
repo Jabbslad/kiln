@@ -62,6 +62,36 @@ async fn cli(config: &Path, args: &[&str]) -> std::process::Output {
 }
 
 #[tokio::test]
+async fn scripts_json_proxy_and_explicit_missing_profiles_never_launch_login() {
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("profiles.json");
+    for args in [
+        vec!["list"],
+        vec!["--profile", "missing", "list"],
+        vec![
+            "--json",
+            "create",
+            "--template",
+            "ubuntu-4g",
+            "--name",
+            "must-not-create",
+        ],
+        vec!["ssh-proxy", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        vec!["--issuer", "https://identity.example.test", "login"],
+    ] {
+        let output = cli(&config, &args).await;
+        assert!(!output.status.success(), "{args:?}");
+        assert!(
+            output.stdout.is_empty(),
+            "login must not corrupt protocol stdout"
+        );
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(!error.contains("Open https://"));
+        assert!(!config.exists(), "must not write an implicit profile");
+    }
+}
+
+#[tokio::test]
 async fn real_binary_profiles_preserve_exec_bytes_status_and_json() {
     let calls = Arc::new(AtomicUsize::new(0));
     let seen = calls.clone();

@@ -30,6 +30,25 @@ or requiring a guest IP reachable from the laptop. SQLite is embedded; no
 PostgreSQL or Redis is required. The service exposes only catalog aliases and sanitized box records,
 not host paths, jail identities, host fingerprints or Firecracker sockets.
 
+## Central login in development builds
+
+Central login is implemented in source but not deployed or released. After an
+operator provisions the identity service and explicitly enrolls a host, Linux
+and macOS clients can use `kiln --issuer https://YOUR-IDENTITY-ORIGIN login`.
+The browser asks for GitHub/Google sign-in and a separate device approval. One
+owned server is selected automatically; multiple servers prompt for a choice.
+No private server address or CA transfer is needed for this flow. The laptop
+still needs network access to the selected server.
+
+Interactive first-use commands can start the same flow with an operator-configured
+identity origin. JSON, nonterminal and SSH proxy invocations never launch login.
+Renewal occurs before requests, without retrying VM mutations. `kiln auth status`,
+device revocation, server-scoped automation keys and logout are documented in the
+[identity operator guide](identity-service.md). Repeating login reuses an existing
+session; log out to change accounts. Existing direct administrator profiles below
+are preserved. Real-provider acceptance and native Windows private-ACL checks remain
+outstanding; no public zero-configuration identity origin is configured yet.
+
 ## Build the binaries
 
 From this checkout on a laptop with the pinned Rust 1.95.0 toolchain:
@@ -120,7 +139,8 @@ public Internet endpoint.
 
    Transfer it securely to a private file on your laptop (not via chat, command
    arguments or a URL). It grants **administrator access to all service-managed
-   boxes** in this single workspace. There are no user roles or scoped tokens yet.
+   boxes** in this single workspace. This direct token is not scoped; central
+   development builds separately support server-scoped `read`/`operate` keys.
 7. Check the configuration while the host service is stopped:
 
    ```sh

@@ -23,13 +23,23 @@ def package(repo, bins, output, version, target, kind, image):
         raise ValueError(
             "version must be vMAJOR.MINOR.PATCH with an optional prerelease suffix"
         )
-    if target not in TARGETS or kind not in ("client", "server"):
+    if target not in TARGETS or kind not in ("client", "server", "identity"):
         raise ValueError("unsupported target or package kind")
     windows = target.endswith("windows-msvc")
     if kind == "client":
         binary = "kiln.exe" if windows else "kiln"
         files = {binary: bins / binary}
         name = f"kiln-{version}-{target}"
+    elif kind == "identity":
+        if target != "x86_64-unknown-linux-gnu":
+            raise ValueError("identity requires Linux x86-64")
+        files = {
+            "bin/kiln-identity": bins / "kiln-identity",
+            "deploy/kiln-identity.service": repo / "deploy/kiln-identity.service",
+            "deploy/identity.example.env": repo / "deploy/identity.example.env",
+            "docs/identity-service.md": repo / "docs/identity-service.md",
+        }
+        name = f"kiln-identity-{version}-{target}"
     else:
         if target != "x86_64-unknown-linux-gnu" or image is None:
             raise ValueError(
@@ -47,6 +57,7 @@ def package(repo, bins, output, version, target, kind, image):
                 "README.md": repo / "README.md",
                 "docs/releases.md": repo / "docs/releases.md",
                 "docs/remote-client.md": repo / "docs/remote-client.md",
+                "docs/identity-service.md": repo / "docs/identity-service.md",
                 "docs/runtime.md": repo / "docs/runtime.md",
             }
         )
@@ -99,7 +110,7 @@ def package(repo, bins, output, version, target, kind, image):
                     )
                     with path.open("rb") as source:
                         archive.addfile(info, source)
-                if kind == "server":
+                if kind in ("server", "identity"):
                     data = json.dumps({"version": version, "target": target}).encode()
                     info = tarfile.TarInfo("release.json")
                     info.size, info.mode = len(data), 0o644
@@ -113,7 +124,7 @@ def package(repo, bins, output, version, target, kind, image):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("kind", choices=("client", "server"))
+    parser.add_argument("kind", choices=("client", "server", "identity"))
     parser.add_argument("--version", required=True)
     parser.add_argument("--target", required=True, choices=TARGETS)
     parser.add_argument("--bin-dir", type=Path, required=True)

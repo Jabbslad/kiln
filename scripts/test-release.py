@@ -56,6 +56,23 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(archive.namelist(), ["kiln.exe"])
             self.assertEqual(archive.read("kiln.exe"), b"binary-kiln.exe")
 
+    def test_identity_allowlist_excludes_vm_and_private_state(self):
+        (self.bins / "kiln-identity").write_bytes(b"identity-binary")
+        (self.bins / "signing.pem").write_text("private fixture")
+        for name in ["deploy/kiln-identity.service", "deploy/identity.example.env", "docs/identity-service.md"]:
+            path = self.repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(name)
+        with tarfile.open(self.package(kind="identity")) as archive:
+            self.assertEqual(set(archive.getnames()), {
+                "bin/kiln-identity", "deploy/kiln-identity.service",
+                "deploy/identity.example.env", "docs/identity-service.md", "release.json",
+            })
+            self.assertEqual(archive.getmember("bin/kiln-identity").mode, 0o755)
+            self.assertEqual(json.load(archive.extractfile("release.json"))["version"], "v0.1.0")
+        with self.assertRaises(ValueError):
+            self.package(kind="identity", target="x86_64-apple-darwin")
+
     def test_invalid_version_target_and_missing_binary_make_no_archive(self):
         for version, target in [
             ("../escape", "x86_64-unknown-linux-gnu"),
@@ -81,6 +98,7 @@ class ReleaseTests(unittest.TestCase):
             "README.md",
             "docs/releases.md",
             "docs/remote-client.md",
+            "docs/identity-service.md",
             "docs/runtime.md",
         ]:
             path = self.repo / name
@@ -111,6 +129,7 @@ class ReleaseTests(unittest.TestCase):
                     "README.md",
                     "docs/releases.md",
                     "docs/remote-client.md",
+                    "docs/identity-service.md",
                     "docs/runtime.md",
                     "image/image.json",
                     "image/inputs.json",

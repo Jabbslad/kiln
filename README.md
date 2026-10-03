@@ -44,6 +44,20 @@ These require matching client/server/Ubuntu guest builds; guest images and
 templates are **not upgraded automatically**. SSH uses authenticated HTTPS/vsock, without a public SSH port;
 internet access requires separate [network provisioning](docs/runtime-networking.md).
 
+## Browser login (unreleased)
+
+The source tree now includes a separate Rust identity service, GitHub/Google
+device approval, account-owned server discovery, rotating laptop credentials and
+server-scoped automation keys. Enrolled hosts validate short-lived ES256 tokens;
+VM operations and SSH/SFTP still connect directly to the private host. Existing
+administrator profiles remain available for recovery.
+
+**This is not yet the public zero-configuration login service.** Deployment,
+provider application registration and real-provider/enrolled-host acceptance are
+pending. No identity hostname is compiled into released clients. Native Windows
+credential-ACL verification is also pending. See the [identity operator guide](docs/identity-service.md)
+for development setup, explicit host enrollment and remaining limitations.
+
 ## Try the runtime
 
 Requires Linux x86_64, read/write access to `/dev/kvm`, cgroup v2, Rust/rustup, curl, Python 3, binutils, e2fsprogs, and a static x86_64 BusyBox at `/usr/bin/busybox` (or pass another path to the fixture builder). Do not run the CLI as root.
@@ -166,4 +180,4 @@ The opt-in integration suite launches disposable VMs and deliberately crashes CL
 
 ## Path to the platform
 
-The [architecture](docs/superpowers/specs/2026-09-30-kiln-platform-design.md) and [runtime plan](docs/superpowers/plans/2026-09-30-runtime-engine.md) describe the wider product. The [laptop-first service slice](docs/remote-client.md) uses embedded SQLite rather than requiring PostgreSQL. Still outstanding: signed client releases, an image security-update/release process, operation-history retention, scoped authentication, preview routing, dashboard, SDK, and fleet scheduling. Both guest images remain intended for trusted development workloads, not a hosted multi-tenant environment.
+The [architecture](docs/superpowers/specs/2026-09-30-kiln-platform-design.md) and [runtime plan](docs/superpowers/plans/2026-09-30-runtime-engine.md) describe the wider product. The [laptop-first service slice](docs/remote-client.md) uses embedded SQLite rather than requiring PostgreSQL. Still outstanding: signed client releases, an image security-update/release process, operation-history retention, central authentication rollout, preview routing, dashboard, SDK, and fleet scheduling. Both guest images remain intended for trusted development workloads, not a hosted multi-tenant environment.

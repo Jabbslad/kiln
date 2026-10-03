@@ -1,31 +1,30 @@
 //! Unprivileged TLS edge. The only upstream is the configured Unix socket.
-use crate::Failure;
-use anyhow::{Result, ensure};
+use crate::{Failure, auth::Authenticator};
+use anyhow::Result;
 use axum::{
     Router,
     body::{Body, to_bytes},
     extract::{Request, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use sha2::{Digest, Sha256};
+use kiln_api::auth::Scope;
 use std::{path::Path, sync::Arc, time::Duration};
-use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
 
 struct Gateway {
     client: reqwest::Client,
-    token_hash: [u8; 32],
+    auth: Authenticator,
     capacity: Semaphore,
     sessions: Arc<Semaphore>,
 }
 
 pub fn router(socket: &Path, token: &str) -> Result<Router> {
-    ensure!(
-        token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()),
-        "token must be 32 random bytes encoded as 64 hexadecimal characters"
-    );
+    router_with_auth(socket, Authenticator::new(token, None)?)
+}
+
+pub fn router_with_auth(socket: &Path, auth: Authenticator) -> Result<Router> {
     let state = Arc::new(Gateway {
         client: reqwest::Client::builder()
             .unix_socket(socket)
@@ -35,37 +34,47 @@ pub fn router(socket: &Path, token: &str) -> Result<Router> {
             .connect_timeout(Duration::from_secs(3))
             .timeout(Duration::from_secs(35))
             .build()?,
-        token_hash: Sha256::digest(token.as_bytes()).into(),
+        auth,
         capacity: Semaphore::new(32),
         sessions: Arc::new(Semaphore::new(32)),
     });
     Ok(Router::new()
-        .route("/v1/templates", get(proxy))
-        .route("/v1/boxes", get(proxy))
-        .route("/v1/boxes/{id}", get(proxy))
-        .route("/v1/boxes/{id}/ssh-key", get(proxy))
+        .route("/v1/templates", get(read_proxy))
+        .route("/v1/boxes", get(read_proxy))
+        .route("/v1/boxes/{id}", get(read_proxy))
+        .route("/v1/boxes/{id}/ssh-key", get(operate_proxy))
         .route("/v1/boxes/{id}/ssh", get(ssh_tunnel))
-        .route("/v1/operations/{id}", get(proxy))
-        .route("/v1/operations", post(proxy))
+        .route("/v1/operations/{id}", get(operate_proxy))
+        .route("/v1/operations", post(operate_proxy))
         .with_state(state))
 }
 
-fn authenticate(state: &Gateway, request: &Request) -> Result<(), Failure> {
-    let token = request
-        .headers()
+async fn authenticate(
+    state: &Gateway,
+    headers: &HeaderMap,
+    uri: &Uri,
+    required: Scope,
+) -> Result<(), Failure> {
+    let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
-    let supplied: [u8; 32] = Sha256::digest(token.as_bytes()).into();
-    if !bool::from(supplied.ct_eq(&state.token_hash)) {
-        return Err(Failure::new(
+    let scope = state.auth.authenticate(token).await.map_err(|_| {
+        Failure::new(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
-            "A valid administrator token is required.",
+            "A valid credential is required.",
+        )
+    })?;
+    if required == Scope::Operate && scope != Scope::Operate {
+        return Err(Failure::new(
+            StatusCode::FORBIDDEN,
+            "insufficient_scope",
+            "An operate credential is required.",
         ));
     }
-    if request.uri().query().is_some() {
+    if uri.query().is_some() {
         return Err(Failure::new(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -79,7 +88,7 @@ async fn ssh_tunnel(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    authenticate(&state, &request)?;
+    authenticate(&state, request.headers(), request.uri(), Scope::Operate).await?;
     let key = crate::ssh::admission(&request)?;
     let permit = state
         .sessions
@@ -114,8 +123,23 @@ async fn ssh_tunnel(
     Ok(crate::ssh::upgrade(request, upstream, permit))
 }
 
-async fn proxy(State(state): State<Arc<Gateway>>, request: Request) -> Result<Response, Failure> {
-    authenticate(&state, &request)?;
+async fn read_proxy(
+    State(state): State<Arc<Gateway>>,
+    request: Request,
+) -> Result<Response, Failure> {
+    authenticate(&state, request.headers(), request.uri(), Scope::Read).await?;
+    proxy(state, request).await
+}
+
+async fn operate_proxy(
+    State(state): State<Arc<Gateway>>,
+    request: Request,
+) -> Result<Response, Failure> {
+    authenticate(&state, request.headers(), request.uri(), Scope::Operate).await?;
+    proxy(state, request).await
+}
+
+async fn proxy(state: Arc<Gateway>, request: Request) -> Result<Response, Failure> {
     let _permit = state.capacity.try_acquire().map_err(|_| {
         Failure::new(
             StatusCode::TOO_MANY_REQUESTS,

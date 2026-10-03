@@ -1,0 +1,29 @@
+[Unit]
+Description=Kiln identity and server discovery
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=kiln-identity
+Group=kiln-identity
+EnvironmentFile=/etc/kiln-identity/service.env
+ExecStart=/usr/local/libexec/kiln-identity --listen 127.0.0.1:8091 --public-origin ${PUBLIC_ORIGIN} --database /var/lib/kiln-identity/identity.db --github-client-id ${GITHUB_CLIENT_ID} --github-secret-file /etc/kiln-identity/github.secret --google-client-id ${GOOGLE_CLIENT_ID} --google-secret-file /etc/kiln-identity/google.secret --signing-key-file /etc/kiln-identity/signing.pem --signing-key-id ${SIGNING_KEY_ID} --trusted-proxy-loopback
+StateDirectory=kiln-identity
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -60,6 +60,12 @@ jobs:
           target/release/kiln-host --help
           target/release/kiln-api --help
           target/release/kiln --version
+      - name: Build independent identity service
+        run: |
+          cargo build --release --locked -p kiln-identity
+          target/release/kiln-identity --version
+          python scripts/release.py identity --version "$VERSION" --target x86_64-unknown-linux-gnu \
+            --bin-dir target/release --output dist
       - name: Build pinned warm guest image without root
         run: |
           sudo apt-get update

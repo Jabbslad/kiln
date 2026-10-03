@@ -6,48 +6,80 @@ use reqwest::{Method, Url, header};
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 
+pub mod auth;
+pub mod credentials;
+pub mod profile;
+
 pub struct Client {
     http: reqwest::Client,
     base: Url,
+    session: Option<auth::Session>,
 }
 
 impl Client {
     pub fn new(url: &str, token: &str, ca_pem: Option<&[u8]>) -> Result<Self> {
-        let base = Url::parse(url)?;
-        ensure!(
-            base.scheme() == "https"
-                && base.host_str().is_some()
-                && base.username().is_empty()
-                && base.password().is_none()
-                && base.query().is_none()
-                && base.fragment().is_none()
-                && base.path() == "/",
-            "server URL must be an HTTPS origin without credentials, path, query or fragment"
-        );
         ensure!(
             token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()),
             "token must be 64 hexadecimal characters"
         );
-        let mut authorization = header::HeaderValue::from_str(&format!("Bearer {token}"))?;
-        authorization.set_sensitive(true);
+        Self::build(url, ca_pem, Some(token), None)
+    }
+
+    pub fn with_bearer(url: &str, token: &str, ca_pem: Option<&[u8]>) -> Result<Self> {
+        ensure!(
+            !token.is_empty()
+                && token.len() <= 8192
+                && !token.bytes().any(|b| b.is_ascii_control()),
+            "invalid bearer token"
+        );
+        Self::build(url, ca_pem, Some(token), None)
+    }
+
+    pub fn with_session(profile: &profile::CentralProfile, session: auth::Session) -> Result<Self> {
+        Self::build(
+            &profile.server.origin,
+            Some(profile.server.ca_pem.as_bytes()),
+            None,
+            Some(session),
+        )
+    }
+
+    fn build(
+        url: &str,
+        ca_pem: Option<&[u8]>,
+        token: Option<&str>,
+        session: Option<auth::Session>,
+    ) -> Result<Self> {
+        let base = Url::parse(url)?;
+        ensure!(
+            base.scheme() == "https"
+                && base.host_str().is_some()
+                && base.path() == "/"
+                && base.query().is_none()
+                && base.fragment().is_none()
+                && base.username().is_empty()
+                && base.password().is_none(),
+            "server URL must be an HTTPS origin without credentials, path, query or fragment"
+        );
         let mut builder = reqwest::Client::builder()
             .https_only(true)
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(40))
-            .default_headers(
-                [(header::AUTHORIZATION, authorization)]
-                    .into_iter()
-                    .collect(),
-            );
+            .timeout(Duration::from_secs(40));
         if let Some(ca) = ca_pem {
             builder = builder.add_root_certificate(reqwest::Certificate::from_pem(ca)?);
+        }
+        if let Some(token) = token {
+            let mut h = header::HeaderValue::from_str(&format!("Bearer {token}"))?;
+            h.set_sensitive(true);
+            builder = builder.default_headers([(header::AUTHORIZATION, h)].into_iter().collect());
         }
         Ok(Self {
             http: builder.build()?,
             base,
+            session,
         })
     }
 
@@ -58,6 +90,9 @@ impl Client {
         body: Option<&Submit>,
     ) -> Result<T> {
         let mut request = self.http.request(method, self.base.join(path)?);
+        if let Some(session) = &self.session {
+            request = request.bearer_auth(session.server_token().await?);
+        }
         if let Some(body) = body {
             let bytes = serde_json::to_vec(body)?;
             ensure!(
@@ -134,9 +169,13 @@ impl Client {
     pub async fn ssh_tunnel(&self, id: &str, public_key: &str) -> Result<reqwest::Upgraded> {
         ensure!(valid_id(id), "invalid box ID");
         ensure!(valid_ssh_public_key(public_key), "invalid SSH public key");
-        let response = self
+        let mut tunnel = self
             .http
-            .get(self.base.join(&format!("v1/boxes/{id}/ssh"))?)
+            .get(self.base.join(&format!("v1/boxes/{id}/ssh"))?);
+        if let Some(s) = &self.session {
+            tunnel = tunnel.bearer_auth(s.server_token().await?);
+        }
+        let response = tunnel
             .header(header::CONNECTION, "upgrade")
             .header(header::UPGRADE, kiln_api::SSH_UPGRADE)
             .header(kiln_api::SSH_KEY_HEADER, public_key)

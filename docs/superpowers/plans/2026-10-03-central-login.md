@@ -357,4 +357,34 @@ git diff --check
 - [x] Kept production domain, provider secrets and live deployment behind explicit approval rather than inventing infrastructure.
 - [ ] Tasks 1–11 implemented and verified.
 
-No product code has been changed by writing this plan. Detailed design approval is recorded in the linked specification; execution can use the normal inline workflow without another architecture decision.
+### Implementation checkpoint (2026-10-03)
+
+The source implementation now includes the identity service, GitHub/OIDC adapters,
+device/browser approval, owner-bound enrollment and resumable activation, gateway
+ES256/JWKS verification, client login/discovery/renewal, device/key commands,
+private Unix/Windows storage, and independent identity packaging. Existing admin
+profiles and direct VM transport are preserved. Protocol, storage, gateway,
+enrollment failure/recovery and CLI scripting tests are present; browser forms were
+rendered and exercised on desktop and mobile. This is not completion of Tasks 10–11.
+
+Implementation adjustments:
+
+- Browser pages use `strict-origin`, not `no-referrer`. A real Chromium form POST
+  under `no-referrer` sent `Origin: null` and failed CSRF origin validation.
+  `strict-origin` preserves that check without leaking query strings.
+- Automation uses `kiln login --auth-token-file PATH` once to create a profile;
+  subsequent commands reuse its private key-file reference.
+- Refresh writes an invalid-session marker before transmission, then atomically
+  saves the rotation before use. This avoids relying on Windows unlink durability.
+- Identity configuration uses an environment file containing only public IDs and
+  origin; provider/signing secrets stay in separate protected files.
+
+Remaining acceptance/delivery: native Windows ACL execution; real GitHub and Google
+consent; an approved central HTTPS deployment and disposable host enrollment; fresh
+CLI onboarding plus real VM/SSH/SFTP/PTY, concurrent refresh, revocation and outage
+acceptance. A reusable real-client smoke script is provided but not yet exercised
+against central-authenticated VMs. No production origin, provider apps, live server
+enrollment or deployment has been created. Public origin embedding, installer
+enrollment guidance and release/installer pin updates follow verified deployment.
+Do not replace these acceptance requirements with fixture results or mark all plan
+checkboxes complete based on this checkpoint.

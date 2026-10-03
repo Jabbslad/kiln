@@ -372,6 +372,10 @@ class UpgradeTests(unittest.TestCase):
         (self.paths["ETC"] / "isolation.json").write_text("{}")
         for name in ("ca.crt", "tls.crt", "tls.key", "admin.token"):
             (self.paths["ETC"] / name).write_text("synthetic-test-only")
+        for name, mode in (("identity.json", 0o640), ("directory.token", 0o600)):
+            path = self.paths["ETC"] / name
+            path.write_text("synthetic-enrollment-only")
+            path.chmod(mode)
         for directory in ("runtime", "journal", "image"):
             (self.paths["STATE"] / directory).mkdir()
             (self.paths["STATE"] / directory / "preserve").write_text(directory)
@@ -439,6 +443,8 @@ class UpgradeTests(unittest.TestCase):
     def assert_data_preserved(self):
         for relative, data in self.data.items():
             self.assertEqual((self.root / relative).read_bytes(), data)
+        for name, mode in (("identity.json", 0o640), ("directory.token", 0o600)):
+            self.assertEqual((self.paths["ETC"] / name).stat().st_mode & 0o777, mode)
 
     def assert_original_binaries(self):
         for name, path in self.destinations.items():
