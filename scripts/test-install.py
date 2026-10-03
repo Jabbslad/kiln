@@ -32,6 +32,27 @@ class InstallTests(unittest.TestCase):
         paths.start()
         self.addCleanup(paths.stop)
 
+    def test_connection_guidance_distinguishes_fresh_pending_and_enrolled_hosts(self):
+        etc = self.root / "ETC"
+        etc.mkdir()
+        for state in ("fresh", "pending", "enrolled"):
+            if state == "pending":
+                (etc / "enrollment.pending.json").touch()
+                (etc / "identity.json").touch()
+            elif state == "enrolled":
+                (etc / "enrollment.pending.json").unlink()
+            with self.subTest(state=state), patch("sys.stdout", new=io.StringIO()) as output:
+                self.install.connection_instructions("100.64.5.6")
+                text = output.getvalue()
+                if state == "fresh":
+                    self.assertIn("kiln-api enroll --url https://100.64.5.6:8443", text)
+                elif state == "pending":
+                    self.assertIn("kiln-api enroll --resume", text)
+                    self.assertNotIn("--url", text)
+                else:
+                    self.assertIn("kiln login", text)
+                    self.assertNotIn("kiln-api enroll", text)
+
     def test_supported_ubuntu_hosts_continue_to_capability_checks(self):
         for version in ("24.04", "26.04"):
             with (
@@ -356,10 +377,10 @@ class UpgradeTests(unittest.TestCase):
             path.write_text(f"#!/bin/sh\necho '{reported_name} 0.3.2'\n")
             path.chmod(0o755)
             new = self.bundle / "bin" / name
-            new.write_text(f"#!/bin/sh\necho '{reported_name} 0.3.3'\n")
+            new.write_text(f"#!/bin/sh\necho '{reported_name} 0.4.0'\n")
             new.chmod(0o755)
         (self.bundle / "release.json").write_text(
-            json.dumps({"version": "v0.3.3", "target": "x86_64-unknown-linux-gnu"})
+            json.dumps({"version": "v0.4.0", "target": "x86_64-unknown-linux-gnu"})
         )
         config = {
             "runtime_dir": str(self.paths["STATE"] / "runtime"),
@@ -491,6 +512,13 @@ class UpgradeTests(unittest.TestCase):
         self.assert_data_preserved()
         self.assertFalse((self.paths["OPT"] / "upgrades").exists())
         self.assertFalse(any(args[1] == "stop" for args in self.commands))
+
+    def test_v033_update_preserves_enrollment(self):
+        for name, path in self.destinations.items():
+            path.write_bytes(self.original[name].replace(b"0.3.2", b"0.3.3"))
+        self.installer.upgrade(self.bundle, apply=True)
+        self.assert_data_preserved()
+        self.assertEqual(set(self.active.values()), {"active"})
 
     def test_busy_operations_restore_gateway_without_stopping_host(self):
         with closing(sqlite3.connect(self.journal)) as db, db:

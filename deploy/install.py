@@ -629,10 +629,25 @@ def install(bundle, address, network_uplink=None):
             )
         raise
     print(
-        f"Ready: https://{address}:8443\nSecurely copy /etc/kiln/laptop.tar.gz to your laptop.\n"
-        "It contains an administrator token; do not upload it to GitHub or paste it into chat.\n"
-        "Extract it into a private directory and follow CONNECT.txt. TLS renewal is due within one year."
+        f"Ready: https://{address}:8443\n"
+        "Keep /etc/kiln/laptop.tar.gz private for direct administrator recovery.\n"
+        "TLS renewal is due within one year."
     )
+    connection_instructions(address)
+
+
+def connection_instructions(address):
+    if (ETC / "enrollment.pending.json").exists():
+        print(f"Resume server enrollment: sudo {LIBEXEC}/kiln-api enroll --resume")
+    elif (ETC / "identity.json").exists():
+        print("Server enrollment preserved. On your laptop, run: kiln login")
+    else:
+        print(
+            "One-time browser enrollment (does not restart guest VMs):\n"
+            f"  sudo {LIBEXEC}/kiln-api enroll --url https://{address}:8443\n"
+            "Approve using GitHub or Google, then run kiln login on your laptop using the same provider.\n"
+            "Installation never enrolls a server or opens a browser automatically."
+        )
 
 
 @contextmanager
@@ -742,7 +757,7 @@ def upgrade(bundle, address=None, network_uplink=None, network=False, apply=Fals
     target = release.get("version", "").removeprefix("v")
     # Binary-only compatibility was reviewed: runtime, journal, guest protocol,
     # Firecracker and unit contracts are unchanged across these releases.
-    if target != "0.3.3" or release.get("target") != "x86_64-unknown-linux-gnu":
+    if target != "0.4.0" or release.get("target") != "x86_64-unknown-linux-gnu":
         raise ValueError("unsupported update package")
     versions = set()
     for name, destination in destinations.items():
@@ -761,7 +776,7 @@ def upgrade(bundle, address=None, network_uplink=None, network=False, apply=Fals
             != f"{reported_name} {target}"
         ):
             raise ValueError(f"package binary version mismatch: {name}")
-    if len(versions) != 1 or not versions <= {"0.3.0", "0.3.2", target}:
+    if len(versions) != 1 or not versions <= {"0.3.0", "0.3.2", "0.3.3", target}:
         raise ValueError(
             "incompatible or mixed installed versions; no downgrade or state migration is supported"
         )
@@ -823,6 +838,7 @@ def upgrade(bundle, address=None, network_uplink=None, network=False, apply=Fals
         for name, path in destinations.items()
     ):
         print(f"Kiln {target} is already current; nothing changed.")
+        connection_instructions(installed_address)
         return
     print(
         f"Kiln {next(iter(versions))} → {target}: preserve configuration and VM state; briefly disconnect API/SSH sessions.",
@@ -890,6 +906,7 @@ def upgrade(bundle, address=None, network_uplink=None, network=False, apply=Fals
     print(
         f"Updated to Kiln {target}. Ready: https://{installed_address}:8443\nPrevious binaries: {backup}"
     )
+    connection_instructions(installed_address)
 
 
 def main():

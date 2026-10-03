@@ -18,6 +18,7 @@ Install the macOS/Linux client without prompts or GitHub credentials:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
+kiln login
 ```
 
 Rerun the same command to update; no upgrade flag is needed. The script verifies
@@ -44,7 +45,7 @@ These require matching client/server/Ubuntu guest builds; guest images and
 templates are **not upgraded automatically**. SSH uses authenticated HTTPS/vsock, without a public SSH port;
 internet access requires separate [network provisioning](docs/runtime-networking.md).
 
-## Browser login (unreleased)
+## Browser login (v0.4.0 pilot)
 
 The source tree now includes a separate Rust identity service, GitHub/Google
 device approval, account-owned server discovery, rotating laptop credentials and
@@ -52,11 +53,19 @@ server-scoped automation keys. Enrolled hosts validate short-lived ES256 tokens;
 VM operations and SSH/SFTP still connect directly to the private host. Existing
 administrator profiles remain available for recovery.
 
-**This is not yet the public zero-configuration login service.** Deployment,
-provider application registration and real-provider/enrolled-host acceptance are
-pending. No identity hostname is compiled into released clients. Native Windows
-credential-ACL verification is also pending. See the [identity operator guide](docs/identity-service.md)
-for development setup, explicit host enrollment and remaining limitations.
+`kiln login` opens your browser at the built-in `https://dark-forge.dev` service.
+Sign in with GitHub or Google, approve the device, and return to the terminal.
+The host administrator must first install/update the server and run the one-time
+enrollment command printed by its installer. Use the same provider and account
+on the server and laptop. No server address, token or CA file is needed on the laptop.
+Existing administrator profiles are never replaced: use `kiln --profile personal login`
+to add browser login separately. With no enrolled server, login explains how to enroll.
+
+The service is deployed and real provider sign-in pages, HTTPS and native client
+builds (including Windows ACLs) are verified. **Real account consent and full
+central-authenticated VM/SSH/SFTP acceptance remain outstanding.** This pilot
+release makes the actual installer/client flow available for that acceptance;
+it is not a production-readiness claim. See the [identity operator guide](docs/identity-service.md).
 
 ## Try the runtime
 

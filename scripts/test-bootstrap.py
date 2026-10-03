@@ -24,6 +24,7 @@ SERVER_FILES = [
     "docs/releases.md",
     "docs/remote-client.md",
     "docs/runtime.md",
+    "docs/identity-service.md",
     "deploy/kiln-host.service",
     "deploy/kiln-api.service",
     "deploy/host.example.json",
@@ -226,6 +227,8 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
                 self.env.update(OS=system, ARCH=arch)
                 code, out = self.run_bootstrap(self.package())
                 self.assertEqual(code, 0, out)
+                self.assertIn("kiln login", out)
+                self.assertNotIn("Next: connect using the server enrollment bundle", out)
                 binary = self.root / "home/.local/bin/kiln"
                 self.assertEqual(
                     subprocess.check_output([binary, "--version"], text=True),

@@ -92,6 +92,38 @@ async fn scripts_json_proxy_and_explicit_missing_profiles_never_launch_login() {
 }
 
 #[tokio::test]
+async fn login_has_a_default_issuer_and_preserves_explicit_overrides() {
+    let root = tempfile::tempdir().unwrap();
+    for (environment, explicit, expected) in [
+        (None, None, "browser login requires an interactive terminal"),
+        (Some("http://invalid.test"), None, "HTTPS"),
+        (
+            Some("http://invalid.test"),
+            Some("https://override.example.test"),
+            "browser login requires an interactive terminal",
+        ),
+    ] {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_kiln"));
+        command.env_remove("KILN_IDENTITY_URL").args([
+            "--config",
+            root.path().join("profiles.json").to_str().unwrap(),
+        ]);
+        if let Some(value) = environment {
+            command.env("KILN_IDENTITY_URL", value);
+        }
+        if let Some(value) = explicit {
+            command.args(["--issuer", value]);
+        }
+        let output = command.arg("login").output().await.unwrap();
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success());
+        assert!(error.contains(expected), "{error}");
+        assert!(output.stdout.is_empty());
+        assert!(!root.path().join("profiles.json").exists());
+    }
+}
+
+#[tokio::test]
 async fn real_binary_profiles_preserve_exec_bytes_status_and_json() {
     let calls = Arc::new(AtomicUsize::new(0));
     let seen = calls.clone();

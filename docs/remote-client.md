@@ -30,24 +30,26 @@ or requiring a guest IP reachable from the laptop. SQLite is embedded; no
 PostgreSQL or Redis is required. The service exposes only catalog aliases and sanitized box records,
 not host paths, jail identities, host fingerprints or Firecracker sockets.
 
-## Central login in development builds
+## Central login in v0.4.0
 
-Central login is implemented in source but not deployed or released. After an
-operator provisions the identity service and explicitly enrolls a host, Linux
-and macOS clients can use `kiln --issuer https://YOUR-IDENTITY-ORIGIN login`.
+The installer includes browser login with `https://dark-forge.dev` built in.
+After an operator updates and explicitly enrolls a host, run `kiln login`.
 The browser asks for GitHub/Google sign-in and a separate device approval. One
 owned server is selected automatically; multiple servers prompt for a choice.
 No private server address or CA transfer is needed for this flow. The laptop
 still needs network access to the selected server.
 
-Interactive first-use commands can start the same flow with an operator-configured
-identity origin. JSON, nonterminal and SSH proxy invocations never launch login.
+Interactive first-use commands can start the same flow without a URL flag.
+JSON, nonterminal and SSH proxy invocations never launch login.
 Renewal occurs before requests, without retrying VM mutations. `kiln auth status`,
 device revocation, server-scoped automation keys and logout are documented in the
 [identity operator guide](identity-service.md). Repeating login reuses an existing
 session; log out to change accounts. Existing direct administrator profiles below
-are preserved. Real-provider acceptance and native Windows private-ACL checks remain
-outstanding; no public zero-configuration identity origin is configured yet.
+are preserved; use `kiln --profile personal login` for a separate central profile.
+No enrolled server means login stops with enrollment instructions, not a usable
+VM profile. Use `--issuer` or `KILN_IDENTITY_URL` for another identity service.
+Native Windows private-ACL checks pass. Real account consent and full
+central-authenticated VM acceptance remain outstanding; this is a pilot release.
 
 ## Build the binaries
 

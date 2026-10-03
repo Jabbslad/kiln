@@ -25,6 +25,7 @@ struct Cli {
     config: Option<PathBuf>,
     #[arg(long, global = true)]
     profile: Option<String>,
+    /// Override the identity service (default: https://dark-forge.dev).
     #[arg(long, global = true)]
     issuer: Option<String>,
     #[arg(long, global = true)]
@@ -192,12 +193,11 @@ fn credential_path(config: &Path, profile: &str) -> PathBuf {
         .join("credentials")
         .join(format!("{profile}-{}.json", kiln_api::new_id()))
 }
-fn identity_origin(explicit: Option<&str>) -> Result<String> {
+fn identity_origin(explicit: Option<&str>) -> String {
     explicit
         .map(str::to_owned)
         .or_else(|| std::env::var("KILN_IDENTITY_URL").ok())
-        .or_else(|| option_env!("KILN_DEFAULT_IDENTITY_URL").map(str::to_owned))
-        .context("identity origin is not configured; pass --issuer or set KILN_IDENTITY_URL")
+        .unwrap_or_else(|| kiln_api::auth::DEFAULT_IDENTITY_ORIGIN.to_owned())
 }
 fn open_browser(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
@@ -322,7 +322,7 @@ async fn run(cli: Cli) -> Result<i32> {
             cli.issuer
                 .as_deref()
                 .or(existing.map(|p| p.issuer.as_str())),
-        )?;
+        );
         let identity = IdentityClient::new(&issuer)?;
         let issuer = reqwest::Url::parse(&issuer)?.origin().ascii_serialization();
         if let Some(existing) = existing {

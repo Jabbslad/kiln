@@ -1,6 +1,12 @@
 //! Identity-service wire types. These contain no runtime records or host paths.
 use serde::{Deserialize, Serialize};
 
+/// Public pilot identity service. Private builds can override it at compile time.
+pub const DEFAULT_IDENTITY_ORIGIN: &str = match option_env!("KILN_DEFAULT_IDENTITY_URL") {
+    Some(origin) => origin,
+    None => "https://dark-forge.dev",
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {

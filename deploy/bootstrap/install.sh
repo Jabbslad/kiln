@@ -95,6 +95,7 @@ README.md
 docs/releases.md
 docs/remote-client.md
 docs/runtime.md
+docs/identity-service.md
 deploy/kiln-host.service
 deploy/kiln-api.service
 deploy/host.example.json
@@ -140,6 +141,7 @@ install_client() {
     [ "$found" = "kiln $version" ] || fail 'Downloaded client version does not match release.'
     if [ "$upgrade" = true ] && cmp -s "$destination" "$work/package/kiln"; then
         printf 'kiln %s is already current; previous backup preserved.\n' "$version"
+        printf '%s\n' 'Next: run kiln login to sign in with GitHub or Google. Your server must be enrolled first.'
         return
     fi
     mkdir -p "$HOME/.local/bin"
@@ -167,7 +169,8 @@ install_client() {
         *":$HOME/.local/bin:"*) ;;
         *) printf '%s\n' 'Add to your shell PATH: export PATH="$HOME/.local/bin:$PATH"' ;;
     esac
-    printf '%s\n' 'Next: connect using the server enrollment bundle and its CONNECT.txt instructions.'
+    printf '%s\n' 'Next: run kiln login to sign in with GitHub or Google. Your server must be enrolled first.'
+    printf '%s\n' 'Existing administrator profiles are preserved; use kiln --profile personal login for a separate browser-login profile.'
 }
 
 configure_server() {

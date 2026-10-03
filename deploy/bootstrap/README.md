@@ -28,6 +28,26 @@ the `kiln` zip from the public release instead; this is not a PowerShell install
 The script downloads a versioned release over HTTPS and verifies its pinned
 SHA-256 checksum. It never asks for credentials or reads answers from stdin.
 
+### Browser login
+
+The v0.4.0 pilot includes GitHub/Google login and `https://dark-forge.dev` as its
+default identity service. After your administrator enrolls the server, run:
+
+```sh
+kiln login
+```
+
+Approve the device in the browser, then return to the terminal. No URL, token or
+CA file is required on the laptop. Use the same provider and account that enrolled
+the server. If you already have a direct administrator profile, preserve it and
+use `kiln --profile personal login`. No enrolled server means login stops with
+instructions to enroll; it does not create a hosted box or open a network tunnel.
+LAN/VPN access to the private host is still required.
+
+HTTPS, provider sign-in pages and native client tests pass. Completed real-account
+consent and full central-authenticated VM acceptance remain outstanding; this
+release provides the normal installer flow for pilot testing, not production certification.
+
 ### Automatic client updates
 
 ```sh
@@ -102,8 +122,8 @@ or blindly rerun setup.
 
 ### Automatic server updates
 
-Rerun the same `server` command. v0.3.3 updates healthy, standard Kiln v0.3.0 or
-v0.3.2 installations and leaves identical v0.3.3 installations alone. It reuses
+Rerun the same `server` command. v0.4.0 updates healthy, standard Kiln v0.3.0,
+v0.3.2 or v0.3.3 installations and leaves identical v0.4.0 installations alone. It reuses
 the existing address and networking, skips apt, and preserves configuration,
 credentials, units, Firecracker, guest images, templates and VM disks. Explicit
 address/network options must agree with the installed configuration.
@@ -128,10 +148,19 @@ real-server update and reboot validation remain outstanding.
 
 ## Connect
 
-After server setup, securely transfer `/etc/kiln/laptop.tar.gz` to the laptop
-using existing SSH/SFTP. It contains an administrator token: treat it as a
-password and never upload it to a repository, issue, or chat. Extract into a
-permanent private directory and follow `CONNECT.txt`, then run:
+After installing/updating the server, run the one-time command printed by the
+installer on that host:
+
+```sh
+sudo /usr/local/libexec/kiln-api enroll --url https://YOUR-SERVER-IP:8443
+```
+
+Sign in through the printed browser URL and approve the server endpoint and CA
+fingerprint. Enrollment briefly restarts the API, not the VMs. If interrupted
+after persistence, follow the reported `enroll --resume` instruction. The
+installer never enrolls or replaces server ownership automatically.
+
+On the laptop, run `kiln login` with the same provider/account, then:
 
 ```sh
 kiln templates
@@ -143,7 +172,10 @@ kiln cp ./local-file BOX_ID:/workspace/remote-file
 kiln ssh-config BOX_ID
 ```
 
-Keep the extracted credential files; profiles reference them. Version 0.2.0 adds
+For independent administrator recovery, keep `/etc/kiln/laptop.tar.gz` private.
+Its `CONNECT.txt` configures a direct profile without central login. It contains
+an administrator token: never upload it to a repository, issue or chat. Keep
+extracted credential files because direct profiles reference them. Version 0.2.0 adds
 interactive SSH, SFTP and editor SSH configuration over the same HTTPS endpoint;
 no port 22 exposure is needed. Linux/macOS need OpenSSH (`ssh`, `scp`, `ssh-keygen`).
 Windows supports management commands only. Existing servers/templates need a

@@ -18,7 +18,8 @@ const STATE_UNIT: &[u8] = b"[Service]\nStateDirectory=kiln-api\nStateDirectoryMo
 
 #[derive(clap::Args)]
 pub struct Options {
-    #[arg(long, required_unless_present = "resume")]
+    /// Override the identity service (default: https://dark-forge.dev).
+    #[arg(long)]
     issuer: Option<String>,
     #[arg(long, required_unless_present = "resume")]
     url: Option<String>,
@@ -275,7 +276,9 @@ pub async fn run(options: Options) -> Result<()> {
             fs::symlink_metadata(&receipt_path).is_err(),
             "enrollment is pending; use --resume"
         );
-        let issuer = options.issuer.context("issuer required")?;
+        let issuer = options
+            .issuer
+            .unwrap_or_else(|| kiln_api::auth::DEFAULT_IDENTITY_ORIGIN.to_owned());
         let url = options.url.context("server URL required")?;
         let central = origin(&issuer)?;
         let issuer = central.origin().ascii_serialization();
@@ -406,6 +409,24 @@ pub async fn run(options: Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn default_issuer_does_not_require_an_argument_or_conflict_with_resume() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            options: Options,
+        }
+        let fresh = Cli::try_parse_from(["enroll", "--url", "https://host.example:8443"])
+            .expect("the public issuer must not require an argument");
+        assert!(fresh.options.issuer.is_none());
+        let resume = Cli::try_parse_from(["enroll", "--resume"]).unwrap();
+        assert!(resume.options.resume);
+        assert!(
+            Cli::try_parse_from(["enroll", "--resume", "--issuer", "https://other.test"]).is_err()
+        );
+    }
+
     #[test]
     fn persistence_is_private_idempotent_and_refuses_symlinks_or_replacement() {
         let dir = tempfile::tempdir().unwrap();

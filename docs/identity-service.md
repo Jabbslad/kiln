@@ -1,9 +1,11 @@
 # Kiln identity service
 
-Central login is under development. No production identity hostname is configured
-in the public CLI. Real GitHub/Google consent and enrolled-host acceptance must
-pass before this can be advertised as ready. Installing the server does not
-install this service, register OAuth applications, or enroll a host.
+The v0.4.0 pilot client uses `https://dark-forge.dev` by default. HTTPS and both
+real provider sign-in pages are verified, but completed GitHub/Google consent
+and full enrolled-host acceptance remain outstanding. The pilot is distributed
+through the normal installer so that acceptance can use the real laptop flow.
+Installing a VM server does not install this identity service, register OAuth
+applications, or enroll a host automatically.
 
 The identity process has its own SQLite database and no KVM/runtime dependency.
 It stores provider subjects, device credentials, registered endpoints and public
@@ -48,9 +50,11 @@ On an installed server, run as its local administrator:
 
 ```sh
 sudo /usr/local/libexec/kiln-api enroll \
-  --issuer https://YOUR-IDENTITY-ORIGIN \
   --url https://YOUR-PRIVATE-SERVER:8443 --ca-file /etc/kiln/ca.crt
 ```
+
+The default issuer is `https://dark-forge.dev`; use `--issuer` only for another
+identity service. The server installer prints the command with its actual address.
 
 The terminal prints a public approval code/URL. Sign in using GitHub or Google
 and confirm the server endpoint and certificate fingerprint. The registration
@@ -70,10 +74,11 @@ state or rerun the installer as an enrollment recovery procedure.
 
 ## Laptop login and recovery
 
-For a development deployment, explicitly set `KILN_IDENTITY_URL` or use
-`kiln --issuer https://YOUR-IDENTITY-ORIGIN login`. A verified public origin will
-be compiled into release clients only after deployment acceptance. First-use
-interactive VM commands can start login; scripts, JSON mode, SSH proxy processes
+Run `kiln login`; the public pilot origin is built in. For another deployment,
+set `KILN_IDENTITY_URL` or use `kiln --issuer https://YOUR-IDENTITY-ORIGIN login`.
+Private builds can set `KILN_DEFAULT_IDENTITY_URL` at compile time for both the
+client and server enrollment command. First-use interactive VM commands can
+start login; scripts, JSON mode, SSH proxy processes
 and explicit missing profiles never open browsers automatically.
 
 The browser URL and public code are printed to stderr if browser launch fails.
@@ -129,7 +134,7 @@ never point development builds at production identity state.
 GitHub and Google subjects are distinct identities even when emails match.
 Cross-provider account linking, teams, invitations and hosted tenant isolation
 are not implemented. Windows central credential storage uses a protected ACL
-allowing only the current user and LocalSystem; native execution awaits CI.
+allowing only the current user and LocalSystem; native execution passed CI.
 Unix storage enforces owner-only files/directories. Unsafe existing ACLs or
 permissions are rejected rather than silently modified.
 
@@ -149,6 +154,7 @@ VM access. After approved provider setup and disposable host enrollment,
 checks real central status, inventory, binary exec and SSH without changing host
 configuration. It has not yet run against a deployed central service. SFTP/PTY,
 multi-process renewal, revocation and identity-outage acceptance remain required
-before publishing the frictionless public flow. Installer enrollment guidance
-and the compiled default origin must use the verified deployment, not an example
-hostname. Existing public installer pins remain unchanged during development.
+before calling the flow fully accepted or production-ready. The v0.4.0 pilot
+includes installer enrollment guidance and the deployed default origin so users
+can perform that acceptance through `kiln login` rather than bespoke downloads.
+Do not describe an anonymous provider sign-in page as completed consent.

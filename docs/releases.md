@@ -3,7 +3,35 @@
 GitHub Actions builds the client and server; neither destination needs Rust.
 Source and published release downloads are public. No GitHub account, PAT, or
 terminal is needed to install. Access to a running Kiln server still requires
-its enrollment credentials; public downloads do not disable API authentication.
+browser login to an enrolled host or a direct administrator profile; public
+downloads do not disable API authentication.
+
+## v0.4.0 browser-login pilot
+
+Rerun the normal installer, then run `kiln login`. The client includes the
+`https://dark-forge.dev` default, browser/device approval, owner-bound server
+discovery, private rotating credentials, logout/revocation and automation keys.
+VM API, SSH, SFTP and editor access remain direct to the private host. Existing
+direct profiles are preserved; use `kiln --profile personal login` alongside one.
+
+The server package includes `kiln-api enroll`; its installer prints the one-time
+command with the correct private endpoint. Enroll with the same provider/account
+used on the laptop. No server address, token or CA transfer is needed on the
+laptop. An unenrolled server does not appear in discovery, and login stops with
+enrollment instructions rather than creating a usable profile. The installer
+does not approve ownership, open a browser, or enroll a host automatically.
+
+Binary-only updates from standard v0.3.0, v0.3.2 and v0.3.3 hosts preserve existing
+configuration, enrollment, guest images and disks. Guest/runtime wire formats and
+host unit contracts are unchanged. This release does not migrate guest images.
+
+**Acceptance status:** public HTTPS, actual GitHub/Google sign-in pages, browser
+rendering, protocol/security tests and native client builds are verified. Real
+account consent and complete central-authenticated VM/SSH/SFTP/PTY, revocation
+and outage acceptance remain outstanding. The owner requested distributing this
+pilot through the installer to exercise the actual laptop flow. Publishing this
+pilot is not a claim that those remaining tests passed, and does not enroll or
+restart an existing server. See [identity operations](identity-service.md).
 
 This is a trusted-workload, single-administrator pilot, not a hosted multi-tenant
 sandbox. The automation is checked in; that alone does not mean a GitHub build,
@@ -83,7 +111,7 @@ is supplied (explicit uplink). See the [bootstrap guide](../deploy/bootstrap/REA
 
 **v0.2.0 guest-access additions:** packages include interactive SSH,
 SFTP, editor SSH configuration, and optional isolated guest IPv4 egress. The
-public installer pins v0.3.3. These features require the new client, server,
+public installer pins v0.4.0. These features require the new client, server,
 and updated Ubuntu guest agent. Existing templates/boxes are not
 upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
 management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
@@ -152,7 +180,7 @@ For macOS/Linux, in a new download directory:
 
 ```sh
 REPO=Jabbslad/kiln
-VERSION=v0.3.3
+VERSION=v0.4.0
 TARGET=aarch64-apple-darwin
 BASE="https://github.com/$REPO/releases/download/$VERSION"
 curl -fL --proto '=https' --proto-redir '=https' -O "$BASE/kiln-$VERSION-$TARGET.tar.gz"
@@ -200,7 +228,7 @@ files to the server). No GitHub credentials are required:
 
 ```sh
 REPO=Jabbslad/kiln
-VERSION=v0.3.3
+VERSION=v0.4.0
 PACKAGE="kiln-server-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
 BASE="https://github.com/$REPO/releases/download/$VERSION"
 curl -fL --proto '=https' --proto-redir '=https' -O "$BASE/$PACKAGE"

@@ -388,3 +388,15 @@ enrollment or deployment has been created. Public origin embedding, installer
 enrollment guidance and release/installer pin updates follow verified deployment.
 Do not replace these acceptance requirements with fixture results or mark all plan
 checkboxes complete based on this checkpoint.
+
+### Pilot distribution adjustment (2026-10-03)
+
+The owner chose and authorized deployment at `dark-forge.dev`, configured both
+OAuth providers, and requested that login and its supporting features ship through
+the ordinary installer rather than a separate test-client download. HTTPS, real
+provider sign-in pages and native Windows checks now pass. v0.4.0 will therefore
+distribute the login-enabled pilot with the deployed origin built in, explicit
+server enrollment instructions and preserved direct administrator profiles.
+This changes the distribution sequence, not the acceptance claims: actual account
+consent and the remaining enrolled-host/VM tests are still outstanding. Release
+notes must say so. Do not mark Task 10 complete or silently enroll/restart a live host.
