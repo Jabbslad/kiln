@@ -124,7 +124,13 @@ class InstallTests(unittest.TestCase):
 
     def test_network_preflight_requires_nsenter_before_commands(self):
         with (
-            patch.object(self.install.shutil, "which", side_effect=lambda tool: None if tool == "nsenter" else f"/usr/bin/{tool}"),
+            patch.object(
+                self.install.shutil,
+                "which",
+                side_effect=lambda tool: (
+                    None if tool == "nsenter" else f"/usr/bin/{tool}"
+                ),
+            ),
             patch.object(self.install, "run") as run,
             patch.object(self.install, "require_absent"),
         ):
@@ -205,11 +211,10 @@ class InstallTests(unittest.TestCase):
         self.assertEqual((policy["uid_base"], policy["gid_base"]), (70000, 71000))
         self.assertEqual(policy["disk_backend"], "copy")
 
-    def test_check_only_rejection_and_cancellation_never_install(self):
-        for arguments, problem, confirmation, expected in [
-            ([], None, "INSTALL", 0),
-            (["--apply"], ValueError("unsupported host"), "INSTALL", 1),
-            (["--apply"], None, "no", 1),
+    def test_check_only_and_rejection_never_install(self):
+        for arguments, problem, expected in [
+            ([], None, 0),
+            (["--apply"], ValueError("unsupported host"), 1),
         ]:
             with (
                 patch.object(self.install.sys, "argv", ["install.py", *arguments]),
@@ -217,12 +222,34 @@ class InstallTests(unittest.TestCase):
                 patch.object(self.install, "preflight", side_effect=problem),
                 patch.object(self.install, "install") as apply,
                 patch.object(self.install.os, "geteuid", return_value=0),
-                patch("builtins.input", return_value=confirmation),
+                patch("builtins.input", side_effect=AssertionError("must not prompt")),
                 patch("sys.stdout", new=io.StringIO()),
                 patch("sys.stderr", new=io.StringIO()),
             ):
                 self.assertEqual(self.install.main(), expected)
                 apply.assert_not_called()
+
+    def test_explicit_apply_installs_after_checks_without_input(self):
+        with (
+            patch.object(
+                self.install.sys,
+                "argv",
+                ["install.py", "--apply", "--address", "100.64.5.6"],
+            ),
+            patch.dict(os.environ),
+            patch.object(self.install, "preflight") as preflight,
+            patch.object(self.install, "install") as apply,
+            patch.object(self.install.os, "geteuid", return_value=0),
+            patch("builtins.input", side_effect=AssertionError("must not prompt")),
+            patch("sys.stdout", new=io.StringIO()),
+        ):
+            self.assertEqual(self.install.main(), 0)
+            preflight.assert_called_once_with(
+                Path(self.install.__file__).resolve().parent, "100.64.5.6"
+            )
+            apply.assert_called_once_with(
+                Path(self.install.__file__).resolve().parent, "100.64.5.6", None
+            )
 
     def test_failed_readiness_disables_services_preserves_state_and_existing_modes(
         self,

@@ -1,8 +1,9 @@
-# Private builds and installation
+# Public builds and unattended installation
 
 GitHub Actions builds the client and server; neither destination needs Rust.
-The repository and its release downloads can remain private. GitHub authentication
-is needed to download a package, **not** to run an installed client or server.
+Source and published release downloads are public. No GitHub account, PAT, or
+terminal is needed to install. Access to a running Kiln server still requires
+its enrollment credentials; public downloads do not disable API authentication.
 
 This is a trusted-workload, single-administrator pilot, not a hosted multi-tenant
 sandbox. The automation is checked in; that alone does not mean a GitHub build,
@@ -15,8 +16,8 @@ binaries are not Authenticode-signed.
 Kiln v0.3.0 renames the client to `kiln`, the operator tool to `kiln-runtime`,
 and the host/API services to `kiln-host` and `kiln-api`. Rust crates, release
 archives, guest units, SSH upgrade headers and `KILN_*` environment variables
-use the new identity. The private source is `Jabbslad/kiln`; only the bootstrap
-and its README are public in `Jabbslad/kiln-install`.
+use the new identity. Source is `Jabbslad/kiln`; the bootstrap
+and its README are also published in `Jabbslad/kiln-install`.
 
 This is **not an in-place upgrade from v0.2.x**. Use matching v0.3.0 client,
 server and rebuilt guest images/templates. New installs use `/etc/kiln`,
@@ -42,7 +43,7 @@ does not add support for 26.04. The guest image remains Ubuntu 24.04 on either h
 
 ## One-command installation
 
-On a macOS or supported Linux laptop, run in a terminal:
+On a macOS or supported Linux laptop:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
@@ -54,17 +55,24 @@ On a dedicated **Ubuntu 24.04 or 26.04 x86-64/KVM** server:
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- server
 ```
 
-Only the bootstrap is public. It prompts for a GitHub token to download pinned
-private release assets. Create a short-lived
-[fine-grained token](https://github.com/settings/personal-access-tokens/new),
-select owner `Jabbslad`, repository `kiln`, and repository permission
-**Contents: Read-only**. Paste it into the hidden terminal prompt, not the command
-line. You can revoke it after installation. No `gh`, Python, Rust, or JSON parser
-is required on the laptop. GitHub authentication is unrelated to kiln enrollment.
+**v0.3.1 adds public, unattended installation.** Packages use versioned public
+release URLs and pinned checksums. No `gh`, Python, Rust, or JSON parser is
+required on the laptop. Both bootstrap modes work without a controlling terminal.
+Running `server` authorizes setup: use root or passwordless sudo. There are no
+`SETUP`/`INSTALL` confirmations or password prompts. Existing installations remain
+protected; this is not an automated server upgrade.
+
+The bootstrap detects the source IPv4 from `ip -4 route get 1.1.1.1` without
+sending traffic, rejects non-private results, and fails rather than guessing
+when it cannot detect one address. Supply `--address PRIVATE_IP` for a VPN or
+another interface. Detection requires iproute2; choose a stable address because
+it is used for the API binding and TLS certificate. Guest networking remains off
+unless `--network` is supplied (detect uplink), or `--network-uplink INTERFACE`
+is supplied (explicit uplink). See the [bootstrap guide](../deploy/bootstrap/README.md).
 
 **v0.2.0 guest-access additions:** packages include interactive SSH,
 SFTP, editor SSH configuration, and optional isolated guest IPv4 egress. The
-public installer pins v0.3.0. These features require the new client, server,
+public installer pins v0.3.1. These features require the new client, server,
 and updated Ubuntu guest agent. Existing templates/boxes are not
 upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
 management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
@@ -96,18 +104,18 @@ replacement, retaining the old binary as `~/.local/bin/kiln.previous`. It leaves
 profiles and credentials unchanged. Server upgrades are not supported by this
 flag; see the [bootstrap upgrade details](../deploy/bootstrap/README.md#upgrade-an-existing-laptop-client).
 
-The server bootstrap prompts for its private IPv4 address and permission to
-install Ubuntu system packages (including Python) through sudo, then invokes the
-existing installer. You do not install dependencies or invoke Python yourself.
+The server bootstrap installs Ubuntu system packages (including Python) without
+prompts using `sudo -n`, then invokes the provisioner. You do not install
+dependencies or invoke Python yourself. Existing package configuration is retained.
 The server still needs the resources and LAN/VPN connectivity described below;
 containers and non-KVM hosts are not supported.
 
-The script checks archive digests before extraction and sends your GitHub token
-only to `api.github.com`. It removes temporary credentials on normal exit and
-handled signals. Checksums assume trust in the public bootstrap publisher, not
+The script checks archive digests before extraction, downloads anonymously using
+HTTPS-only redirects, and ignores user curl configuration. It removes temporary
+files on normal exit and handled signals. Checksums assume trust in the bootstrap publisher, not
 independent package signing. To inspect before execution, download the script
 with `curl -fsSL URL -o install.sh`, read it, then run `sh install.sh [server]`.
-Native Windows continues to use the private release zip described below.
+Native Windows continues to use the public release zip described below.
 
 **Fresh-host provisioning and reboot remain unverified.** The pilot uses the copy
 disk backend, not the faster overlay benchmark configuration. After server setup,
@@ -116,11 +124,8 @@ administrator credentials automatically.
 
 ## Manual client download (optional)
 
-Install [GitHub CLI](https://cli.github.com/) and run `gh auth login`. Use an
-account with access to the private repository. Set `REPO` to its `OWNER/NAME` and
-`VERSION` to a published release tag (for example `v0.3.0`). A maintainer can also
-download a draft; other readers need the release published within the private
-repository first. Publishing a release **does not** make the repository public.
+Download from [GitHub Releases](https://github.com/Jabbslad/kiln/releases),
+or use curl as shown below. Draft releases are maintainer-only until published.
 
 Choose one target:
 
@@ -134,11 +139,12 @@ Choose one target:
 For macOS/Linux, in a new download directory:
 
 ```sh
-REPO=OWNER/NAME
-VERSION=v0.3.0
+REPO=Jabbslad/kiln
+VERSION=v0.3.1
 TARGET=aarch64-apple-darwin
-gh release download "$VERSION" --repo "$REPO" \
-  --pattern "kiln-$VERSION-$TARGET.tar.gz*"
+BASE="https://github.com/$REPO/releases/download/$VERSION"
+curl -fL --proto '=https' --proto-redir '=https' -O "$BASE/kiln-$VERSION-$TARGET.tar.gz"
+curl -fL --proto '=https' --proto-redir '=https' -O "$BASE/kiln-$VERSION-$TARGET.tar.gz.sha256"
 shasum -a 256 -c "kiln-$VERSION-$TARGET.tar.gz.sha256"
 tar -xzf "kiln-$VERSION-$TARGET.tar.gz"
 mkdir -p "$HOME/.local/bin"
@@ -147,14 +153,14 @@ install -m 755 kiln "$HOME/.local/bin/kiln"
 ```
 
 Put `$HOME/.local/bin` on your shell's PATH if it is not already there. On Windows,
-download the matching `.zip` and `.zip.sha256` with `gh release download`, compare
+download the matching `.zip` and `.zip.sha256` from GitHub Releases, compare
 `Get-FileHash -Algorithm SHA256` to the checksum, then `Expand-Archive` and place
 `kiln.exe` in a directory on your user PATH. Verify downloads before execution;
 do not disable system-wide OS security policies to run an unsigned pilot binary.
 
 Checksums detect corruption, not a compromised publisher. The trust boundary is
-your authenticated GitHub repository and the reviewed workflow; signing is not
-implemented yet. Do not paste a GitHub token into a URL or installer command.
+the release publisher and the reviewed workflow; signing is not implemented yet.
+The bootstrap embeds reviewed digests rather than trusting a downloaded sidecar alone.
 
 ## Server requirements and manual installation
 
@@ -174,24 +180,27 @@ default; new source packages support explicit `--network-uplink INTERFACE`
 provisioning, including NAT/filtering and a boot unit (see
 [networking](runtime-networking.md)). Pick a stable IPv4 address
 assigned to that private interface. Public addresses and `0.0.0.0` are refused;
-omitting the address installs a **local-only** endpoint at `127.0.0.1`.
+omitting the address when invoking `install.py` directly installs a **local-only**
+endpoint at `127.0.0.1`. The shell bootstrap instead detects a private address.
 
 Download as your normal user (or download on your laptop and securely copy both
-files to the server). Do not copy your GitHub credentials into the service:
+files to the server). No GitHub credentials are required:
 
 ```sh
-REPO=OWNER/NAME
-VERSION=v0.3.0
+REPO=Jabbslad/kiln
+VERSION=v0.3.1
 PACKAGE="kiln-server-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
-gh release download "$VERSION" --repo "$REPO" --pattern "$PACKAGE*"
+BASE="https://github.com/$REPO/releases/download/$VERSION"
+curl -fL --proto '=https' --proto-redir '=https' -O "$BASE/$PACKAGE"
+curl -fL --proto '=https' --proto-redir '=https' -O "$BASE/$PACKAGE.sha256"
 sha256sum -c "$PACKAGE.sha256"
 mkdir kiln-server
 tar -xzf "$PACKAGE" -C kiln-server
-sudo python3 kiln-server/install.py --address 192.168.1.20 --apply
+sudo -n python3 kiln-server/install.py --address 192.168.1.20 --apply
 ```
 
-Replace `192.168.1.20` with the server's private/VPN address. Review the displayed
-plan and type `INSTALL`. Omit `--apply` for prerequisite checks only. The installer:
+Replace `192.168.1.20` with the server's private/VPN address. `--apply` authorizes
+installation without a prompt. Omit `--apply` for prerequisite checks only. The installer:
 
 - Refuses existing installations, partial installs, unit overrides, conflicting
   account IDs, occupied ports and unsupported hosts before changing the host.
@@ -250,17 +259,18 @@ requests, backups, token rotation, quotas and the operation-journal capacity.
 
 Pushes and pull requests run Linux workspace checks, build the server/guest image,
 and run native client TLS/CLI tests on Linux, macOS ARM/Intel and Windows. Archives
-and individual SHA-256 files are available as private run artifacts for seven
+and individual SHA-256 files are available as run artifacts for seven
 days. Use `gh run download RUN_ID --repo OWNER/NAME` for branch builds; do not
 confuse those with a reviewed release. CI uses no credentials beyond the scoped
-GitHub Actions token and never deploys a server. Private-repository build minutes
-and artifact storage count against the account's allowance and may incur costs.
+GitHub Actions token and never deploys a server. Public workflows/logs/artifacts
+must not contain credentials or runtime data. Fork PRs use hosted runners and
+read-only permissions; only the tag release job has contents-write permission.
 
 For an approved release, update the workspace version, commit the reviewed source
 and push a matching `vMAJOR.MINOR.PATCH` tag. Tag/version mismatches fail. When all
-jobs pass, the workflow creates a **draft release**, only if the repository is
-still private. Review/download the draft and complete real Ubuntu/KVM installation
-validation before publishing it to repository readers. Reruns do not overwrite
+jobs pass, the workflow creates a **draft release**. Review/download the draft,
+verify packages, and record real-host validation and any outstanding limitations
+before publishing it publicly. Reruns do not overwrite
 existing releases. Real KVM tests remain separate; ordinary CI tests do not prove
 host isolation, reboot persistence or installer success on a real server.
 
@@ -272,8 +282,8 @@ makes that change.
 
 The public installer is maintained in `deploy/bootstrap/`. Only `install.sh` and
 its public `README.md` may be copied to `Jabbslad/kiln-install`. After an approved
-private release is published, update the script's pinned asset IDs and SHA-256
+release is published, update the script's pinned version and SHA-256
 values from verified packages, run `scripts/test-bootstrap.py` and ShellCheck,
-and verify a real authenticated download before publishing the public copy.
-Never publish this private checkout, server state, or GitHub credentials there.
+and verify a real anonymous download before publishing the public copy.
+Never publish server state or credentials there.
 The ordinary build workflow has no cross-repository publishing credentials.

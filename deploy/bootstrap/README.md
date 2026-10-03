@@ -1,8 +1,9 @@
 # Kiln installer
 
-Public bootstrap for **private** Kiln pilot packages. This repository contains
+Public, non-interactive bootstrap for Kiln pilot packages. This repository contains
 only installation instructions and a shell script, not the platform source,
-binaries, or credentials. You need access to `Jabbslad/kiln` to download packages.
+binaries, or credentials. Source and releases are public in
+[Jabbslad/kiln](https://github.com/Jabbslad/kiln). No GitHub account or PAT is needed.
 
 **v0.3.0 requires matching Kiln client, server and freshly built guest templates.**
 It is not an in-place upgrade from v0.2.x. Existing services, profiles, disks,
@@ -14,23 +15,20 @@ explicit enrollment with a matching server.
 
 ## Laptop: macOS or Linux
 
-Run in a terminal:
+Run locally or in automation (no terminal required):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
 ```
 
 Supports Apple Silicon/Intel macOS and x86-64 Linux with glibc 2.39+. Installs
-`~/.local/bin/kiln` without sudo. Add that directory to PATH if prompted. No
+`~/.local/bin/kiln` without sudo. Add that directory to PATH if it is not present. No
 GitHub CLI, Python, Rust, or JSON parser is required. Standard shell tools, curl,
 tar and a SHA-256 utility must be present. Native Windows users should download
-the `kiln` zip from the private release instead; this is not a PowerShell installer.
+the `kiln` zip from the public release instead; this is not a PowerShell installer.
 
-The script asks for a GitHub token with read access to the private release.
-Create a short-lived [fine-grained token](https://github.com/settings/personal-access-tokens/new):
-choose owner **Jabbslad**, repository **kiln**, permission **Contents: Read-only**.
-Paste it at the hidden prompt, never into the command itself. You can revoke it
-after installation. Tokens are not saved in the installed application.
+The script downloads a versioned release over HTTPS and verifies its pinned
+SHA-256 checksum. It never asks for credentials or reads answers from stdin.
 
 ### Upgrade an existing laptop client
 
@@ -62,21 +60,36 @@ RAM and 24 GiB free on `/var/lib`, plus about 3 GiB temporary extraction space.
 16 GiB+ total RAM is recommended. Containers are not supported. The guest image
 remains Ubuntu 24.04 regardless of the supported host Ubuntu version.
 
-The script downloads and verifies the package, prompts for a stable private/VPN
-IPv4 address assigned to the server, and requests permission to install required
-Ubuntu packages through sudo. These include Python; you do not install or invoke
-it yourself. The provisioner checks resources/conflicts and requests a separate
-`INSTALL` confirmation before creating accounts, services, TLS credentials, and
-a 4 GiB warm Ubuntu template. No VPN or API firewall opening is configured.
+**Running `server` authorizes installation without further confirmation.** Use
+a root shell or an account with passwordless sudo; the script uses `sudo -n` and
+fails instead of asking for a password. It installs required Ubuntu packages
+(including Python), then checks resources/conflicts before creating accounts,
+services, TLS credentials, and a 4 GiB warm Ubuntu template. Package configuration
+is non-interactive and retains existing configuration files. No VPN or API
+firewall opening is configured.
 
-Guest networking is off by default. On a fresh host, explicitly opt in to
-filtered IPv4 egress by setting the host's uplink interface (replace `enp1s0`):
+The server address is the source IPv4 selected by `ip -4 route get 1.1.1.1`
+(a local route lookup, not a network request). It must be private/VPN IPv4;
+public or ambiguous results fail with an error. Detection requires iproute2.
+For a VPN, multi-interface host, or no default route, override it explicitly:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | KILN_NETWORK_UPLINK=enp1s0 sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- server --address 100.64.5.6
 ```
 
-This additionally installs iproute2/nftables/util-linux and, after confirmation, enables
+Choose a stable address: it becomes the API binding and TLS certificate address.
+`--address 127.0.0.1` is available for deliberate local-only installation.
+
+Guest networking is off by default. On a fresh host, explicitly opt in to
+filtered IPv4 egress with automatic uplink detection:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- server --network
+```
+
+Use `--network-uplink enp1s0` to opt in with an explicit interface instead.
+The existing `KILN_NETWORK_UPLINK` environment override is also supported.
+This additionally installs iproute2/nftables/util-linux and enables
 forwarding, a guest bridge, NAT/filter rules and a boot service. Host/LAN/metadata
 and peer-guest access are blocked. Review coexistence with any host firewall
 manager. This option cannot retrofit an existing immutable runtime store.
@@ -125,9 +138,9 @@ It remains compatible with the 0.2.1 guest image.
 
 ## Trust and maintenance
 
-The bootstrap pins v0.3.0 asset IDs and SHA-256 digests, validates archive contents,
-and authenticates only to GitHub's API. Redirected asset requests do not receive
-the GitHub token. Temporary secrets are removed on normal exit and handled
+The bootstrap pins v0.3.1 release URLs and SHA-256 digests, validates archive contents,
+and downloads without authentication. Redirects are HTTPS-only and user curl
+configuration is disabled. Temporary files are removed on normal exit and handled
 signals. A checksum protects integrity under trust in this bootstrap publisher;
 it is not independent signing. macOS/Windows binaries are not signed/notarized.
 
@@ -139,6 +152,6 @@ less install.sh
 sh install.sh
 ```
 
-The authoritative files live under `deploy/bootstrap/` in the private source
+The authoritative files live under `deploy/bootstrap/` in the source
 repository. Maintainers publish only `install.sh` and this README after testing
-and verifying the release assets. No private checkout history belongs here.
+and verifying the release assets. Runtime state and credentials never belong here.

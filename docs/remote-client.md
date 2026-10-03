@@ -1,7 +1,7 @@
 # Laptop client and single-host service
 
-For prebuilt downloads and the guided first-install workflow, start with the
-[private release guide](releases.md). The manual instructions below remain useful
+For prebuilt downloads and the unattended first-install workflow, start with the
+[release guide](releases.md). The manual instructions below remain useful
 for custom hosts and development; they are not required when installing a release
 package on a supported Ubuntu host.
 

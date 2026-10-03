@@ -14,16 +14,16 @@ An experimental isolated profile now integrates jailer, per-box host identities,
 
 ## Use a laptop client
 
-Install the macOS/Linux client from a terminal:
+Install the macOS/Linux client without prompts or GitHub credentials:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
 ```
 
-The script prompts for a GitHub token with read access to the private packages;
+The script verifies pinned public release packages and works without a terminal;
 no GitHub CLI, Python or Rust installation is needed on the laptop. See the
-[installation guide](docs/releases.md) for token permissions, the one-command
-Ubuntu server setup, platform requirements and optional manual/Windows downloads.
+[installation guide](docs/releases.md) for unattended Ubuntu server setup,
+automatic private-address detection, platform requirements and manual/Windows downloads.
 To build from source instead, use
 `cargo install --locked --path crates/kiln-client`.
 It manages templates, create/list/inspect, exec, pause/resume, stop/start and delete
@@ -33,8 +33,9 @@ to the existing runtime. Durable request IDs survive disconnection and prevent
 automatic replay of interrupted commands.
 
 See the [server setup and laptop guide](docs/remote-client.md). Installing the
-client does not provision server services. Server setup requires confirmation
-and binds only to the chosen private address. This pilot has one administrator.
+client does not provision server services. Running the installer with `server`
+authorizes setup without confirmation and binds only to a detected or specified
+private address. Root or passwordless sudo is required. This pilot has one administrator.
 Version 0.2.0 includes `kiln ssh`, SFTP via `kiln cp`,
 editor configuration via `kiln ssh-config`, and opt-in isolated IPv4 egress.
 These require matching client/server/Ubuntu guest builds; existing installations

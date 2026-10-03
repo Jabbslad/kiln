@@ -26,15 +26,17 @@ hides that hierarchy. Version 0.2.2 fixes this on ordinary hosts; older tests
 accidentally masked the problem with a second cgroup mount outside `/sys`.
 
 The fresh-install provisioner supports this through its explicit
-`--network-uplink INTERFACE` option. After reviewing the plan, `INSTALL` authorizes
+`--network-uplink INTERFACE` option. Supplying `--apply` authorizes unattended
 creation of the bridge/firewall and a `kiln-network.service` boot prerequisite.
 Omitting the option makes no networking changes. This is not an upgrade path
 for an existing immutable state store.
 
-The shell bootstrap accepts `KILN_NETWORK_UPLINK=INTERFACE` and installs the
-additional prerequisites only after `SETUP` confirmation. It refuses old
-packages without the helper. The v0.2.0 bootstrap and server package include
-this option; it is not enabled merely by installing the client.
+The shell bootstrap accepts `server --network` to detect the uplink, or
+`server --network-uplink INTERFACE` to choose it explicitly. The existing
+`KILN_NETWORK_UPLINK=INTERFACE` override also works. Running the server command
+authorizes installation without prompts; root or passwordless sudo is required.
+It refuses old packages without the helper. Networking is not enabled merely
+by installing the client or omitting these options.
 
 An operator must explicitly enable host forwarding/NAT once, choosing the
 public uplink:

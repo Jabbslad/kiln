@@ -635,7 +635,7 @@ def main():
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="apply after preflight and interactive confirmation",
+        help="authorize unattended installation after preflight (no confirmation prompt)",
     )
     parser.add_argument(
         "--network-uplink",
@@ -672,9 +672,6 @@ def main():
             return 0
         if os.geteuid() != 0:
             raise ValueError("--apply requires sudo/root")
-        if input("Type INSTALL to apply these changes: ") != "INSTALL":
-            print("Cancelled; no installation performed.")
-            return 1
         install(bundle, address, args.network_uplink)
         return 0
     except (OSError, ValueError, subprocess.CalledProcessError, EOFError) as error:

@@ -897,7 +897,7 @@ dependencies = [
 
 [[package]]
 name = "kiln-api"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "kiln-protocol",
  "serde",
@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "kiln-client"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -925,7 +925,7 @@ dependencies = [
 
 [[package]]
 name = "kiln-guest"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "kiln-protocol",
  "libc",
@@ -939,7 +939,7 @@ dependencies = [
 
 [[package]]
 name = "kiln-protocol"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -949,7 +949,7 @@ dependencies = [
 
 [[package]]
 name = "kiln-runtime"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "clap",
  "kiln-protocol",
@@ -965,7 +965,7 @@ dependencies = [
 
 [[package]]
 name = "kiln-server"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "axum",

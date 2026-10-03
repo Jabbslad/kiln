@@ -135,7 +135,7 @@ jobs:
 
   draft-release:
     needs: [server, client]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.event.repository.private == true
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -146,13 +146,12 @@ jobs:
           pattern: package-*
           path: dist
           merge-multiple: true
-      - name: Verify packages and create private draft
+      - name: Verify packages and create release draft
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          test "$(gh api "repos/$GH_REPO" --jq .private)" = true
           (cd dist && sha256sum -c ./*.sha256)
           gh release create "$TAG" dist/* --verify-tag --draft --title "$TAG" \
-            --notes 'Private pilot. Native client tests and Linux build checks passed. The installer requires Ubuntu 24.04 or 26.04 x86-64/KVM. No deployment was performed. Review the release and real-host validation before publishing. Binaries are not signed or notarized.'
+            --notes 'Trusted-workload pilot. Native client tests and Linux build checks passed. The unattended installer requires Ubuntu 24.04 or 26.04 x86-64/KVM for servers. No deployment was performed. Review the release and real-host validation before publishing. Binaries are not signed or notarized.'

@@ -1,24 +1,18 @@
 #!/usr/bin/env python3
-"""Run the real shell bootstrap through a pipe/TTY; never provision this host."""
+"""Run the real shell bootstrap without a TTY; never provision this host."""
 
 import hashlib
 import io
 import json
 import os
-import pty
-import select
-import signal
 import subprocess
 import sys
 import tarfile
 import tempfile
-import termios
-import time
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TOKEN = "github_pat_test_not_a_real_credential"
 SERVER_FILES = [
     "bin/kiln-runtime",
     "bin/kiln",
@@ -65,14 +59,21 @@ class BootstrapTests(unittest.TestCase):
             "ARCH": "x86_64",
             "GLIBC": "glibc 2.39",
             "HTTP": "200",
-            "REDIRECT": "https://release-assets.githubusercontent.com/test",
+            "ROUTE": "1.1.1.1 via 192.168.50.1 dev eth0 src 192.168.50.7 uid 1000\n    cache",
+            "EXPECTED_ADDRESS": "192.168.50.7",
+            "EXPECTED_UPLINK": "",
         }
+        self.env.pop("KILN_NETWORK_UPLINK", None)
         self.executable(
             "uname",
             '#!/bin/sh\ncase "$1" in -s) echo "$OS";; -m) echo "$ARCH";; esac\n',
         )
         self.executable("getconf", '#!/bin/sh\necho "$GLIBC"\n')
         self.executable("id", "#!/bin/sh\necho 1000\n")
+        self.executable(
+            "ip",
+            '#!/bin/sh\n[ "$*" = "-4 route get 1.1.1.1" ] || exit 2\nprintf "%s\\n" "$ROUTE"\n',
+        )
         self.executable(
             "curl",
             f"#!{sys.executable}\n"
@@ -82,27 +83,17 @@ root = pathlib.Path(os.environ['FIXTURE'])
 args = sys.argv[1:]
 assert args[0] == '-q', 'curl user configuration must be disabled'
 assert '--location-trusted' not in args
-assert '--location' not in args and '-L' not in args
+assert '--location' in args
 assert '--proto' in args and args[args.index('--proto') + 1] == '=https'
+assert args[args.index('--proto-redir') + 1] == '=https'
+assert '--netrc' not in args and '--config' not in args and '--user' not in args
+assert not any('Authorization' in arg for arg in args)
+assert args[-1].startswith('https://github.com/Jabbslad/kiln/releases/download/v0.3.1/kiln-')
 record = {'args': args}
-if '--config' in args:
-    config = pathlib.Path(args[args.index('--config') + 1])
-    record['private_config'] = config.stat().st_mode & 0o777 == 0o600
-    record['has_auth'] = 'Authorization: Bearer github_pat_test_not_a_real_credential' in config.read_text()
-    if record['has_auth']:
-        assert args[-1].startswith('https://api.github.com/repos/Jabbslad/kiln/releases/assets/')
-    else:
-        assert config.read_text().startswith('url = "https://release-assets.githubusercontent.com/')
-        assert 'Authorization' not in config.read_text()
-else:
-    record['has_auth'] = False
 with (root / 'requests').open('a') as f:
     f.write(json.dumps(record) + '\\n')
 output = pathlib.Path(args[args.index('--output') + 1])
-code = os.environ['HTTP'] if record['has_auth'] else '200'
-if '--dump-header' in args:
-    pathlib.Path(args[args.index('--dump-header') + 1]).write_text(
-        'HTTP/2 ' + code + '\\r\\nLocation: ' + os.environ['REDIRECT'] + '\\r\\n\\r\\n')
+code = os.environ['HTTP']
 if code == '200':
     shutil.copyfile(root / 'archive.tar.gz', output)
 else:
@@ -117,13 +108,16 @@ if '--write-out' in args:
             + """
 import json, os, pathlib, subprocess, sys
 root = pathlib.Path(os.environ['FIXTURE'])
+assert sys.argv[1] == '-n', 'sudo must never prompt'
+args = sys.argv[2:]
 with (root / 'privileged').open('a') as f:
-    f.write(json.dumps(sys.argv[1:]) + '\\n')
-if sys.argv[1] == 'python3':
-    assert os.isatty(0), 'provisioner must read from TTY, not script pipe'
-    assert not list((root / 'tmp').glob('*/auth.conf')), 'token must be deleted before sudo'
-    sys.exit(subprocess.call([sys.executable, *sys.argv[2:]]))
-assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
+    f.write(json.dumps(args) + '\\n')
+assert sys.stdin.read() == '', 'privileged commands must not consume script stdin'
+if args[0] == 'true':
+    sys.exit(int(os.environ.get('SUDO_FAILURE', '0')))
+if args[0] == 'python3':
+    sys.exit(subprocess.call([sys.executable, *args[1:]]))
+assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a', 'apt-get']
 """,
         )
 
@@ -134,11 +128,13 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
 
     def package(self, members=None, server=False):
         if members is None:
-            members = {"kiln": b"#!/bin/sh\necho 'kiln 0.3.0'\n"}
+            members = {"kiln": b"#!/bin/sh\necho 'kiln 0.3.1'\n"}
         if server:
-            members = dict.fromkeys(SERVER_FILES, b"fixture\n")
+            members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
             members["install.py"] = (
-                b"import sys\nassert sys.argv[1:] == ['--address', '192.168.50.7', '--apply']\nassert input('Type INSTALL: ') == 'INSTALL'\nprint('provisioner completed')\n"
+                b"import os, sys\nexpected = ['--address', os.environ['EXPECTED_ADDRESS'], '--apply']\n"
+                b"if os.environ['EXPECTED_UPLINK']: expected += ['--network-uplink', os.environ['EXPECTED_UPLINK']]\n"
+                b"assert sys.argv[1:] == expected, sys.argv\nassert sys.stdin.read() == ''\nprint('provisioner completed')\n"
             )
         with tarfile.open(self.archive, "w:gz") as archive:
             for name, data in members.items():
@@ -158,15 +154,14 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
         start, tail = source.split("# BEGIN RELEASE ASSETS\n", 1)
         _, end = tail.split("# END RELEASE ASSETS", 1)
         rows = "\n".join(
-            f"{key} {index} {digest}"
-            for index, key in enumerate(
+            f"{key} {digest}"
+            for key in (
                 [
                     "client:x86_64-unknown-linux-gnu",
                     "client:x86_64-apple-darwin",
                     "client:aarch64-apple-darwin",
                     "server:x86_64-unknown-linux-gnu",
-                ],
-                101,
+                ]
             )
         )
         source = (
@@ -183,65 +178,32 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
         path.write_text(source)
         return path
 
-    def run_bootstrap(self, digest, args=(), answers=None, interrupt=False):
+    def run_bootstrap(self, digest, args=()):
         script = self.script(digest)
-        if answers is None:
-            answers = [(b"GitHub token: ", TOKEN)]
-        pid, master = pty.fork()
-        if pid == 0:
-            os.execve(
-                "/bin/sh",
-                [
-                    "sh",
-                    "-c",
-                    'file=$1; shift; cat "$file" | sh -s -- "$@"',
-                    "test",
-                    str(script),
-                    *args,
-                ],
-                self.env,
-            )
-        output = b""
-        deadline = time.monotonic() + 12
-        answer_index = 0
-        interrupted = False
-        status = None
-        waited = 0
-        try:
-            while time.monotonic() < deadline:
-                if select.select([master], [], [], 0.05)[0]:
-                    try:
-                        chunk = os.read(master, 65536)
-                    except OSError:
-                        break
-                    if not chunk:
-                        break
-                    output += chunk
-                if interrupt and b"GitHub token: " in output and not interrupted:
-                    os.write(master, b"\x03")
-                    interrupted = True
-                elif answer_index < len(answers) and answers[answer_index][0] in output:
-                    os.write(master, (answers[answer_index][1] + "\n").encode())
-                    answer_index += 1
-                waited, status = os.waitpid(pid, os.WNOHANG)
-                if waited:
-                    break
-            else:
-                os.killpg(pid, signal.SIGKILL)
-                self.fail("bootstrap timed out: " + output.decode(errors="replace"))
-            if not waited:
-                _, status = os.waitpid(pid, 0)
-            echo = bool(termios.tcgetattr(master)[3] & termios.ECHO)
-        finally:
-            os.close(master)
-        self.assertNotIn(TOKEN, output.decode(errors="replace"))
-        self.assertTrue(echo, "terminal echo was not restored")
+        result = subprocess.run(
+            [
+                "sh",
+                "-c",
+                'file=$1; shift; cat "$file" | sh -s -- "$@"',
+                "test",
+                str(script),
+                *args,
+            ],
+            env=self.env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            start_new_session=True,
+            timeout=15,
+        )
+        output = result.stdout + result.stderr
+        self.assertNotIn("GitHub token:", output)
         self.assertEqual(
             list((self.root / "tmp").iterdir()),
             [],
-            "temporary credentials/files remain",
+            "temporary files remain",
         )
-        return os.waitstatus_to_exitcode(status), output.decode(errors="replace")
+        return result.returncode, output
 
     def requests(self):
         path = self.root / "requests"
@@ -253,9 +215,9 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
 
     def test_client_platforms_install_correct_asset(self):
         for system, arch, expected in [
-            ("Linux", "x86_64", 101),
-            ("Darwin", "x86_64", 102),
-            ("Darwin", "arm64", 103),
+            ("Linux", "x86_64", "x86_64-unknown-linux-gnu"),
+            ("Darwin", "x86_64", "x86_64-apple-darwin"),
+            ("Darwin", "arm64", "aarch64-apple-darwin"),
         ]:
             with self.subTest(system=system, arch=arch):
                 self.env.update(OS=system, ARCH=arch)
@@ -264,26 +226,14 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
                 binary = self.root / "home/.local/bin/kiln"
                 self.assertEqual(
                     subprocess.check_output([binary, "--version"], text=True),
-                    "kiln 0.3.0\n",
+                    "kiln 0.3.1\n",
                 )
                 request = self.requests()[-1]
-                self.assertTrue(request["private_config"])
-                self.assertTrue(request["has_auth"])
-                self.assertTrue(request["args"][-1].endswith(f"/{expected}"))
-                self.assertNotIn(TOKEN, json.dumps(request))
+                self.assertEqual(
+                    request["args"][-1],
+                    f"https://github.com/Jabbslad/kiln/releases/download/v0.3.1/kiln-v0.3.1-{expected}.tar.gz",
+                )
                 binary.unlink()
-
-    def test_redirect_does_not_receive_authentication(self):
-        self.env["HTTP"] = "302"
-        code, out = self.run_bootstrap(self.package())
-        self.assertEqual(code, 0, out)
-        self.assertEqual([r["has_auth"] for r in self.requests()], [True, False])
-
-    def test_unexpected_redirect_stops(self):
-        self.env.update(HTTP="302", REDIRECT="https://attacker.example/package")
-        code, out = self.run_bootstrap(self.package())
-        self.assertNotEqual(code, 0, out)
-        self.assertEqual(len(self.requests()), 1)
 
     def test_bad_digest_never_installs(self):
         self.package()
@@ -315,13 +265,13 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
         binary = self.root / "home/.local/bin/kiln"
         binary.parent.mkdir(parents=True)
         binary.write_text("preserve")
-        code, out = self.run_bootstrap(self.package(), answers=[])
+        code, out = self.run_bootstrap(self.package())
         self.assertNotEqual(code, 0, out)
         self.assertEqual(binary.read_text(), "preserve")
         self.assertEqual(self.requests(), [])
         binary.unlink()
         binary.symlink_to("missing-target")
-        code, out = self.run_bootstrap(self.package(), answers=[])
+        code, out = self.run_bootstrap(self.package())
         self.assertNotEqual(code, 0, out)
         self.assertEqual(os.readlink(binary), "missing-target")
         self.assertEqual(self.requests(), [])
@@ -336,7 +286,7 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
             with self.subTest(values=values):
                 old = self.env.copy()
                 self.env.update(values)
-                code, out = self.run_bootstrap(self.package(), answers=[])
+                code, out = self.run_bootstrap(self.package())
                 self.assertNotEqual(code, 0, out)
                 self.assertNotIn("GitHub token: ", out)
                 self.assertEqual(self.requests(), [])
@@ -357,10 +307,16 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
         profile.write_text("preserve profile and credential references")
         code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"))
         self.assertEqual(code, 0, out)
-        self.assertEqual(subprocess.check_output([binary, "--version"], text=True), "kiln 0.3.0\n")
+        self.assertEqual(
+            subprocess.check_output([binary, "--version"], text=True), "kiln 0.3.1\n"
+        )
         self.assertEqual(binary.with_name("kiln.previous").read_bytes(), original)
-        self.assertEqual(profile.read_text(), "preserve profile and credential references")
-        self.assertEqual(sorted(p.name for p in binary.parent.iterdir()), ["kiln", "kiln.previous"])
+        self.assertEqual(
+            profile.read_text(), "preserve profile and credential references"
+        )
+        self.assertEqual(
+            sorted(p.name for p in binary.parent.iterdir()), ["kiln", "kiln.previous"]
+        )
 
     def test_failed_upgrade_preserves_current_and_previous_clients(self):
         binary = self.old_client()
@@ -370,8 +326,15 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
         for failure in ("checksum", "version", "HTTP"):
             with self.subTest(failure=failure):
                 self.env["HTTP"] = "403" if failure == "HTTP" else "200"
-                digest = self.package({"kiln": b"#!/bin/sh\necho wrong-version\n"}) if failure == "version" else self.package()
-                code, out = self.run_bootstrap("0" * 64 if failure == "checksum" else digest, args=("client", "--upgrade"))
+                digest = (
+                    self.package({"kiln": b"#!/bin/sh\necho wrong-version\n"})
+                    if failure == "version"
+                    else self.package()
+                )
+                code, out = self.run_bootstrap(
+                    "0" * 64 if failure == "checksum" else digest,
+                    args=("client", "--upgrade"),
+                )
                 self.assertNotEqual(code, 0, out)
                 self.assertIn(failure.lower(), out.lower())
                 self.assertEqual(binary.read_bytes(), original)
@@ -384,7 +347,7 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
             if unsafe.exists():
                 unsafe.unlink()
             unsafe.symlink_to("missing-target")
-            code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"), answers=[])
+            code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"))
             self.assertNotEqual(code, 0, out)
             self.assertIn("regular file", out)
             self.assertTrue(unsafe.is_symlink())
@@ -393,7 +356,7 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
             self.old_client()
         lock = binary.parent / ".kiln-install.lock"
         lock.mkdir()
-        code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"), answers=[])
+        code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"))
         self.assertNotEqual(code, 0, out)
         self.assertIn("another installer", out)
         self.assertTrue(lock.exists())
@@ -402,36 +365,29 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
     def test_upgrade_failed_publication_preserves_working_client(self):
         binary = self.old_client()
         original = binary.read_bytes()
-        real_mv = subprocess.check_output(["sh", "-c", "command -v mv"], text=True).strip()
-        self.executable("mv", f'#!/bin/sh\nfor arg do last=$arg; done\ncase "$last" in */kiln) exit 1;; esac\nexec "{real_mv}" "$@"\n')
+        real_mv = subprocess.check_output(
+            ["sh", "-c", "command -v mv"], text=True
+        ).strip()
+        self.executable(
+            "mv",
+            f'#!/bin/sh\nfor arg do last=$arg; done\ncase "$last" in */kiln) exit 1;; esac\nexec "{real_mv}" "$@"\n',
+        )
         code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"))
         self.assertNotEqual(code, 0, out)
         self.assertIn("replace", out.lower())
         self.assertEqual(binary.read_bytes(), original)
         self.assertEqual(binary.with_name("kiln.previous").read_bytes(), original)
-        self.assertEqual(sorted(p.name for p in binary.parent.iterdir()), ["kiln", "kiln.previous"])
-
-    def test_cancelled_upgrade_preserves_client_and_releases_lock(self):
-        binary = self.old_client()
-        original = binary.read_bytes()
-        code, out = self.run_bootstrap(self.package(), args=("client", "--upgrade"), interrupt=True)
-        self.assertNotEqual(code, 0, out)
-        self.assertEqual(binary.read_bytes(), original)
-        self.assertEqual(sorted(p.name for p in binary.parent.iterdir()), ["kiln"])
-        self.assertEqual(self.requests(), [])
+        self.assertEqual(
+            sorted(p.name for p in binary.parent.iterdir()), ["kiln", "kiln.previous"]
+        )
 
     def test_upgrade_flag_is_client_only_and_requires_existing_file(self):
         for args in [("server", "--upgrade"), ("client", "--upgrade")]:
             with self.subTest(args=args):
-                code, out = self.run_bootstrap(self.package(), args=args, answers=[])
+                code, out = self.run_bootstrap(self.package(), args=args)
                 self.assertNotEqual(code, 0, out)
                 self.assertEqual(self.requests(), [])
                 self.assertFalse((self.root / "privileged").exists())
-
-    def test_cancelled_token_prompt_restores_echo(self):
-        code, out = self.run_bootstrap(self.package(), interrupt=True)
-        self.assertNotEqual(code, 0, out)
-        self.assertEqual(self.requests(), [])
 
     def test_server_unsupported_host_never_requests_privileges(self):
         for distro, version in [
@@ -445,7 +401,7 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
                     f'ID={distro}\nVERSION_ID="{version}"\n'
                 )
                 code, out = self.run_bootstrap(
-                    self.package(server=True), args=("server",), answers=[]
+                    self.package(server=True), args=("server",)
                 )
                 self.assertNotEqual(code, 0, out)
                 self.assertIn("24.04", out)
@@ -454,18 +410,12 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
 
     def test_ubuntu_2604_reaches_server_provisioning(self):
         (self.root / "os-release").write_text('ID=ubuntu\nVERSION_ID="26.04"\n')
-        self.test_server_dependency_and_provisioner_confirmation_use_tty()
+        self.test_server_detects_address_and_installs_without_tty()
 
-    def test_server_dependency_and_provisioner_confirmation_use_tty(self):
+    def test_server_detects_address_and_installs_without_tty(self):
         code, out = self.run_bootstrap(
             self.package(server=True),
             args=("server",),
-            answers=[
-                (b"GitHub token: ", TOKEN),
-                (b"Server private IPv4 address: ", "192.168.50.7"),
-                (b"Type SETUP", "SETUP"),
-                (b"Type INSTALL", "INSTALL"),
-            ],
         )
         self.assertEqual(code, 0, out)
         self.assertIn("provisioner completed", out)
@@ -473,34 +423,44 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
             json.loads(line)
             for line in (self.root / "privileged").read_text().splitlines()
         ]
-        self.assertEqual(commands[0], ["apt-get", "update"])
-        self.assertIn("python3", commands[1])
-        self.assertEqual(commands[2][0], "python3")
+        self.assertEqual(commands[0], ["true"])
+        self.assertEqual(commands[1][-2:], ["apt-get", "update"])
+        self.assertIn("python3", commands[2])
+        self.assertEqual(commands[3][0], "python3")
+        self.assertTrue(
+            self.requests()[0]["args"][-1].endswith(
+                "/kiln-server-v0.3.1-x86_64-unknown-linux-gnu.tar.gz"
+            )
+        )
 
     def test_kvm_access_is_checked_by_privileged_provisioner(self):
         (self.root / "kvm").chmod(0)
-        self.test_server_dependency_and_provisioner_confirmation_use_tty()
+        self.test_server_detects_address_and_installs_without_tty()
 
-    def test_network_opt_in_requires_capable_package_and_passes_explicit_uplink(self):
-        self.env["KILN_NETWORK_UPLINK"] = "eth0"
-        members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
-        members["install.py"] = (
-            b"import sys\nassert sys.argv[1:] == ['--address', '192.168.50.7', '--apply', '--network-uplink', 'eth0']\nassert input('Type INSTALL: ') == 'INSTALL'\n"
-        )
-        code, out = self.run_bootstrap(self.package(members), args=("server",), answers=[
-            (b"GitHub token: ", TOKEN),
-            (b"Server private IPv4 address: ", "192.168.50.7"),
-            (b"Type SETUP", "SETUP"), (b"Type INSTALL", "INSTALL"),
-        ])
-        self.assertEqual(code, 0, out)
-        commands = [json.loads(line) for line in (self.root / "privileged").read_text().splitlines()]
-        self.assertIn("nftables", commands[1])
-        self.assertIn("iproute2", commands[1])
-        self.assertIn("util-linux", commands[1])
+    def test_network_auto_detection_and_explicit_overrides(self):
+        for args, address, uplink in [
+            (("--network",), "192.168.50.7", "eth0"),
+            (
+                ("--address", "100.64.5.6", "--network-uplink", "enp2s0"),
+                "100.64.5.6",
+                "enp2s0",
+            ),
+        ]:
+            with self.subTest(args=args):
+                self.env.update(EXPECTED_ADDRESS=address, EXPECTED_UPLINK=uplink)
+                code, out = self.run_bootstrap(
+                    self.package(server=True), args=("server", *args)
+                )
+                self.assertEqual(code, 0, out)
+                commands = [
+                    json.loads(line)
+                    for line in (self.root / "privileged").read_text().splitlines()
+                ]
+                for package in ("nftables", "iproute2", "util-linux"):
+                    self.assertIn(package, commands[-2])
 
-    def test_server_cancellation_and_invalid_addresses_do_not_run_sudo(self):
+    def test_invalid_addresses_do_not_run_sudo(self):
         for address in [
-            "192.168.50.7",
             "8.8.8.8",
             "100.63.0.1",
             "172.32.0.1",
@@ -510,18 +470,85 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
             with self.subTest(address=address):
                 code, out = self.run_bootstrap(
                     self.package(server=True),
-                    args=("server",),
-                    answers=[
-                        (b"GitHub token: ", TOKEN),
-                        (b"Server private IPv4 address: ", address),
-                        (b"Type SETUP", "no"),
-                    ],
+                    args=("server", "--address", address),
                 )
                 self.assertNotEqual(code, 0, out)
-                self.assertIn(
-                    "Cancelled" if address == "192.168.50.7" else "Use a private/VPN",
-                    out,
+                self.assertIn("private/VPN", out)
+                self.assertFalse((self.root / "privileged").exists())
+
+    def test_bad_route_fails_without_mutations(self):
+        for route in (
+            "",
+            "1.1.1.1 dev eth0 src 8.8.8.8",
+            "1.1.1.1 dev eth0 src 10.1.2.3 src 10.4.5.6",
+        ):
+            with self.subTest(route=route):
+                self.env["ROUTE"] = route
+                code, out = self.run_bootstrap(
+                    self.package(server=True), args=("server",)
                 )
+                self.assertNotEqual(code, 0, out)
+                self.assertIn("--address", out)
+                self.assertFalse((self.root / "privileged").exists())
+
+    def test_explicit_address_works_without_default_route(self):
+        self.env.update(ROUTE="", EXPECTED_ADDRESS="172.31.8.9")
+        code, out = self.run_bootstrap(
+            self.package(server=True), args=("server", "--address", "172.31.8.9")
+        )
+        self.assertEqual(code, 0, out)
+
+    def test_sudo_failure_does_not_download_or_install(self):
+        self.env["SUDO_FAILURE"] = "1"
+        code, out = self.run_bootstrap(self.package(server=True), args=("server",))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("sudo", out)
+        self.assertEqual(self.requests(), [])
+        self.assertEqual(
+            (self.root / "privileged").read_text().splitlines(), ['["true"]']
+        )
+
+    def test_bad_options_never_download_or_provision(self):
+        for args in (
+            ("server", "--address"),
+            ("server", "--network-uplink", "bad;name"),
+            ("server", "--network-uplink", "eth0\nbad;name"),
+            ("server", "--address", "10.1.2.3\ninvalid"),
+            ("client", "--network"),
+            ("server", "--unknown"),
+        ):
+            with self.subTest(args=args):
+                code, out = self.run_bootstrap(self.package(server=True), args=args)
+                self.assertNotEqual(code, 0, out)
+                self.assertEqual(self.requests(), [])
+                self.assertFalse((self.root / "privileged").exists())
+
+    def test_network_environment_override_and_missing_helper(self):
+        self.env.update(KILN_NETWORK_UPLINK="enp4s0", EXPECTED_UPLINK="enp4s0")
+        code, out = self.run_bootstrap(self.package(server=True), args=("server",))
+        self.assertEqual(code, 0, out)
+        (self.root / "privileged").unlink()
+        code, out = self.run_bootstrap(
+            self.package(dict.fromkeys(SERVER_FILES, b"fixture\n")), args=("server",)
+        )
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("no guest networking", out)
+        self.assertEqual(
+            (self.root / "privileged").read_text().splitlines(), ['["true"]']
+        )
+
+    def test_missing_or_ambiguous_network_device_requires_override(self):
+        for route in (
+            "1.1.1.1 src 192.168.50.7",
+            "1.1.1.1 dev eth0 dev eth1 src 192.168.50.7",
+        ):
+            with self.subTest(route=route):
+                self.env["ROUTE"] = route
+                code, out = self.run_bootstrap(
+                    self.package(server=True), args=("server", "--network")
+                )
+                self.assertNotEqual(code, 0, out)
+                self.assertIn("--network-uplink", out)
                 self.assertFalse((self.root / "privileged").exists())
 
     def test_wrong_binary_version_is_not_installed(self):
@@ -531,13 +558,6 @@ assert sys.argv[1] == 'apt-get', 'unexpected privileged action'
         self.assertNotEqual(code, 0, out)
         self.assertIn("version", out)
         self.assertFalse((self.root / "home/.local/bin/kiln").exists())
-
-    def test_token_config_injection_is_rejected(self):
-        code, out = self.run_bootstrap(
-            self.package(), answers=[(b"GitHub token: ", 'bad"token')]
-        )
-        self.assertNotEqual(code, 0, out)
-        self.assertEqual(self.requests(), [])
 
 
 if __name__ == "__main__":
