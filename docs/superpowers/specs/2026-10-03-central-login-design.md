@@ -1,7 +1,7 @@
 # Central login and self-hosted server discovery
 
 Date: 2026-10-03
-Status: The owner approved GitHub/Google browser login and a Kiln-operated login/discovery service. This detailed design is proposed for review; implementation and deployment have not started.
+Status: Approved by the owner on 2026-10-03, including GitHub/Google browser login and a Kiln-operated login/discovery service. Implementation and deployment have not started. See the [implementation plan](../plans/2026-10-03-central-login.md).
 
 ## Outcome and scope
 
