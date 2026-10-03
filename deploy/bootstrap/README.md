@@ -138,7 +138,7 @@ It remains compatible with the 0.2.1 guest image.
 
 ## Trust and maintenance
 
-The bootstrap pins v0.3.1 release URLs and SHA-256 digests, validates archive contents,
+The bootstrap pins v0.3.2 release URLs and SHA-256 digests, validates archive contents,
 and downloads without authentication. Redirects are HTTPS-only and user curl
 configuration is disabled. Temporary files are removed on normal exit and handled
 signals. A checksum protects integrity under trust in this bootstrap publisher;

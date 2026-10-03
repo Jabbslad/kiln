@@ -217,7 +217,7 @@ install_server() {
 }
 
 main() {
-    version=0.3.1
+    version=0.3.2
     work='' staged='' backup_staged='' lock='' upgrade=false
     address='' uplink=${KILN_NETWORK_UPLINK:-} network=false
     trap cleanup EXIT
@@ -236,7 +236,8 @@ main() {
         case "$mode:$1" in
             client:--upgrade) upgrade=true; shift ;;
             server:--address|server:--network-uplink)
-                [ "$#" -ge 2 ] && [ -n "$2" ] || fail "$usage"
+                [ "$#" -ge 2 ] || fail "$usage"
+                [ -n "$2" ] || fail "$usage"
                 if [ "$1" = --address ]; then address=$2; else uplink=$2; fi
                 shift 2 ;;
             server:--network) network=true; shift ;;

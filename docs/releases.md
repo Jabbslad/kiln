@@ -55,7 +55,7 @@ On a dedicated **Ubuntu 24.04 or 26.04 x86-64/KVM** server:
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- server
 ```
 
-**v0.3.1 adds public, unattended installation.** Packages use versioned public
+**v0.3.2 adds public, unattended installation.** Packages use versioned public
 release URLs and pinned checksums. No `gh`, Python, Rust, or JSON parser is
 required on the laptop. Both bootstrap modes work without a controlling terminal.
 Running `server` authorizes setup: use root or passwordless sudo. There are no
@@ -72,7 +72,7 @@ is supplied (explicit uplink). See the [bootstrap guide](../deploy/bootstrap/REA
 
 **v0.2.0 guest-access additions:** packages include interactive SSH,
 SFTP, editor SSH configuration, and optional isolated guest IPv4 egress. The
-public installer pins v0.3.1. These features require the new client, server,
+public installer pins v0.3.2. These features require the new client, server,
 and updated Ubuntu guest agent. Existing templates/boxes are not
 upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
 management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
@@ -140,7 +140,7 @@ For macOS/Linux, in a new download directory:
 
 ```sh
 REPO=Jabbslad/kiln
-VERSION=v0.3.1
+VERSION=v0.3.2
 TARGET=aarch64-apple-darwin
 BASE="https://github.com/$REPO/releases/download/$VERSION"
 curl -fL --proto '=https' --proto-redir '=https' -O "$BASE/kiln-$VERSION-$TARGET.tar.gz"
@@ -188,7 +188,7 @@ files to the server). No GitHub credentials are required:
 
 ```sh
 REPO=Jabbslad/kiln
-VERSION=v0.3.1
+VERSION=v0.3.2
 PACKAGE="kiln-server-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
 BASE="https://github.com/$REPO/releases/download/$VERSION"
 curl -fL --proto '=https' --proto-redir '=https' -O "$BASE/$PACKAGE"
