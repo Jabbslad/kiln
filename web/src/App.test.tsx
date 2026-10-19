@@ -15,6 +15,19 @@ function open(path = '/boxes?preview=1') {
   )
 }
 
+it('keeps the public page independent of the host and makes preview an explicit choice', async () => {
+  const request = vi.fn().mockRejectedValue(new Error('Host unavailable'))
+  vi.stubGlobal('fetch', request)
+  open('/')
+  expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Your machine.')
+  expect(screen.getByRole('link', { name: 'Open console' })).toHaveAttribute('href', '/boxes')
+  expect(request).not.toHaveBeenCalled()
+  await userEvent.setup().click(screen.getByRole('link', { name: 'Explore design preview' }))
+  expect(await screen.findByRole('heading', { name: 'Boxes' })).toBeVisible()
+  expect(screen.getByText('EXAMPLE DATA · NO VM OPERATIONS')).toBeVisible()
+  expect(request).not.toHaveBeenCalled()
+})
+
 it('combines search and filters without mutating fixture state or fetching', async () => {
   const request = vi.fn()
   vi.stubGlobal('fetch', request)

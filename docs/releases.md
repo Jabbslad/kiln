@@ -6,6 +6,22 @@ terminal is needed to install. Access to a running Kiln server still requires
 browser login to an enrolled host or a direct administrator profile; public
 downloads do not disable API authentication.
 
+## v0.4.7 website and dashboard design
+
+The static dashboard archive now includes a public landing page at `/` and the
+existing console at `/boxes`. The imported root `design.md` records the shared
+visual system and Kiln adaptations. The landing page uses original, locally
+bundled artwork, real client installation instructions, and explicit links to the
+read-only preview. It makes no host API requests. Console navigation, headings,
+borders, and selection treatments follow the same system.
+
+Browser authentication and live dashboard controls are still not integrated.
+Existing preview gates remain; no VM operations are simulated. The static archive
+is separate from server installation. Publishing it does not deploy either surface,
+restart services, or change runtime state. The runtime behavior is unchanged from
+v0.4.6. Browser validation covers phone/desktop layouts, accessibility, navigation,
+clipboard success and denial, and the existing console interactions.
+
 ## v0.4.6 public door
 
 `kiln-api door` binds one public address and presents a leaf from the existing
@@ -222,7 +238,7 @@ is supplied (explicit uplink). See the [bootstrap guide](../deploy/bootstrap/REA
 
 **v0.2.0 guest-access additions:** packages include interactive SSH,
 SFTP, editor SSH configuration, and optional isolated guest IPv4 egress. The
-public installer pins v0.4.6. These features require the new client, server,
+public installer pins v0.4.7. These features require the new client, server,
 and updated Ubuntu guest agent. Existing templates/boxes are not
 upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
 management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
@@ -322,7 +338,7 @@ temporary space for the downloaded archive and extracted image (about 3 GiB).
 The shell bootstrap manages sqlite3, OpenSSL, curl, CA certificates, tar, and
 Ubuntu account tools. For manual installation, supply these dependencies yourself.
 `deploy/install.sh` only checks them. Installing and deploying Kiln is shell
-scripts. The public bootstrap pins v0.4.6 and runs `install.sh`. It rejects an
+scripts. The public bootstrap pins v0.4.7 and runs `install.sh`. It rejects an
 archive whose installer is `install.py`. `scripts/release.py` packages releases in
 CI and does not run on the server.
 The installer downloads checksum-pinned Firecracker/jailer 1.17.0 from GitHub. The package
@@ -500,4 +516,3 @@ Jobs that set `environment: dark-forge` receive these secrets after that
 approval. A workflow that does not name the environment cannot read them.
 After the secrets are saved, delete the private key from the server with
 `shred -u /root/.ssh/kiln-github-deploy`.
-

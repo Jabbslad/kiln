@@ -266,7 +266,7 @@ if args[0] == 'env' and 'apt-get' in args:
         )
 
     def test_pinned_version_matches_published_release(self):
-        self.assertEqual(pinned_version(), "0.4.6")
+        self.assertEqual(pinned_version(), "0.4.7")
 
     def test_client_platforms_install_correct_asset(self):
         for system, arch, expected in [
