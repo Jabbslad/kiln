@@ -273,21 +273,23 @@ class DeployWorkflowTests(unittest.TestCase):
             if "sqlite3" in line and "apt-get" in line:
                 self.assertIn(exact, line)
                 self.assertNotIn("openssl", line)
-        present, _ = apt_lines(hide_sqlite3=False)
+        present, _, _ = apt_lines(hide_sqlite3=False)
         self.assertNotIn(exact, present)
         self.assertFalse(upgrade_lines(present))
-        missing, _ = apt_lines(hide_sqlite3=True)
+        missing, _, _ = apt_lines(hide_sqlite3=True)
         self.assertEqual(missing.count(exact), 1)
         self.assertLess(missing.index(update), missing.index(exact))
         self.assertEqual(missing[missing.index(exact) - 1], update)
         self.assertFalse(upgrade_lines(missing))
-        existing_present, _ = apt_lines(hide_sqlite3=False, existing=True)
-        self.assertEqual(existing_present, [])
-        existing_missing, _ = apt_lines(hide_sqlite3=True, existing=True)
-        self.assertEqual(existing_missing, [update, exact])
+        existing_present, present_out, present_err = apt_lines(hide_sqlite3=False, existing=True)
+        self.assertEqual(existing_present, [], present_err)
+        self.assertIn("installer-ran", present_out)
+        existing_missing, missing_out, missing_err = apt_lines(hide_sqlite3=True, existing=True)
+        self.assertEqual(existing_missing, [update, exact], missing_out + missing_err)
+        self.assertIn("installer-ran", missing_out)
         self.assertFalse(upgrade_lines(existing_missing))
-        failed, failed_out = apt_lines(hide_sqlite3=True, existing=True, apt_fail="update")
-        self.assertEqual(failed, [update])
+        failed, failed_out, failed_err = apt_lines(hide_sqlite3=True, existing=True, apt_fail="update")
+        self.assertEqual(failed, [update], failed_out + failed_err)
         self.assertNotIn("installer-ran", failed_out)
 
     def test_smoke_deletes_the_box_when_exec_or_output_fails(self):
@@ -404,6 +406,7 @@ def upgrade_lines(lines):
 def apt_lines(hide_sqlite3, existing=False, apt_fail=""):
     remote = Path(subprocess.check_output(["mktemp", "-d", "/tmp/kiln-deploy.XXXXXX"], text=True).strip())
     fake = Path(tempfile.mkdtemp())
+    overlay = None
     try:
         name = "kiln-server-v0.4.4-x86_64-unknown-linux-gnu.tar.gz"
         blob = tar_bytes({"install.sh": "#!/bin/bash\nprintf 'installer-ran\\n'\n"})
@@ -413,8 +416,11 @@ def apt_lines(hide_sqlite3, existing=False, apt_fail=""):
         apt = fake / "apt-get"
         apt.write_text(
             "#!/bin/bash\n"
-            f"printf 'DEBIAN_FRONTEND=%s NEEDRESTART_MODE=%s apt-get %s\\n' "
-            f"\"${{DEBIAN_FRONTEND-}}\" \"${{NEEDRESTART_MODE-}}\" \"$*\" >> {shlex.quote(str(log))}\n"
+            "umask 022\n"
+            f"log={shlex.quote(str(log))}\n"
+            "printf 'DEBIAN_FRONTEND=%s NEEDRESTART_MODE=%s apt-get %s\\n' "
+            "\"${DEBIAN_FRONTEND-}\" \"${NEEDRESTART_MODE-}\" \"$*\" >> \"$log\"\n"
+            "chmod a+r \"$log\"\n"
             'case " ${APT_FAIL-} " in *" $1 "*) exit 100;; esac\n'
             "exit 0\n"
         )
@@ -426,21 +432,34 @@ def apt_lines(hide_sqlite3, existing=False, apt_fail=""):
             sqlite.write_text("#!/bin/bash\nexit 0\n")
             sqlite.chmod(0o755)
             path = str(fake) + os.pathsep + os.environ["PATH"]
+        os.chmod(fake, 0o755)
+        os.chmod(remote, 0o755)
+        hidden = fake / "hidden"
+        if hidden.is_dir():
+            os.chmod(hidden, 0o755)
         env = os.environ.copy()
         env["PATH"] = path
         env["APT_FAIL"] = apt_fail
         inner = ["bash", str(ROOT / "deploy/github/install-remote.sh"), str(remote), "127.0.0.1"]
         if existing:
+            # Root mount namespace. Unprivileged user namespaces cannot mount
+            # overlay on the GitHub runner, so the script never started there.
+            overlay = Path(tempfile.mkdtemp(prefix="kiln-ov-"))
+            os.chmod(overlay, 0o755)
             command = [
+                "sudo",
+                "-n",
+                "env",
+                f"PATH={path}",
+                f"APT_FAIL={apt_fail}",
+                f"OV={overlay}",
                 "unshare",
-                "--user",
-                "--map-root-user",
                 "--mount",
                 "bash",
                 "-c",
-                "mkdir -p /tmp/ov/upper /tmp/ov/work /tmp/ov/merged && "
-                "mount -t overlay overlay -o lowerdir=/etc,upperdir=/tmp/ov/upper,workdir=/tmp/ov/work /tmp/ov/merged && "
-                "mount --bind /tmp/ov/merged /etc && "
+                "mkdir -p \"$OV/upper\" \"$OV/work\" \"$OV/merged\" && "
+                "mount -t overlay overlay -o lowerdir=/etc,upperdir=\"$OV/upper\",workdir=\"$OV/work\" \"$OV/merged\" && "
+                "mount --bind \"$OV/merged\" /etc && "
                 "mkdir -p /etc/kiln && "
                 "exec "
                 + " ".join(shlex.quote(part) for part in inner),
@@ -455,10 +474,12 @@ def apt_lines(hide_sqlite3, existing=False, apt_fail=""):
             check=False,
         )
         lines = log.read_text().splitlines() if log.exists() else []
-        return lines, result.stdout
+        return lines, result.stdout, result.stderr
     finally:
         shutil.rmtree(remote, ignore_errors=True)
         shutil.rmtree(fake, ignore_errors=True)
+        if overlay is not None:
+            shutil.rmtree(overlay, ignore_errors=True)
 
 
 def run_remote(archive_body, overlay=None, bad_checksum=False):
