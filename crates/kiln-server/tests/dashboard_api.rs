@@ -35,6 +35,8 @@ const STDERR: &str = "secret-stderr-7183";
 const KERNEL: &str = "/private/canary-kernel";
 const ROOTFS: &str = "/private/canary-rootfs";
 const PATH_ERROR: &str = "/private/canary-error";
+const PATH_DETAIL: &str = "/var/lib/kiln/op-path-canary";
+const CORRUPT_ROW: &str = "CORRUPT-ROW-NOT-JSON";
 const SAFE_ERROR: &str = "interrupted launch stopped; disk retained for explicit start or restore";
 
 fn hid(n: u64) -> String {
@@ -162,6 +164,8 @@ struct Fixture {
     exec: String,
     unknown: String,
     oldest: String,
+    path_op: String,
+    corrupt: String,
 }
 
 async fn fixture() -> (Fixture, Arc<AtomicUsize>) {
@@ -246,6 +250,8 @@ async fn fixture() -> (Fixture, Arc<AtomicUsize>) {
     let exec = hid(204);
     let unknown = hid(205);
     let oldest = hid(1);
+    let path_op = hid(206);
+    let corrupt = hid(207);
     insert(
         &db,
         &create_alpha,
@@ -336,6 +342,26 @@ async fn fixture() -> (Fixture, Arc<AtomicUsize>) {
             Some("oldest-omitted"),
         ),
     );
+    insert(
+        &db,
+        &path_op,
+        &beta,
+        false,
+        1_700_000_500,
+        &operation(
+            &path_op,
+            &beta,
+            OperationState::Failed,
+            None,
+            Some(PATH_DETAIL),
+        ),
+    );
+    db.execute(
+        "INSERT INTO operations(id, fingerprint, box_id, is_create, running, response, created_at)
+         VALUES (?1, ?2, ?3, 0, 0, ?4, ?5)",
+        rusqlite::params![corrupt, vec![0u8; 32], beta, CORRUPT_ROW, 1_700_000_600_i64],
+    )
+    .unwrap();
     for at in 2_i64..=96 {
         let id = hid(300 + u64::try_from(at).unwrap());
         insert(
@@ -379,6 +405,8 @@ async fn fixture() -> (Fixture, Arc<AtomicUsize>) {
             exec,
             unknown,
             oldest,
+            path_op,
+            corrupt,
         },
         hits,
     )
@@ -500,7 +528,7 @@ fn assert_document(raw: &str, value: &Value, fixture: &Fixture) {
     assert!(!raw.contains(&fixture.bare));
 
     let operations = value["operations"].as_array().unwrap();
-    assert_eq!(operations.len(), 99);
+    assert_eq!(operations.len(), 98);
     let by_id = |id: &str| operations.iter().find(|row| row["id"] == id).unwrap();
     let create = by_id(&fixture.create_beta);
     assert_eq!(create["kind"], "create");
@@ -524,6 +552,10 @@ fn assert_document(raw: &str, value: &Value, fixture: &Fixture) {
     );
     assert!(operations.iter().all(|row| row["id"] != fixture.unknown));
     assert!(operations.iter().all(|row| row["id"] != fixture.oldest));
+    assert!(operations.iter().all(|row| row["id"] != fixture.corrupt));
+    let path_op = by_id(&fixture.path_op);
+    assert_eq!(path_op["detail"], "");
+    assert_eq!(path_op["state"], "failed");
     for secret in [
         STDOUT,
         STDERR,
@@ -532,6 +564,8 @@ fn assert_document(raw: &str, value: &Value, fixture: &Fixture) {
         KERNEL,
         ROOTFS,
         PATH_ERROR,
+        PATH_DETAIL,
+        CORRUPT_ROW,
         "unknown-row-marker",
         "oldest-omitted",
         "/private/canary-template",
@@ -614,4 +648,110 @@ async fn unreachable_host_is_offline() {
     assert_eq!(value["checkpoints"], json!([]));
     assert_eq!(value["operations"], json!([]));
     assert!(!raw.contains(root.path().to_str().unwrap()));
+}
+
+#[tokio::test]
+async fn dashboard_schema_accepts_enrolled_and_unenrolled_servers() {
+    let (fixture, hits) = fixture().await;
+    let (auth, key) = enrollment(&fixture.root.path().join("schema-jwks.json"));
+    let enrolled = gateway::router_with_workspace(&fixture.socket, auth, WORKSPACE.into()).unwrap();
+    let enrolled_body =
+        document_body(get(&enrolled, Some(&read_jwt(&key)), "/api/v1/dashboard").await).await;
+    assert_eq!(enrolled_body["workspace"], WORKSPACE);
+    assert_eq!(enrolled_body["host"]["name"], WORKSPACE);
+    assert_eq!(enrolled_body["host"]["state"], "online");
+
+    let open_token = "d".repeat(64);
+    let open = gateway::router_with_auth(
+        &fixture.socket,
+        Authenticator::new(&open_token, None).unwrap(),
+    )
+    .unwrap();
+    for (label, token) in [("missing", None), ("bogus", Some("not-a-jwt"))] {
+        let response = get(&open, token, "/api/v1/dashboard").await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{label}");
+    }
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "rejected tokens dialed the host"
+    );
+    let online = document_body(get(&open, Some(&open_token), "/api/v1/dashboard").await).await;
+    assert_eq!(online["workspace"], "local");
+    assert_eq!(online["host"]["name"], "local");
+    assert_eq!(online["host"]["state"], "online");
+    assert!(!online["boxes"].as_array().unwrap().is_empty());
+
+    let root = tempfile::tempdir().unwrap();
+    let closed_token = "e".repeat(64);
+    let closed = gateway::router_with_auth(
+        &root.path().join("missing.sock"),
+        Authenticator::new(&closed_token, None).unwrap(),
+    )
+    .unwrap();
+    let denied = get(&closed, Some("not-a-jwt"), "/api/v1/dashboard").await;
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+    let offline = document_body(get(&closed, Some(&closed_token), "/api/v1/dashboard").await).await;
+    assert_eq!(offline["workspace"], "local");
+    assert_eq!(offline["host"]["name"], "local");
+    assert_eq!(offline["host"]["state"], "offline");
+    assert_eq!(offline["boxes"], json!([]));
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+
+    parse_with_dashboard_schema(&json!({
+        "enrolled": enrolled_body,
+        "unenrolled_online": online,
+        "unenrolled_offline": offline,
+    }));
+}
+
+async fn document_body(response: axum::response::Response) -> Value {
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), kiln_api::MAX_RESPONSE_BYTES)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+fn parse_with_dashboard_schema(cases: &Value) {
+    let web = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web");
+    if !web.join("node_modules/zod/package.json").exists() {
+        let install = std::process::Command::new("npm")
+            .args(["ci"])
+            .current_dir(&web)
+            .status()
+            .expect("npm ci");
+        assert!(install.success(), "npm ci failed");
+    }
+    let mut child = std::process::Command::new("node")
+        .args([
+            "--experimental-strip-types",
+            "--input-type=module",
+            "-e",
+            r#"import { dashboardSchema } from './src/data.ts'
+const chunks = []
+for await (const chunk of process.stdin) chunks.push(chunk)
+const cases = JSON.parse(Buffer.concat(chunks).toString())
+for (const name of ['enrolled', 'unenrolled_online', 'unenrolled_offline']) {
+  dashboardSchema.parse(cases[name])
+}"#,
+        ])
+        .current_dir(&web)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("node");
+    std::io::Write::write_all(
+        child.stdin.as_mut().unwrap(),
+        &serde_json::to_vec(cases).unwrap(),
+    )
+    .unwrap();
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "dashboardSchema rejected gateway JSON\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

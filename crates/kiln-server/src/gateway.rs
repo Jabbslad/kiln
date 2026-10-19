@@ -138,7 +138,7 @@ async fn dashboard(
     let observed_at = crate::dashboard::utc_timestamp(crate::dashboard::unix_now());
     match proxy(Arc::clone(&state), request).await {
         Ok(response) if response.status().is_success() => {
-            Ok(stamp(response, &state.workspace, &observed_at).await)
+            stamp(response, &state.workspace, &observed_at).await
         }
         Err(failure) if socket_failed(&failure) => Ok(json_document(
             StatusCode::OK,
@@ -158,16 +158,20 @@ fn socket_failed(failure: &Failure) -> bool {
     failure.0 == StatusCode::BAD_GATEWAY && failure.1.code == "host_unavailable"
 }
 
-async fn stamp(response: Response, workspace: &str, observed_at: &str) -> Response {
+async fn stamp(
+    response: Response,
+    workspace: &str,
+    observed_at: &str,
+) -> Result<Response, Failure> {
     let (parts, body) = response.into_parts();
-    let Ok(bytes) = to_bytes(body, kiln_api::MAX_RESPONSE_BYTES).await else {
-        return Response::from_parts(parts, Body::empty());
-    };
+    let bytes = to_bytes(body, kiln_api::MAX_RESPONSE_BYTES)
+        .await
+        .map_err(|_| upstream_error())?;
     let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return Response::from_parts(parts, Body::from(bytes));
+        return Ok(Response::from_parts(parts, Body::from(bytes)));
     };
     crate::dashboard::stamp_value(&mut value, workspace, observed_at);
-    json_document(parts.status, value)
+    Ok(json_document(parts.status, value))
 }
 
 fn json_document(status: StatusCode, body: impl serde::Serialize) -> Response {
@@ -274,4 +278,26 @@ fn upstream_error() -> Failure {
         "host_unavailable",
         "Host connection failed. A submitted operation may have been accepted; query its request ID before retrying.",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn oversized_host_body_is_an_error() {
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::from(vec![b'x'; kiln_api::MAX_RESPONSE_BYTES + 1]))
+            .unwrap();
+        let failure = stamp(response, "server-b", "1970-01-01T00:00:00Z")
+            .await
+            .expect_err("oversized body");
+        assert_eq!(failure.0, StatusCode::BAD_GATEWAY);
+        assert_eq!(failure.1.code, "host_unavailable");
+        let response = failure.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
+        assert!(!bytes.is_empty());
+    }
 }

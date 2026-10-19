@@ -130,12 +130,23 @@ pub(crate) fn utc_timestamp(secs: i64) -> String {
     )
 }
 
+const UNENROLLED_WORKSPACE: &str = "local";
+
+fn published_workspace(name: &str) -> &str {
+    if name.is_empty() {
+        UNENROLLED_WORKSPACE
+    } else {
+        name
+    }
+}
+
 pub(crate) fn document(
     workspace: &str,
     observed_at: &str,
     host_state: &'static str,
     inventory: &Inventory,
 ) -> Document {
+    let workspace = published_workspace(workspace).to_owned();
     let mut operations = Vec::new();
     for row in &inventory.operations {
         let Some(state) = operation_state(row.operation.state) else {
@@ -155,9 +166,9 @@ pub(crate) fn document(
     Document {
         schema_version: 1,
         observed_at: observed_at.to_owned(),
-        workspace: workspace.to_owned(),
+        workspace: workspace.clone(),
         host: HostBody {
-            name: workspace.to_owned(),
+            name: workspace,
             state: host_state,
             metrics: Metrics::empty(),
         },
@@ -176,10 +187,8 @@ pub(crate) fn stamp_value(value: &mut Value, workspace: &str, observed_at: &str)
     if !value.is_object() {
         return;
     }
+    let workspace = published_workspace(workspace);
     value["observed_at"] = json!(observed_at);
-    if workspace.is_empty() {
-        return;
-    }
     value["workspace"] = json!(workspace);
     if let Some(host) = value.get_mut("host") {
         host["name"] = json!(workspace);
@@ -247,11 +256,7 @@ fn operation_state(state: OperationState) -> Option<&'static str> {
 }
 
 fn client_detail(operation: &Operation) -> String {
-    operation
-        .error
-        .as_ref()
-        .map(|error| error.message.clone())
-        .unwrap_or_default()
+    public_error(operation.error.as_ref().map(|error| error.message.as_str())).unwrap_or_default()
 }
 
 fn public_error(value: Option<&str>) -> Option<String> {

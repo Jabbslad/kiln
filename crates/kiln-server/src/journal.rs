@@ -161,12 +161,15 @@ impl Journal {
         let mut operations = Vec::new();
         for row in rows {
             let (id, box_id, is_create, created_at, response) = row?;
+            let Ok(operation) = serde_json::from_str(&response) else {
+                continue;
+            };
             operations.push(StoredOperation {
                 id,
                 box_id,
                 is_create: is_create != 0,
                 created_at,
-                operation: serde_json::from_str(&response)?,
+                operation,
             });
         }
         Ok(operations)
