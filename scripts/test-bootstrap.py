@@ -268,12 +268,16 @@ if args[0] == 'env' and 'apt-get' in args:
         )
 
     def test_pinned_version_matches_published_release(self):
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "kiln-bootstrap-test",
+        }
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(
             "https://api.github.com/repos/Jabbslad/kiln/releases/latest",
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "kiln-bootstrap-test",
-            },
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(request, timeout=30) as response:

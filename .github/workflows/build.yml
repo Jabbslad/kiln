@@ -46,6 +46,8 @@ jobs:
         with:
           cache-workspace-crates: 'true'
       - name: Test and lint
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -171,6 +173,8 @@ jobs:
         run: cargo test --locked -p kiln-api -p kiln-client --target ${{ matrix.target }}
       - name: Native shell bootstrap tests
         if: runner.os != 'Windows'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: python scripts/test-bootstrap.py
       - name: Production binary
         if: github.event_name != 'pull_request'
