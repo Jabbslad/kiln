@@ -30,7 +30,7 @@ SERVER_FILES = [
     "bin/kiln",
     "bin/kiln-host",
     "bin/kiln-api",
-    "install.py",
+    "install.sh",
     "fetch-firecracker.sh",
     "README.md",
     "docs/releases.md",
@@ -153,9 +153,12 @@ if args[0] == 'python3':
     sys.exit(subprocess.call([sys.executable, *args[1:]]))
 if args[0] == 'sh' and len(args) >= 3 and 'kvm' in args[2]:
     sys.exit(0 if (root / 'kvm').exists() else 1)
-if args == ['env', 'NEEDRESTART_MODE=l', 'apt-get', 'install', '-y', '--no-install-recommends', '--no-upgrade', 'sqlite3']:
+if args[0] == 'env' and 'apt-get' in args:
+    sub = args[args.index('apt-get') + 1]
+    assert sub not in ('upgrade', 'dist-upgrade', 'full-upgrade'), args
+    if os.environ.get('APT_FAIL') == sub:
+        sys.exit(100)
     sys.exit(0)
-assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a', 'apt-get']
 """,
         )
 
@@ -171,10 +174,12 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
             }
         if server:
             members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
-            members["install.py"] = (
-                b"import os, sys\nexpected = ['--address', os.environ['EXPECTED_ADDRESS'], '--apply']\n"
-                b"if os.environ['EXPECTED_UPLINK']: expected += ['--network-uplink', os.environ['EXPECTED_UPLINK']]\n"
-                b"assert sys.argv[1:] == expected, sys.argv\nassert sys.stdin.read() == ''\nprint('provisioner completed')\n"
+            members["install.sh"] = (
+                b"#!/bin/bash\nset -euo pipefail\n"
+                b'expected="--address ${EXPECTED_ADDRESS} --apply"\n'
+                b'if [ -n "${EXPECTED_UPLINK}" ]; then expected="${expected} --network-uplink ${EXPECTED_UPLINK}"; fi\n'
+                b'[ "$*" = "$expected" ]\n'
+                b"printf '%s\\n' 'provisioner completed'\n"
             )
         with tarfile.open(self.archive, "w:gz") as archive:
             for name, data in members.items():
@@ -258,7 +263,7 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
         )
 
     def test_pinned_version_matches_published_release(self):
-        self.assertEqual(pinned_version(), "0.4.4")
+        self.assertEqual(pinned_version(), "0.4.5")
 
     def test_client_platforms_install_correct_asset(self):
         for system, arch, expected in [
@@ -473,8 +478,8 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
         (self.root / "etc-kiln").mkdir()
         self.env["ROUTE"] = ""
         members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
-        members["install.py"] = (
-            b"import sys\nassert sys.argv[1:] == ['--apply']\nprint('updated')\n"
+        members["install.sh"] = (
+            b"#!/bin/bash\nset -euo pipefail\n[ \"$*\" = --apply ]\nprintf '%s\\n' updated\n"
         )
         code, out = self.run_bootstrap(self.package(members), args=("server",))
         self.assertEqual(code, 0, out)
@@ -484,7 +489,7 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
             for line in (self.root / "privileged").read_text().splitlines()
         ]
         self.assertEqual(commands[0], ["true"])
-        self.assertEqual(commands[1][0], "python3")
+        self.assertEqual(commands[1][0], "bash")
         self.assertEqual(len(commands), 2)
 
     def test_server_unsupported_host_never_requests_privileges(self):
@@ -529,8 +534,9 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
         self.assertEqual(commands[0], ["true"])
         self.assertIn("kvm", commands[1][2])
         self.assertEqual(commands[2][-2:], ["apt-get", "update"])
-        self.assertIn("python3", commands[3])
-        self.assertEqual(commands[4][0], "python3")
+        self.assertNotIn("python3", commands[3])
+        self.assertNotIn("sqlite3", commands[3])
+        self.assertEqual(commands[4][0], "bash")
         self.assertTrue(
             self.requests()[0]["args"][-1].endswith(
                 f"/kiln-server-v{PINNED}-x86_64-unknown-linux-gnu.tar.gz"
@@ -686,9 +692,18 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
         self.assertEqual(code, 0, out)
         self.assertIn("provisioner completed", out)
 
+    def test_python_archive_is_rejected_before_apt(self):
+        members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
+        del members["install.sh"]
+        members["install.py"] = b"print('must-not-run')\n"
+        code, out = self.run_bootstrap(self.package(members), args=("server",))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("Unexpected archive contents.", out)
+        self.assertNotIn("must-not-run", out)
+        self.assertNotIn("apt-get", self.privileged())
+
     def test_shell_archive_uses_bash_and_sqlite_not_python(self):
         members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
-        del members["install.py"]
         members["install.sh"] = b"""#!/bin/bash
 set -euo pipefail
 got="$*"
@@ -711,7 +726,6 @@ printf '%s\\n' 'provisioner completed'
         (self.root / "etc-kiln").mkdir()
         self.env["ROUTE"] = ""
         members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
-        del members["install.py"]
         members["install.sh"] = b"#!/bin/bash\nset -euo pipefail\n[ \"$*\" = --apply ]\nprintf '%s\\n' updated\n"
         code, out = self.run_bootstrap(self.package(members), args=("server",))
         self.assertEqual(code, 0, out)
@@ -739,9 +753,25 @@ printf '%s\\n' 'provisioner completed'
                     continue
         return str(self.root / "bin") + os.pathsep + str(hidden)
 
+    def apt_subcommands(self, commands):
+        found = []
+        for command in commands:
+            if "apt-get" not in command:
+                continue
+            found.append(command[command.index("apt-get") + 1])
+        return found
+
     def test_sqlite3_install_is_exact_and_skipped_when_present(self):
-        exact = [
+        update = [
             "env",
+            "DEBIAN_FRONTEND=noninteractive",
+            "NEEDRESTART_MODE=l",
+            "apt-get",
+            "update",
+        ]
+        install = [
+            "env",
+            "DEBIAN_FRONTEND=noninteractive",
             "NEEDRESTART_MODE=l",
             "apt-get",
             "install",
@@ -752,29 +782,38 @@ printf '%s\\n' 'provisioner completed'
         ]
         text = (ROOT / "deploy/bootstrap/install.sh").read_text()
         self.assertIn(
-            "NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3",
+            "DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get update",
+            text,
+        )
+        self.assertIn(
+            "DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3",
             text,
         )
         self.assertNotIn("apt-get upgrade", text)
+        self.assertNotIn("dist-upgrade", text)
         members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
-        del members["install.py"]
         members["install.sh"] = b"#!/bin/bash\nset -euo pipefail\nprintf '%s\\n' 'provisioner completed'\n"
         code, out = self.run_bootstrap(self.package(members), args=("server",))
         self.assertEqual(code, 0, out)
         present = [json.loads(line) for line in (self.root / "privileged").read_text().splitlines()]
-        self.assertNotIn(exact, present)
+        self.assertNotIn(install, present)
+        self.assertNotIn(update, present)
         self.assertTrue(any(command[-2:] == ["apt-get", "update"] for command in present))
+        self.assertNotIn("upgrade", self.apt_subcommands(present))
+        self.assertNotIn("dist-upgrade", self.apt_subcommands(present))
 
         (self.root / "privileged").unlink()
         self.env["PATH"] = self.path_without("sqlite3")
         code, out = self.run_bootstrap(self.package(members), args=("server",))
         self.assertEqual(code, 0, out)
         missing = [json.loads(line) for line in (self.root / "privileged").read_text().splitlines()]
-        self.assertIn(exact, missing)
-        self.assertEqual(missing.count(exact), 1)
+        self.assertEqual(missing.count(install), 1)
+        self.assertLess(missing.index(update), missing.index(install))
         general = next(command for command in missing if command[-1] == "passwd")
         self.assertNotIn("sqlite3", general)
         self.assertNotIn("python3", general)
+        self.assertNotIn("upgrade", self.apt_subcommands(missing))
+        self.assertNotIn("dist-upgrade", self.apt_subcommands(missing))
 
         (self.root / "etc-kiln").mkdir()
         (self.root / "privileged").unlink()
@@ -783,10 +822,27 @@ printf '%s\\n' 'provisioner completed'
         code, out = self.run_bootstrap(self.package(members), args=("server",))
         self.assertEqual(code, 0, out)
         existing = [json.loads(line) for line in (self.root / "privileged").read_text().splitlines()]
+        self.assertEqual(len(existing), 4, existing)
         self.assertEqual(existing[0], ["true"])
-        self.assertEqual(existing[1], exact)
-        self.assertEqual(existing[2][0], "bash")
-        self.assertEqual(len(existing), 3)
+        self.assertEqual(existing[1], update)
+        self.assertEqual(existing[2], install)
+        self.assertEqual(existing[3][0], "bash")
+        self.assertEqual(existing[3][-1], "--apply")
+        self.assertNotIn("upgrade", self.apt_subcommands(existing))
+        self.assertNotIn("dist-upgrade", self.apt_subcommands(existing))
+
+    def test_sqlite3_apt_failure_does_not_run_the_installer(self):
+        (self.root / "etc-kiln").mkdir()
+        self.env.update(ROUTE="", APT_FAIL="update", PATH=self.path_without("sqlite3"))
+        members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
+        members["install.sh"] = b"#!/bin/bash\nprintf '%s\\n' updated\n"
+        code, out = self.run_bootstrap(self.package(members), args=("server",))
+        self.assertNotEqual(code, 0, out)
+        self.assertNotIn("updated", out)
+        commands = [json.loads(line) for line in (self.root / "privileged").read_text().splitlines()]
+        self.assertTrue(any(command[-2:] == ["apt-get", "update"] for command in commands))
+        self.assertFalse(any(command[0] == "bash" for command in commands))
+        self.assertFalse(any(command[-1] == "sqlite3" for command in commands))
 
     def test_kvm_access_is_probed_before_apt(self):
         code, out = self.run_bootstrap(self.package(server=True), args=("server",))

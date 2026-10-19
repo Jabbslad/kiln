@@ -87,7 +87,8 @@ if [ "$existing" = false ]; then
     openssl curl ca-certificates tar passwd
 fi
 if ! command -v sqlite3 >/dev/null 2>&1; then
-  NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3
+  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get update
+  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3
 fi
 
 if [ -n "$address" ]; then

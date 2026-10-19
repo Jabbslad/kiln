@@ -4,6 +4,7 @@
 import hashlib
 import io
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -222,10 +223,15 @@ class DeployWorkflowTests(unittest.TestCase):
         script = (ROOT / "deploy/github/install-remote.sh").read_text()
         self.assertIn("NEEDRESTART_MODE=l", script)
         self.assertIn(
-            "NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3",
+            "DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get update",
+            script,
+        )
+        self.assertIn(
+            "DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3",
             script,
         )
         self.assertNotIn("apt-get upgrade", script)
+        self.assertNotIn("dist-upgrade", script)
         self.assertIn("apt-get install --no-install-recommends --no-upgrade -y", script)
         pending = subprocess.run(
             ["apt-get", "-s", "upgrade"],
@@ -257,18 +263,34 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertIn(name, plain.stdout)
 
     def test_sqlite3_install_is_exact_and_skipped_when_present(self):
-        exact = "NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3"
+        update = "DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get update"
+        exact = "DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3"
         script = (ROOT / "deploy/github/install-remote.sh").read_text()
         self.assertEqual(script.count(exact), 1)
         self.assertNotIn("apt-get upgrade", script)
+        self.assertNotIn("dist-upgrade", script)
         for line in script.splitlines():
             if "sqlite3" in line and "apt-get" in line:
                 self.assertIn(exact, line)
                 self.assertNotIn("openssl", line)
-        self.assertNotIn(exact, "\n".join(apt_lines(hide_sqlite3=False)))
-        missing = apt_lines(hide_sqlite3=True)
+        present, _, _ = apt_lines(hide_sqlite3=False)
+        self.assertNotIn(exact, present)
+        self.assertFalse(upgrade_lines(present))
+        missing, _, _ = apt_lines(hide_sqlite3=True)
         self.assertEqual(missing.count(exact), 1)
-        self.assertFalse(any(line.startswith("apt-get upgrade") or " apt-get upgrade" in line for line in missing))
+        self.assertLess(missing.index(update), missing.index(exact))
+        self.assertEqual(missing[missing.index(exact) - 1], update)
+        self.assertFalse(upgrade_lines(missing))
+        existing_present, present_out, present_err = apt_lines(hide_sqlite3=False, existing=True)
+        self.assertEqual(existing_present, [], present_err)
+        self.assertIn("installer-ran", present_out)
+        existing_missing, missing_out, missing_err = apt_lines(hide_sqlite3=True, existing=True)
+        self.assertEqual(existing_missing, [update, exact], missing_out + missing_err)
+        self.assertIn("installer-ran", missing_out)
+        self.assertFalse(upgrade_lines(existing_missing))
+        failed, failed_out, failed_err = apt_lines(hide_sqlite3=True, existing=True, apt_fail="update")
+        self.assertEqual(failed, [update], failed_out + failed_err)
+        self.assertNotIn("installer-ran", failed_out)
 
     def test_smoke_deletes_the_box_when_exec_or_output_fails(self):
         remote = (ROOT / "deploy/github/install-remote.sh").read_text()
@@ -373,19 +395,33 @@ def path_without(name, root, *front):
     return os.pathsep.join([*front, str(hidden)])
 
 
-def apt_lines(hide_sqlite3):
+def upgrade_lines(lines):
+    return any(
+        line.split(" apt-get ", 1)[-1].split(" ", 1)[0] in ("upgrade", "dist-upgrade", "full-upgrade")
+        for line in lines
+        if " apt-get " in line
+    )
+
+
+def apt_lines(hide_sqlite3, existing=False, apt_fail=""):
     remote = Path(subprocess.check_output(["mktemp", "-d", "/tmp/kiln-deploy.XXXXXX"], text=True).strip())
     fake = Path(tempfile.mkdtemp())
+    overlay = None
     try:
         name = "kiln-server-v0.4.4-x86_64-unknown-linux-gnu.tar.gz"
-        blob = tar_bytes({"install.sh": "#!/bin/bash\nexit 0\n"})
+        blob = tar_bytes({"install.sh": "#!/bin/bash\nprintf 'installer-ran\\n'\n"})
         (remote / name).write_bytes(blob)
         (remote / f"{name}.sha256").write_text(f"{hashlib.sha256(blob).hexdigest()}  {name}\n")
         log = fake / "apt.log"
         apt = fake / "apt-get"
         apt.write_text(
             "#!/bin/bash\n"
-            f"printf 'NEEDRESTART_MODE=%s apt-get %s\\n' \"${{NEEDRESTART_MODE-}}\" \"$*\" >> {log}\n"
+            "umask 022\n"
+            f"log={shlex.quote(str(log))}\n"
+            "printf 'DEBIAN_FRONTEND=%s NEEDRESTART_MODE=%s apt-get %s\\n' "
+            "\"${DEBIAN_FRONTEND-}\" \"${NEEDRESTART_MODE-}\" \"$*\" >> \"$log\"\n"
+            "chmod a+r \"$log\"\n"
+            'case " ${APT_FAIL-} " in *" $1 "*) exit 100;; esac\n'
             "exit 0\n"
         )
         apt.chmod(0o755)
@@ -396,19 +432,54 @@ def apt_lines(hide_sqlite3):
             sqlite.write_text("#!/bin/bash\nexit 0\n")
             sqlite.chmod(0o755)
             path = str(fake) + os.pathsep + os.environ["PATH"]
+        os.chmod(fake, 0o755)
+        os.chmod(remote, 0o755)
+        hidden = fake / "hidden"
+        if hidden.is_dir():
+            os.chmod(hidden, 0o755)
         env = os.environ.copy()
         env["PATH"] = path
-        subprocess.run(
-            ["bash", str(ROOT / "deploy/github/install-remote.sh"), str(remote), "127.0.0.1"],
+        env["APT_FAIL"] = apt_fail
+        inner = ["bash", str(ROOT / "deploy/github/install-remote.sh"), str(remote), "127.0.0.1"]
+        if existing:
+            # Root mount namespace. Unprivileged user namespaces cannot mount
+            # overlay on the GitHub runner, so the script never started there.
+            overlay = Path(tempfile.mkdtemp(prefix="kiln-ov-"))
+            os.chmod(overlay, 0o755)
+            command = [
+                "sudo",
+                "-n",
+                "env",
+                f"PATH={path}",
+                f"APT_FAIL={apt_fail}",
+                f"OV={overlay}",
+                "unshare",
+                "--mount",
+                "bash",
+                "-c",
+                "mkdir -p \"$OV/upper\" \"$OV/work\" \"$OV/merged\" && "
+                "mount -t overlay overlay -o lowerdir=/etc,upperdir=\"$OV/upper\",workdir=\"$OV/work\" \"$OV/merged\" && "
+                "mount --bind \"$OV/merged\" /etc && "
+                "mkdir -p /etc/kiln && "
+                "exec "
+                + " ".join(shlex.quote(part) for part in inner),
+            ]
+        else:
+            command = inner
+        result = subprocess.run(
+            command,
             env=env,
             text=True,
             capture_output=True,
             check=False,
         )
-        return log.read_text().splitlines() if log.exists() else []
+        lines = log.read_text().splitlines() if log.exists() else []
+        return lines, result.stdout, result.stderr
     finally:
         shutil.rmtree(remote, ignore_errors=True)
         shutil.rmtree(fake, ignore_errors=True)
+        if overlay is not None:
+            shutil.rmtree(overlay, ignore_errors=True)
 
 
 def run_remote(archive_body, overlay=None, bad_checksum=False):

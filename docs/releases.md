@@ -29,7 +29,7 @@ install is recorded in `docs/runbooks/2026-10-19-dark-forge-first-install.md`.
 `.cursor/skills/verify-kiln/` drives a checkout and records the evidence.
 
 Publishing this release does not deploy a server or restart a live service.
-The public bootstrap pins the published v0.4.4 assets.
+The public bootstrap pins the published v0.4.5 assets and runs `install.sh`.
 
 ## v0.4.4 dashboard frontend
 
@@ -196,7 +196,7 @@ is supplied (explicit uplink). See the [bootstrap guide](../deploy/bootstrap/REA
 
 **v0.2.0 guest-access additions:** packages include interactive SSH,
 SFTP, editor SSH configuration, and optional isolated guest IPv4 egress. The
-public installer pins v0.4.4. These features require the new client, server,
+public installer pins v0.4.5. These features require the new client, server,
 and updated Ubuntu guest agent. Existing templates/boxes are not
 upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
 management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
@@ -293,12 +293,11 @@ Start with a **dedicated Ubuntu 24.04 or 26.04 x86-64 systemd host** with usable
 cgroup v2, at least 6 GiB currently available RAM and 24 GiB free on `/var/lib`
 after extracting the package. A 16 GiB+ host is recommended. Allow additional
 temporary space for the downloaded archive and extracted image (about 3 GiB).
-The shell bootstrap manages sqlite3, OpenSSL, curl, CA certificates, tar and
-Ubuntu account tools. For manual installation, supply these dependencies yourself;
+The shell bootstrap manages sqlite3, OpenSSL, curl, CA certificates, tar, and
+Ubuntu account tools. For manual installation, supply these dependencies yourself.
 `deploy/install.sh` only checks them. Installing and deploying Kiln is shell
-scripts. The published v0.4.4 archive is the exception: it contains `install.py`
-and no `install.sh`, and the bootstrap still runs that Python file for an
-archive that has no shell installer. `scripts/release.py` packages releases in
+scripts. The public bootstrap pins v0.4.5 and runs `install.sh`. It rejects an
+archive whose installer is `install.py`. `scripts/release.py` packages releases in
 CI and does not run on the server.
 The installer downloads checksum-pinned Firecracker/jailer 1.17.0 from GitHub. The package
 already contains the kernel, Ubuntu filesystem and guest agent.

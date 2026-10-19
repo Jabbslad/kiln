@@ -15,7 +15,7 @@ Surfaces:
 - `deploy/bootstrap/install.sh` for client and server install.
 - The dashboard in `web/`. It is a static React app. Preview mode does not call a VM API.
 
-There is no in-tree server that implements `GET /api/v1/dashboard`. Workspace version is `0.4.4` (`Cargo.toml`).
+There is no in-tree server that implements `GET /api/v1/dashboard`. Workspace version is `0.4.5` (`Cargo.toml`).
 
 Build once. Give each drive its own tmux session. Do not run `kiln-runtime` as root.
 
