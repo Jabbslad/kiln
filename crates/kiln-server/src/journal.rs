@@ -2,7 +2,7 @@ use anyhow::{Result, ensure};
 use kiln_api::{Action, ApiError, Operation, OperationState, Submit, new_id};
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 #[derive(Debug)]
 pub struct Conflict;
@@ -134,6 +134,51 @@ impl Journal {
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?)
     }
+
+    pub(crate) fn create_times(&self) -> Result<BTreeMap<String, i64>> {
+        Ok(self
+            .0
+            .prepare("SELECT box_id, created_at FROM operations WHERE is_create=1")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub(crate) fn recent(&self, limit: usize) -> Result<Vec<StoredOperation>> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let mut statement = self.0.prepare(
+            "SELECT id, box_id, is_create, created_at, response
+             FROM operations ORDER BY created_at DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = statement.query_map(params![limit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        let mut operations = Vec::new();
+        for row in rows {
+            let (id, box_id, is_create, created_at, response) = row?;
+            operations.push(StoredOperation {
+                id,
+                box_id,
+                is_create: is_create != 0,
+                created_at,
+                operation: serde_json::from_str(&response)?,
+            });
+        }
+        Ok(operations)
+    }
+}
+
+pub(crate) struct StoredOperation {
+    pub id: String,
+    pub box_id: String,
+    pub is_create: bool,
+    pub created_at: i64,
+    pub operation: Operation,
 }
 
 #[cfg(test)]
