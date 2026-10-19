@@ -14,9 +14,9 @@ Surfaces:
 - `kiln login` against the identity service. The client default issuer is `https://dark-forge.dev`.
 - The public door in `features/public-door.md`. A laptop dials `cli.dark-forge.dev:8443` after identity approval. The door checks the token before it dials loopback `kiln-api`.
 - `deploy/bootstrap/install.sh` for client and server install.
-- The dashboard in `web/`. It is a static React app. Preview mode does not call a VM API.
+- The dashboard in `web/`. It is a static React app. Preview mode does not call a VM API. `GET /api/v1/dashboard` is served by `kiln-host` and by loopback `kiln-api`. `kiln-door` on `:8443` forwards it for a read-scope owner JWT. The drive is in `features/dashboard.md`.
 
-There is no in-tree server that implements `GET /api/v1/dashboard`. Workspace version is `0.4.6` (`Cargo.toml`).
+Workspace version is `0.4.7` (`Cargo.toml`).
 
 Build once. Give each drive its own tmux session. Do not run `kiln-runtime` as root.
 
@@ -26,7 +26,7 @@ From the repository root.
 
 ### Dashboard
 
-No KVM and no Rust build. Node 22.12+ and npm.
+Preview needs no KVM and no Rust build. Node 22.12+ and npm. The live GET needs `kiln-host` and `kiln-api`, as in `features/dashboard.md`.
 
 ```sh
 cd web
@@ -35,7 +35,7 @@ npx playwright install chromium
 tmux new-session -d -s kiln-dash -c "$PWD" -- npm run dev -- --host 127.0.0.1 --port 4173 --strictPort
 ```
 
-Record the pane pid (`tmux list-panes -t kiln-dash -F '#{pane_pid}'`). Ready means `http://127.0.0.1:4173/boxes?preview=1` renders the heading `Boxes` and the label `Design preview`. A listening port is not enough; run Doctor.
+Record the pane pid (`tmux list-panes -t kiln-dash -F '#{pane_pid}'`). Ready means `http://127.0.0.1:4173/boxes?preview=1` renders the heading `Boxes` and the label `Design preview`. A listening port is not enough; run Doctor. That check is the design preview. `GET /api/v1/dashboard` is a separate drive in `features/dashboard.md`.
 
 ### Host runtime
 
@@ -60,7 +60,7 @@ Ready means Doctor exits 0 and prints `"development_ready": true`. `kiln-runtime
 
 ### Laptop API, login, installer
 
-Those launches are in `features/private-ca.md`, `features/login.md`, and `features/installer.md`. Do not start them for a dashboard or runtime drive.
+Those launches are in `features/private-ca.md`, `features/login.md`, and `features/installer.md`. The design preview and a runtime drive do not start them. The live `GET /api/v1/dashboard` curl uses the loopback `kiln-api` from `features/private-ca.md`.
 
 ## Doctor
 

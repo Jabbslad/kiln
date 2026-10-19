@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, Navigate, Route, Routes, useLocation, useSearchParams } from 'react-router-dom'
+import { Link, Route, Routes, useLocation, useSearchParams } from 'react-router-dom'
 import {
   ArrowUpRight,
   Box,
@@ -25,6 +25,7 @@ import Templates from './Templates'
 import Operations from './Operations'
 import { Docs, Settings } from './Settings'
 import { AppLink, Empty } from './ui'
+import Landing from './Landing'
 
 type Connection =
   { state: 'loading' } | { state: 'error'; message: string } | { state: 'ready'; data: Dashboard }
@@ -36,6 +37,11 @@ const navigation = [
 ]
 
 export default function App() {
+  const location = useLocation()
+  return location.pathname === '/' ? <Landing /> : <Dashboard />
+}
+
+function Dashboard() {
   const [params] = useSearchParams()
   const location = useLocation()
   const preview = params.get('preview') === '1'
@@ -90,9 +96,9 @@ export default function App() {
       </a>
       <header className="topbar">
         <div className="brand">
-          <AppLink to="/boxes" aria-label="kiln home">
+          <Link to="/" aria-label="kiln home">
             kiln<span className="brand-period">.</span>
-          </AppLink>
+          </Link>
           <span className="brand-divider" />
           <span className="topbar-label">Single-host console</span>
         </div>
@@ -107,7 +113,7 @@ export default function App() {
                   ? 'Connecting'
                   : 'Not connected'}
           </span>
-          <span className="topbar-version">v0.1</span>
+          <span className="topbar-version">Console / pilot</span>
         </div>
       </header>
       <aside id="sidebar" className="sidebar">
@@ -212,10 +218,6 @@ export default function App() {
               element={
                 data ? (
                   <Routes>
-                    <Route
-                      path="/"
-                      element={<Navigate to={`/boxes${preview ? '?preview=1' : ''}`} replace />}
-                    />
                     <Route path="/boxes" element={<Inventory data={data} preview={preview} />} />
                     <Route
                       path="/boxes/:id"

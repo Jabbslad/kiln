@@ -61,7 +61,7 @@ class ReleaseTests(unittest.TestCase):
         (self.repo / "web").mkdir()
         (self.repo / "web/README.md").write_text("Frontend only; no live control plane")
         (self.bins / "assets").mkdir()
-        for name in ["index.html", "favicon.svg", "THIRD_PARTY_LICENSES.md", "assets/index-ab.js", "assets/index-cd.css", "assets/font-ef.woff2"]:
+        for name in ["index.html", "favicon.svg", "THIRD_PARTY_LICENSES.md", "assets/index-ab.js", "assets/index-cd.css", "assets/font-ef.woff2", "assets/hero-gh.webp"]:
             (self.bins / name).write_text(name)
         (self.bins / "admin.token").write_text("private")
         path = self.package(kind="dashboard", target="web")
@@ -69,7 +69,7 @@ class ReleaseTests(unittest.TestCase):
         with tarfile.open(path) as archive:
             self.assertEqual(set(archive.getnames()), {
                 "index.html", "favicon.svg", "assets/index-ab.js", "assets/index-cd.css",
-                "assets/font-ef.woff2", "THIRD_PARTY_LICENSES.md", "README.md", "release.json",
+                "assets/font-ef.woff2", "assets/hero-gh.webp", "THIRD_PARTY_LICENSES.md", "README.md", "release.json",
             })
             self.assertEqual(archive.extractfile("assets/index-ab.js").read(), b"assets/index-ab.js")
             self.assertTrue(all(member.mode == 0o644 for member in archive.getmembers()))
@@ -113,12 +113,14 @@ class ReleaseTests(unittest.TestCase):
     def test_invalid_version_target_and_missing_binary_make_no_archive(self):
         for version, target in [
             ("../escape", "x86_64-unknown-linux-gnu"),
+            ("v0.1.0-rc.1", "x86_64-unknown-linux-gnu"),
             ("v0.1.0", "arm-unknown"),
         ]:
             with self.assertRaises(ValueError):
                 self.release.package(
                     self.repo, self.bins, self.out, version, target, "client", None
                 )
+            self.assertFalse(self.out.exists(), version)
         (self.bins / "kiln").unlink()
         with self.assertRaises(FileNotFoundError):
             self.package()

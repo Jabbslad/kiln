@@ -6,6 +6,22 @@ terminal is needed to install. Access to a running Kiln server still requires
 browser login to an enrolled host or a direct administrator profile; public
 downloads do not disable API authentication.
 
+## v0.4.7 website and dashboard design
+
+The static dashboard archive now includes a public landing page at `/` and the
+existing console at `/boxes`. The imported root `design.md` records the shared
+visual system and Kiln adaptations. The landing page uses original, locally
+bundled artwork, real client installation instructions, and explicit links to the
+read-only preview. It makes no host API requests. Console navigation, headings,
+borders, and selection treatments follow the same system.
+
+Browser authentication and live dashboard controls are still not integrated.
+Existing preview gates remain; no VM operations are simulated. The static archive
+is separate from server installation. Publishing it does not deploy either surface,
+restart services, or change runtime state. The runtime behavior is unchanged from
+v0.4.6. Browser validation covers phone/desktop layouts, accessibility, navigation,
+clipboard success and denial, and the existing console interactions.
+
 ## v0.4.6 public door
 
 `kiln-api door` binds one public address and presents a leaf from the existing
@@ -30,7 +46,7 @@ installs `sqlite3`, it runs `apt-get update`.
 A patch update from v0.4.5 keeps the guest image, the runtime format,
 configuration, enrollment, and disks. Publishing this release does not deploy
 a server or restart a live service. The public bootstrap pins the published
-v0.4.6 assets and runs `install.sh`.
+v0.4.7 assets and runs `install.sh`.
 
 ## v0.4.5 shell installer
 
@@ -55,7 +71,7 @@ install is recorded in `docs/runbooks/2026-10-19-dark-forge-first-install.md`.
 `.cursor/skills/verify-kiln/` drives a checkout and records the evidence.
 
 Publishing this release does not deploy a server or restart a live service.
-The public bootstrap pins the published v0.4.6 assets and runs `install.sh`.
+The public bootstrap pins the published v0.4.7 assets and runs `install.sh`.
 
 ## v0.4.4 dashboard frontend
 
@@ -222,7 +238,7 @@ is supplied (explicit uplink). See the [bootstrap guide](../deploy/bootstrap/REA
 
 **v0.2.0 guest-access additions:** packages include interactive SSH,
 SFTP, editor SSH configuration, and optional isolated guest IPv4 egress. The
-public installer pins v0.4.6. These features require the new client, server,
+public installer pins v0.4.7. These features require the new client, server,
 and updated Ubuntu guest agent. Existing templates/boxes are not
 upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
 management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
@@ -322,7 +338,7 @@ temporary space for the downloaded archive and extracted image (about 3 GiB).
 The shell bootstrap manages sqlite3, OpenSSL, curl, CA certificates, tar, and
 Ubuntu account tools. For manual installation, supply these dependencies yourself.
 `deploy/install.sh` only checks them. Installing and deploying Kiln is shell
-scripts. The public bootstrap pins v0.4.6 and runs `install.sh`. It rejects an
+scripts. The public bootstrap pins v0.4.7 and runs `install.sh`. It rejects an
 archive whose installer is `install.py`. `scripts/release.py` packages releases in
 CI and does not run on the server.
 The installer downloads checksum-pinned Firecracker/jailer 1.17.0 from GitHub. The package
@@ -421,9 +437,17 @@ beyond the scoped GitHub Actions token and does not deploy a server. Public work
 must not contain credentials or runtime data. Fork PRs use hosted runners and
 read-only permissions; only the tag release job has contents-write permission.
 
-For an approved release, update the workspace version, commit the reviewed source
-and push a matching `vMAJOR.MINOR.PATCH` tag. Tag/version mismatches fail. When all
-jobs pass, the workflow creates a **draft release**. Review/download the draft,
+For an approved release, push an annotated `vMAJOR.MINOR.PATCH` tag of the green
+main commit (`git tag -a vX.Y.Z -m "..."`). Do not commit a version bump. The tag
+build stamps that name into the workspace version and the lockfile versions of
+the workspace crates, then compiles. The binaries, archive names, and
+`release.json` use the tag. A tag that is not stable `vMAJOR.MINOR.PATCH` fails
+before compile. Branch and pull-request builds keep the committed workspace
+version. Checking out the tag and building without the stamp produces the
+committed workspace version. Restore `Cargo.toml` and `Cargo.lock` after a local
+stamp so the stamp is not committed. When all jobs pass, the workflow
+creates a **draft release**. The draft includes that filled `install.sh`.
+Review/download the draft,
 verify packages, and record real-host validation and any outstanding limitations
 before publishing it publicly. Reruns do not overwrite
 existing releases. Real KVM tests remain separate; ordinary CI tests do not prove
@@ -435,10 +459,16 @@ packager includes only named binaries, installer files and pristine image files.
 Changing repository visibility later is a separate decision; this workflow never
 makes that change.
 
-The public installer is `deploy/bootstrap/install.sh`. After an approved
-release is published, update the script's pinned version and SHA-256
-values from verified packages, run `scripts/test-bootstrap.py` and ShellCheck,
-and verify a real anonymous download of that script.
+The public install command fetches `deploy/bootstrap/install.sh` from main.
+That file stays a runnable pin of the current published release. After you
+publish, re-pin its version and SHA-256 lines from the published archives.
+`scripts/test-bootstrap.py` fails if that pin is not the latest published
+release. The tag job also attaches `install.sh` and `install.sh.sha256` to
+the draft, and the checksum check includes that sidecar. The attached script
+verifies each archive checksum and installs only that version. Leave the
+public command on the raw main URL until Jamie publishes a release that
+contains `install.sh`. `releases/latest/download/install.sh` returns 404 for
+v0.4.7. A later change can switch the command after that publish.
 Never publish server state or credentials.
 The ordinary build workflow has no cross-repository publishing credentials.
 
@@ -486,4 +516,3 @@ Jobs that set `environment: dark-forge` receive these secrets after that
 approval. A workflow that does not name the environment cannot read them.
 After the secrets are saved, delete the private key from the server with
 `shred -u /root/.ssh/kiln-github-deploy`.
-

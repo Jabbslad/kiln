@@ -10,6 +10,64 @@ async function capture(page: Page, name: string) {
   }
 }
 
+test('public page copies only the client installer and separates live console from preview', async ({
+  page,
+  context,
+}) => {
+  const apiRequests: string[] = []
+  page.on('request', (request) => {
+    if (request.url().includes('/api/')) apiRequests.push(request.url())
+  })
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await page.goto('/')
+  await expect(page).toHaveTitle('kiln — Linux boxes on your terms')
+  await page.getByRole('link', { name: 'Install Kiln', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'A terminal is all you need.' })).toBeInViewport()
+  await page.getByRole('button', { name: 'Copy client install command' }).click()
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    'curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh',
+  )
+  await expect(page.getByRole('status')).toHaveText('Copied')
+  await page.getByRole('link', { name: 'Explore design preview' }).click()
+  await expect(page).toHaveURL(/\/boxes\?preview=1$/)
+  await expect(page.getByText('EXAMPLE DATA · NO VM OPERATIONS')).toBeVisible()
+  expect(apiRequests).toEqual([])
+  await page.getByRole('link', { name: 'kiln home' }).click()
+  await page.getByRole('link', { name: 'Open console' }).click()
+  await expect(page).toHaveURL(/\/boxes$/)
+  await expect(page.getByRole('heading', { name: 'Connect your control plane' })).toBeVisible()
+  await capture(page, 'default-disconnected')
+})
+
+test('public page is readable across breakpoints and explains clipboard denial', async ({
+  page,
+}) => {
+  await page.goto('/')
+  for (const width of [1440, 1280, 1024, 768, 390, 320]) {
+    await page.setViewportSize({ width, height: width < 768 ? 844 : 1000 })
+    await page.evaluate(() => document.fonts.ready)
+    await page.locator('.landing-hero img').evaluate((image: HTMLImageElement) => image.decode())
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await expect(page.getByRole('link', { name: 'Open console' })).toBeInViewport()
+    if (width === 1440 || width === 390) {
+      await capture(page, `landing-${width}`)
+      expect(
+        (await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze())
+          .violations,
+      ).toEqual([])
+    }
+  }
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: () => Promise.reject(new Error('Denied')) },
+      configurable: true,
+    })
+  })
+  await page.getByRole('button', { name: 'Copy client install command' }).click()
+  await expect(page.getByRole('status')).toHaveText('Copy unavailable. Select the text to copy.')
+  await expect(page.locator('.install-command code')).toContainText('curl -fsSL')
+})
+
 test('inventory, search, sorting, navigation and actual rendered design', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
