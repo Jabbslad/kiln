@@ -27,8 +27,11 @@ pub struct Options {
     ca_file: PathBuf,
     #[arg(long, default_value = "kiln")]
     name: String,
+    /// Loopback API used for the readiness check. The public URL is what laptops dial.
+    #[arg(long, conflicts_with = "resume")]
+    local_url: Option<String>,
     /// Resume saved enrollment after readiness or activation failed.
-    #[arg(long, conflicts_with_all = ["issuer", "url"])]
+    #[arg(long, conflicts_with_all = ["issuer", "url", "local_url"])]
     resume: bool,
 }
 
@@ -40,6 +43,9 @@ pub struct Receipt {
     pub origin: String,
     pub ca_pem: String,
     pub directory_token: String,
+    /// Empty means the readiness check dials `origin`.
+    #[serde(default)]
+    pub local_origin: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,6 +55,10 @@ struct Pending {
     verification_uri: String,
     expires_in: u64,
     interval: u64,
+}
+
+pub(crate) fn readiness_target<'a>(origin: &'a str, local: &'a str) -> &'a str {
+    if local.is_empty() { origin } else { local }
 }
 
 fn origin(value: &str) -> Result<reqwest::Url> {
@@ -208,7 +218,13 @@ impl EnrollmentEffects for ProductionEffects<'_> {
         for _ in 0..30 {
             if let Ok(response) = self
                 .direct
-                .get(origin(&self.receipt.origin)?.join("v1/templates")?)
+                .get(
+                    origin(readiness_target(
+                        &self.receipt.origin,
+                        &self.receipt.local_origin,
+                    ))?
+                    .join("v1/templates")?,
+                )
                 .bearer_auth(&self.admin)
                 .send()
                 .await
@@ -283,6 +299,13 @@ pub async fn run(options: Options) -> Result<()> {
         let central = origin(&issuer)?;
         let issuer = central.origin().ascii_serialization();
         origin(&url)?;
+        let local_origin = match options.local_url {
+            Some(value) => {
+                origin(&value)?;
+                value
+            }
+            None => String::new(),
+        };
         let ca = String::from_utf8(read(&options.ca_file, 0o022, 65536)?)?;
         reqwest::Certificate::from_pem(ca.as_bytes())?;
         let (rest, certificate) = x509_parser::pem::parse_x509_pem(ca.as_bytes())
@@ -363,6 +386,7 @@ pub async fn run(options: Options) -> Result<()> {
             origin: url,
             ca_pem: ca,
             directory_token: registration.directory_token,
+            local_origin,
         };
         receipt.enrollment.validate()?;
         install_file(&receipt_path, &serde_json::to_vec(&receipt)?, 0o600, 0)?;
@@ -410,6 +434,18 @@ pub async fn run(options: Options) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn readiness_uses_the_loopback_url_when_the_public_origin_is_separate() {
+        assert_eq!(
+            readiness_target("https://cli.dark-forge.dev:8443", "https://127.0.0.1:8443"),
+            "https://127.0.0.1:8443"
+        );
+        assert_eq!(
+            readiness_target("https://10.0.0.8:8443", ""),
+            "https://10.0.0.8:8443"
+        );
+    }
+
+    #[test]
     fn default_issuer_does_not_require_an_argument_or_conflict_with_resume() {
         use clap::Parser;
         #[derive(Parser)]
@@ -424,6 +460,27 @@ mod tests {
         assert!(resume.options.resume);
         assert!(
             Cli::try_parse_from(["enroll", "--resume", "--issuer", "https://other.test"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "enroll",
+                "--resume",
+                "--local-url",
+                "https://127.0.0.1:8443"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_saved_receipt_without_a_local_origin_still_loads() {
+        let receipt: Receipt = serde_json::from_str(
+            r#"{"enrollment":{"version":1,"issuer":"https://identity.example","owner_id":"owner","server_id":"server"},"origin":"https://10.0.0.8:8443","ca_pem":"pem","directory_token":"token"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            readiness_target(&receipt.origin, &receipt.local_origin),
+            "https://10.0.0.8:8443"
         );
     }
 

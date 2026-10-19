@@ -52,6 +52,7 @@ fn setup() -> (tempfile::TempDir, Receipt) {
         origin: "https://server.example/".into(),
         ca_pem: String::new(),
         directory_token: "one-time-directory-token".into(),
+        local_origin: String::new(),
     };
     let bytes = serde_json::to_vec(&receipt).unwrap();
     fs::write(root.path().join("etc/enrollment.pending.json"), bytes).unwrap();
