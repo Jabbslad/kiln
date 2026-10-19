@@ -1,7 +1,7 @@
 # Central login and self-hosted server discovery
 
 Date: 2026-10-03
-Status: Approved by the owner on 2026-10-03, including GitHub/Google browser login and a Kiln-operated login/discovery service. Implementation and deployment have not started. See the [implementation plan](../plans/2026-10-03-central-login.md).
+Status: Approved by the owner on 2026-10-03, including GitHub/Google browser login and a Kiln-operated login/discovery service. See the [implementation plan](../plans/2026-10-03-central-login.md). The identity service has since shipped. See the [identity service guide](../../identity-service.md). The follow-on section records the owner's later host decision.
 
 ## Outcome and scope
 
@@ -93,6 +93,18 @@ Test security boundaries using differing accounts, servers, audiences and scopes
 Render and inspect browser sign-in, approval, denial, expiry and no-server states; test keyboard access and CSRF behavior. Protocol test fixtures can exercise errors deterministically, but do not label them real provider verification. Acceptance additionally requires actual GitHub and Google sign-in, a fresh client profile, and a disposable real Kiln server exercising lifecycle, binary exec, SSH and SFTP. Verify that losing central connectivity leaves guests running and does not allow expired credentials.
 
 Commit, push and release verified product changes through the existing workflow and synchronize public installer pins. Publishing code is separate from deploying the central service. Choosing a production domain/hosting destination, registering provider applications, supplying secrets, and applying shared-infrastructure changes need the owner's participation/explicit approval. Never publish a default endpoint as usable before its deployment and real provider flows have been verified.
+
+## Follow-on
+
+On 2026-10-19 the owner decided that the Kiln server runs on the dark-forge.dev host, beside this identity service, and that one GitHub or Google account covers the dashboard, the CLI, and the server. The design is [dashboard login](2026-10-19-dashboard-login-design.md).
+
+Two decisions above change for that host.
+
+The read-only dashboard is in scope. The outcome section left a general management dashboard out of scope. Dashboard mutations, teams, invitations, billing, and public VM proxies stay out.
+
+A laptop reaches that host over the public internet. A server enrolled at a private address still requires the laptop's LAN or VPN, as the service-boundaries section says.
+
+Private-CA pinning, the five-minute server-token bound, separate GitHub and Google accounts, and local administrator recovery stay as approved.
 
 ## References
 
