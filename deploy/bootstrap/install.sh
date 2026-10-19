@@ -224,7 +224,8 @@ configure_server() {
 
 install_sqlite3_if_missing() {
     if [ -f "$work/package/install.sh" ] && ! command -v sqlite3 >/dev/null 2>&1; then
-        as_root env NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3 < /dev/null
+        as_root env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get update < /dev/null
+        as_root env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3 < /dev/null
     fi
 }
 
