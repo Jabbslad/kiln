@@ -176,43 +176,43 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertEqual(ssh_calls, [], latest.stderr)
 
     def test_v044_uses_this_tree_and_later_tags_use_the_archive(self):
-        tree = str(ROOT / "deploy/install.py")
-        current, calls, ssh_calls = run_deploy("v0.4.4", archive_installer="print('archive')\n")
+        tree = str(ROOT / "deploy/install.sh")
+        current, calls, ssh_calls = run_deploy("v0.4.4", archive_installer="printf 'archive\\n'\n")
         self.assertEqual(current.returncode, 0, current.stderr)
         self.assertIn("deployed v0.4.4", current.stdout)
         self.assertTrue(any(tree in call for call in ssh_calls), ssh_calls)
-        self.assertTrue(any(call.startswith("scp ") and call.endswith("installer.py") for call in ssh_calls), ssh_calls)
+        self.assertTrue(any(call.startswith("scp ") and call.endswith("installer.sh") for call in ssh_calls), ssh_calls)
         self.assertTrue(any("kiln-server-v0.4.4-" in call for call in calls), calls)
 
-        later, _, later_ssh = run_deploy("v0.4.5", archive_installer="print('archive-v045')\n")
+        later, _, later_ssh = run_deploy("v0.4.5", archive_installer="printf 'archive-v045\\n'\n")
         self.assertEqual(later.returncode, 0, later.stderr)
         self.assertIn("deployed v0.4.5", later.stdout)
-        self.assertFalse(any("install.py" in call or "installer.py" in call for call in later_ssh), later_ssh)
+        self.assertFalse(any("install.py" in call or "installer.py" in call or "installer.sh" in call for call in later_ssh), later_ssh)
         self.assertTrue(any("kiln-server-v0.4.5-" in call and call.startswith("scp ") for call in later_ssh), later_ssh)
 
-        numeric, _, numeric_ssh = run_deploy("v0.4.10", archive_installer="print('archive-v0410')\n")
+        numeric, _, numeric_ssh = run_deploy("v0.4.10", archive_installer="printf 'archive-v0410\\n'\n")
         self.assertEqual(numeric.returncode, 0, numeric.stderr)
-        self.assertFalse(any("installer.py" in call for call in numeric_ssh), numeric_ssh)
+        self.assertFalse(any("installer.sh" in call for call in numeric_ssh), numeric_ssh)
 
         for tag in ("v0.4.4", "v0.4.5"):
             failed, _, failed_ssh = run_deploy(
                 tag,
-                archive_installer="print('must-not-run')\n",
+                archive_installer="printf 'must-not-run\\n'\n",
                 bad_checksum=True,
             )
             self.assertNotEqual(failed.returncode, 0, failed.stdout + failed.stderr)
             self.assertIn("NOT match", failed.stderr)
             self.assertEqual(failed_ssh, [], failed.stderr)
 
-        tree_run = run_remote("print('installer=archive')\n", overlay="print('installer=tree')\n")
+        tree_run = run_remote("printf 'installer=archive\\n'\n", overlay="printf 'installer=tree\\n'\n")
         self.assertIn("installer=tree", tree_run.stdout)
         self.assertNotIn("installer=archive", tree_run.stdout)
-        archive_run = run_remote("print('installer=archive')\n")
+        archive_run = run_remote("printf 'installer=archive\\n'\n")
         self.assertIn("installer=archive", archive_run.stdout)
         self.assertNotIn("installer=tree", archive_run.stdout)
         mismatch = run_remote(
-            "print('installer=archive')\n",
-            overlay="print('installer=tree')\n",
+            "printf 'installer=archive\\n'\n",
+            overlay="printf 'installer=tree\\n'\n",
             bad_checksum=True,
         )
         self.assertNotIn("installer=", mismatch.stdout)
@@ -306,7 +306,7 @@ def run_deploy(tag, releases="[]", archive_installer=None, bad_checksum=False):
         asset_name = f"kiln-server-{tag}-x86_64-unknown-linux-gnu.tar.gz"
         checksum_text = ""
         if archive_installer is not None:
-            blob = tar_bytes({"install.py": archive_installer})
+            blob = tar_bytes({"install.sh": archive_installer})
             archive_path.write_bytes(blob)
             digest = "0" * 64 if bad_checksum else hashlib.sha256(blob).hexdigest()
             checksum_text = f"{digest}  {asset_name}\n"
@@ -341,12 +341,12 @@ def run_remote(archive_body, overlay=None, bad_checksum=False):
     fake = Path(tempfile.mkdtemp())
     try:
         name = "kiln-server-v0.4.4-x86_64-unknown-linux-gnu.tar.gz"
-        blob = tar_bytes({"install.py": archive_body})
+        blob = tar_bytes({"install.sh": archive_body})
         (remote / name).write_bytes(blob)
         digest = "0" * 64 if bad_checksum else hashlib.sha256(blob).hexdigest()
         (remote / f"{name}.sha256").write_text(f"{digest}  {name}\n")
         if overlay is not None:
-            (remote / "installer.py").write_text(overlay)
+            (remote / "installer.sh").write_text(overlay)
         apt = fake / "apt-get"
         apt.write_text("#!/bin/bash\nexit 0\n")
         apt.chmod(apt.stat().st_mode | stat.S_IEXEC)

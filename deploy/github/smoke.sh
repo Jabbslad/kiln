@@ -45,20 +45,28 @@ create_out=$(
   "$kiln" --config "$config" --profile default --json \
     create --template ubuntu-4g --name kiln-smoke
 ) || create_rc=$?
-box_id=$(printf '%s\n' "$create_out" | python3 -c '
-import json, re, sys
-raw = sys.stdin.read()
-if not raw.strip():
-    raise SystemExit(1)
-try:
-    op = json.loads(raw)
-except json.JSONDecodeError:
-    raise SystemExit(1)
-result = op.get("result") or {}
-box_id = result.get("id", "") if result.get("type") == "box" else ""
-if re.fullmatch(r"[0-9a-f]{32}", box_id) is None:
-    raise SystemExit(1)
-print(box_id)
+box_id=$(printf '%s' "$create_out" | tr -d '[:space:]' | awk '
+  {
+    marker = "\"result\":{"
+    at = index($0, marker)
+    if (at == 0) exit 1
+    rest = substr($0, at)
+    type_key = "\"type\":\""
+    type_at = index(rest, type_key)
+    if (type_at == 0) exit 1
+    type_rest = substr(rest, type_at + length(type_key))
+    type_end = index(type_rest, "\"")
+    if (type_end == 0 || substr(type_rest, 1, type_end - 1) != "box") exit 1
+    id_key = "\"id\":\""
+    id_at = index(rest, id_key)
+    if (id_at == 0) exit 1
+    id_rest = substr(rest, id_at + length(id_key))
+    id_end = index(id_rest, "\"")
+    if (id_end == 0) exit 1
+    id = substr(id_rest, 1, id_end - 1)
+    if (id !~ /^[0-9a-f]{32}$/) exit 1
+    printf "%s", id
+  }
 ') || box_id=
 
 exec_rc=0

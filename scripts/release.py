@@ -67,7 +67,7 @@ def package(repo, bins, output, version, target, kind, image):
         }
         files.update(
             {
-                "install.py": repo / "deploy/install.py",
+                "install.sh": repo / "deploy/install.sh",
                 "bin/kiln-network": repo / "deploy/kiln-network",
                 "fetch-firecracker.sh": repo / "scripts/fetch-firecracker.sh",
                 "README.md": repo / "README.md",
@@ -121,13 +121,16 @@ def package(repo, bins, output, version, target, kind, image):
                     info.uname = info.gname = ""
                     info.mode = (
                         0o755
-                        if relative == "kiln" or relative.startswith("bin/")
+                        if relative in {"kiln", "install.sh"} or relative.startswith("bin/")
                         else 0o644
                     )
                     with path.open("rb") as source:
                         archive.addfile(info, source)
                 if kind in ("server", "identity", "dashboard"):
-                    data = json.dumps({"version": version, "target": target}).encode()
+                    payload = {"version": version, "target": target}
+                    if kind == "server":
+                        payload["min_upgrade_from"] = "0.3.0"
+                    data = json.dumps(payload).encode()
                     info = tarfile.TarInfo("release.json")
                     info.size, info.mode = len(data), 0o644
                     archive.addfile(info, io.BytesIO(data))

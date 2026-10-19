@@ -147,6 +147,8 @@ with (root / 'privileged').open('a') as f:
 assert sys.stdin.read() == '', 'privileged commands must not consume script stdin'
 if args[0] == 'true':
     sys.exit(int(os.environ.get('SUDO_FAILURE', '0')))
+if args[0] == 'bash':
+    sys.exit(subprocess.call(args))
 if args[0] == 'python3':
     sys.exit(subprocess.call([sys.executable, *args[1:]]))
 if args[0] == 'sh' and len(args) >= 3 and 'kvm' in args[2]:
@@ -674,12 +676,48 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
         self.assertIn("24 GiB", out)
         self.assertNotIn("apt-get", self.privileged())
 
-    def test_bind_failure_stops_install_before_apt(self):
+    def test_bootstrap_leaves_port_binding_to_the_installer(self):
+        text = (ROOT / "deploy/bootstrap/install.sh").read_text()
+        self.assertNotIn("socket", text)
         self.env["BIND_FAIL"] = "1"
         code, out = self.run_bootstrap(self.package(server=True), args=("server",))
-        self.assertNotEqual(code, 0, out)
-        self.assertIn("8443", out)
-        self.assertNotIn("apt-get", self.privileged())
+        self.assertEqual(code, 0, out)
+        self.assertIn("provisioner completed", out)
+
+    def test_shell_archive_uses_bash_and_sqlite_not_python(self):
+        members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
+        del members["install.py"]
+        members["install.sh"] = b"""#!/bin/bash
+set -euo pipefail
+got="$*"
+expected="--address ${EXPECTED_ADDRESS} --apply"
+if [ -n "${EXPECTED_UPLINK}" ]; then
+  expected="${expected} --network-uplink ${EXPECTED_UPLINK}"
+fi
+[ "$got" = "$expected" ]
+printf '%s\\n' 'provisioner completed'
+"""
+        code, out = self.run_bootstrap(self.package(members), args=("server",))
+        self.assertEqual(code, 0, out)
+        self.assertIn("provisioner completed", out)
+        commands = [json.loads(line) for line in (self.root / "privileged").read_text().splitlines()]
+        self.assertIn("sqlite3", commands[3])
+        self.assertNotIn("python3", commands[3])
+        self.assertEqual(commands[4][0], "bash")
+
+    def test_existing_shell_archive_skips_apt(self):
+        (self.root / "etc-kiln").mkdir()
+        self.env["ROUTE"] = ""
+        members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
+        del members["install.py"]
+        members["install.sh"] = b"#!/bin/bash\nset -euo pipefail\n[ \"$*\" = --apply ]\nprintf '%s\\n' updated\n"
+        code, out = self.run_bootstrap(self.package(members), args=("server",))
+        self.assertEqual(code, 0, out)
+        self.assertIn("updated", out)
+        commands = [json.loads(line) for line in (self.root / "privileged").read_text().splitlines()]
+        self.assertEqual(commands[0], ["true"])
+        self.assertEqual(commands[1][0], "bash")
+        self.assertEqual(len(commands), 2)
 
     def test_kvm_access_is_probed_before_apt(self):
         code, out = self.run_bootstrap(self.package(server=True), args=("server",))
