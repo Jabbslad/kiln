@@ -6,6 +6,24 @@ terminal is needed to install. Access to a running Kiln server still requires
 browser login to an enrolled host or a direct administrator profile; public
 downloads do not disable API authentication.
 
+## v0.4.4 dashboard frontend
+
+The release includes `kiln-dashboard-v0.4.4.tar.gz` with the built React dashboard
+and a SHA-256 checksum. It contains responsive inventory, detail views, templates,
+operations, settings and a console guide, with locally bundled fonts. See the
+[dashboard guide](../web/README.md) for static hosting and the proposed API contract.
+
+**This is a frontend preview, not a connected management console.** Open
+`/boxes?preview=1` for labelled, read-only fixtures. The default live view reports
+a disconnected state because `/api/v1/dashboard` and browser authentication are
+not integrated with the existing CLI API. VM mutations, terminal, SSH and token
+controls remain disabled. No live VM operations are claimed by browser tests.
+
+CI tests and builds the dashboard and includes it in the release separately from
+the server installer. Publishing does not deploy it or change live services.
+Server binary-only updates also accept v0.4.3; runtime and guest formats remain
+unchanged, and no guest-image or state migration is performed.
+
 ## v0.4.3 recovery-test synchronization
 
 The interrupted-jailer test waits for the child executable and working-directory

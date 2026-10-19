@@ -4,6 +4,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 import tarfile
 import tempfile
 import unittest
@@ -55,6 +56,40 @@ class ReleaseTests(unittest.TestCase):
         with zipfile.ZipFile(self.package(target="x86_64-pc-windows-msvc")) as archive:
             self.assertEqual(archive.namelist(), ["kiln.exe"])
             self.assertEqual(archive.read("kiln.exe"), b"binary-kiln.exe")
+
+    def test_dashboard_contains_only_static_build_and_usage(self):
+        (self.repo / "web").mkdir()
+        (self.repo / "web/README.md").write_text("Frontend only; no live control plane")
+        (self.bins / "assets").mkdir()
+        for name in ["index.html", "favicon.svg", "THIRD_PARTY_LICENSES.md", "assets/index-ab.js", "assets/index-cd.css", "assets/font-ef.woff2"]:
+            (self.bins / name).write_text(name)
+        (self.bins / "admin.token").write_text("private")
+        path = self.package(kind="dashboard", target="web")
+        self.assertEqual(path.name, "kiln-dashboard-v0.1.0.tar.gz")
+        with tarfile.open(path) as archive:
+            self.assertEqual(set(archive.getnames()), {
+                "index.html", "favicon.svg", "assets/index-ab.js", "assets/index-cd.css",
+                "assets/font-ef.woff2", "THIRD_PARTY_LICENSES.md", "README.md", "release.json",
+            })
+            self.assertEqual(archive.extractfile("assets/index-ab.js").read(), b"assets/index-ab.js")
+            self.assertTrue(all(member.mode == 0o644 for member in archive.getmembers()))
+            self.assertEqual(json.load(archive.extractfile("release.json")), {
+                "version": "v0.1.0", "target": "web",
+            })
+        self.assertEqual(Path(str(path) + ".sha256").read_text().split()[0],
+                         hashlib.sha256(path.read_bytes()).hexdigest())
+        # Dashboard packaging runs on Linux; Windows client builders need not
+        # have the privilege required to create symbolic links.
+        if os.name != "nt":
+            (self.bins / "assets/private.js").symlink_to(self.bins / "admin.token")
+            with self.assertRaises(ValueError):
+                self.package(kind="dashboard", target="web")
+            (self.bins / "assets/private.js").unlink()
+        (self.bins / "assets/private.pem").write_text("private")
+        with self.assertRaises(ValueError):
+            self.package(kind="dashboard", target="web")
+        with self.assertRaises(ValueError):
+            self.package(kind="client", target="web")
 
     def test_identity_allowlist_excludes_vm_and_private_state(self):
         (self.bins / "kiln-identity").write_bytes(b"identity-binary")
