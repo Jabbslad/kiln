@@ -31,7 +31,11 @@ Three names, three credentials, one machine.
 
 `https://app.dark-forge.dev` is the dashboard and the read API, on port 443. The operator obtains a Let's Encrypt certificate whose only name is `app.dark-forge.dev`, in its own key file. The kiln process does not speak ACME. The identity guide already says the app does not manage public certificates. The same rule applies here. A browser check on the real host must show a different certificate fingerprint for `app.dark-forge.dev` than for `dark-forge.dev`. One proxy process can serve both names when SNI selects a separate key. The identity key file stays unique to `dark-forge.dev`.
 
-`https://cli.dark-forge.dev:8443` is the CLI listener. It presents the private CA that enrollment already registers. `kiln-api` terminates that TLS itself, with the PEM pair it loads today (`crates/kiln-server/src/bin/kiln-api.rs` lines 54-57). The identity reverse proxy must not sit in front of this listener. A proxy certificate would fail the pinned CA.
+`https://cli.dark-forge.dev:8443` is the CLI listener. `kiln-api` terminates that TLS itself, with the PEM pair it loads today (`crates/kiln-server/src/bin/kiln-api.rs` lines 54-57, `deploy/kiln-api.service` line 12). The identity reverse proxy must not sit in front of this listener. A proxy certificate would fail the pinned CA.
+
+The leaf has to include `DNS:cli.dark-forge.dev`. The installer writes `subjectAltName=IP:{address}` and no DNS name (`deploy/install.py` line 333). Renewal text still says to keep that IP SAN (`docs/releases.md` lines 353-355). On this host the operator issues a new leaf from the retained private CA. The SAN includes `DNS:cli.dark-forge.dev` and any `IP:` name a current profile still dials. The operator replaces `/etc/kiln/tls.crt` and `/etc/kiln/tls.key` with that leaf and key. The certificate stays a leaf, `CA:FALSE` (`docs/remote-client.md` lines 166-169). The key stays owner-only and readable by `kiln-api` (`docs/remote-client.md` lines 169-170). The CA public file registered at enrollment stays `ca.crt`. `ca.key` stays mode 0600 (`deploy/install.py` lines 356-357).
+
+This host enrolls with `--url https://cli.dark-forge.dev:8443`. Identity stores that URL as the server origin (`crates/kiln-server/src/enrollment.rs` lines 24-25 and line 305).
 
 Cookies do not cross these names. Identity sets `__Host-kiln_session` with `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, and no `Domain` attribute (`crates/kiln-identity/src/lib.rs` line 748). The `__Host-` prefix is host-only. A cookie set for `dark-forge.dev` is not sent to `app.dark-forge.dev`, and a cookie set for `app.dark-forge.dev` is not sent to `cli.dark-forge.dev`. The dashboard session uses a different cookie name, `__Host-kiln_app`, so a mistaken `Domain` attribute still cannot collide with the identity session.
 
@@ -49,7 +53,7 @@ Saving a central profile for the same server id refuses a CA change with `server
 
 The other candidate was one public listener, and a planned move of CLI profiles onto public roots. That candidate loses for this server. A leaf pin breaks when Let's Encrypt renews the certificate. Trusting public roots would drop the pin the approved spec requires. The client has no confirm-and-replace flow. It has a refusal. Building that flow, and then deleting the private listener, is a later change to an approved rule. This design does not start it.
 
-Existing profiles need no migration. A profile whose origin is the private-CA URL keeps working, including a direct administrator profile created with `--ca-file`. Identity login does not take a CA file and keeps public roots. That client is how the laptop reaches `https://dark-forge.dev`.
+A direct administrator profile is never replaced (`crates/kiln-client/src/profile.rs` lines 178-181). It keeps dialing the URL it was given, so that host stays on the leaf. A central profile for a different server id stays as saved. A central profile for this server id refuses a CA change (`crates/kiln-client/src/profile.rs` lines 186-190). `kiln login --server` copies the server descriptor identity returns, including its origin, when the CA bytes are unchanged (`crates/kiln-client/src/main.rs` lines 464-471). Until that command the profile keeps the saved origin. A saved IP origin still matches a leaf that keeps the IP SAN. After `--server`, the profile dials `https://cli.dark-forge.dev:8443`. The DNS name on the leaf is what makes that handshake succeed. Identity login builds its client with no custom CA (`crates/kiln-client/src/auth.rs` lines 264-275), so it uses public roots. That client is how the laptop reaches `https://dark-forge.dev`.
 
 Enrollment writes two facts. `servers.origin` and `servers.ca_pem` (`crates/kiln-identity/src/store.rs` line 281) remain the CLI origin and the private CA. A new column stores the dashboard redirect URI, exactly `https://app.dark-forge.dev/oauth/callback`. The approval page shows the endpoint, the certificate fingerprint, and that redirect URI. The owner sees where authorization codes will be sent.
 
@@ -122,7 +126,7 @@ Identity checks the redirect URI against the value stored at enrollment. Any oth
 
 An existing identity session makes this redirect silent. The browser already has `__Host-kiln_session` for `dark-forge.dev` after a visit to login, device approval, or server approval. The navigation to `dark-forge.dev` sends that cookie. When the session's account is the enrolled owner, identity redirects back to `https://app.dark-forge.dev/oauth/callback` with the code and does not show GitHub or Google. When no identity session exists, identity shows the current provider buttons, then redirects to the same callback. When the session is a different account, identity shows a refusal and issues no code. Sign-in does not switch accounts. The central-login spec already says login never silently changes accounts.
 
-The callback checks `state`, then exchanges the code from the server, with the PKCE verifier and a login client secret. The secret is generated at enrollment, stored root-only beside `directory.token`, and stored only as a hash in the identity database. It is not the directory token. The directory token remains limited to directory changes.
+The callback checks `state`, then exchanges the code from the server, with the PKCE verifier and a login client secret. Enrollment generates the secret and stores only its hash in the identity database. On the host the file is `/etc/kiln/login.token`, root-owned, mode 0640, group `kiln-api`. Enrollment writes `identity.json` the same way (`crates/kiln-server/src/enrollment.rs` lines 168-173). The group id is the `kiln-api` group (`crates/kiln-server/src/enrollment.rs` lines 373-375, `docs/identity-service.md` lines 63-64). `directory.token` stays mode 0600 (`crates/kiln-server/src/enrollment.rs` lines 174-179). The gateway runs as `kiln-api` (`deploy/kiln-api.service` lines 8-9) and refuses to start when its user id is root (`crates/kiln-server/src/bin/kiln-api.rs` lines 42-45). Mode 0640 lets that group read `login.token`. Mode 0600 leaves `directory.token` readable by its owner. The login secret is a different credential. The directory token remains limited to directory changes.
 
 The token endpoint returns a server-audience JWT, `kiln:server:<server id>`, the audience `verify` already requires (`crates/kiln-server/src/auth.rs` line 115). `sub` must equal `Enrollment.owner_id`. The scope is `read`. Do not reuse `POST /v1/access`. That handler always mints `operate` (`crates/kiln-identity/src/lib.rs` line 437). The gateway checks the JWT with the existing verifier, then discards it. The session cookie is an opaque id.
 
@@ -146,11 +150,13 @@ Logout on `app.dark-forge.dev` deletes that one dashboard session. Logout on `da
 
 Revoking an automation key updates that key (`crates/kiln-identity/src/lib.rs` lines 1124-1132). It does not touch devices or dashboard sessions.
 
-Account removal and server un-enrollment end all of them, within the bound the central-login spec already states. That spec, in the revocation section, says already issued server tokens can authorize new requests for at most five minutes plus clock skew. The gateway does not ask identity on every `/v1` request. A JWT that has already been minted still verifies until `exp`, plus the 30 second leeway. This design does not shorten that bound and does not claim the gateway can cancel a JWT in hand.
+Stopping the account or the server stops new credentials. An already issued server JWT still verifies until `exp`, plus the 30 second leeway (`crates/kiln-server/src/auth.rs` line 117). The verifier rejects a lifetime longer than 300 seconds (`crates/kiln-server/src/auth.rs` line 124). That is at most five minutes of token life plus skew. The gateway does not ask identity on each `/v1` request. This design does not shorten that bound.
+
+A dashboard session is a local cookie. The five-minute JWT bound does not apply to it. The gateway asks identity at most every five minutes whether the owner and the server are still active. An inactive answer deletes the dashboard sessions for that server on the next check, at most five minutes later. When identity cannot be reached, an unexpired session lasts until its 12 hour expiry. The central-login outage section keeps cached unexpired access working and does not extend an expired credential (`docs/superpowers/specs/2026-10-03-central-login-design.md` line 83).
 
 There is no shipped command that sets `accounts.revoked_at`. Issuance checks the column (`crates/kiln-identity/src/lib.rs` line 271 and the device query at line 324). The only writer in the tree is a test (`crates/kiln-identity/tests/lifecycle.rs` line 352). Server deactivation is the shipped all-sessions action. `DELETE /v1/servers/{id}` with the directory token sets `active=0` (`crates/kiln-identity/src/lib.rs` lines 1064-1084). New grants stop because `POST /v1/access` and key exchange require `active=1`.
 
-Dashboard sessions are local, so they need their own check. The gateway asks identity, with the login client secret, whether the owner and the server are still active. It does this at most every five minutes per session. An inactive answer deletes every dashboard session for that server. A network failure leaves the session in place until the 12 hour cookie expiry. That matches the central-login outage rule. Cached access keeps working when identity cannot be reached, and an expired credential is not extended.
+The check calls `POST /v1/server-status` with the login client secret. PR B adds that route. It reports whether `accounts.revoked_at` is null and whether `servers.active` is 1. It returns no CA, token, or inventory.
 
 Removing local enrollment, or changing `owner_id`, deletes the dashboard session rows in the same administrative step. Those sessions must not survive a server that no longer has an owner.
 
@@ -164,7 +170,7 @@ The gateway limits how many requests run at once. It holds 32 request permits an
 
 The journal cap is unchanged. `Journal::accept` refuses a new row once 10,000 rows exist (`crates/kiln-server/src/journal.rs` lines 73-80). Nothing in the journal deletes old rows. A dashboard read does not insert one. A public `operate` credential on the CLI listener still can, and a full journal refuses new mutations with the existing error. This design does not add retention. The error already tells the operator to archive the installation.
 
-KVM has to exist on the host. `kiln-runtime doctor` reports through `host::check`, which opens `/dev/kvm` read-write (`crates/kiln-runtime/src/host.rs` lines 78-89). A failed open adds `/dev/kvm is not readable and writable` and clears `development_ready` (lines 25-26 and 38-40). `Runtime::create` returns that failure before it launches a box (`crates/kiln-runtime/src/runtime.rs` lines 562-564). A cloud VM without KVM can still prove the HTTP design. It cannot prove a guest. The dark-forge.dev host has to pass `kiln-runtime doctor` before this server is called ready. This design does not weaken that check.
+The host has to report `development_ready: true` from `kiln-runtime doctor`. `host::evaluate` requires x86_64, `/dev/kvm` read-write, cgroup v2, Firecracker exactly 1.17.0, and a matching jailer (`crates/kiln-runtime/src/host.rs` lines 22-40). `host::check` opens `/dev/kvm` (`crates/kiln-runtime/src/host.rs` lines 78-89). `evaluate` leaves `isolated_ready` false (`crates/kiln-runtime/src/host.rs` line 41). `Runtime::create` returns the doctor problems when `development_ready` is false (`crates/kiln-runtime/src/runtime.rs` lines 562-564). A cloud VM can still prove the HTTP design when that report is false. It cannot prove a guest. This design does not weaken the check.
 
 ## Out of scope
 
@@ -194,7 +200,7 @@ Jamie checks the Let's Encrypt certificate only after PR C, on the real name. PR
 
 ### B. Identity-service web sign-in
 
-Land the server authorization-code grant, the stored redirect URI, PKCE, and the `read` JWT. The approval page shows the redirect URI. No dashboard process is required.
+Land the server authorization-code grant, the stored redirect URI, PKCE, the `read` JWT, and `POST /v1/server-status`. The server row stores the hash of the login secret. The status route takes that secret and the server id. It reports whether `accounts.revoked_at` is null and whether `servers.active` is 1. It returns no CA, token, or inventory. The approval page shows the redirect URI. No dashboard process is required.
 
 A reviewer on a cloud VM can prove all of the following with the fixture provider.
 
@@ -202,12 +208,13 @@ A reviewer on a cloud VM can prove all of the following with the fixture provide
 - An identity session for the enrolled owner returns a code without a provider page. A session for a different account returns a refusal and no code. No session shows the provider page, then returns a code.
 - The exchanged JWT has audience `kiln:server:<id>`, scope `read`, and `sub` equal to the owner. `verify` accepts it. A JWT minted for another server fails `verify`.
 - The directory token cannot exchange this code. The login secret cannot update the server origin or CA.
+- `POST /v1/server-status` with the login secret returns both flags true for an active owner and an active server. A fixture that sets `revoked_at`, or a server with `active=0`, returns the matching flag false. The directory token is refused. A wrong login secret is refused. The body has no `ca_pem` and no access token.
 
 Jamie checks a real GitHub consent and a real Google consent against the deployed identity service, including the silent path after an ordinary visit to `https://dark-forge.dev`.
 
 ### C. Gateway browser sessions
 
-Land the dashboard listener, the login redirect, the callback, the session cookie, logout, and the five-minute owner check. Move `GET /api/v1/dashboard` on that listener from bearer auth to the cookie. The CLI listener keeps bearer auth and does not serve the SPA.
+Land the dashboard listener, the login redirect, the callback, the session cookie, logout, and the five-minute call to `POST /v1/server-status`. Enrollment writes `/etc/kiln/login.token` root-owned, mode 0640, group `kiln-api`, and the callback reads that file. Move `GET /api/v1/dashboard` on that listener from bearer auth to the cookie. The CLI listener keeps bearer auth and does not serve the SPA.
 
 A reviewer on a cloud VM can prove all of the following against a fixture identity service and a test certificate.
 
@@ -217,7 +224,7 @@ A reviewer on a cloud VM can prove all of the following against a fixture identi
 - Deactivating the server, or removing local enrollment, ends dashboard sessions. A fixture that sets `revoked_at` ends them on the next status check. An identity process that refuses connections leaves an unexpired session usable.
 - A burst past 60 requests per minute from one address is limited. The 32-permit ceiling still returns 429 under concurrency.
 
-Jamie checks the live names. `app.dark-forge.dev` presents its own Let's Encrypt certificate. `dark-forge.dev` presents the identity certificate. `cli.dark-forge.dev:8443` presents the private CA, and an existing private-CA profile still completes `kiln templates`. `kiln-runtime doctor` on that host reports `/dev/kvm` usable. Those three checks are the real-host bar. The cloud VM cannot produce them.
+Jamie checks the live names. `app.dark-forge.dev` presents its own Let's Encrypt certificate. `dark-forge.dev` presents the identity certificate. `cli.dark-forge.dev:8443` presents a leaf whose SAN includes `DNS:cli.dark-forge.dev`, and a profile whose saved host is on that leaf still completes `kiln templates`. `kiln-runtime doctor` reports `development_ready: true`, which requires x86_64, `/dev/kvm` read-write, cgroup v2, Firecracker exactly 1.17.0, and a matching jailer (`crates/kiln-runtime/src/host.rs` lines 22-40). The cloud VM cannot produce the live certificates or that doctor report.
 
 ## Open questions
 
