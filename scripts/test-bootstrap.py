@@ -254,7 +254,7 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
         )
 
     def test_pinned_version_matches_published_release(self):
-        self.assertEqual(pinned_version(), "0.4.3")
+        self.assertEqual(pinned_version(), "0.4.4")
 
     def test_client_platforms_install_correct_asset(self):
         for system, arch, expected in [

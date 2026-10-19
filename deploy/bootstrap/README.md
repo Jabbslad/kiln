@@ -68,6 +68,14 @@ are blocked by `~/.local/bin/.kiln-install.lock`; if an installer was forcibly
 killed, confirm it is no longer running before removing that empty directory.
 The client command does not update a server or its guest images.
 
+## Dashboard preview
+
+[v0.4.4](https://github.com/Jabbslad/kiln/releases/tag/v0.4.4) includes the separate
+`kiln-dashboard-v0.4.4.tar.gz` static frontend and checksum. The installer does
+not deploy it. Its `/boxes?preview=1` view uses labelled read-only examples;
+browser authentication and live VM controls are not integrated yet. See the
+[dashboard guide](https://github.com/Jabbslad/kiln/tree/main/web#readme).
+
 ## Server: dedicated Ubuntu 24.04 or 26.04 x86-64/KVM
 
 ```sh
@@ -122,8 +130,8 @@ or blindly rerun setup.
 
 ### Automatic server updates
 
-Rerun the same `server` command. v0.4.3 updates healthy, standard Kiln v0.3.0,
-v0.3.2, v0.3.3, v0.4.0, v0.4.1 or v0.4.2 installations and leaves identical v0.4.3 installations alone. It reuses
+Rerun the same `server` command. v0.4.4 updates healthy, standard Kiln v0.3.0,
+v0.3.2, v0.3.3, v0.4.0, v0.4.1, v0.4.2 or v0.4.3 installations and leaves identical v0.4.4 installations alone. It reuses
 the existing address and networking, skips apt, and preserves configuration,
 credentials, units, Firecracker, guest images, templates and VM disks. Explicit
 address/network options must agree with the installed configuration.
@@ -201,7 +209,7 @@ It remains compatible with the 0.2.1 guest image.
 
 ## Trust and maintenance
 
-The bootstrap pins v0.4.3 release URLs and SHA-256 digests, validates archive contents,
+The bootstrap pins v0.4.4 release URLs and SHA-256 digests, validates archive contents,
 and downloads without authentication. Redirects are HTTPS-only and user curl
 configuration is disabled. Temporary files are removed on normal exit and handled
 signals. A checksum protects integrity under trust in this bootstrap publisher;
