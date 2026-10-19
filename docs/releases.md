@@ -184,13 +184,13 @@ does not add support for 26.04. The guest image remains Ubuntu 24.04 on either h
 On a macOS or supported Linux laptop:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh
+curl -fsSL https://github.com/Jabbslad/kiln/releases/latest/download/install.sh | sh
 ```
 
 On a dedicated **Ubuntu 24.04, Ubuntu 26.04, or Debian 13 x86-64/KVM** server:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh -s -- server
+curl -fsSL https://github.com/Jabbslad/kiln/releases/latest/download/install.sh | sh -s -- server
 ```
 
 **v0.3.2 adds public, unattended installation.** Packages use versioned public
@@ -246,7 +246,7 @@ The client installs to `~/.local/bin/kiln` without sudo and prints PATH setup
 instructions if needed. To update, rerun the original command:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh
+curl -fsSL https://github.com/Jabbslad/kiln/releases/latest/download/install.sh | sh
 ```
 
 This verifies the downloaded checksum and executable version before atomic
@@ -430,7 +430,8 @@ before compile. Branch and pull-request builds keep the committed workspace
 version. Checking out the tag and building without the stamp produces the
 committed workspace version. Restore `Cargo.toml` and `Cargo.lock` after a local
 stamp so the stamp is not committed. When all jobs pass, the workflow
-creates a **draft release**. Review/download the draft,
+creates a **draft release**. The draft includes that filled `install.sh`.
+Review/download the draft,
 verify packages, and record real-host validation and any outstanding limitations
 before publishing it publicly. Reruns do not overwrite
 existing releases. Real KVM tests remain separate; ordinary CI tests do not prove
@@ -442,10 +443,16 @@ packager includes only named binaries, installer files and pristine image files.
 Changing repository visibility later is a separate decision; this workflow never
 makes that change.
 
-The public installer is `deploy/bootstrap/install.sh`. After an approved
-release is published, update the script's pinned version and SHA-256
-values from verified packages, run `scripts/test-bootstrap.py` and ShellCheck,
-and verify a real anonymous download of that script.
+The copy of `deploy/bootstrap/install.sh` on main stays a runnable pin of the
+last reviewed release (0.4.6) so a checkout can install that release and
+`scripts/test-bootstrap.py` keeps testing it. The tag build attaches its own
+copy to the draft. That copy carries the tag version and the SHA-256 of the
+archives in the same draft. `install.sh.sha256` is checked with the other
+checksums before the draft is created. Publishing the draft is what
+https://github.com/Jabbslad/kiln/releases/latest/download/install.sh serves.
+There is no follow-up pull request to re-pin the installer. The attached
+script still verifies each archive checksum before it installs, and it
+installs only that version.
 Never publish server state or credentials.
 The ordinary build workflow has no cross-repository publishing credentials.
 

@@ -12,8 +12,8 @@ private. No server deployment or private package release has been approved.
 The public installer is `deploy/bootstrap/install.sh` in `Jabbslad/kiln`. The command shapes are:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh -s -- server
+curl -fsSL https://github.com/Jabbslad/kiln/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/Jabbslad/kiln/releases/latest/download/install.sh | sh -s -- server
 ```
 
 ## Distribution
