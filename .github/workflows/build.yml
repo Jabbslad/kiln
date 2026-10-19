@@ -32,21 +32,13 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
-      - name: Toolchain and version
+      - name: Stamp release version
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
-        run: |
-          rustup show
-          python - <<'PY'
-          import os, tomllib
-          with open('Cargo.toml', 'rb') as f:
-              version = 'v' + tomllib.load(f)['workspace']['package']['version']
-          if os.environ['REF_TYPE'] == 'tag' and os.environ['REF_NAME'] != version:
-              raise SystemExit('Release tag must match Cargo.toml workspace version')
-          with open(os.environ['GITHUB_ENV'], 'a') as f:
-              f.write(f'VERSION={version}\n')
-          PY
+        run: python scripts/release_version.py resolve --ref-type "$REF_TYPE" --ref-name "$REF_NAME"
+      - name: Toolchain
+        run: rustup show
       # Tag builds ship binaries, so they do not restore or save a cache.
       # Keep the kiln crates in the cache so a warm run reuses them.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -58,6 +50,7 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
           cargo test --workspace --all-features --locked
+          python scripts/test-release-version.py
           python scripts/test-release.py
           python scripts/test-install.py
           python scripts/test-bootstrap.py
@@ -79,21 +72,13 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
-      - name: Toolchain and version
+      - name: Stamp release version
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
-        run: |
-          rustup show
-          python - <<'PY'
-          import os, tomllib
-          with open('Cargo.toml', 'rb') as f:
-              version = 'v' + tomllib.load(f)['workspace']['package']['version']
-          if os.environ['REF_TYPE'] == 'tag' and os.environ['REF_NAME'] != version:
-              raise SystemExit('Release tag must match Cargo.toml workspace version')
-          with open(os.environ['GITHUB_ENV'], 'a') as f:
-              f.write(f'VERSION={version}\n')
-          PY
+        run: python scripts/release_version.py resolve --ref-type "$REF_TYPE" --ref-name "$REF_NAME"
+      - name: Toolchain
+        run: rustup show
       # Tag builds ship binaries, so they do not restore or save a cache.
       # Keep the kiln crates in the cache so a warm run reuses them.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -108,8 +93,12 @@ jobs:
           cargo build --release --locked -p kiln-identity
           target/release/kiln-host --help
           target/release/kiln-api --help
-          target/release/kiln --version
-          target/release/kiln-identity --version
+          python scripts/release_version.py check-binary --version "$VERSION" -- \
+            target/release/kiln \
+            target/release/kiln-runtime \
+            target/release/kiln-host \
+            target/release/kiln-api \
+            target/release/kiln-identity
           case "$(target/release/kiln-identity --help)" in
             *github-authorize-url*|*github-token-url*|*github-user-url*|*provider-ca-file*)
               echo "release kiln-identity must not accept a substitute provider" >&2
@@ -165,6 +154,11 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
+      - name: Stamp release version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: python scripts/release_version.py resolve --ref-type "$REF_TYPE" --ref-name "$REF_NAME"
       - name: Toolchain
         run: rustup show
       # Tag builds ship binaries, so they do not restore or save a cache.
@@ -182,11 +176,11 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           cargo build --release --locked -p kiln-client --bin kiln --target ${{ matrix.target }}
-          target/${{ matrix.target }}/release/kiln${{ matrix.suffix }} --version
+          python scripts/release_version.py check-binary --version "$VERSION" -- \
+            target/${{ matrix.target }}/release/kiln${{ matrix.suffix }}
       - name: Package client
         if: github.event_name != 'pull_request'
         run: |
-          VERSION=$(python -c "import tomllib; print('v' + tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
           python scripts/test-release.py
           python scripts/release.py client --version "$VERSION" --target ${{ matrix.target }} \
             --bin-dir target/${{ matrix.target }}/release --output dist
@@ -204,11 +198,11 @@ jobs:
         run: |
           rustup target add x86_64-apple-darwin
           cargo build --release --locked -p kiln-client --bin kiln --target x86_64-apple-darwin
-          target/x86_64-apple-darwin/release/kiln --version
+          python scripts/release_version.py check-binary --version "$VERSION" -- \
+            target/x86_64-apple-darwin/release/kiln
       - name: Package x86_64 macOS client
         if: github.event_name != 'pull_request' && matrix.target == 'aarch64-apple-darwin'
         run: |
-          VERSION=$(python -c "import tomllib; print('v' + tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
           python scripts/release.py client --version "$VERSION" --target x86_64-apple-darwin \
             --bin-dir target/x86_64-apple-darwin/release --output dist-x86_64
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -227,15 +221,20 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Stamp release version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: python scripts/release_version.py resolve --ref-type "$REF_TYPE" --ref-name "$REF_NAME"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           # Empty on a v* tag, so setup-node skips restore and save and still installs Node.
           cache: ${{ !startsWith(github.ref, 'refs/tags/v') && 'npm' || '' }}
           cache-dependency-path: web/package-lock.json
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
       - name: Test and build dashboard
         working-directory: web
         run: |
@@ -256,7 +255,6 @@ jobs:
       - name: Package static dashboard
         if: github.event_name != 'pull_request'
         run: |
-          VERSION=$(python -c "import tomllib; print('v' + tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
           python scripts/test-release.py
           python scripts/release.py dashboard --version "$VERSION" --target web \
             --bin-dir web/dist --output dist
@@ -278,6 +276,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: package-*
@@ -289,6 +290,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
+          python3 scripts/release_version.py check-archives --version "$TAG" dist
           (cd dist && sha256sum -c ./*.sha256)
           gh release create "$TAG" dist/* --verify-tag --draft --title "$TAG" \
             --notes 'Trusted-workload pilot. Native client tests and Linux build checks passed. The unattended installer requires Ubuntu 24.04 or 26.04 x86-64/KVM for servers. No deployment was performed. Review the release and real-host validation before publishing. Binaries are not signed or notarized.'

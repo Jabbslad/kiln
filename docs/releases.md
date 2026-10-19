@@ -421,9 +421,16 @@ beyond the scoped GitHub Actions token and does not deploy a server. Public work
 must not contain credentials or runtime data. Fork PRs use hosted runners and
 read-only permissions; only the tag release job has contents-write permission.
 
-For an approved release, update the workspace version, commit the reviewed source
-and push a matching `vMAJOR.MINOR.PATCH` tag. Tag/version mismatches fail. When all
-jobs pass, the workflow creates a **draft release**. Review/download the draft,
+For an approved release, push an annotated `vMAJOR.MINOR.PATCH` tag of the green
+main commit (`git tag -a vX.Y.Z -m "..."`). Do not commit a version bump. The tag
+build stamps that name into the workspace version and the lockfile versions of
+the workspace crates, then compiles. The binaries, archive names, and
+`release.json` use the tag. A tag that is not stable `vMAJOR.MINOR.PATCH` fails
+before compile. Branch and pull-request builds keep the committed workspace
+version. Checking out the tag and building without the stamp produces the
+committed workspace version. Restore `Cargo.toml` and `Cargo.lock` after a local
+stamp so the stamp is not committed. When all jobs pass, the workflow
+creates a **draft release**. Review/download the draft,
 verify packages, and record real-host validation and any outstanding limitations
 before publishing it publicly. Reruns do not overwrite
 existing releases. Real KVM tests remain separate; ordinary CI tests do not prove
