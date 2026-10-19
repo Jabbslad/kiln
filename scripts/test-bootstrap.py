@@ -488,6 +488,7 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
             ("ubuntu", "22.04"),
             ("ubuntu", "24.10"),
             ("ubuntu", "26.10"),
+            ("debian", "12"),
             ("debian", "26.04"),
         ]:
             with self.subTest(distro=distro, version=version):

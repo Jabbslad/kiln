@@ -2,12 +2,14 @@ name: Build and package
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
 
 # Build jobs cannot publish or deploy. Never run PR code on the real KVM host.
+# actions: write is omitted. The cache service uses the runner token, and that
+# permission would let a build step start workflow_dispatch.
 permissions:
   contents: read
 
@@ -20,7 +22,7 @@ env:
   PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
-  server:
+  server-check:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -45,6 +47,12 @@ jobs:
           with open(os.environ['GITHUB_ENV'], 'a') as f:
               f.write(f'VERSION={version}\n')
           PY
+      # Tag builds ship binaries, so they do not restore or save a cache.
+      # Keep the kiln crates in the cache so a warm run reuses them.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        with:
+          cache-workspace-crates: 'true'
       - name: Test and lint
         run: |
           cargo fmt --all -- --check
@@ -58,16 +66,51 @@ jobs:
             deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
             deploy/github/install-remote.sh deploy/github/smoke.sh \
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh
-      - name: Build production server and local client
+
+  # Pull requests run server-check only. main, tags, and workflow_dispatch package.
+  server-package:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Toolchain and version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          cargo build --release --locked -p kiln-server --bins -p kiln-runtime --bin kiln-runtime -p kiln-client --bin kiln
+          rustup show
+          python - <<'PY'
+          import os, tomllib
+          with open('Cargo.toml', 'rb') as f:
+              version = 'v' + tomllib.load(f)['workspace']['package']['version']
+          if os.environ['REF_TYPE'] == 'tag' and os.environ['REF_NAME'] != version:
+              raise SystemExit('Release tag must match Cargo.toml workspace version')
+          with open(os.environ['GITHUB_ENV'], 'a') as f:
+              f.write(f'VERSION={version}\n')
+          PY
+      # Tag builds ship binaries, so they do not restore or save a cache.
+      # Keep the kiln crates in the cache so a warm run reuses them.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        with:
+          cache-workspace-crates: 'true'
+      - name: Build release binaries
+        run: |
+          cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client
+          # One cargo command unifies features and links h2 into kiln-identity.
+          cargo build --release --locked -p kiln-identity
           target/release/kiln-host --help
           target/release/kiln-api --help
           target/release/kiln --version
-      - name: Build independent identity service
-        run: |
-          cargo build --release --locked -p kiln-identity
           target/release/kiln-identity --version
+      - name: Package identity service
+        run: |
           python scripts/release.py identity --version "$VERSION" --target x86_64-unknown-linux-gnu \
             --bin-dir target/release --output dist
       - name: Build pinned warm guest image without root
@@ -100,9 +143,6 @@ jobs:
           - os: macos-15
             target: aarch64-apple-darwin
             suffix: ''
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            suffix: ''
           - os: windows-2025
             target: x86_64-pc-windows-msvc
             suffix: .exe
@@ -120,25 +160,55 @@ jobs:
           python-version: '3.12'
       - name: Toolchain
         run: rustup show
+      # Tag builds ship binaries, so they do not restore or save a cache.
+      # Keep the kiln crates in the cache so a warm run reuses them.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        with:
+          cache-workspace-crates: 'true'
       - name: Native client TLS and CLI tests
         run: cargo test --locked -p kiln-api -p kiln-client --target ${{ matrix.target }}
       - name: Native shell bootstrap tests
         if: runner.os != 'Windows'
         run: python scripts/test-bootstrap.py
       - name: Production binary
+        if: github.event_name != 'pull_request'
         run: |
           cargo build --release --locked -p kiln-client --bin kiln --target ${{ matrix.target }}
           target/${{ matrix.target }}/release/kiln${{ matrix.suffix }} --version
       - name: Package client
+        if: github.event_name != 'pull_request'
         run: |
           VERSION=$(python -c "import tomllib; print('v' + tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
           python scripts/test-release.py
           python scripts/release.py client --version "$VERSION" --target ${{ matrix.target }} \
             --bin-dir target/${{ matrix.target }}/release --output dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name != 'pull_request'
         with:
           name: package-${{ matrix.target }}
           path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      # The intel runner is gone. This arm job still publishes package-x86_64-apple-darwin.
+      - name: Cross-compile x86_64 macOS client
+        if: github.event_name != 'pull_request' && matrix.target == 'aarch64-apple-darwin'
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo build --release --locked -p kiln-client --bin kiln --target x86_64-apple-darwin
+          target/x86_64-apple-darwin/release/kiln --version
+      - name: Package x86_64 macOS client
+        if: github.event_name != 'pull_request' && matrix.target == 'aarch64-apple-darwin'
+        run: |
+          VERSION=$(python -c "import tomllib; print('v' + tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
+          python scripts/release.py client --version "$VERSION" --target x86_64-apple-darwin \
+            --bin-dir target/x86_64-apple-darwin/release --output dist-x86_64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name != 'pull_request' && matrix.target == 'aarch64-apple-darwin'
+        with:
+          name: package-x86_64-apple-darwin
+          path: dist-x86_64/*
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
@@ -153,6 +223,9 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
+          # Empty on a v* tag, so setup-node skips restore and save and still installs Node.
+          cache: ${{ !startsWith(github.ref, 'refs/tags/v') && 'npm' || '' }}
+          cache-dependency-path: web/package-lock.json
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
@@ -163,9 +236,18 @@ jobs:
           npm test
           npx prettier --check .
           npm run build
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('web/package-lock.json') }}
+      - name: Browser tests
+        working-directory: web
+        run: |
           npx playwright install --with-deps chromium
           npm run test:browser
       - name: Package static dashboard
+        if: github.event_name != 'pull_request'
         run: |
           VERSION=$(python -c "import tomllib; print('v' + tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
           python scripts/test-release.py
@@ -173,6 +255,7 @@ jobs:
             --bin-dir web/dist --output dist
           (cd dist && sha256sum -c ./*.sha256)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name != 'pull_request'
         with:
           name: package-dashboard
           path: dist/*
@@ -181,7 +264,7 @@ jobs:
           compression-level: 0
 
   draft-release:
-    needs: [server, client, dashboard]
+    needs: [server-check, server-package, client, dashboard]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 10

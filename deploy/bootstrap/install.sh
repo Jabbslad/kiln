@@ -232,7 +232,7 @@ install_server() {
     resource_preflight
     printf '%s\n' \
         'Fresh Kiln installation. Fresh-host/reboot validation is outstanding.' \
-        'Setup will use sudo to install host packages: python3 openssl curl ca-certificates tar passwd.' \
+        'Setup will use sudo to install Ubuntu packages: python3 openssl curl ca-certificates tar passwd.' \
         'The server command authorizes setup; resource/conflict checks still run before creating kiln accounts and services.' \
         'A failed setup retains runtime state for diagnosis; do not delete it and blindly retry.'
     as_root env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update < /dev/null

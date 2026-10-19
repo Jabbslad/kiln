@@ -14,9 +14,13 @@ use std::{
 };
 use tower::ServiceExt;
 
-static CLOCK: AtomicI64 = AtomicI64::new(1_700_000_000);
-fn now() -> i64 {
-    CLOCK.load(Ordering::SeqCst)
+macro_rules! test_clock {
+    ($clock:ident, $now:ident) => {
+        static $clock: AtomicI64 = AtomicI64::new(1_700_000_000);
+        fn $now() -> i64 {
+            $clock.load(Ordering::SeqCst)
+        }
+    };
 }
 
 const ORIGIN: &str = "https://identity.example.test";
@@ -29,7 +33,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new() -> Self {
+    fn new(now: fn() -> i64) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -105,9 +109,11 @@ fn approval_body(code: &str) -> String {
     format!("csrf=csrf&user_code={code}&decision=approve")
 }
 
+test_clock!(UNAUTH_CLOCK, unauth_now);
+
 #[tokio::test]
 async fn unauthenticated_approvals_hit_the_ip_limit() {
-    let f = Fixture::new();
+    let f = Fixture::new(unauth_now);
     let body = approval_body("ABCD23456789");
     for attempt in 1..=5 {
         let (status, bytes) = send(
@@ -153,9 +159,11 @@ async fn unauthenticated_approvals_hit_the_ip_limit() {
     );
 }
 
+test_clock!(BAD_GRANT_CLOCK, bad_grant_now);
+
 #[tokio::test]
 async fn bad_token_grants_hit_the_ip_limit() {
-    let f = Fixture::new();
+    let f = Fixture::new(bad_grant_now);
     let body = "grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=missing";
     for attempt in 1..=24 {
         let (status, bytes) = send(&f.app, "/oauth/token", "192.0.2.20", None, None, body).await;
@@ -177,12 +185,14 @@ async fn bad_token_grants_hit_the_ip_limit() {
     );
 }
 
+test_clock!(PENDING_POLL_CLOCK, pending_poll_now);
+
 #[tokio::test]
 async fn pending_device_polls_are_not_rate_limited_at_the_login_cadence() {
-    let f = Fixture::new();
+    let f = Fixture::new(pending_poll_now);
     let grant = f
         .store
-        .create_device("laptop", "192.0.2.30", now())
+        .create_device("laptop", "192.0.2.30", pending_poll_now())
         .unwrap();
     let body = format!(
         "grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code={}",
@@ -199,16 +209,18 @@ async fn pending_device_polls_are_not_rate_limited_at_the_login_cadence() {
     }
 }
 
+test_clock!(LIVE_SESSION_CLOCK, live_session_now);
+
 #[tokio::test]
 async fn a_live_session_can_still_approve_and_receive_a_token() {
-    let f = Fixture::new();
+    let f = Fixture::new(live_session_now);
     let owner = f
         .store
-        .seed_account("github", "42", "tester", now())
+        .seed_account("github", "42", "tester", live_session_now())
         .unwrap();
     let grant = f
         .store
-        .create_device("laptop", "192.0.2.40", now())
+        .create_device("laptop", "192.0.2.40", live_session_now())
         .unwrap();
     f.db()
         .execute(
@@ -217,7 +229,7 @@ async fn a_live_session_can_still_approve_and_receive_a_token() {
                 Sha256::digest(b"browser").to_vec(),
                 Sha256::digest(b"csrf").to_vec(),
                 owner,
-                now() + 43_200,
+                live_session_now() + 43_200,
             ],
         )
         .unwrap();
@@ -231,7 +243,7 @@ async fn a_live_session_can_still_approve_and_receive_a_token() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    CLOCK.fetch_add(5, Ordering::SeqCst);
+    LIVE_SESSION_CLOCK.fetch_add(5, Ordering::SeqCst);
     let (status, bytes) = send(
         &f.app,
         "/oauth/token",
@@ -254,9 +266,11 @@ async fn a_live_session_can_still_approve_and_receive_a_token() {
     assert!(body["access_token"].is_string());
 }
 
+test_clock!(SQLITE_ERROR_CLOCK, sqlite_error_now);
+
 #[tokio::test]
 async fn sqlite_errors_on_token_and_approval_are_server_errors() {
-    let f = Fixture::new();
+    let f = Fixture::new(sqlite_error_now);
     f.db().execute("DROP TABLE pending_devices", []).unwrap();
     let (status, bytes) = send(
         &f.app,

@@ -968,11 +968,9 @@ def provision(args):
     preflight(bundle, address)
     if args.network_uplink is not None:
         network_preflight(args.network_uplink)
-    distro = platform.freedesktop_os_release()
-    host_label = f"{distro.get('ID', 'unknown')} {distro.get('VERSION_ID', '')}".strip()
     print(
         f"Checks passed. Proposed installation:\n"
-        f"  {host_label} / KVM, endpoint https://{address}:8443\n"
+        f"  Ubuntu / KVM, endpoint https://{address}:8443\n"
         "  /opt/kiln, /usr/local/libexec/kiln-*, /etc/kiln, /var/lib/kiln\n"
         "  kiln-api and eight locked VM accounts; UID 70000..70007 / GID 71000..71007\n"
         "  Enable cpu/memory/pids cgroup controllers and three systemd services\n"

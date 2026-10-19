@@ -80,6 +80,7 @@ class InstallTests(unittest.TestCase):
             ("ubuntu", "22.04", "x86_64"),
             ("ubuntu", "24.10", "x86_64"),
             ("ubuntu", "26.10", "x86_64"),
+            ("debian", "12", "x86_64"),
             ("debian", "26.04", "x86_64"),
             ("ubuntu", "26.04", "aarch64"),
         ):
