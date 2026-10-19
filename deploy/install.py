@@ -94,12 +94,18 @@ def trusted_ancestors(path):
 def preflight(bundle, address):
     address = private_address(address)
     release = platform.freedesktop_os_release()
-    if (
-        platform.machine() != "x86_64"
-        or release.get("ID") != "ubuntu"
-        or release.get("VERSION_ID") not in ("24.04", "26.04")
-    ):
-        raise ValueError("installer supports Ubuntu 24.04 and 26.04 x86-64 only")
+    supported = {
+        ("ubuntu", "24.04"),
+        ("ubuntu", "26.04"),
+        ("debian", "13"),
+    }
+    if platform.machine() != "x86_64" or (
+        release.get("ID"),
+        release.get("VERSION_ID"),
+    ) not in supported:
+        raise ValueError(
+            "installer supports Ubuntu 24.04, Ubuntu 26.04, and Debian 13 x86-64 only"
+        )
     if not Path("/run/systemd/system").is_dir():
         raise ValueError("a booted systemd host is required (not a container)")
     for tool in (
