@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod door;
 pub mod enrollment;
 pub mod gateway;
 pub mod host;
