@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Release tag to workspace version.
-
-resolve, check-binary, check-archives, and attach-bootstrap are the entry points.
-plan_stamp and render_bootstrap rewrite text and do not touch disk.
-"""
+"""Release tag to workspace version."""
 
 from __future__ import annotations
 
@@ -21,8 +17,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-# deploy.sh compares with shell arithmetic and install.sh with awk.
-# A tenth digit is not exact there, and a leading zero is an octal trap (08).
 _COMPONENT_LIMIT = 10**9
 _TAG_PATTERN = (
     r"^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$"
@@ -36,9 +30,6 @@ _PACKAGE_TABLE = re.compile(r"^\[package\]$")
 _VERSION_KEY = re.compile(r"^version(\s|=|\.|$)")
 _LOCK_PACKAGE = "[[package]]"
 
-# Clap's default command is the package name. kiln-client sets name = "kiln".
-# kiln-host and kiln-api are binaries of package kiln-server.
-# test_clap_names_match_installer locks this map to deploy/install.sh reported_name.
 _CLAP_COMMAND = {
     "kiln": "kiln",
     "kiln-runtime": "kiln-runtime",
@@ -59,8 +50,6 @@ _ASSET_ARCHIVE = {
 
 @dataclass(frozen=True)
 class ReleaseVersion:
-    """Stable product version. tag and cargo are derived from the three integers."""
-
     major: int
     minor: int
     patch: int
@@ -75,19 +64,15 @@ class ReleaseVersion:
 
     @property
     def tag(self) -> str:
-        """vMAJOR.MINOR.PATCH. Archives, release.json, VERSION, and the git ref."""
         return f"v{self.major}.{self.minor}.{self.patch}"
 
     @property
     def cargo(self) -> str:
-        """MAJOR.MINOR.PATCH. The manifest, the lockfile, and clap stdout."""
         return f"{self.major}.{self.minor}.{self.patch}"
 
 
 @dataclass(frozen=True)
 class MemberCrate:
-    """One workspace member. The stamp requires version.workspace = true."""
-
     name: str
     inherits_workspace_version: bool
 
@@ -112,8 +97,7 @@ def plan_stamp(
 ) -> tuple[str, str]:
     """Return stamped Cargo.toml and Cargo.lock text.
 
-    The result is pure. A second call with the same version returns the same
-    text. Registry packages, git packages, dependency arrays, the lockfile
+    Registry packages, git packages, dependency arrays, the lockfile
     header, and non-member path packages stay as they were.
     """
     if type(version) is not ReleaseVersion:
@@ -141,12 +125,7 @@ def plan_stamp(
 
 
 def resolve(repo: Path, ref_type: str, ref_name: str) -> ReleaseVersion:
-    """Stamp a tag, or return the committed version for a branch.
-
-    This is the only writer of Cargo.toml and Cargo.lock. A tag replaces the
-    lockfile and then the manifest when the bytes differ. A branch writes
-    nothing. Any other ref type fails.
-    """
+    """Stamp a tag, or return the committed version for a branch."""
     repo = Path(repo)
     if ref_type == "branch":
         text = _read_text(repo / "Cargo.toml")
@@ -171,7 +150,6 @@ def resolve(repo: Path, ref_type: str, ref_name: str) -> ReleaseVersion:
 
 
 def clap_line(binary: Path, version: ReleaseVersion) -> str:
-    """The exact --version line, without the trailing newline."""
     if type(version) is not ReleaseVersion:
         raise TypeError("version must be a ReleaseVersion")
     stem = binary.name
@@ -185,7 +163,6 @@ def clap_line(binary: Path, version: ReleaseVersion) -> str:
 
 
 def check_binary(version: ReleaseVersion, binaries: tuple[Path, ...]) -> None:
-    """Require each binary's --version stdout to be the clap line plus a newline."""
     if type(version) is not ReleaseVersion:
         raise TypeError("version must be a ReleaseVersion")
     if not binaries:
@@ -256,7 +233,7 @@ def render_bootstrap(
 ) -> str:
     """Return install.sh text pinned to this release.
 
-    Pure. The version pin and the asset digests are the only bytes that change.
+    The version pin and the asset digests are the only bytes that change.
     """
     if type(version) is not ReleaseVersion:
         raise TypeError("version must be a ReleaseVersion")
@@ -308,7 +285,6 @@ def attach_bootstrap(repo: Path, dist: Path, version: ReleaseVersion) -> Path:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Run resolve, check-binary, check-archives, or attach-bootstrap."""
     try:
         _dispatch(argv)
     except ValueError as exc:

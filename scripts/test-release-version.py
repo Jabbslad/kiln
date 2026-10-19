@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Fixture checks for the release tag stamp. They never stamp this checkout."""
 
 import hashlib
 import importlib.util

@@ -142,26 +142,9 @@ def package(repo, bins, output, version, target, kind, image):
 
 
 def _parse_release_tag(version):
-    # This file is loaded by path, so a bare import cannot see scripts/.
-    # dataclass also looks the sibling up in sys.modules while it is defined.
-    import importlib.util
-    import sys
+    import release_version
 
-    name = "_kiln_release_version"
-    module = sys.modules.get(name)
-    if module is None:
-        path = Path(__file__).with_name("release_version.py")
-        spec = importlib.util.spec_from_file_location(name, path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"cannot load {path}")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module
-        try:
-            spec.loader.exec_module(module)
-        except Exception:
-            sys.modules.pop(name, None)
-            raise
-    return module.parse_release_tag(version)
+    return release_version.parse_release_tag(version)
 
 
 if __name__ == "__main__":
