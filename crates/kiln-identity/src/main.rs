@@ -28,6 +28,15 @@ struct Args {
     /// Trust an X-Forwarded-For value overwritten by the loopback HTTPS proxy.
     #[arg(long)]
     trusted_proxy_loopback: bool,
+    #[arg(long, default_value = kiln_identity::GITHUB_AUTHORIZE_URL)]
+    github_authorize_url: String,
+    #[arg(long, default_value = kiln_identity::GITHUB_TOKEN_URL)]
+    github_token_url: String,
+    #[arg(long, default_value = kiln_identity::GITHUB_USER_URL)]
+    github_user_url: String,
+    /// Extra CA for a lab provider. Refused when the public origin is dark-forge.dev.
+    #[arg(long)]
+    provider_ca_file: Option<PathBuf>,
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -48,6 +57,10 @@ async fn main() -> anyhow::Result<()> {
             signing_key_id: x.signing_key_id,
             retiring_jwks_file: x.retiring_jwks_file,
             trusted_proxy_loopback: x.trusted_proxy_loopback,
+            github_authorize_url: x.github_authorize_url,
+            github_token_url: x.github_token_url,
+            github_user_url: x.github_user_url,
+            provider_ca_pem: x.provider_ca_file.map(std::fs::read).transpose()?,
             now: unix_now,
         },
         store,

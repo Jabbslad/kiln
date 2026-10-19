@@ -39,15 +39,18 @@ pub struct Authorization {
     pub nonce: Option<String>,
 }
 
-pub fn http_client() -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
+pub fn http_client(extra_ca: Option<&[u8]>) -> anyhow::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
         .https_only(true)
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
         .no_proxy()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .build()?)
+        .timeout(Duration::from_secs(30));
+    if let Some(pem) = extra_ca {
+        builder = builder.add_root_certificate(reqwest::Certificate::from_pem(pem)?);
+    }
+    Ok(builder.build()?)
 }
 
 fn github_client(
@@ -75,18 +78,17 @@ fn github_client(
     Ok(client)
 }
 
-pub fn github_begin(client_id: &str, redirect: &str) -> anyhow::Result<Authorization> {
+pub fn github_begin(
+    client_id: &str,
+    redirect: &str,
+    authorize_url: &str,
+    token_url: &str,
+) -> anyhow::Result<Authorization> {
     let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
-    let (url, state) = github_client(
-        client_id,
-        None,
-        redirect,
-        "https://github.com/login/oauth/authorize",
-        "https://github.com/login/oauth/access_token",
-    )?
-    .authorize_url(CsrfToken::new_random)
-    .set_pkce_challenge(challenge)
-    .url();
+    let (url, state) = github_client(client_id, None, redirect, authorize_url, token_url)?
+        .authorize_url(CsrfToken::new_random)
+        .set_pkce_challenge(challenge)
+        .url();
     Ok(Authorization {
         url: url.into(),
         state: state.secret().clone(),
@@ -161,6 +163,7 @@ struct GhUser {
     id: u64,
     login: String,
 }
+#[allow(clippy::too_many_arguments)]
 pub async fn github_finish(
     client: &reqwest::Client,
     client_id: &str,
@@ -168,6 +171,8 @@ pub async fn github_finish(
     code: &str,
     redirect: &str,
     pkce: &str,
+    token_url: &str,
+    user_url: &str,
 ) -> anyhow::Result<ProviderIdentity> {
     github_finish_at(
         client,
@@ -176,8 +181,8 @@ pub async fn github_finish(
         code,
         redirect,
         pkce,
-        "https://github.com/login/oauth/access_token",
-        "https://api.github.com/user",
+        token_url,
+        user_url,
     )
     .await
 }
@@ -282,8 +287,7 @@ async fn google_finish_at(
     })
 }
 
-// Endpoint substitution is compiled only into the protocol test crate. Production callers can
-// reach only the fixed provider endpoints above.
+// Lab issuers pass these URLs through. https://dark-forge.dev refuses substitutes in router().
 #[cfg(test)]
 #[allow(dead_code, clippy::too_many_arguments)] // exercised by tests/providers.rs
 pub async fn test_github_finish(
