@@ -1,6 +1,6 @@
 # Installer
 
-`deploy/bootstrap/install.sh` is the public one-command installer. `client` (the default) downloads a pinned `kiln` binary into `~/.local/bin`. `server` downloads the server package and runs `deploy/install.sh` under passwordless sudo. Installing and deploying Kiln is shell scripts. The bootstrap pins v0.4.6 and runs `install.sh`. An archive whose installer is `install.py` is rejected.
+`deploy/bootstrap/install.sh` is the public one-command installer. `client` (the default) downloads a pinned `kiln` binary into `~/.local/bin`. `server` downloads the server package and runs `deploy/install.sh` under passwordless sudo. Installing and deploying Kiln is shell scripts. The bootstrap pins the latest published release and runs `install.sh`. An archive whose installer is `install.py` is rejected.
 
 ## Sub-features
 
@@ -51,7 +51,7 @@ shellcheck scripts/fetch-firecracker.sh images/build-ubuntu.sh deploy/install.sh
 ## Gotchas
 
 - A green harness is not an installed server. Fresh-host provisioning and reboot are still described as unverified in `docs/releases.md`.
-- `deploy/bootstrap/install.sh` `main` pins `version=0.4.6`. The harness tests the pin that is in the script.
+- `deploy/bootstrap/install.sh` `main` pins the latest published release. The harness reads that pin from the script and checks it against the GitHub releases API.
 - Server mode requires `/dev/kvm` to exist, Ubuntu 24.04, Ubuntu 26.04, or Debian 13, systemd, and cgroup controllers `cpu`, `memory`, and `pids`. The authoring VM's `/dev/kvm` was not usable by uid 1000 until an ACL was added. The harness stubs those checks.
 - CI runs the Python modules and ShellCheck in `.github/workflows/build.yml`. `deploy.yml` and `diagnose.yml` SSH to dark-forge and do not run on pull requests. The build workflow has no dependency advisory scan (`cargo audit`, `cargo-deny`, Dependabot, or OSV).
 - The authoring proof ran the three Python modules from the repo root. All three exited 0 (32 bootstrap tests, 31 install tests, 6 release tests). `shellcheck` was not installed on that machine, so the ShellCheck line stayed unverified. The harness still does not install a server.

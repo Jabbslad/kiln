@@ -11,6 +11,8 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -37,8 +39,11 @@ SERVER_FILES = [
     "docs/remote-client.md",
     "docs/runtime.md",
     "docs/identity-service.md",
+    "docs/runbooks/2026-10-19-public-door.md",
     "deploy/kiln-host.service",
     "deploy/kiln-api.service",
+    "deploy/kiln-door.service",
+    "deploy/enroll-dark-forge.sh",
     "deploy/host.example.json",
     "image/image.json",
     "image/inputs.json",
@@ -263,7 +268,25 @@ if args[0] == 'env' and 'apt-get' in args:
         )
 
     def test_pinned_version_matches_published_release(self):
-        self.assertEqual(pinned_version(), "0.4.6")
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "kiln-bootstrap-test",
+        }
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        request = urllib.request.Request(
+            "https://api.github.com/repos/Jabbslad/kiln/releases/latest",
+            headers=headers,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.load(response)
+        except urllib.error.URLError as exc:
+            self.fail(f"cannot read the latest published release: {exc}")
+        self.assertEqual(payload["tag_name"], "v" + pinned_version())
+        self.assertFalse(payload["draft"])
+        self.assertFalse(payload["prerelease"])
 
     def test_client_platforms_install_correct_asset(self):
         for system, arch, expected in [

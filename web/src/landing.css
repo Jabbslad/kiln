@@ -1,0 +1,415 @@
+.landing {
+  max-width: 1440px;
+  margin: 0 auto;
+}
+.landing main {
+  padding: 0;
+}
+.landing-header {
+  min-height: 80px;
+  display: flex;
+  align-items: center;
+  gap: 40px;
+  padding: 16px 32px;
+  border-bottom: 1px solid var(--line);
+}
+.landing-brand {
+  font-size: 32px;
+  font-weight: 500;
+  letter-spacing: -1px;
+}
+.landing-header nav {
+  display: flex;
+  gap: 32px;
+  flex: 1;
+  font: 12px var(--mono);
+  text-transform: uppercase;
+}
+.landing-header nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  gap: 6px;
+}
+.landing .button {
+  font-size: 11px;
+  min-height: 44px;
+  letter-spacing: 0;
+}
+.landing-hero {
+  position: relative;
+  min-height: 640px;
+  display: flex;
+  align-items: end;
+  isolation: isolate;
+  padding: 80px 40px;
+  background: #111111;
+}
+.landing-hero > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 60% center;
+  z-index: -2;
+}
+.landing-hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    linear-gradient(90deg, #0e0e0ed9, #0e0e0e33 60%, transparent),
+    linear-gradient(0deg, #0e0e0e, transparent 45%);
+}
+.hero-content {
+  max-width: 580px;
+}
+.hero-content .eyebrow {
+  color: #c1c1c1;
+  font-size: 11px;
+  margin-bottom: 24px;
+}
+.hero-content h1 {
+  font-size: clamp(36px, 4vw, 56px);
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+.hero-description {
+  font-size: 18px;
+  line-height: 1.6;
+  color: #c2c2c2;
+  margin-top: 24px;
+}
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 28px;
+}
+.hero-actions .button:not(.primary) {
+  background: #ffffff0f;
+  border-color: #ffffff40;
+  backdrop-filter: blur(12px);
+}
+.hero-caption {
+  font: 12px/1.7 var(--mono);
+  color: #bdbdbd;
+  margin-top: 28px;
+}
+.landing .terminal-prompt {
+  display: inline;
+  margin-top: 0;
+  font: inherit;
+  color: var(--green);
+  margin-right: 8px;
+}
+.hero-footnote {
+  position: absolute;
+  bottom: 28px;
+  right: 32px;
+  font: 10px var(--mono);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.platform-band {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-block: 1px solid var(--line);
+}
+.platform-band span {
+  padding: 28px 16px;
+  font: 11px var(--mono);
+  text-align: center;
+  text-transform: uppercase;
+  color: #b5b5b5;
+}
+.platform-band span + span {
+  border-left: 1px solid var(--line);
+}
+.landing-section {
+  margin: 80px 20px;
+  border: 1px solid var(--line);
+  scroll-margin-top: 20px;
+}
+.landing-section-heading {
+  padding: 40px;
+}
+.landing h2 {
+  font-size: 32px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.25;
+  margin: 16px 0;
+}
+.landing-section-heading > p:last-child,
+.console-feature > div:first-child > p:not(.eyebrow) {
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--muted);
+  max-width: 560px;
+}
+.workflow-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  border-top: 1px solid var(--line);
+}
+.workflow-grid article {
+  padding: 32px;
+  min-width: 0;
+}
+.workflow-grid article + article {
+  border-left: 1px solid var(--line);
+}
+.workflow-code {
+  font: 11px/1.7 var(--mono);
+  padding-bottom: 48px;
+  overflow-wrap: anywhere;
+}
+.landing h3 {
+  font-size: 20px;
+  font-weight: 400;
+  margin-bottom: 16px;
+}
+.workflow-grid h3 span {
+  color: var(--muted);
+  margin-right: 12px;
+}
+.workflow-grid p,
+.install-details p {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.console-feature {
+  margin: 0 20px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--line);
+}
+.console-feature > div {
+  padding: 40px;
+}
+.console-feature .button {
+  margin-top: 32px;
+}
+.console-figure {
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  font: 11px/1.5 var(--mono);
+}
+.figure-label {
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 24px;
+}
+.host-figure {
+  border: 1px solid #454545;
+  padding: 20px;
+}
+.figure-boxes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin: 16px 0;
+}
+.figure-boxes > div {
+  border: 1px solid var(--line-strong);
+  padding: 16px;
+}
+.figure-boxes small {
+  display: block;
+  color: var(--muted);
+  margin: 4px 0 20px;
+}
+.figure-disk {
+  display: block;
+  font-size: 10px;
+  border-top: 1px solid var(--line-strong);
+  padding-top: 10px;
+}
+.figure-control {
+  border-top: 1px solid var(--line-strong);
+  padding-top: 16px;
+}
+.figure-control span {
+  display: block;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.console-figure > p {
+  color: var(--muted);
+  font-size: 10px;
+  margin-top: 16px;
+}
+.install-command {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-block: 1px solid var(--line);
+  background: var(--panel);
+  padding: 24px 40px;
+}
+.install-command code {
+  font: 12px/1.8 var(--mono);
+  overflow-wrap: anywhere;
+  min-width: 0;
+  flex: 1;
+}
+.install-command .icon-button {
+  width: 44px;
+  height: 44px;
+}
+.install-details {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+.install-details > div {
+  padding: 32px;
+}
+.install-details > div + div {
+  border-left: 1px solid var(--line);
+}
+.install-details .text-action {
+  margin-top: 20px;
+  min-height: 44px;
+}
+.pilot-note {
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  padding: 20px 32px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.landing-footer {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  padding: 40px 32px;
+  border-top: 1px solid var(--line);
+  background: #191919;
+}
+.landing-footer > span:nth-child(2) {
+  flex: 1;
+  color: var(--muted);
+  font-size: 14px;
+}
+.landing-footer a {
+  font: 11px var(--mono);
+  text-transform: uppercase;
+  padding-block: 14px;
+}
+@media (max-width: 767px) {
+  .landing-header {
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    padding: 12px 16px;
+  }
+  .landing-header .landing-brand {
+    flex: 1;
+  }
+  .landing-header nav {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: space-between;
+    border-top: 1px solid var(--line);
+    margin-top: 6px;
+  }
+  .landing-hero {
+    min-height: 680px;
+    padding: 200px 20px 70px;
+  }
+  .landing-hero > img {
+    object-position: 74% center;
+  }
+  .landing-hero::before {
+    background: linear-gradient(0deg, #0e0e0e 5%, #0e0e0ee8 35%, #0e0e0e22 90%);
+  }
+  .hero-content .eyebrow {
+    font-size: 10px;
+  }
+  .hero-description {
+    font-size: 16px;
+  }
+  .hero-footnote {
+    left: 20px;
+    right: auto;
+    font-size: 9px;
+  }
+  .platform-band {
+    grid-template-columns: 1fr 1fr;
+  }
+  .platform-band span {
+    padding: 20px 10px;
+    font-size: 10px;
+  }
+  .platform-band span:nth-child(3) {
+    border-left: 0;
+  }
+  .platform-band span:nth-child(n + 3) {
+    border-top: 1px solid var(--line);
+  }
+  .landing-section {
+    margin: 32px 16px;
+  }
+  .landing-section-heading,
+  .console-feature > div {
+    padding: 28px 20px;
+  }
+  .landing h2 {
+    font-size: 28px;
+  }
+  .workflow-grid,
+  .install-details,
+  .console-feature {
+    grid-template-columns: 1fr;
+  }
+  .workflow-grid article,
+  .install-details > div {
+    padding: 24px 20px;
+  }
+  .workflow-grid article + article,
+  .install-details > div + div,
+  .console-figure {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .workflow-code {
+    padding-bottom: 28px;
+  }
+  .console-feature {
+    margin: 0 16px;
+  }
+  .host-figure {
+    padding: 14px;
+  }
+  .figure-boxes {
+    gap: 8px;
+  }
+  .figure-boxes > div {
+    padding: 10px;
+  }
+  .figure-disk {
+    font-size: 9px;
+  }
+  .install-command {
+    padding: 20px 16px;
+    gap: 4px;
+  }
+  .pilot-note {
+    padding: 20px;
+  }
+  .landing-footer {
+    flex-wrap: wrap;
+    gap: 20px;
+    padding: 32px 20px;
+  }
+  .landing-footer > span:nth-child(2) {
+    flex-basis: 70%;
+  }
+  .desktop-break {
+    display: none;
+  }
+}

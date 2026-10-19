@@ -1,6 +1,10 @@
-# kiln dashboard
+# Kiln website and dashboard
 
-React/TypeScript implementation of the approved inventory-first console. Geist and Geist Mono are bundled locally; there are no third-party font requests.
+React/TypeScript public landing page and inventory-first console, styled from the
+root [design.md](https://github.com/Jabbslad/kiln/blob/main/design.md). That reference is preserved with a Kiln adaptation
+section documenting the imagery, font substitution, and accessibility choices.
+Geist and Geist Mono are bundled locally; there are no third-party font requests.
+The original generated landscape is a local 70 KB WebP, not a live installation photograph.
 
 ## Run
 
@@ -11,7 +15,7 @@ npm ci
 npm run dev
 ```
 
-Open `/boxes` for the live connection state, or `/boxes?preview=1` to explicitly explore read-only example data. The dev server binds to loopback by default. To view it through a trusted runner connection, use `npm run dev -- --host 0.0.0.0 --port 4173`. This is a development server, not a production deployment.
+Open `/` for the public landing page (no API requests), `/boxes` for the live connection state, or `/boxes?preview=1` to explicitly explore read-only example data. The dev server binds to loopback by default. To view it through a trusted runner connection, use `npm run dev -- --host 0.0.0.0 --port 4173`. This is a development server, not a production deployment.
 
 ## Delivery boundary
 
@@ -23,14 +27,14 @@ Preview mode uses `src/fixtures.ts`, is labelled across all screens, makes no AP
 
 ## Published dashboard
 
-GitHub releases include `kiln-dashboard-v0.4.6.tar.gz` and its SHA-256 checksum.
-The archive contains the production HTML, JavaScript, CSS, bundled fonts, this
+GitHub releases include `kiln-dashboard-v0.4.7.tar.gz` and its SHA-256 checksum.
+The archive contains both surfaces: production HTML, JavaScript, CSS, imagery, bundled fonts, this
 guide, dependency licenses and release metadata; Node is only needed to build from source, not to
 serve the archive. It is separate from the server installer and is not deployed
 or connected to a host automatically.
 
 Extract it into a static web root served at `/`, with SPA fallback to
-`index.html`. Open `/boxes?preview=1` for the labelled design preview. Without
+`index.html`. `/` is the public landing page. Open `/boxes?preview=1` for the labelled design preview. On `/boxes` without
 preview mode, the missing dashboard API produces a disconnected screen; the
 existing CLI API does not implement this aggregate endpoint or browser sessions.
 Do not embed administrator tokens or bypass authentication to connect it.
