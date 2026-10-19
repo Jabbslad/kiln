@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[package.metadata]
+ci-cache-proof = "1"
+
 [[bin]]
 name = "kiln"
 path = "src/main.rs"
