@@ -6,6 +6,32 @@ terminal is needed to install. Access to a running Kiln server still requires
 browser login to an enrolled host or a direct administrator profile; public
 downloads do not disable API authentication.
 
+## v0.4.6 public door
+
+`kiln-api door` binds one public address and presents a leaf from the existing
+private CA. The name is `https://cli.dark-forge.dev:8443`. The door checks an
+identity JWT, then dials `https://127.0.0.1:8443`. A request without that JWT
+does not open the dial. The door does not accept the administrator token.
+
+`deploy/enroll-dark-forge.sh` enrolls that origin when no enrollment files
+exist. It continues only when `servers.origin` is exactly that URL and the
+approving GitHub account is login `Jabbslad`, numeric id `3084`. An enrollment
+that already exists is left in place.
+
+A release build of `kiln-identity` omits `--github-authorize-url`,
+`--github-token-url`, `--github-user-url`, and `--provider-ca-file`. Those
+flags are the Cargo feature `lab-provider`, which is off by default.
+`https://dark-forge.dev` refuses a substitute provider when that feature is on.
+
+The dark-forge.dev upgrade to v0.4.5 is recorded in
+`docs/runbooks/2026-10-19-dark-forge-v0.4.5-upgrade.md`. Before the bootstrap
+installs `sqlite3`, it runs `apt-get update`.
+
+A patch update from v0.4.5 keeps the guest image, the runtime format,
+configuration, enrollment, and disks. Publishing this release does not deploy
+a server or restart a live service. The public bootstrap pins the published
+v0.4.5 assets until this release and its checksums are reviewed.
+
 ## v0.4.5 shell installer
 
 The server archive contains `install.sh`. The script accepts Debian 13 x86-64,
