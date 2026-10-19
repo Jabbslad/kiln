@@ -130,11 +130,15 @@ or blindly rerun setup.
 
 ### Automatic server updates
 
-Rerun the same `server` command. v0.4.4 updates healthy, standard Kiln v0.3.0,
-v0.3.2, v0.3.3, v0.4.0, v0.4.1, v0.4.2 or v0.4.3 installations and leaves identical v0.4.4 installations alone. It reuses
-the existing address and networking, skips apt, and preserves configuration,
-credentials, units, Firecracker, guest images, templates and VM disks. Explicit
-address/network options must agree with the installed configuration.
+Rerun the same `server` command. A package newer than the installed release
+replaces the binaries. The installer compares major, minor, and patch as numbers,
+so 0.4.10 is newer than 0.4.4. An older package stops with an error and does not
+change the host. The same version with identical binaries leaves the host alone.
+The same version with different binaries replaces those binaries. The updater
+reuses the existing address and networking, skips apt, and preserves
+configuration, credentials, units, Firecracker, guest images, templates and VM
+disks. Explicit address/network options must agree with the installed
+configuration.
 
 The updater retains binaries under `/opt/kiln/upgrades/`, stops the gateway,
 waits up to 60 seconds for accepted operations, then restarts the management
@@ -149,10 +153,10 @@ service. A power loss, forced termination or failed rollback leaves
 proceed until recovery is reviewed. Do not delete that marker to force a retry.
 Use `journalctl -u kiln-host -u kiln-api` and the recorded backup for diagnosis.
 
-Updates are binary-only, not guest-image or state migrations. Compatibility must
-be reviewed for each release; unsupported versions and custom service commands
-are refused. File replacement/rollback and simulated service failures are tested;
-real-server update and reboot validation remain outstanding.
+Updates are binary-only, not guest-image or state migrations. A downgrade is
+refused. Mixed binary versions and custom service commands are refused. File
+replacement, rollback, and simulated service failures are tested. Real-server
+update and reboot validation remain outstanding.
 
 ## Connect
 

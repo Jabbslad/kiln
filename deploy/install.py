@@ -728,6 +728,13 @@ def service_arguments(service, executable):
     return match[2].split()
 
 
+def release_version(value):
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", value)
+    if not match:
+        raise ValueError("unsupported update package")
+    return tuple(int(part) for part in match.groups())
+
+
 def wait_for_operations(journal):
     # Stop the gateway first, then let accepted lifecycle/exec operations finish.
     # Local operator commands must not run concurrently with an update.
@@ -761,10 +768,12 @@ def upgrade(bundle, address=None, network_uplink=None, network=False, apply=Fals
     destinations.update({name: LIBEXEC / name for name in ("kiln-host", "kiln-api")})
     release = json.loads((bundle / "release.json").read_text())
     target = release.get("version", "").removeprefix("v")
-    # Binary-only compatibility was reviewed: runtime, journal, guest protocol,
-    # Firecracker and unit contracts are unchanged across these releases.
-    if target != "0.4.4" or release.get("target") != "x86_64-unknown-linux-gnu":
+    if release.get("target") != "x86_64-unknown-linux-gnu":
         raise ValueError("unsupported update package")
+    # Numeric components. Text order would treat 0.4.10 as older than 0.4.4.
+    # An equal version continues. Identical bytes leave the host alone below.
+    # Different bytes at that version replace the binaries.
+    target_version = release_version(target)
     versions = set()
     for name, destination in destinations.items():
         regular_file(destination, executable=True)
@@ -782,10 +791,11 @@ def upgrade(bundle, address=None, network_uplink=None, network=False, apply=Fals
             != f"{reported_name} {target}"
         ):
             raise ValueError(f"package binary version mismatch: {name}")
-    if len(versions) != 1 or not versions <= {"0.3.0", "0.3.2", "0.3.3", "0.4.0", "0.4.1", "0.4.2", "0.4.3", target}:
-        raise ValueError(
-            "incompatible or mixed installed versions; no downgrade or state migration is supported"
-        )
+    if len(versions) != 1:
+        raise ValueError("mixed installed versions; no state migration is supported")
+    installed = next(iter(versions))
+    if release_version(installed) > target_version:
+        raise ValueError(f"refusing downgrade from {installed} to {target}")
     for service in ("kiln-host.service", "kiln-api.service"):
         if service_property(service, "ActiveState") != "active":
             raise ValueError(f"{service} must be healthy and active before updating")
