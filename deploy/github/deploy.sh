@@ -18,15 +18,21 @@ if [ "$tag" = latest ]; then
     curl --fail --silent --show-error --proto '=https' --proto-redir '=https' \
       --retry 3 \
       https://api.github.com/repos/Jabbslad/kiln/releases?per_page=20 \
-      | python3 -c 'import json, sys
-releases = json.load(sys.stdin)
-for release in releases:
-    if not release.get("draft"):
-        print(release["tag_name"])
-        break
-else:
-    raise SystemExit("no published release")'
+      | awk '
+        /"tag_name"/ {
+          value = $0
+          sub(/.*"tag_name"[[:space:]]*:[[:space:]]*"/, "", value)
+          sub(/".*/, "", value)
+          found = value
+        }
+        /"draft"/ {
+          draft = ($0 ~ /true/)
+          if (found != "" && draft == 0) { print found; exit }
+          found = ""
+        }
+      '
   )
+  [ -n "$tag" ] || fail 'no published release'
 fi
 printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$' \
   || fail "invalid release tag: ${tag}"
@@ -34,21 +40,26 @@ if [ -n "$address" ]; then
   printf '%s\n' "$address" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' \
     || fail 'address must be an IPv4 literal'
 fi
-# v0.4.4's archive installer rejects Debian 13, so that one tag runs this tree's
-# install.py. Newer stable releases run the installer from their own archive.
+# v0.4.4's published archive rejects Debian 13, so that one tag runs this tree's
+# install.sh. Newer stable releases run the installer from their own archive.
 # Older tags and pre-releases stop here, before any download or SSH.
-python3 - "$tag" <<'PY' || fail "refusing ${tag}; deploy accepts v0.4.4 and newer stable releases"
-import sys
-
-tag = sys.argv[1]
-if not tag.startswith("v") or "-" in tag:
-    raise SystemExit(1)
-parts = tag[1:].split(".")
-if len(parts) != 3 or not all(part.isdigit() for part in parts):
-    raise SystemExit(1)
-if tuple(int(part) for part in parts) < (0, 4, 4):
-    raise SystemExit(1)
-PY
+case $tag in
+  v[0-9]*) ;;
+  *) fail "refusing ${tag}; deploy accepts v0.4.4 and newer stable releases" ;;
+esac
+release=${tag#v}
+case $release in
+  *[!0-9.]*) fail "refusing ${tag}; deploy accepts v0.4.4 and newer stable releases" ;;
+esac
+IFS=. read -r major minor patch extra <<<"$release"
+if [ -n "${extra:-}" ] || [ -z "${major:-}" ] || [ -z "${minor:-}" ] || [ -z "${patch:-}" ]; then
+  fail "refusing ${tag}; deploy accepts v0.4.4 and newer stable releases"
+fi
+if [ "$major" -lt 0 ] \
+  || { [ "$major" -eq 0 ] && [ "$minor" -lt 4 ]; } \
+  || { [ "$major" -eq 0 ] && [ "$minor" -eq 4 ] && [ "$patch" -lt 4 ]; }; then
+  fail "refusing ${tag}; deploy accepts v0.4.4 and newer stable releases"
+fi
 
 asset="kiln-server-${tag}-x86_64-unknown-linux-gnu.tar.gz"
 base="https://github.com/Jabbslad/kiln/releases/download/${tag}"
@@ -79,7 +90,7 @@ esac
 bash "$ssh_sh" scp "$work/$asset" "$remote/$asset"
 bash "$ssh_sh" scp "$work/${asset}.sha256" "$remote/${asset}.sha256"
 if [ "$tag" = "v0.4.4" ]; then
-  bash "$ssh_sh" scp "$repo_root/deploy/install.py" "$remote/installer.py"
+  bash "$ssh_sh" scp "$repo_root/deploy/install.sh" "$remote/installer.sh"
 fi
 bash "$ssh_sh" scp "$script_dir/install-remote.sh" "$remote/install-remote.sh"
 bash "$ssh_sh" scp "$script_dir/smoke.sh" "$remote/smoke.sh"

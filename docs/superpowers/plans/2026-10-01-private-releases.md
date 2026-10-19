@@ -1,5 +1,7 @@
 # Private releases and guided installation
 
+> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). Steps below that name `install.py` are historical. The published v0.4.4 archive still contains `install.py`; bootstrap runs that file only for an archive that has no `install.sh`.
+
 > Execute inline with the executing-plans skill. Preserve unrelated dashboard work.
 
 **Goal:** Download clients and a ready-to-install server package from a private

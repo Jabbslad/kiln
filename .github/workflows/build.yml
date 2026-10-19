@@ -62,7 +62,7 @@ jobs:
           python scripts/test-install.py
           python scripts/test-bootstrap.py
           python scripts/test-deploy-workflow.py
-          shellcheck scripts/fetch-firecracker.sh images/build-ubuntu.sh deploy/bootstrap/install.sh \
+          shellcheck scripts/fetch-firecracker.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
             deploy/github/install-remote.sh deploy/github/smoke.sh \
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh

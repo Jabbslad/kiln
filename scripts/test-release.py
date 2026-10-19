@@ -104,7 +104,9 @@ class ReleaseTests(unittest.TestCase):
                 "deploy/identity.example.env", "docs/identity-service.md", "release.json",
             })
             self.assertEqual(archive.getmember("bin/kiln-identity").mode, 0o755)
-            self.assertEqual(json.load(archive.extractfile("release.json"))["version"], "v0.1.0")
+            identity_release = json.load(archive.extractfile("release.json"))
+            self.assertEqual(identity_release["version"], "v0.1.0")
+            self.assertNotIn("min_upgrade_from", identity_release)
         with self.assertRaises(ValueError):
             self.package(kind="identity", target="x86_64-apple-darwin")
 
@@ -124,7 +126,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_server_contains_prebuilt_image_not_host_snapshots_or_secrets(self):
         for name in [
-            "deploy/install.py",
+            "deploy/install.sh",
             "deploy/kiln-network",
             "deploy/kiln-host.service",
             "deploy/kiln-api.service",
@@ -156,7 +158,7 @@ class ReleaseTests(unittest.TestCase):
                     "bin/kiln-api",
                     "bin/kiln",
                     "bin/kiln-network",
-                    "install.py",
+                    "install.sh",
                     "deploy/kiln-host.service",
                     "deploy/kiln-api.service",
                     "deploy/host.example.json",
@@ -176,6 +178,8 @@ class ReleaseTests(unittest.TestCase):
             release = json.load(archive.extractfile("release.json"))
             self.assertEqual(release["version"], "v0.1.0")
             self.assertEqual(release["target"], "x86_64-unknown-linux-gnu")
+            self.assertEqual(release["min_upgrade_from"], "0.3.0")
+            self.assertEqual(archive.getmember("install.sh").mode, 0o755)
 
 
 if __name__ == "__main__":

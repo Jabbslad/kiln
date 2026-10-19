@@ -1,5 +1,7 @@
 # Automatic Kiln updates
 
+> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). The updater accepts any strictly newer stable release, refuses downgrades and installs older than 0.3.0, and requires `min_upgrade_from` for a minor or major bump. The published v0.4.4 archive still contains `install.py`.
+
 **Goal:** Re-running the installer installs missing Kiln components, updates
 compatible installations, and leaves identical installations unchanged. No
 upgrade flag, prompts, or boxd migration are required.

@@ -1,5 +1,7 @@
 # Central Login and Server Discovery Implementation Plan
 
+> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). Steps below that name `install.py` are historical. The published v0.4.4 archive still contains `install.py`; bootstrap runs that file only for an archive that has no `install.sh`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Prefer inline execution in the checkout containing the work; tool/developer delegation restrictions take precedence over a skill's recommendation to delegate.
 
 **Goal:** A fresh Kiln laptop signs in with GitHub or Google, approves its device, discovers its owner's self-hosted server, and uses it without copying URLs, certificates or tokens.

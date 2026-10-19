@@ -35,10 +35,10 @@ awk 'substr($0, 1, 1) != "-" { bad = 1 } END { exit bad }' "$extract/types" \
 mkdir "$extract/package"
 tar -xzf "$archive" -C "$extract/package"
 # v0.4.4 uploads this tree's installer. A newer release keeps the copy in the archive.
-if [ -f "$dir/installer.py" ]; then
-  install -m 0644 "$dir/installer.py" "$extract/package/install.py"
+if [ -f "$dir/installer.sh" ]; then
+  install -m 0755 "$dir/installer.sh" "$extract/package/install.sh"
 fi
-[ -f "$extract/package/install.py" ] || fail 'archive is missing install.py'
+[ -f "$extract/package/install.sh" ] || fail 'archive is missing install.sh'
 
 stamp() {
   if [ ! -d /run/systemd/system ]; then
@@ -84,22 +84,28 @@ if [ "$existing" = false ]; then
   apt-get install --no-install-recommends --no-upgrade -y \
     -o Dpkg::Options::=--force-confdef \
     -o Dpkg::Options::=--force-confold \
-    python3 openssl curl ca-certificates tar passwd
+    openssl curl ca-certificates tar passwd
+fi
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3
 fi
 
 if [ -n "$address" ]; then
-  python3 -c 'import ipaddress, sys
-address = ipaddress.IPv4Address(sys.argv[1])
-ranges = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "127.0.0.1/32")
-raise SystemExit(0 if any(address in ipaddress.IPv4Network(item) for item in ranges) else 1)' \
-    "$address" || fail 'the API address must be a private or VPN IPv4 address, or 127.0.0.1'
+  printf '%s\n' "$address" | awk -F. '
+    NF == 4 {
+      for (i = 1; i <= 4; i++) if ($i !~ /^(0|[1-9][0-9]*)$/ || $i > 255) exit 1
+      if ($1 == 10 || ($1 == 172 && $2 >= 16 && $2 <= 31) || ($1 == 192 && $2 == 168) ||
+          ($1 == 100 && $2 >= 64 && $2 <= 127) || ($1 == 127 && $2 == 0 && $3 == 0 && $4 == 1)) ok = 1
+    }
+    END { exit !(ok && NR == 1) }
+  ' || fail 'the API address must be a private or VPN IPv4 address, or 127.0.0.1'
 fi
 
 install_rc=0
 if [ -n "$address" ]; then
-  python3 "$extract/package/install.py" --address "$address" --apply || install_rc=$?
+  bash "$extract/package/install.sh" --address "$address" --apply || install_rc=$?
 else
-  python3 "$extract/package/install.py" --apply || install_rc=$?
+  bash "$extract/package/install.sh" --apply || install_rc=$?
 fi
 
 doctor_rc=1
@@ -118,12 +124,11 @@ if [ -x /opt/kiln/bin/kiln-runtime ]; then
     cat "$extract/doctor.err" >&2
   fi
   doctor_rc=$doctor_status
-  printf '%s\n' "$report" | python3 -c 'import json, sys
-try:
-    body = json.load(sys.stdin)
-except json.JSONDecodeError:
-    raise SystemExit(1)
-raise SystemExit(0 if body.get("development_ready") is True else 1)' || doctor_rc=1
+  flat=$(printf '%s' "$report" | tr -d '[:space:]')
+  case $flat in
+    *'"development_ready":true'*) ;;
+    *) doctor_rc=1 ;;
+  esac
 fi
 if [ "$doctor_rc" -ne 0 ]; then
   printf 'deploy: kiln-runtime doctor did not report development_ready true\n' >&2
@@ -132,25 +137,19 @@ fi
 health_rc=1
 if [ "$install_rc" -eq 0 ]; then
   if [ -z "$address" ]; then
-    address=$(python3 -c 'import re
-from pathlib import Path
-text = Path("/etc/systemd/system/kiln-api.service.d/installer.conf").read_text()
-match = re.search(r"--listen ([0-9.]+):8443", text)
-if match is None:
-    raise SystemExit(1)
-print(match.group(1))') || fail 'cannot read the installed API address'
+    address=$(awk '
+      match($0, /--listen [0-9.]+:8443/) {
+        value = substr($0, RSTART, RLENGTH)
+        sub(/^--listen /, "", value)
+        sub(/:8443$/, "", value)
+        print value
+        found = 1
+      }
+      END { exit !found }
+    ' /etc/systemd/system/kiln-api.service.d/installer.conf) || fail 'cannot read the installed API address'
   fi
   health_rc=0
-  python3 - "$extract/package/install.py" "$address" <<'PY' || health_rc=$?
-import importlib.util
-import sys
-
-path, address = sys.argv[1], sys.argv[2]
-spec = importlib.util.spec_from_file_location("kiln_install", path)
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-print(module.healthcheck(address))
-PY
+  bash "$extract/package/install.sh" --healthcheck "$address" || health_rc=$?
 else
   printf 'deploy: skipping the health check because installation failed\n' >&2
 fi

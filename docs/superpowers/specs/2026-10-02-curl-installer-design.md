@@ -1,5 +1,7 @@
 # Curl installation with private packages
 
+> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). The "reuse install.py" step below is historical. The published v0.4.4 archive still contains `install.py`; bootstrap runs that file only for an archive that has no `install.sh`. `scripts/release.py` remains the CI packager and does not run on the server.
+
 ## Outcome
 
 Install the laptop client or provision a supported server from one shell command,

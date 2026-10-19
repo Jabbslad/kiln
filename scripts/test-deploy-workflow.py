@@ -176,43 +176,43 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertEqual(ssh_calls, [], latest.stderr)
 
     def test_v044_uses_this_tree_and_later_tags_use_the_archive(self):
-        tree = str(ROOT / "deploy/install.py")
-        current, calls, ssh_calls = run_deploy("v0.4.4", archive_installer="print('archive')\n")
+        tree = str(ROOT / "deploy/install.sh")
+        current, calls, ssh_calls = run_deploy("v0.4.4", archive_installer="printf 'archive\\n'\n")
         self.assertEqual(current.returncode, 0, current.stderr)
         self.assertIn("deployed v0.4.4", current.stdout)
         self.assertTrue(any(tree in call for call in ssh_calls), ssh_calls)
-        self.assertTrue(any(call.startswith("scp ") and call.endswith("installer.py") for call in ssh_calls), ssh_calls)
+        self.assertTrue(any(call.startswith("scp ") and call.endswith("installer.sh") for call in ssh_calls), ssh_calls)
         self.assertTrue(any("kiln-server-v0.4.4-" in call for call in calls), calls)
 
-        later, _, later_ssh = run_deploy("v0.4.5", archive_installer="print('archive-v045')\n")
+        later, _, later_ssh = run_deploy("v0.4.5", archive_installer="printf 'archive-v045\\n'\n")
         self.assertEqual(later.returncode, 0, later.stderr)
         self.assertIn("deployed v0.4.5", later.stdout)
-        self.assertFalse(any("install.py" in call or "installer.py" in call for call in later_ssh), later_ssh)
+        self.assertFalse(any("install.py" in call or "installer.py" in call or "installer.sh" in call for call in later_ssh), later_ssh)
         self.assertTrue(any("kiln-server-v0.4.5-" in call and call.startswith("scp ") for call in later_ssh), later_ssh)
 
-        numeric, _, numeric_ssh = run_deploy("v0.4.10", archive_installer="print('archive-v0410')\n")
+        numeric, _, numeric_ssh = run_deploy("v0.4.10", archive_installer="printf 'archive-v0410\\n'\n")
         self.assertEqual(numeric.returncode, 0, numeric.stderr)
-        self.assertFalse(any("installer.py" in call for call in numeric_ssh), numeric_ssh)
+        self.assertFalse(any("installer.sh" in call for call in numeric_ssh), numeric_ssh)
 
         for tag in ("v0.4.4", "v0.4.5"):
             failed, _, failed_ssh = run_deploy(
                 tag,
-                archive_installer="print('must-not-run')\n",
+                archive_installer="printf 'must-not-run\\n'\n",
                 bad_checksum=True,
             )
             self.assertNotEqual(failed.returncode, 0, failed.stdout + failed.stderr)
             self.assertIn("NOT match", failed.stderr)
             self.assertEqual(failed_ssh, [], failed.stderr)
 
-        tree_run = run_remote("print('installer=archive')\n", overlay="print('installer=tree')\n")
+        tree_run = run_remote("printf 'installer=archive\\n'\n", overlay="printf 'installer=tree\\n'\n")
         self.assertIn("installer=tree", tree_run.stdout)
         self.assertNotIn("installer=archive", tree_run.stdout)
-        archive_run = run_remote("print('installer=archive')\n")
+        archive_run = run_remote("printf 'installer=archive\\n'\n")
         self.assertIn("installer=archive", archive_run.stdout)
         self.assertNotIn("installer=tree", archive_run.stdout)
         mismatch = run_remote(
-            "print('installer=archive')\n",
-            overlay="print('installer=tree')\n",
+            "printf 'installer=archive\\n'\n",
+            overlay="printf 'installer=tree\\n'\n",
             bad_checksum=True,
         )
         self.assertNotIn("installer=", mismatch.stdout)
@@ -221,6 +221,11 @@ class DeployWorkflowTests(unittest.TestCase):
     def test_apt_installs_missing_packages_without_upgrading(self):
         script = (ROOT / "deploy/github/install-remote.sh").read_text()
         self.assertIn("NEEDRESTART_MODE=l", script)
+        self.assertIn(
+            "NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3",
+            script,
+        )
+        self.assertNotIn("apt-get upgrade", script)
         self.assertIn("apt-get install --no-install-recommends --no-upgrade -y", script)
         pending = subprocess.run(
             ["apt-get", "-s", "upgrade"],
@@ -250,6 +255,20 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertNotIn(f"Inst {name} ", held.stdout)
         self.assertIn(f"Skipping {name}", held.stdout)
         self.assertIn(name, plain.stdout)
+
+    def test_sqlite3_install_is_exact_and_skipped_when_present(self):
+        exact = "NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3"
+        script = (ROOT / "deploy/github/install-remote.sh").read_text()
+        self.assertEqual(script.count(exact), 1)
+        self.assertNotIn("apt-get upgrade", script)
+        for line in script.splitlines():
+            if "sqlite3" in line and "apt-get" in line:
+                self.assertIn(exact, line)
+                self.assertNotIn("openssl", line)
+        self.assertNotIn(exact, "\n".join(apt_lines(hide_sqlite3=False)))
+        missing = apt_lines(hide_sqlite3=True)
+        self.assertEqual(missing.count(exact), 1)
+        self.assertFalse(any(line.startswith("apt-get upgrade") or " apt-get upgrade" in line for line in missing))
 
     def test_smoke_deletes_the_box_when_exec_or_output_fails(self):
         remote = (ROOT / "deploy/github/install-remote.sh").read_text()
@@ -306,7 +325,7 @@ def run_deploy(tag, releases="[]", archive_installer=None, bad_checksum=False):
         asset_name = f"kiln-server-{tag}-x86_64-unknown-linux-gnu.tar.gz"
         checksum_text = ""
         if archive_installer is not None:
-            blob = tar_bytes({"install.py": archive_installer})
+            blob = tar_bytes({"install.sh": archive_installer})
             archive_path.write_bytes(blob)
             digest = "0" * 64 if bad_checksum else hashlib.sha256(blob).hexdigest()
             checksum_text = f"{digest}  {asset_name}\n"
@@ -336,17 +355,73 @@ def run_deploy(tag, releases="[]", archive_installer=None, bad_checksum=False):
         return result, calls, ssh_calls
 
 
+def path_without(name, root, *front):
+    hidden = root / "hidden"
+    hidden.mkdir()
+    for directory in os.environ["PATH"].split(os.pathsep):
+        base = Path(directory)
+        if not base.is_dir():
+            continue
+        for entry in base.iterdir():
+            dest = hidden / entry.name
+            if entry.name == name or dest.exists():
+                continue
+            try:
+                dest.symlink_to(entry)
+            except OSError:
+                continue
+    return os.pathsep.join([*front, str(hidden)])
+
+
+def apt_lines(hide_sqlite3):
+    remote = Path(subprocess.check_output(["mktemp", "-d", "/tmp/kiln-deploy.XXXXXX"], text=True).strip())
+    fake = Path(tempfile.mkdtemp())
+    try:
+        name = "kiln-server-v0.4.4-x86_64-unknown-linux-gnu.tar.gz"
+        blob = tar_bytes({"install.sh": "#!/bin/bash\nexit 0\n"})
+        (remote / name).write_bytes(blob)
+        (remote / f"{name}.sha256").write_text(f"{hashlib.sha256(blob).hexdigest()}  {name}\n")
+        log = fake / "apt.log"
+        apt = fake / "apt-get"
+        apt.write_text(
+            "#!/bin/bash\n"
+            f"printf 'NEEDRESTART_MODE=%s apt-get %s\\n' \"${{NEEDRESTART_MODE-}}\" \"$*\" >> {log}\n"
+            "exit 0\n"
+        )
+        apt.chmod(0o755)
+        if hide_sqlite3:
+            path = path_without("sqlite3", fake, str(fake))
+        else:
+            sqlite = fake / "sqlite3"
+            sqlite.write_text("#!/bin/bash\nexit 0\n")
+            sqlite.chmod(0o755)
+            path = str(fake) + os.pathsep + os.environ["PATH"]
+        env = os.environ.copy()
+        env["PATH"] = path
+        subprocess.run(
+            ["bash", str(ROOT / "deploy/github/install-remote.sh"), str(remote), "127.0.0.1"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return log.read_text().splitlines() if log.exists() else []
+    finally:
+        shutil.rmtree(remote, ignore_errors=True)
+        shutil.rmtree(fake, ignore_errors=True)
+
+
 def run_remote(archive_body, overlay=None, bad_checksum=False):
     remote = Path(subprocess.check_output(["mktemp", "-d", "/tmp/kiln-deploy.XXXXXX"], text=True).strip())
     fake = Path(tempfile.mkdtemp())
     try:
         name = "kiln-server-v0.4.4-x86_64-unknown-linux-gnu.tar.gz"
-        blob = tar_bytes({"install.py": archive_body})
+        blob = tar_bytes({"install.sh": archive_body})
         (remote / name).write_bytes(blob)
         digest = "0" * 64 if bad_checksum else hashlib.sha256(blob).hexdigest()
         (remote / f"{name}.sha256").write_text(f"{digest}  {name}\n")
         if overlay is not None:
-            (remote / "installer.py").write_text(overlay)
+            (remote / "installer.sh").write_text(overlay)
         apt = fake / "apt-get"
         apt.write_text("#!/bin/bash\nexit 0\n")
         apt.chmod(apt.stat().st_mode | stat.S_IEXEC)
