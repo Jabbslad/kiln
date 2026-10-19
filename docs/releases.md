@@ -30,7 +30,7 @@ installs `sqlite3`, it runs `apt-get update`.
 A patch update from v0.4.5 keeps the guest image, the runtime format,
 configuration, enrollment, and disks. Publishing this release does not deploy
 a server or restart a live service. The public bootstrap pins the published
-v0.4.5 assets until this release and its checksums are reviewed.
+v0.4.6 assets and runs `install.sh`.
 
 ## v0.4.5 shell installer
 
@@ -55,7 +55,7 @@ install is recorded in `docs/runbooks/2026-10-19-dark-forge-first-install.md`.
 `.cursor/skills/verify-kiln/` drives a checkout and records the evidence.
 
 Publishing this release does not deploy a server or restart a live service.
-The public bootstrap pins the published v0.4.5 assets and runs `install.sh`.
+The public bootstrap pins the published v0.4.6 assets and runs `install.sh`.
 
 ## v0.4.4 dashboard frontend
 
@@ -222,7 +222,7 @@ is supplied (explicit uplink). See the [bootstrap guide](../deploy/bootstrap/REA
 
 **v0.2.0 guest-access additions:** packages include interactive SSH,
 SFTP, editor SSH configuration, and optional isolated guest IPv4 egress. The
-public installer pins v0.4.5. These features require the new client, server,
+public installer pins v0.4.6. These features require the new client, server,
 and updated Ubuntu guest agent. Existing templates/boxes are not
 upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
 management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
@@ -322,7 +322,7 @@ temporary space for the downloaded archive and extracted image (about 3 GiB).
 The shell bootstrap manages sqlite3, OpenSSL, curl, CA certificates, tar, and
 Ubuntu account tools. For manual installation, supply these dependencies yourself.
 `deploy/install.sh` only checks them. Installing and deploying Kiln is shell
-scripts. The public bootstrap pins v0.4.5 and runs `install.sh`. It rejects an
+scripts. The public bootstrap pins v0.4.6 and runs `install.sh`. It rejects an
 archive whose installer is `install.py`. `scripts/release.py` packages releases in
 CI and does not run on the server.
 The installer downloads checksum-pinned Firecracker/jailer 1.17.0 from GitHub. The package
