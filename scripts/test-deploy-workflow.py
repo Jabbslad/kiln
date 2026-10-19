@@ -55,13 +55,17 @@ class DeployWorkflowTests(unittest.TestCase):
             self.assertIn("secrets.DARK_FORGE_SSH_KEY", text, name)
             self.assertIn("secrets.DARK_FORGE_KNOWN_HOSTS", text, name)
 
-    def test_deploy_is_manual_on_main_or_a_published_release(self):
+    def test_deploy_is_manual_from_main(self):
         text = workflow("deploy.yml")
         self.assertIn("workflow_dispatch:", text)
-        self.assertIn("types: [published]", text)
+        self.assertNotIn("release:", text)
+        self.assertNotIn("types: [published]", text)
         self.assertIn("group: dark-forge-deploy", text)
         self.assertIn("cancel-in-progress: false", text)
         self.assertIn("default: latest", text)
+        docs = (ROOT / "docs/releases.md").read_text()
+        self.assertIn("Publishing a release does not start it.", docs)
+        self.assertNotIn("runs when a release is published", docs)
 
     def test_diagnose_is_manual_and_read_only(self):
         text = workflow("diagnose.yml")
@@ -110,7 +114,7 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertNotEqual(branch.returncode, 0, branch.stderr)
         self.assertIn("only from main", branch.stderr)
 
-    def test_guard_allows_main_dispatch_and_published_release(self):
+    def test_guard_allows_main_dispatch_and_refuses_a_release(self):
         dispatch = run_guard(
             "deploy",
             GITHUB_EVENT_NAME="workflow_dispatch",
@@ -124,7 +128,8 @@ class DeployWorkflowTests(unittest.TestCase):
             GITHUB_REPOSITORY="Jabbslad/kiln",
             GITHUB_REF="refs/tags/v0.4.4",
         )
-        self.assertEqual(release.returncode, 0, release.stderr)
+        self.assertNotEqual(release.returncode, 0, release.stderr)
+        self.assertIn("refusing event release", release.stderr)
         diagnose_release = run_guard(
             "diagnose",
             GITHUB_EVENT_NAME="release",

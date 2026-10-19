@@ -14,7 +14,6 @@ guard_github_event() {
     deploy:workflow_dispatch|diagnose:workflow_dispatch)
       [ "${GITHUB_REF:-}" = "refs/heads/main" ] || fail 'manual runs only from main'
       ;;
-    deploy:release) ;;
     *) fail "refusing event ${GITHUB_EVENT_NAME}" ;;
   esac
 }
