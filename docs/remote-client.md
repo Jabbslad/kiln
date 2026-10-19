@@ -120,8 +120,9 @@ cargo build --release --locked -p kiln-runtime --bin kiln-runtime \
 
 The commands below are installation instructions, **not actions performed by
 building this feature**. They change host users, files or services and require
-operator approval. Use a private/VPN interface for this pilot, not an unrestricted
-public Internet endpoint.
+operator approval. A private install stays on a private address. dark-forge is
+the public exception, and only through the identity-checked door in
+`docs/runbooks/2026-10-19-public-door.md`.
 
 1. Follow the [isolated-runtime setup](runtime.md#experimental-isolated-profile):
    matching root-owned Firecracker/jailer 1.17.0, KVM, pre-enabled cgroup v2

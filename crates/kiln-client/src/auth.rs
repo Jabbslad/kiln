@@ -29,6 +29,34 @@ fn now() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+fn reject_private_ca_for_production(host: Option<&str>, ca_is_set: bool) -> Result<()> {
+    if ca_is_set {
+        ensure!(
+            host != Some("dark-forge.dev"),
+            "https://dark-forge.dev uses its public certificate"
+        );
+    }
+    Ok(())
+}
+
+fn identity_http(issuer: &Url) -> Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .https_only(true)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(40));
+    if let Some(path) = std::env::var_os("KILN_IDENTITY_CA").filter(|path| !path.is_empty()) {
+        reject_private_ca_for_production(issuer.host_str(), true)?;
+        let pem = std::fs::read(path).context("could not read KILN_IDENTITY_CA")?;
+        builder = builder
+            .add_root_certificate(reqwest::Certificate::from_pem(&pem)?)
+            .tls_built_in_root_certs(false);
+    }
+    Ok(builder.build()?)
+}
+
 fn origin(value: &str) -> Result<Url> {
     let u = Url::parse(value)?;
     ensure!(
@@ -46,15 +74,9 @@ fn origin(value: &str) -> Result<Url> {
 
 impl Session {
     pub fn new(profile: CentralProfile) -> Result<Self> {
-        origin(&profile.issuer)?;
+        let issuer = origin(&profile.issuer)?;
         let store = CredentialStore::new(profile.credential_file.clone());
-        let http = reqwest::Client::builder()
-            .https_only(true)
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .timeout(Duration::from_secs(40))
-            .build()?;
+        let http = identity_http(&issuer)?;
         Ok(Self {
             inner: Arc::new(Inner {
                 profile,
@@ -262,17 +284,9 @@ pub enum LoginPoll {
 }
 impl IdentityClient {
     pub fn new(issuer: &str) -> Result<Self> {
-        Ok(Self {
-            issuer: origin(issuer)?,
-            http: reqwest::Client::builder()
-                .https_only(true)
-                .no_proxy()
-                .redirect(reqwest::redirect::Policy::none())
-                .retry(reqwest::retry::never())
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(40))
-                .build()?,
-        })
+        let issuer = origin(issuer)?;
+        let http = identity_http(&issuer)?;
+        Ok(Self { issuer, http })
     }
     pub async fn begin_login(&self, name: &str) -> Result<DeviceAuthorization> {
         let flow: DeviceAuthorization = read_json(
@@ -413,6 +427,14 @@ mod tests {
         ] {
             assert!(IdentityClient::new(issuer).is_err());
         }
+    }
+
+    #[test]
+    fn dark_forge_rejects_a_private_identity_ca() {
+        let error = reject_private_ca_for_production(Some("dark-forge.dev"), true).unwrap_err();
+        assert!(error.to_string().contains("public certificate"), "{error}");
+        assert!(reject_private_ca_for_production(Some("dark-forge.dev"), false).is_ok());
+        assert!(reject_private_ca_for_production(Some("login.public.test"), true).is_ok());
     }
 
     #[cfg(unix)]

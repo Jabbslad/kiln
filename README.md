@@ -61,17 +61,18 @@ administrator profiles remain available for recovery.
 
 `kiln login` opens your browser at the built-in `https://dark-forge.dev` service.
 Sign in with GitHub or Google, approve the device, and return to the terminal.
-The host administrator must first install/update the server and run the one-time
-enrollment command printed by its installer. Use the same provider and account
-on the server and laptop. No server address, token or CA file is needed on the laptop.
-Existing administrator profiles are never replaced: use `kiln --profile personal login`
-to add browser login separately. With no enrolled server, login explains how to enroll.
+The laptop then dials the enrolled server. On dark-forge that name is
+`https://cli.dark-forge.dev:8443`. A door on that name checks the identity token
+before it dials loopback `kiln-api`. A request without that token does not reach
+the API. The administrator token stays on loopback. No server address, token, or
+CA file is needed on the laptop. Use `kiln --profile personal login` to keep an
+existing administrator profile. With no enrolled server, login explains how to enroll.
 
-The service is deployed and real provider sign-in pages, HTTPS and native client
-builds (including Windows ACLs) are verified. **Real account consent and full
-central-authenticated VM/SSH/SFTP acceptance remain outstanding.** This pilot
-release makes the actual installer/client flow available for that acceptance;
-it is not a production-readiness claim. See the [identity operator guide](docs/identity-service.md).
+The host administrator enrolls once with `deploy/enroll-dark-forge.sh` and
+approves as GitHub user Jabbslad, numeric id 3084. The release identity binary
+accepts only the production GitHub endpoints. The steps are in the
+[public door runbook](docs/runbooks/2026-10-19-public-door.md). SSH is not served
+by the public door. See the [identity operator guide](docs/identity-service.md).
 
 ## Try the runtime
 

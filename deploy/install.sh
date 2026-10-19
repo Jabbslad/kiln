@@ -756,6 +756,9 @@ connection_instructions() {
     printf 'Approve using GitHub or Google, then run kiln login on your laptop using the same provider.\n'
     printf 'Installation never enrolls a server or opens a browser automatically.\n'
   fi
+  if [ "$address" = "127.0.0.1" ]; then
+    printf 'That URL is only on this machine. For dark-forge, follow docs/runbooks/2026-10-19-public-door.md and run deploy/enroll-dark-forge.sh.\n'
+  fi
 }
 
 acquire_lock() {

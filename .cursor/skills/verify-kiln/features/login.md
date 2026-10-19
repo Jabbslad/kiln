@@ -39,7 +39,7 @@ Do not run this against `https://dark-forge.dev` from an unattended agent. Appro
 ## Gotchas
 
 - Completing approval needs the real issuer and a provider account. The authoring proof did not log in.
-- `kiln-identity` will not bind a non-loopback address. Its `public_origin` must be an HTTPS origin with an empty path. Provider token URLs are GitHub and Google (`crates/kiln-identity/src/providers.rs`). A local stub is not wired through those functions.
+- `kiln-identity` will not bind a non-loopback address. Its `public_origin` must be an HTTPS origin with an empty path. `https://dark-forge.dev` refuses substitute GitHub URLs. `--github-authorize-url`, `--github-token-url`, `--github-user-url`, and `--provider-ca-file` exist only on a build with the non-default `lab-provider` feature. A release binary does not accept them.
 - First-use interactive VM commands can start login. `--json`, SSH proxy, and a missing explicit profile do not open a browser.
 - `scripts/test-central-login.py` checks an already approved profile. It is not a substitute for this journey.
 - Device requests last ten minutes. The client poll interval starts at the value the server returns (5 seconds in the identity store).

@@ -31,13 +31,47 @@ struct Args {
 enum Command {
     /// Enroll this installed host. Restarts only the API and disconnects API/SSH sessions.
     Enroll(kiln_server::enrollment::Options),
+    /// Serve the public door. Identity JWTs are checked before loopback kiln-api is dialed.
+    Door {
+        #[arg(long)]
+        listen: SocketAddr,
+        #[arg(long)]
+        upstream: String,
+        #[arg(long)]
+        tls_cert: PathBuf,
+        #[arg(long)]
+        tls_key: PathBuf,
+        #[arg(long)]
+        upstream_ca: PathBuf,
+        #[arg(long, default_value = "/etc/kiln/identity.json")]
+        enrollment_file: PathBuf,
+        #[arg(long, default_value = "/var/lib/kiln-api/jwks.json")]
+        jwks_cache: PathBuf,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    if let Some(Command::Enroll(options)) = args.command {
-        return kiln_server::enrollment::run(options).await;
+    if let Some(command) = args.command {
+        return match command {
+            Command::Enroll(options) => kiln_server::enrollment::run(options).await,
+            Command::Door {
+                listen,
+                upstream,
+                tls_cert,
+                tls_key,
+                upstream_ca,
+                enrollment_file,
+                jwks_cache,
+            } => {
+                let enrollment = kiln_server::auth::Enrollment::load(&enrollment_file)?
+                    .context("server is not enrolled")?;
+                let auth = kiln_server::auth::Authenticator::central_only(enrollment, jwks_cache)?;
+                let ca = std::fs::read(&upstream_ca).context("upstream CA required")?;
+                kiln_server::door::serve(listen, &tls_cert, &tls_key, auth, &upstream, &ca).await
+            }
+        };
     }
     ensure!(
         unsafe { libc::geteuid() } != 0,

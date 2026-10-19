@@ -56,6 +56,10 @@ impl Fixture {
             signing_key_id: "fixture-key".into(),
             retiring_jwks_file: None,
             trusted_proxy_loopback: false,
+            github_authorize_url: kiln_identity::GITHUB_AUTHORIZE_URL.into(),
+            github_token_url: kiln_identity::GITHUB_TOKEN_URL.into(),
+            github_user_url: kiln_identity::GITHUB_USER_URL.into(),
+            provider_ca_pem: None,
             now,
         };
         let app = kiln_identity::router(cfg, store.clone()).unwrap();

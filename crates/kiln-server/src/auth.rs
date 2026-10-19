@@ -135,7 +135,7 @@ struct Cache {
     last_fetch: Option<Instant>,
 }
 pub struct Authenticator {
-    admin_hash: [u8; 32],
+    admin_hash: Option<[u8; 32]>,
     central: Option<(Enrollment, PathBuf)>,
     cache: Mutex<Cache>,
     http: reqwest::Client,
@@ -162,7 +162,7 @@ impl Authenticator {
             }
         }
         Ok(Self {
-            admin_hash: Sha256::digest(admin.as_bytes()).into(),
+            admin_hash: Some(Sha256::digest(admin.as_bytes()).into()),
             central,
             cache: Mutex::new(Cache {
                 jwks,
@@ -179,12 +179,30 @@ impl Authenticator {
         })
     }
 
+    /// Identity JWTs only. The local administrator token stays on the loopback API.
+    pub fn central_only(enrollment: Enrollment, cache: PathBuf) -> Result<Self> {
+        let mut auth = Self::new(&"0".repeat(64), Some((enrollment, cache)))?;
+        auth.admin_hash = None;
+        Ok(auth)
+    }
+
     pub async fn authenticate(&self, bearer: &str) -> Result<Scope> {
         ensure!(bearer.len() <= 8192, "invalid token");
-        let supplied: [u8; 32] = Sha256::digest(bearer.as_bytes()).into();
-        if bool::from(supplied.ct_eq(&self.admin_hash)) {
-            return Ok(Scope::Operate);
+        if let Some(admin_hash) = self.admin_hash {
+            let supplied: [u8; 32] = Sha256::digest(bearer.as_bytes()).into();
+            if bool::from(supplied.ct_eq(&admin_hash)) {
+                return Ok(Scope::Operate);
+            }
         }
+        self.central_jwt(bearer).await
+    }
+
+    pub async fn authenticate_central(&self, bearer: &str) -> Result<Scope> {
+        ensure!(bearer.len() <= 8192, "invalid token");
+        self.central_jwt(bearer).await
+    }
+
+    async fn central_jwt(&self, bearer: &str) -> Result<Scope> {
         let (enrollment, path) = self
             .central
             .as_ref()

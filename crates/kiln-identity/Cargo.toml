@@ -5,6 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# Off unless a build asks for it. Release archives do not.
+# A lab issuer can point GitHub URLs at a stand-in. https://dark-forge.dev still refuses that.
+lab-provider = []
+
 [dependencies]
 anyhow = "1"
 axum = { version = "0.8", features = ["form", "json", "query"] }

@@ -130,6 +130,8 @@ class ReleaseTests(unittest.TestCase):
             "deploy/kiln-network",
             "deploy/kiln-host.service",
             "deploy/kiln-api.service",
+            "deploy/kiln-door.service",
+            "deploy/enroll-dark-forge.sh",
             "deploy/host.example.json",
             "scripts/fetch-firecracker.sh",
             "README.md",
@@ -137,6 +139,7 @@ class ReleaseTests(unittest.TestCase):
             "docs/remote-client.md",
             "docs/identity-service.md",
             "docs/runtime.md",
+            "docs/runbooks/2026-10-19-public-door.md",
         ]:
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -161,6 +164,8 @@ class ReleaseTests(unittest.TestCase):
                     "install.sh",
                     "deploy/kiln-host.service",
                     "deploy/kiln-api.service",
+                    "deploy/kiln-door.service",
+                    "deploy/enroll-dark-forge.sh",
                     "deploy/host.example.json",
                     "fetch-firecracker.sh",
                     "README.md",
@@ -168,6 +173,7 @@ class ReleaseTests(unittest.TestCase):
                     "docs/remote-client.md",
                     "docs/identity-service.md",
                     "docs/runtime.md",
+                    "docs/runbooks/2026-10-19-public-door.md",
                     "image/image.json",
                     "image/inputs.json",
                     "image/rootfs.ext4",

@@ -9,7 +9,10 @@ use axum::{
     response::{Html, IntoResponse, Redirect, Response},
     routing::{delete, get, post, put},
 };
-pub use config::{Config, unix_now};
+pub use config::{
+    Config, GITHUB_AUTHORIZE_URL, GITHUB_TOKEN_URL, GITHUB_USER_URL, PRODUCTION_IDENTITY_ORIGIN,
+    unix_now,
+};
 use kiln_api::auth::{DeviceTokens, Registration, Scope, ServerClaims};
 pub use providers::{Provider, ProviderIdentity};
 use rusqlite::{OptionalExtension, params};
@@ -42,6 +45,30 @@ pub fn router(mut cfg: Config, store: Store) -> anyhow::Result<Router> {
         "public origin must be an HTTPS origin"
     );
     cfg.public_origin = u.origin().ascii_serialization();
+    for endpoint in [
+        &cfg.github_authorize_url,
+        &cfg.github_token_url,
+        &cfg.github_user_url,
+    ] {
+        let endpoint = url::Url::parse(endpoint)?;
+        anyhow::ensure!(
+            endpoint.scheme() == "https"
+                && endpoint.host_str().is_some()
+                && endpoint.username().is_empty()
+                && endpoint.password().is_none(),
+            "provider URL must be HTTPS"
+        );
+    }
+    anyhow::ensure!(
+        cfg.production_github()
+            || (cfg!(feature = "lab-provider") && cfg.public_origin != PRODUCTION_IDENTITY_ORIGIN),
+        "{}",
+        if cfg.public_origin == PRODUCTION_IDENTITY_ORIGIN {
+            "https://dark-forge.dev cannot use a substitute identity provider"
+        } else {
+            "this identity build accepts only the production GitHub endpoints"
+        }
+    );
     check_private_file(&cfg.signing_key_file)?;
     check_private_file(&cfg.github_secret_file)?;
     check_private_file(&cfg.google_secret_file)?;
@@ -55,11 +82,12 @@ pub fn router(mut cfg: Config, store: Store) -> anyhow::Result<Router> {
         );
         signer = signer.with_retiring(serde_json::from_slice(&std::fs::read(path)?)?)?;
     }
+    let http = providers::http_client(cfg.provider_ca_pem.as_deref())?;
     let app = Arc::new(App {
         cfg,
         store,
         signer,
-        http: providers::http_client()?,
+        http,
     });
     let cleanup = Arc::downgrade(&app);
     tokio::spawn(async move {
@@ -722,7 +750,12 @@ async fn oauth_begin(
         provider.as_str()
     );
     let authorization = match provider {
-        Provider::Github => providers::github_begin(&a.cfg.github_client_id, &redirect),
+        Provider::Github => providers::github_begin(
+            &a.cfg.github_client_id,
+            &redirect,
+            &a.cfg.github_authorize_url,
+            &a.cfg.github_token_url,
+        ),
         Provider::Google => {
             providers::google_begin(&a.http, &a.cfg.google_client_id, &redirect).await
         }
@@ -815,6 +848,8 @@ async fn oauth_callback(
             &q.code,
             &redirect,
             &pkce,
+            &a.cfg.github_token_url,
+            &a.cfg.github_user_url,
         )
         .await
     } else {

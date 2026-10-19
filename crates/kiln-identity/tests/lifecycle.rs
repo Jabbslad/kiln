@@ -49,6 +49,10 @@ impl Fixture {
             signing_key_id: "fixture-key".into(),
             retiring_jwks_file: None,
             trusted_proxy_loopback: false,
+            github_authorize_url: kiln_identity::GITHUB_AUTHORIZE_URL.into(),
+            github_token_url: kiln_identity::GITHUB_TOKEN_URL.into(),
+            github_user_url: kiln_identity::GITHUB_USER_URL.into(),
+            provider_ca_pem: None,
             now,
         };
         let app = kiln_identity::router(cfg.clone(), store.clone()).unwrap();
@@ -670,4 +674,31 @@ async fn concurrent_replay(f: &Fixture, owner: &str) {
         .0,
         StatusCode::UNAUTHORIZED
     );
+}
+
+#[tokio::test]
+async fn dark_forge_rejects_a_substitute_provider() {
+    let fixture = Fixture::new();
+    let mut cfg = fixture.cfg.clone();
+    cfg.public_origin = kiln_identity::PRODUCTION_IDENTITY_ORIGIN.into();
+    assert!(kiln_identity::router(cfg.clone(), fixture.store.clone()).is_ok());
+    cfg.github_token_url = "https://fixture.example/token".into();
+    assert!(kiln_identity::router(cfg.clone(), fixture.store.clone()).is_err());
+    cfg.github_token_url = kiln_identity::GITHUB_TOKEN_URL.into();
+    cfg.provider_ca_pem = Some(b"not a certificate".to_vec());
+    assert!(kiln_identity::router(cfg, fixture.store).is_err());
+}
+
+#[tokio::test]
+async fn a_substitute_provider_requires_the_lab_feature() {
+    let fixture = Fixture::new();
+    let mut cfg = fixture.cfg.clone();
+    cfg.public_origin = "https://lab.example".into();
+    cfg.github_token_url = "https://fixture.example/token".into();
+    let result = kiln_identity::router(cfg, fixture.store);
+    if cfg!(feature = "lab-provider") {
+        assert!(result.is_ok());
+    } else {
+        assert!(result.is_err());
+    }
 }
