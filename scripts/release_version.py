@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Release tag to workspace version.
 
-resolve, check-binary, and check-archives are the entry points.
-plan_stamp rewrites the two file texts and does not touch disk.
+resolve, check-binary, check-archives, and attach-bootstrap are the entry points.
+plan_stamp and render_bootstrap rewrite text and do not touch disk.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -16,6 +17,7 @@ import tarfile
 import tempfile
 import tomllib
 import zipfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,6 +45,15 @@ _CLAP_COMMAND = {
     "kiln-host": "kiln-server",
     "kiln-api": "kiln-server",
     "kiln-identity": "kiln-identity",
+}
+_VERSION_PIN = re.compile(r"^    version=[0-9]+\.[0-9]+\.[0-9]+$")
+_ASSET_LINE = re.compile(r"^([^:\s]+):(\S+) ([0-9a-f]{64})$")
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_ASSET_BEGIN = "# BEGIN RELEASE ASSETS"
+_ASSET_END = "# END RELEASE ASSETS"
+_ASSET_ARCHIVE = {
+    "client": "kiln-{tag}-{target}.tar.gz",
+    "server": "kiln-server-{tag}-{target}.tar.gz",
 }
 
 
@@ -240,8 +251,64 @@ def check_archives(version: ReleaseVersion, dist: Path) -> None:
             )
 
 
+def render_bootstrap(
+    source: str, version: ReleaseVersion, digests: Mapping[str, str]
+) -> str:
+    """Return install.sh text pinned to this release.
+
+    Pure. The version pin and the asset digests are the only bytes that change.
+    """
+    if type(version) is not ReleaseVersion:
+        raise TypeError("version must be a ReleaseVersion")
+    if not isinstance(source, str):
+        raise TypeError("source must be a str")
+    supplied = _digest_map(digests)
+    lines = source.splitlines(keepends=True)
+    pins = [index for index, line in enumerate(lines) if _VERSION_PIN.fullmatch(_body(line))]
+    if len(pins) != 1:
+        raise ValueError("install.sh needs exactly one version pin")
+    rows = _asset_rows(lines)
+    keys = [key for _, key in rows]
+    if set(keys) != set(supplied):
+        raise ValueError("release asset keys do not match the supplied digests")
+    lines[pins[0]] = f"    version={version.cargo}{_ending(lines[pins[0]])}"
+    for index, key in rows:
+        body = _body(lines[index])
+        prefix, separator, _old = body.rpartition(" ")
+        lines[index] = prefix + separator + supplied[key] + _ending(lines[index])
+    return "".join(lines)
+
+
+def attach_bootstrap(repo: Path, dist: Path, version: ReleaseVersion) -> Path:
+    """Write dist/install.sh and dist/install.sh.sha256 for this tag.
+
+    Digests are the first field of each archive sidecar. The repo copy and the
+    archives stay as they were. An existing pair in dist is replaced.
+    """
+    if type(version) is not ReleaseVersion:
+        raise TypeError("version must be a ReleaseVersion")
+    repo = Path(repo)
+    dist = Path(dist)
+    source_path = repo / "deploy" / "bootstrap" / "install.sh"
+    source = _read_text(source_path)
+    rows = _asset_rows(source.splitlines(keepends=True))
+    digests = {
+        key: _sidecar_digest(dist / f"{_archive_name(key, version)}.sha256")
+        for _, key in rows
+    }
+    rendered = render_bootstrap(source, version, digests)
+    data = rendered.encode("utf-8")
+    script = dist / "install.sh"
+    _write_file(script, data, 0o755)
+    _write_file(
+        dist / "install.sh.sha256",
+        f"{hashlib.sha256(data).hexdigest()}  install.sh\n".encode("ascii"),
+    )
+    return script
+
+
 def main(argv: list[str] | None = None) -> None:
-    """Run resolve, check-binary, or check-archives."""
+    """Run resolve, check-binary, check-archives, or attach-bootstrap."""
     try:
         _dispatch(argv)
     except ValueError as exc:
@@ -269,6 +336,15 @@ def _dispatch(argv: list[str] | None) -> None:
     archive_cmd.add_argument("--version", required=True)
     archive_cmd.add_argument("dist", type=Path)
 
+    bootstrap_cmd = sub.add_parser("attach-bootstrap")
+    bootstrap_cmd.add_argument("--version", required=True)
+    bootstrap_cmd.add_argument("--dist", required=True, type=Path)
+    bootstrap_cmd.add_argument(
+        "--repo",
+        type=Path,
+        default=Path(__file__).resolve().parent.parent,
+    )
+
     args = parser.parse_args(argv)
     if args.command == "resolve":
         version = resolve(args.repo, args.ref_type, args.ref_name)
@@ -281,6 +357,9 @@ def _dispatch(argv: list[str] | None) -> None:
     version = parse_release_tag(args.version)
     if args.command == "check-binary":
         check_binary(version, tuple(args.binaries))
+        return
+    if args.command == "attach-bootstrap":
+        attach_bootstrap(args.repo, args.dist, version)
         return
     check_archives(version, args.dist)
 
@@ -534,6 +613,79 @@ def _zip_release_json(path: Path) -> dict | None:
     if not isinstance(payload, dict):
         raise ValueError(f"{path.name} release.json is not an object")
     return payload
+
+
+def _digest_map(digests: Mapping[str, str]) -> dict[str, str]:
+    if not isinstance(digests, Mapping):
+        raise TypeError("digests must be a mapping")
+    cleaned: dict[str, str] = {}
+    for key, digest in digests.items():
+        if (
+            not isinstance(key, str)
+            or not isinstance(digest, str)
+            or _HEX64.fullmatch(digest) is None
+        ):
+            raise ValueError(f"release digest for {key!r} must be 64 lowercase hex")
+        cleaned[key] = digest
+    return cleaned
+
+
+def _asset_rows(lines: list[str]) -> list[tuple[int, str]]:
+    begin = [index for index, line in enumerate(lines) if _body(line) == _ASSET_BEGIN]
+    end = [index for index, line in enumerate(lines) if _body(line) == _ASSET_END]
+    if len(begin) != 1 or len(end) != 1 or begin[0] >= end[0]:
+        raise ValueError("install.sh release asset markers are missing or duplicated")
+    rows: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    for index in range(begin[0] + 1, end[0]):
+        body = _body(lines[index])
+        if body.lstrip().startswith("#"):
+            continue
+        match = _ASSET_LINE.fullmatch(body)
+        if match is None:
+            raise ValueError(f"invalid release asset line {body!r}")
+        key = f"{match.group(1)}:{match.group(2)}"
+        if key in seen:
+            raise ValueError(f"duplicate release asset {key}")
+        seen.add(key)
+        rows.append((index, key))
+    return rows
+
+
+def _archive_name(key: str, version: ReleaseVersion) -> str:
+    mode, sep, target = key.partition(":")
+    template = _ASSET_ARCHIVE.get(mode)
+    if template is None or sep != ":" or target == "":
+        raise ValueError(f"unknown release asset {key}")
+    return template.format(tag=version.tag, target=target)
+
+
+def _sidecar_digest(path: Path) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"missing checksum sidecar {path.name}")
+    fields = _read_text(path).split()
+    digest = fields[0] if fields else ""
+    if _HEX64.fullmatch(digest) is None:
+        raise ValueError(f"checksum sidecar {path.name} first field is not 64 lowercase hex")
+    return digest
+
+
+def _write_file(path: Path, data: bytes, mode: int | None = None) -> None:
+    if not path.parent.is_dir():
+        raise ValueError(f"{path.parent} is not a directory")
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if mode is not None:
+            os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _dist_pattern(version: ReleaseVersion) -> re.Pattern[str]:

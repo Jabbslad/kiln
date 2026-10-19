@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Fixture checks for the release tag stamp. They never stamp this checkout."""
 
+import hashlib
 import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -28,6 +30,17 @@ def _load(filename):
 
 
 rv = _load("release_version.py")
+REPO = Path(__file__).resolve().parent.parent
+LINUX_CLIENT_URL = (
+    "https://github.com/Jabbslad/kiln/releases/download/v9.9.9/"
+    "kiln-v9.9.9-x86_64-unknown-linux-gnu.tar.gz"
+)
+ASSET_KEYS = (
+    "client:x86_64-unknown-linux-gnu",
+    "client:x86_64-apple-darwin",
+    "client:aarch64-apple-darwin",
+    "server:x86_64-unknown-linux-gnu",
+)
 
 MANIFEST = """\
 [workspace]
@@ -416,6 +429,298 @@ dependencies = [
         with self.assertRaises(ValueError):
             rv.check_archives(version, empty)
 
+    def test_render_bootstrap_changes_only_the_version_and_digests(self):
+        path = REPO / "deploy" / "bootstrap" / "install.sh"
+        before = path.read_bytes()
+        source = before.decode()
+        version = rv.parse_release_tag("v9.9.9")
+        digests = {
+            key: (f"{index:02x}" * 32) for index, key in enumerate(ASSET_KEYS, start=1)
+        }
+        rendered = rv.render_bootstrap(source, version, digests)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(
+            [line for line in rendered.splitlines() if line.startswith("    version=")],
+            ["    version=9.9.9"],
+        )
+        self.assertEqual(_asset_digests(rendered), digests)
+        original_lines = source.splitlines(keepends=True)
+        rendered_lines = rendered.splitlines(keepends=True)
+        self.assertEqual(len(rendered_lines), len(original_lines))
+        version_re = re.compile(r"^    version=[0-9]+\.[0-9]+\.[0-9]+$")
+        asset_re = re.compile(r"^(\S+:\S+) ([0-9a-f]{64})$")
+        changed = [
+            pair for pair in zip(original_lines, rendered_lines, strict=True) if pair[0] != pair[1]
+        ]
+        self.assertEqual(len(changed), 5)
+        saw_version = False
+        seen = []
+        for before_line, after_line in changed:
+            before_body, before_end = _split_ending(before_line)
+            after_body, after_end = _split_ending(after_line)
+            self.assertEqual(before_end, after_end)
+            if version_re.fullmatch(before_body):
+                self.assertEqual(after_body, "    version=9.9.9")
+                saw_version = True
+                continue
+            before_asset = asset_re.fullmatch(before_body)
+            after_asset = asset_re.fullmatch(after_body)
+            self.assertIsNotNone(before_asset)
+            self.assertIsNotNone(after_asset)
+            self.assertEqual(before_asset.group(1), after_asset.group(1))
+            self.assertEqual(after_asset.group(2), digests[before_asset.group(1)])
+            seen.append(before_asset.group(1))
+        self.assertTrue(saw_version)
+        self.assertEqual(seen, list(ASSET_KEYS))
+
+    def test_render_bootstrap_rejects_a_missing_or_duplicate_version_line(self):
+        source = (REPO / "deploy" / "bootstrap" / "install.sh").read_text()
+        version = rv.parse_release_tag("v9.9.9")
+        digests = {key: "ab" * 32 for key in ASSET_KEYS}
+        missing = source.replace("    version=0.4.6\n", "", 1)
+        duplicate = source.replace(
+            "    version=0.4.6\n",
+            "    version=0.4.6\n    version=1.2.3\n",
+            1,
+        )
+        for text in (missing, duplicate):
+            with self.assertRaises(ValueError):
+                rv.render_bootstrap(text, version, digests)
+
+    def test_render_bootstrap_rejects_a_bad_digest_or_key_set(self):
+        source = (REPO / "deploy" / "bootstrap" / "install.sh").read_text()
+        version = rv.parse_release_tag("v9.9.9")
+        digests = {key: "ab" * 32 for key in ASSET_KEYS}
+        bad_digest = dict(digests)
+        bad_digest[ASSET_KEYS[0]] = "A" * 64
+        short = dict(digests)
+        short[ASSET_KEYS[0]] = "abcd"
+        missing_key = dict(digests)
+        missing_key.pop(ASSET_KEYS[-1])
+        extra_key = dict(digests)
+        extra_key["client:x86_64-pc-windows-msvc"] = "cd" * 32
+        for mapping in (bad_digest, short, missing_key, extra_key):
+            with self.assertRaises(ValueError):
+                rv.render_bootstrap(source, version, mapping)
+
+    def test_attach_bootstrap_rejects_a_missing_or_bad_sidecar(self):
+        version = rv.parse_release_tag("v9.9.9")
+        repo_script = REPO / "deploy" / "bootstrap" / "install.sh"
+        before = repo_script.read_bytes()
+        missing = self.root / "missing-sidecars"
+        missing.mkdir()
+        with self.assertRaises(ValueError):
+            rv.attach_bootstrap(REPO, missing, version)
+        self.assertEqual(list(missing.iterdir()), [])
+
+        bad = self.root / "bad-sidecar"
+        bad.mkdir()
+        names = [_sidecar_name(key) for key in ASSET_KEYS]
+        good = "ab" * 32
+        for name in names:
+            (bad / name).write_text(f"{good}  {name[:-len('.sha256')]}\n")
+        (bad / names[0]).write_text(
+            f"not-a-digest  {names[0][:-len('.sha256')]}\n"
+        )
+        snapshot = {path.name: path.read_bytes() for path in bad.iterdir()}
+        with self.assertRaises(ValueError):
+            rv.attach_bootstrap(REPO, bad, version)
+        self.assertEqual({path.name: path.read_bytes() for path in bad.iterdir()}, snapshot)
+        self.assertFalse((bad / "install.sh").exists())
+        self.assertEqual(repo_script.read_bytes(), before)
+
+    def test_attach_bootstrap_cli_rejects_a_bad_tag_without_writing(self):
+        dist = self.root / "cli-dist"
+        dist.mkdir()
+        (dist / "install.sh").write_bytes(b"keep\n")
+        before_dist = {path.name: path.read_bytes() for path in dist.iterdir()}
+        repo_script = REPO / "deploy" / "bootstrap" / "install.sh"
+        before_repo = repo_script.read_bytes()
+        for raw in ("9.9.9", "v9.9.9-rc.1"):
+            with self.assertRaises(SystemExit) as caught:
+                rv.main(
+                    [
+                        "attach-bootstrap",
+                        "--version",
+                        raw,
+                        "--repo",
+                        str(REPO),
+                        "--dist",
+                        str(dist),
+                    ]
+                )
+            self.assertNotEqual(caught.exception.code, 0)
+        self.assertEqual(
+            {path.name: path.read_bytes() for path in dist.iterdir()}, before_dist
+        )
+        self.assertEqual(repo_script.read_bytes(), before_repo)
+
+    def test_attached_installer_runs_and_refuses_a_bad_checksum(self):
+        release = _load("release.py")
+        repo = self.root / "pack-repo"
+        bins = self.root / "bins"
+        image = self.root / "image"
+        dist = self.root / "dist"
+        bins.mkdir()
+        image.mkdir()
+        client = bins / "kiln"
+        client.write_text("#!/bin/sh\nprintf 'kiln 9.9.9\\n'\n")
+        client.chmod(0o755)
+        for name in ("kiln-runtime", "kiln-host", "kiln-api"):
+            (bins / name).write_bytes(b"stub-" + name.encode())
+        for name in (
+            "deploy/install.sh",
+            "deploy/kiln-network",
+            "deploy/kiln-host.service",
+            "deploy/kiln-api.service",
+            "deploy/kiln-door.service",
+            "deploy/enroll-dark-forge.sh",
+            "deploy/host.example.json",
+            "scripts/fetch-firecracker.sh",
+            "README.md",
+            "docs/releases.md",
+            "docs/remote-client.md",
+            "docs/identity-service.md",
+            "docs/runtime.md",
+            "docs/runbooks/2026-10-19-public-door.md",
+        ):
+            path = repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(name)
+        for name in ("image.json", "inputs.json", "rootfs.ext4", "vmlinux"):
+            (image / name).write_text(name)
+        version = rv.parse_release_tag("v9.9.9")
+        for target in (
+            "x86_64-unknown-linux-gnu",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+        ):
+            release.package(repo, bins, dist, "v9.9.9", target, "client", None)
+        release.package(
+            repo, bins, dist, "v9.9.9", "x86_64-unknown-linux-gnu", "server", image
+        )
+        repo_script = REPO / "deploy" / "bootstrap" / "install.sh"
+        before_repo = repo_script.read_bytes()
+        self.assertFalse((dist / "install.sh").exists())
+        rv.check_archives(version, dist)
+        archives = {path.name: path.read_bytes() for path in dist.iterdir()}
+        written = rv.attach_bootstrap(REPO, dist, version)
+        self.assertEqual(written, dist / "install.sh")
+        first_bytes = written.read_bytes()
+        first_checksum = (dist / "install.sh.sha256").read_bytes()
+        rv.main(
+            [
+                "attach-bootstrap",
+                "--version",
+                "v9.9.9",
+                "--dist",
+                str(dist),
+            ]
+        )
+        self.assertEqual(written.read_bytes(), first_bytes)
+        self.assertEqual((dist / "install.sh.sha256").read_bytes(), first_checksum)
+        self.assertEqual(
+            {path.name: path.read_bytes() for path in dist.iterdir() if path.name in archives},
+            archives,
+        )
+        self.assertEqual(repo_script.read_bytes(), before_repo)
+        script = written.read_text()
+        self.assertEqual(
+            [line for line in script.splitlines() if line.startswith("    version=")],
+            ["    version=9.9.9"],
+        )
+        attached = _asset_digests(script)
+        for key in ASSET_KEYS:
+            sidecar = (dist / _sidecar_name(key)).read_text().split()[0]
+            self.assertEqual(attached[key], sidecar)
+        digest = hashlib.sha256(written.read_bytes()).hexdigest()
+        self.assertEqual(
+            (dist / "install.sh.sha256").read_text(), f"{digest}  install.sh\n"
+        )
+        self.assertEqual(written.stat().st_mode & 0o777, 0o755)
+        checksums = sorted(path.name for path in dist.glob("*.sha256"))
+        checked = subprocess.run(
+            ["sha256sum", "-c", *checksums],
+            cwd=dist,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+
+        home = self.root / "home"
+        tmp = self.root / "tmp"
+        home.mkdir()
+        tmp.mkdir()
+        served = self.root / "served.tar.gz"
+        linux_archive = dist / "kiln-v9.9.9-x86_64-unknown-linux-gnu.tar.gz"
+        served.write_bytes(linux_archive.read_bytes())
+        record = self.root / "urls"
+        stub = self.root / "stub-bin"
+        stub.mkdir()
+        curl = stub / "curl"
+        curl.write_text(
+            f"#!{sys.executable}\n"
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "args = sys.argv[1:]\n"
+            "url = args[-1]\n"
+            'Path(os.environ["CURL_RECORD"]).open("a", encoding="utf-8").write(url + "\\n")\n'
+            f"if url != {LINUX_CLIENT_URL!r}:\n"
+            "    sys.exit(1)\n"
+            'if "--output" not in args or "--write-out" not in args:\n'
+            "    sys.exit(2)\n"
+            'output = Path(args[args.index("--output") + 1])\n'
+            'output.write_bytes(Path(os.environ["CURL_ARCHIVE"]).read_bytes())\n'
+            'sys.stdout.write("200")\n'
+        )
+        curl.chmod(0o755)
+        (stub / "uname").write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = -s ]; then printf "Linux\\n"; exit 0; fi\n'
+            'if [ "$1" = -m ]; then printf "x86_64\\n"; exit 0; fi\n'
+            "exit 2\n"
+        )
+        (stub / "getconf").write_text(
+            "#!/bin/sh\n"
+            '[ "$1" = GNU_LIBC_VERSION ] || exit 2\n'
+            "printf 'glibc 2.39\\n'\n"
+        )
+        (stub / "uname").chmod(0o755)
+        (stub / "getconf").chmod(0o755)
+        env = {
+            "PATH": f"{stub}:/usr/bin:/bin",
+            "HOME": str(home),
+            "TMPDIR": str(tmp),
+            "CURL_ARCHIVE": str(served),
+            "CURL_RECORD": str(record),
+            "LANG": "C",
+        }
+        installed = home / ".local" / "bin" / "kiln"
+        self.assertFalse(installed.exists())
+        first = _run_installer(written, env)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual(record.read_text().splitlines(), [LINUX_CLIENT_URL])
+        version_run = subprocess.run(
+            [str(installed), "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(version_run.returncode, 0)
+        self.assertEqual(version_run.stdout, "kiln 9.9.9\n")
+        before_install = installed.read_bytes()
+        before_mtime = installed.stat().st_mtime_ns
+        served.write_bytes(b"not-the-archive\n")
+        second = _run_installer(written, env)
+        self.assertNotEqual(second.returncode, 0)
+        self.assertIn("checksum", (second.stdout + second.stderr).lower())
+        self.assertEqual(installed.read_bytes(), before_install)
+        self.assertEqual(installed.stat().st_mtime_ns, before_mtime)
+        self.assertEqual(record.read_text().splitlines(), [LINUX_CLIENT_URL, LINUX_CLIENT_URL])
+        self.assertEqual(linux_archive.read_bytes(), archives[linux_archive.name])
+        self.assertEqual(repo_script.read_bytes(), before_repo)
+
     def _restore_github_env(self, previous):
         if previous is None:
             os.environ.pop("GITHUB_ENV", None)
@@ -447,6 +752,46 @@ def _extract_function(source, name):
             if depth == 0:
                 return source[start : index + 1]
     raise AssertionError(f"unclosed {name}")
+
+
+def _split_ending(line):
+    if line.endswith("\r\n"):
+        return line[:-2], "\r\n"
+    if line.endswith("\n"):
+        return line[:-1], "\n"
+    return line, ""
+
+
+def _asset_digests(text):
+    lines = text.splitlines()
+    begin = lines.index("# BEGIN RELEASE ASSETS")
+    end = lines.index("# END RELEASE ASSETS")
+    digests = {}
+    for line in lines[begin + 1 : end]:
+        if line.lstrip().startswith("#"):
+            continue
+        key, digest = line.split()
+        digests[key] = digest
+    return digests
+
+
+def _sidecar_name(key):
+    mode, target = key.split(":", 1)
+    prefix = {"client": "kiln", "server": "kiln-server"}[mode]
+    return f"{prefix}-v9.9.9-{target}.tar.gz.sha256"
+
+
+def _run_installer(script, env):
+    return subprocess.run(
+        ["sh"],
+        input=script.read_text(),
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        start_new_session=True,
+    )
 
 
 def _rewrite_release_json(archive, version):

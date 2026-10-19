@@ -291,6 +291,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           python3 scripts/release_version.py check-archives --version "$TAG" dist
+          python3 scripts/release_version.py attach-bootstrap --version "$TAG" --dist dist
           (cd dist && sha256sum -c ./*.sha256)
           gh release create "$TAG" dist/* --verify-tag --draft --title "$TAG" \
             --notes 'Trusted-workload pilot. Native client tests and Linux build checks passed. The unattended installer requires Ubuntu 24.04 or 26.04 x86-64/KVM for servers. No deployment was performed. Review the release and real-host validation before publishing. Binaries are not signed or notarized.'
