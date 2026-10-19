@@ -1,6 +1,6 @@
 # Dashboard
 
-The console in `web/` is a React app served as static files. Release `v0.4.5` publishes `kiln-dashboard-v0.4.5.tar.gz`. The archive is not installed by `deploy/install.sh`. Preview mode (`?preview=1`) renders `web/src/fixtures.ts` and does not call the network. Without that flag the app requests `GET /api/v1/dashboard` (`web/src/data.ts`). No Rust service implements that route.
+The console in `web/` is a React app served as static files. Release `v0.4.6` publishes `kiln-dashboard-v0.4.6.tar.gz`. The archive is not installed by `deploy/install.sh`. Preview mode (`?preview=1`) renders `web/src/fixtures.ts` and does not call the network. Without that flag the app requests `GET /api/v1/dashboard` (`web/src/data.ts`). No Rust service implements that route.
 
 ## Sub-features
 
