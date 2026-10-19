@@ -722,21 +722,31 @@ async fn logout(door: &Door, request: Request) -> Response {
     if session.dead {
         return unauthorized();
     }
-    let central = match fresh_central(dash, &mut session).await {
-        Ok(token) => token,
-        Err(RefreshError::Dead) => {
-            kill(dash, &mut session);
-            return unauthorized();
-        }
-        Err(RefreshError::Down) => return identity_down(),
-    };
     let device_id = session.disk.device_id.clone();
-    if !revoke_device(dash, &device_id, &central).await {
-        return identity_down();
-    }
+    let refresh_token = session.disk.refresh_token.clone();
+    let cached = session
+        .central
+        .as_ref()
+        .filter(|item| fresh(item))
+        .map(|item| item.value.clone());
+    // The browser session ends before identity is asked. A failed revoke must not restore it.
     kill(dash, &mut session);
     drop(session);
-    let mut response = StatusCode::NO_CONTENT.into_response();
+    let central = match cached {
+        Some(token) => token,
+        None => match exchange_refresh(dash, &refresh_token).await {
+            Ok(tokens) => tokens.access_token,
+            Err(RefreshError::Dead) => return cleared_session(unauthorized()),
+            Err(RefreshError::Down) => return cleared_session(identity_down()),
+        },
+    };
+    if !revoke_device(dash, &device_id, &central).await {
+        return cleared_session(identity_down());
+    }
+    cleared_session(StatusCode::NO_CONTENT.into_response())
+}
+
+fn cleared_session(mut response: Response) -> Response {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -799,10 +809,23 @@ async fn fresh_central(dash: &Dash, session: &mut Session) -> Result<String, Ref
     if let Some(token) = session.central.as_ref().filter(|item| fresh(item)) {
         return Ok(token.value.clone());
     }
+    let tokens = exchange_refresh(dash, &session.disk.refresh_token).await?;
+    session.disk.refresh_token = tokens.refresh_token;
+    if write_session(&dash.dir, &session.key, &session.disk).is_err() {
+        return Err(RefreshError::Down);
+    }
+    session.central = Some(Cached {
+        value: tokens.access_token.clone(),
+        exp: Instant::now() + Duration::from_secs(tokens.expires_in),
+    });
+    Ok(tokens.access_token)
+}
+
+async fn exchange_refresh(dash: &Dash, refresh_token: &str) -> Result<DeviceTokens, RefreshError> {
     let url = identity_url(&dash.issuer, "/oauth/token").map_err(|_| RefreshError::Down)?;
     let body = form_encode(&[
         ("grant_type", "refresh_token"),
-        ("refresh_token", &session.disk.refresh_token),
+        ("refresh_token", refresh_token),
     ]);
     let (status, bytes) = post_form(&dash.identity, url, body)
         .await
@@ -818,15 +841,7 @@ async fn fresh_central(dash: &Dash, session: &mut Session) -> Result<String, Ref
     {
         return Err(RefreshError::Dead);
     }
-    session.disk.refresh_token = tokens.refresh_token;
-    if write_session(&dash.dir, &session.key, &session.disk).is_err() {
-        return Err(RefreshError::Down);
-    }
-    session.central = Some(Cached {
-        value: tokens.access_token.clone(),
-        exp: Instant::now() + Duration::from_secs(tokens.expires_in),
-    });
-    Ok(tokens.access_token)
+    Ok(tokens)
 }
 
 fn fresh(token: &Cached) -> bool {

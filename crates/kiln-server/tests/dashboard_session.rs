@@ -55,6 +55,7 @@ struct World {
     seen: Arc<Mutex<Vec<Seen>>>,
     port: u16,
     identity: Identity,
+    identity_server: axum_server::Handle<std::net::SocketAddr>,
     key: EncodingKey,
     issuer: String,
     session_dir: std::path::PathBuf,
@@ -328,6 +329,41 @@ async fn device_grant_strips_browser_authorization() {
 }
 
 #[tokio::test]
+async fn logout_clears_the_session_when_identity_is_down() {
+    let world = world(false).await;
+    let (cookie, csrf) = dashboard_cookie(&world).await;
+    world.identity_server.shutdown();
+    wait_until_identity_stops(&world).await;
+    let hits = world.hits.load(Ordering::SeqCst);
+    let response = world
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/logout")
+                .header(header::HOST, "cli.test")
+                .header(header::ORIGIN, "https://cli.test")
+                .header(header::COOKIE, &cookie)
+                .header("x-kiln-csrf", csrf)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert!(set_cookie(&response, "__Host-kiln_dash").contains("Max-Age=0"));
+    assert!(
+        std::fs::read_dir(&world.session_dir)
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    let response = world
+        .call(req("GET", "/api/v1/dashboard", Some(&cookie), None, None))
+        .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(world.hits.load(Ordering::SeqCst), hits);
+}
+
+#[tokio::test]
 async fn wrong_account_does_not_open_a_session() {
     let world = world(true).await;
     world.identity.wrong.store(true, Ordering::SeqCst);
@@ -441,7 +477,7 @@ async fn world(with_root: bool) -> World {
         user_code: "CODE".into(),
         device_code: "device-secret".into(),
     };
-    spawn_tls(
+    let identity_server = spawn_tls(
         identity_listener,
         cert.cert.pem(),
         cert.signing_key.serialize_pem(),
@@ -453,7 +489,7 @@ async fn world(with_root: bool) -> World {
     let (upstream_listener, port) = bind().await;
     let upstream_cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
     let ca_pem = upstream_cert.cert.pem();
-    spawn_tls(
+    let _ = spawn_tls(
         upstream_listener,
         upstream_cert.cert.pem(),
         upstream_cert.signing_key.serialize_pem(),
@@ -496,6 +532,7 @@ async fn world(with_root: bool) -> World {
         seen,
         port,
         identity,
+        identity_server,
         key,
         issuer,
         session_dir,
@@ -808,20 +845,82 @@ async fn spawn_tls(
     cert_pem: String,
     key_pem: String,
     app: Router,
-) {
+) -> axum_server::Handle<std::net::SocketAddr> {
     let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
         cert_pem.into_bytes(),
         key_pem.into_bytes(),
     )
     .await
     .unwrap();
+    let handle = axum_server::Handle::<std::net::SocketAddr>::new();
+    let server = handle.clone();
     tokio::spawn(async move {
         axum_server::from_tcp_rustls(listener, tls)
             .unwrap()
+            .handle(server)
             .serve(app.into_make_service())
             .await
             .unwrap();
     });
+    handle
+}
+
+async fn dashboard_cookie(world: &World) -> (String, String) {
+    let response = world.call(req("GET", "/login", None, None, None)).await;
+    let attempt = cookie_pair(&set_cookie(&response, "__Host-kiln_dash_attempt")).1;
+    let response = world
+        .call(req(
+            "GET",
+            "/login/wait",
+            Some(&format!("__Host-kiln_dash_attempt={attempt}")),
+            None,
+            None,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    world.identity.approved.store(true, Ordering::SeqCst);
+    let response = world
+        .call(req(
+            "GET",
+            "/login/wait",
+            Some(&format!("__Host-kiln_dash_attempt={attempt}")),
+            None,
+            None,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookie = format!(
+        "__Host-kiln_dash={}",
+        cookie_pair(&set_cookie(&response, "__Host-kiln_dash")).1
+    );
+    let response = world
+        .call(req("GET", "/api/v1/session", Some(&cookie), None, None))
+        .await;
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    (cookie, body["csrf"].as_str().unwrap().to_owned())
+}
+
+async fn wait_until_identity_stops(world: &World) {
+    let addr = format!("127.0.0.1:{}", world.identity.port);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let refused = matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                tokio::net::TcpStream::connect(&addr),
+            )
+            .await,
+            Ok(Err(_))
+        );
+        if refused && world.identity_server.connection_count() == 0 {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "identity kept accepting"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
 
 fn sockets(port: u16) -> usize {
