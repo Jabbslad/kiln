@@ -291,6 +291,8 @@ impl Runtime {
         if fs::symlink_metadata(self.root.join("boxes").join(box_id)).is_ok() {
             return Err(Error::Invalid("box ID already reserved".into()));
         }
+        let records = self.records()?;
+        ensure_unique_name(&records, name)?;
         let snapshot = self.snapshot_metadata(snapshot_id)?;
         let phase = Phase::start("reservation");
         if !snapshot.template {
@@ -298,7 +300,6 @@ impl Runtime {
                 "only prepared templates can be cloned".into(),
             ));
         }
-        let records = self.records()?;
         if records.len() >= 8
             || records.iter().map(|r| r.memory_mib).sum::<u32>() + snapshot.memory_mib > 16384
         {
@@ -425,5 +426,72 @@ mod tests {
         );
         fs::write(directory.join("disk.ext4"), b"abd").unwrap();
         assert!(runtime.verify_snapshot(&legacy).is_err());
+    }
+
+    fn store_box(root: &std::path::Path, id: &str, name: &str) {
+        let record = BoxRecord {
+            schema_version: 1,
+            id: id.into(),
+            name: name.into(),
+            state: "stopped".into(),
+            run: "c".repeat(32),
+            process: None,
+            image: crate::image::Manifest {
+                schema_version: 1,
+                architecture: "x86_64".into(),
+                kernel_path: "kernel".into(),
+                kernel_sha256: "ab".repeat(32),
+                rootfs_path: "rootfs".into(),
+                rootfs_sha256: "cd".repeat(32),
+                agent_protocol_version: 1,
+                boot_mode: Default::default(),
+            },
+            host: "test".into(),
+            memory_mib: 256,
+            vcpus: 1,
+            source: None,
+            operation: None,
+            last_error: None,
+            disk_copy: String::new(),
+            disk_layer: None,
+            jail: None,
+            network: None,
+        };
+        let directory = root.join("boxes").join(id);
+        crate::storage::private_dir(&directory).unwrap();
+        crate::storage::atomic_json(&directory.join("box.json"), &record).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_second_live_box_cannot_reuse_a_name() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = Runtime::open(root.path()).unwrap();
+        let first = "a".repeat(32);
+        let second = "b".repeat(32);
+        store_box(root.path(), &first, "shared");
+        store_box(root.path(), &second, "shared");
+        let fresh = "e".repeat(32);
+        let duplicate = runtime
+            .clone_template_with_id(&"d".repeat(32), "shared", &fresh)
+            .await
+            .unwrap_err();
+        assert!(
+            duplicate.to_string().contains("already in use"),
+            "{duplicate}"
+        );
+        assert!(!root.path().join("boxes").join(&fresh).exists());
+        for id in [&first, &second] {
+            let record: BoxRecord =
+                crate::storage::read_json(&root.path().join("boxes").join(id).join("box.json"))
+                    .unwrap();
+            assert_eq!(record.id, *id);
+            assert_eq!(record.name, "shared");
+        }
+        let other = runtime
+            .clone_template_with_id("missing", "other", &"f".repeat(32))
+            .await
+            .unwrap_err();
+        assert!(!other.to_string().contains("already in use"), "{other}");
     }
 }

@@ -49,6 +49,7 @@ class BootstrapTests(unittest.TestCase):
         (self.root / "os-release").write_text('ID=ubuntu\nVERSION_ID="24.04"\n')
         (self.root / "kvm").touch()
         (self.root / "controllers").write_text("cpu memory pids\n")
+        (self.root / "meminfo").write_text("MemAvailable:   8388608 kB\n")
         self.archive = self.root / "archive.tar.gz"
         self.env = {
             **os.environ,
@@ -104,6 +105,16 @@ if '--write-out' in args:
 """,
         )
         self.executable(
+            "python3",
+            f"#!{sys.executable}\n"
+            + """
+import os, sys
+if any("bind" in arg and "socket" in arg for arg in sys.argv[1:]):
+    raise SystemExit(int(os.environ.get("BIND_FAIL", "0")))
+os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+""",
+        )
+        self.executable(
             "sudo",
             f"#!{sys.executable}\n"
             + """
@@ -118,6 +129,8 @@ if args[0] == 'true':
     sys.exit(int(os.environ.get('SUDO_FAILURE', '0')))
 if args[0] == 'python3':
     sys.exit(subprocess.call([sys.executable, *args[1:]]))
+if args[0] == 'sh' and len(args) >= 3 and 'kvm' in args[2]:
+    sys.exit(0 if (root / 'kvm').exists() else 1)
 assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a', 'apt-get']
 """,
         )
@@ -171,6 +184,7 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
         for old, new in [
             ("/etc/os-release", "os-release"),
             ("/dev/kvm", "kvm"),
+            ("/proc/meminfo", "meminfo"),
             ("/run/systemd/system", "systemd"),
             ("/sys/fs/cgroup/cgroup.controllers", "controllers"),
             ("/etc/kiln", "etc-kiln"),
@@ -468,9 +482,10 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
             for line in (self.root / "privileged").read_text().splitlines()
         ]
         self.assertEqual(commands[0], ["true"])
-        self.assertEqual(commands[1][-2:], ["apt-get", "update"])
-        self.assertIn("python3", commands[2])
-        self.assertEqual(commands[3][0], "python3")
+        self.assertIn("kvm", commands[1][2])
+        self.assertEqual(commands[2][-2:], ["apt-get", "update"])
+        self.assertIn("python3", commands[3])
+        self.assertEqual(commands[4][0], "python3")
         self.assertTrue(
             self.requests()[0]["args"][-1].endswith(
                 "/kiln-server-v0.4.1-x86_64-unknown-linux-gnu.tar.gz"
@@ -594,6 +609,48 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
                 self.assertNotEqual(code, 0, out)
                 self.assertIn("--network-uplink", out)
                 self.assertFalse((self.root / "privileged").exists())
+
+    def privileged(self):
+        path = self.root / "privileged"
+        if not path.exists():
+            return ""
+        return path.read_text()
+
+    def test_resource_limits_stop_install_before_apt(self):
+        (self.root / "meminfo").write_text("MemAvailable:   1024 kB\n")
+        code, out = self.run_bootstrap(self.package(server=True), args=("server",))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("6 GiB", out)
+        self.assertNotIn("apt-get", self.privileged())
+
+    def test_low_disk_stops_install_before_apt(self):
+        self.executable(
+            "df",
+            "#!/bin/sh\nprintf '%s\\n' 'Filesystem 1B-blocks Used Available Use% Mounted' 'tmp 1 1 1 100% /'\n",
+        )
+        code, out = self.run_bootstrap(self.package(server=True), args=("server",))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("24 GiB", out)
+        self.assertNotIn("apt-get", self.privileged())
+
+    def test_bind_failure_stops_install_before_apt(self):
+        self.env["BIND_FAIL"] = "1"
+        code, out = self.run_bootstrap(self.package(server=True), args=("server",))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("8443", out)
+        self.assertNotIn("apt-get", self.privileged())
+
+    def test_kvm_access_is_probed_before_apt(self):
+        code, out = self.run_bootstrap(self.package(server=True), args=("server",))
+        self.assertEqual(code, 0, out)
+        commands = [
+            json.loads(line) for line in (self.root / "privileged").read_text().splitlines()
+        ]
+        kvm = next(i for i, command in enumerate(commands) if "kvm" in json.dumps(command))
+        update = next(
+            i for i, command in enumerate(commands) if command[-2:] == ["apt-get", "update"]
+        )
+        self.assertLess(kvm, update)
 
     def test_wrong_binary_version_is_not_installed(self):
         code, out = self.run_bootstrap(

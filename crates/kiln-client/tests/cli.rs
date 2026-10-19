@@ -153,7 +153,17 @@ async fn box_targets_resolve_without_guessing_and_lists_keep_json_ids() {
     .await;
     let root = tempfile::tempdir().unwrap();
     let config = configured(&server, root.path()).await;
-    for target in ["work", "abcdef12000000000000000000000001"] {
+    for (target, id) in [
+        ("work", "abcdef12000000000000000000000001"),
+        (
+            "abcdef12000000000000000000000001",
+            "abcdef12000000000000000000000001",
+        ),
+        (
+            "bbbbbbbb000000000000000000000003",
+            "bbbbbbbb000000000000000000000003",
+        ),
+    ] {
         let output = cli(&config, &["--json", "inspect", target]).await;
         assert!(
             output.status.success(),
@@ -161,7 +171,10 @@ async fn box_targets_resolve_without_guessing_and_lists_keep_json_ids() {
             String::from_utf8_lossy(&output.stderr)
         );
         let result: BoxView = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(result.id, "abcdef12000000000000000000000001");
+        assert_eq!(result.id, id);
+        if id.ends_with('3') {
+            assert_eq!(result.name, "duplicate");
+        }
     }
     let output = cli(&config, &["--json", "stop", "bbbbbbbb"]).await;
     assert!(
