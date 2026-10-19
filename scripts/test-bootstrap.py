@@ -690,6 +690,7 @@ if args[0] == 'env' and 'apt-get' in args:
     def test_bootstrap_leaves_port_binding_to_the_installer(self):
         text = (ROOT / "deploy/bootstrap/install.sh").read_text()
         # The allowlist names the systemd unit. The script still does not bind.
+        text = text.replace("kiln-door-proxy-public.socket", "")
         text = text.replace("kiln-door-proxy.socket", "")
         self.assertNotIn("socket", text)
         self.env["BIND_FAIL"] = "1"
@@ -701,6 +702,7 @@ if args[0] == 'env' and 'apt-get' in args:
         door_proxy = [
             "deploy/kiln-door-proxy.service",
             "deploy/kiln-door-proxy.socket",
+            "deploy/kiln-door-proxy-public.socket",
             "docs/runbooks/2026-10-19-door-public-cert.md",
         ]
         members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network", *door_proxy], b"fixture\n")

@@ -288,46 +288,74 @@ async fn poll_exec(
         .unwrap()
 }
 
-fn wait_tcp(port: u16) {
+fn wait_tcp_result(addr: SocketAddr) -> Result<(), ()> {
     let deadline = Instant::now() + Duration::from_secs(10);
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
     while Instant::now() < deadline {
         if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
-            return;
+            return Ok(());
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    panic!("nothing accepted on {addr}");
+    Err(())
+}
+
+fn proxyd_bin() -> String {
+    for candidate in [
+        "/usr/lib/systemd/systemd-socket-proxyd",
+        "/lib/systemd/systemd-socket-proxyd",
+    ] {
+        if Path::new(candidate).is_file() {
+            return candidate.to_string();
+        }
+    }
+    panic!("systemd-socket-proxyd is required");
 }
 
 fn start_proxy(door_port: u16, dir: &Path) -> Proxy {
     let port_file = dir.join("proxy.port");
     let log = fs::File::create(dir.join("proxy.log")).unwrap();
+    // fd 3 is often the first socket. dup2 onto itself leaves close-on-exec set, and the forwarder then exits.
     let script = r#"
 import os, socket, sys
-target, port_path = sys.argv[1], sys.argv[2]
-s = socket.socket()
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(("127.0.0.1", 0))
-s.listen(128)
-with open(port_path, "w") as out:
-    out.write(str(s.getsockname()[1]))
-fd = s.fileno()
-os.dup2(fd, 3)
-if fd != 3:
+target, bridge_path, binary = sys.argv[1:]
+
+def listen(addr):
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(addr)
+    sock.listen(128)
+    return sock
+
+def park(sock):
+    fd = sock.fileno()
+    parked = os.dup(fd)
+    while parked < 5:
+        nxt = os.dup(parked)
+        os.close(parked)
+        parked = nxt
     os.close(fd)
-os.environ["LISTEN_FDS"] = "1"
+    sock.detach()
+    return parked
+
+bridge = listen(("127.0.0.1", 0))
+public = listen(("127.0.0.2", 8443))
+with open(bridge_path, "w") as out:
+    out.write(str(bridge.getsockname()[1]))
+held = [park(bridge), park(public)]
+for number, parked in enumerate(held, start=3):
+    os.dup2(parked, number)
+    os.close(parked)
+    os.set_inheritable(number, True)
+os.environ["LISTEN_FDS"] = "2"
 os.environ["LISTEN_PID"] = str(os.getpid())
-os.execv(
-    "/usr/lib/systemd/systemd-socket-proxyd",
-    ["systemd-socket-proxyd", "--connections-max=256", "--exit-idle-time=5min", target],
-)
+os.execv(binary, [binary, "--connections-max=256", "--exit-idle-time=5min", target])
 "#;
     let child = Command::new("python3")
         .arg("-c")
         .arg(script)
         .arg(format!("127.0.0.1:{door_port}"))
         .arg(&port_file)
+        .arg(proxyd_bin())
         .stdout(Stdio::from(log.try_clone().unwrap()))
         .stderr(Stdio::from(log))
         .spawn()
@@ -513,11 +541,22 @@ async fn exec_poll_reads_stdout_through_caddy_and_rejected_tokens_do_not_dial() 
     }
 
     let proxy = start_proxy(8444, root.path());
-    wait_tcp(proxy.port);
+    let bridge = SocketAddr::from(([127, 0, 0, 1], proxy.port));
+    let fallback = SocketAddr::from(([127, 0, 0, 2], 8443));
+    for addr in [bridge, fallback] {
+        if wait_tcp_result(addr).is_err() {
+            panic!(
+                "proxy did not accept on {addr}: {}",
+                fs::read_to_string(root.path().join("proxy.log")).unwrap_or_default()
+            );
+        }
+    }
+    std::net::TcpListener::bind("127.0.0.1:8443")
+        .expect("the fallback leaves kiln-api's loopback port free");
     let (caddy_cert, caddy_key) = pem_pair("127.0.0.1");
     let caddy = start_caddy(root.path(), proxy.port, &door_cert, &caddy_cert, &caddy_key);
     assert_eq!(caddy.port, 443);
-    if wait_tcp_result(caddy.port).is_err() {
+    if wait_tcp_result(SocketAddr::from(([127, 0, 0, 1], caddy.port))).is_err() {
         panic!(
             "caddy did not listen: {}",
             fs::read_to_string(root.path().join("caddy.log")).unwrap_or_default()
@@ -560,6 +599,47 @@ async fn exec_poll_reads_stdout_through_caddy_and_rejected_tokens_do_not_dial() 
     );
     assert_eq!(up.hits.load(Ordering::SeqCst), 0);
     assert_eq!(sockets(up.port), before);
+
+    let fallback_url = "https://cli.dark-forge.dev:8443/v1/boxes";
+    let pinned = reqwest::Client::builder()
+        .add_root_certificate(reqwest::Certificate::from_pem(door_cert.as_bytes()).unwrap())
+        .tls_built_in_root_certs(false)
+        .https_only(true)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve(
+            "cli.dark-forge.dev",
+            SocketAddr::from(([127, 0, 0, 2], 8443)),
+        )
+        .build()
+        .unwrap();
+    let listed = pinned
+        .get(fallback_url)
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .expect("old pin should finish the TLS handshake on :8443");
+    assert_eq!(listed.status(), StatusCode::OK);
+    assert_eq!(listed.text().await.unwrap(), "[]");
+    let (other_cert, _) = pem_pair("cli.dark-forge.dev");
+    let wrong = reqwest::Client::builder()
+        .add_root_certificate(reqwest::Certificate::from_pem(other_cert.as_bytes()).unwrap())
+        .tls_built_in_root_certs(false)
+        .https_only(true)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve(
+            "cli.dark-forge.dev",
+            SocketAddr::from(([127, 0, 0, 2], 8443)),
+        )
+        .build()
+        .unwrap();
+    let err = wrong.get(fallback_url).send().await.unwrap_err();
+    let text = format!("{err:?}");
+    assert!(
+        text.to_ascii_lowercase().contains("certificate"),
+        "a different pin should fail the :8443 leaf, got {text}"
+    );
 
     let profiles = root.path().join("profiles.json");
     let credential = root.path().join("private/credential.json");
@@ -683,16 +763,4 @@ fn which_caddy() -> String {
         }
     }
     panic!("caddy is required on PATH");
-}
-
-fn wait_tcp_result(port: u16) -> Result<(), ()> {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    while Instant::now() < deadline {
-        if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    Err(())
 }

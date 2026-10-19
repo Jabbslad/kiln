@@ -133,6 +133,7 @@ class ReleaseTests(unittest.TestCase):
             "deploy/kiln-door.service",
             "deploy/kiln-door-proxy.service",
             "deploy/kiln-door-proxy.socket",
+            "deploy/kiln-door-proxy-public.socket",
             "deploy/enroll-dark-forge.sh",
             "docs/runbooks/2026-10-19-door-public-cert.md",
             "deploy/host.example.json",
@@ -170,6 +171,7 @@ class ReleaseTests(unittest.TestCase):
                     "deploy/kiln-door.service",
                     "deploy/kiln-door-proxy.service",
                     "deploy/kiln-door-proxy.socket",
+                    "deploy/kiln-door-proxy-public.socket",
                     "deploy/enroll-dark-forge.sh",
                     "deploy/host.example.json",
                     "fetch-firecracker.sh",
@@ -208,6 +210,7 @@ def bootstrap_accepts(archive_names):
     door_proxy = {
         "deploy/kiln-door-proxy.service",
         "deploy/kiln-door-proxy.socket",
+        "deploy/kiln-door-proxy-public.socket",
         "docs/runbooks/2026-10-19-door-public-cert.md",
     }
     if archive_names & door_proxy:

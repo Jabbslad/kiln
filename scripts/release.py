@@ -90,6 +90,7 @@ def package(repo, bins, output, version, target, kind, image):
                     "kiln-door.service",
                     "kiln-door-proxy.service",
                     "kiln-door-proxy.socket",
+                    "kiln-door-proxy-public.socket",
                     "enroll-dark-forge.sh",
                     "host.example.json",
                 )
