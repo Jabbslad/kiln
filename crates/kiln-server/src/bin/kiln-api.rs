@@ -79,11 +79,16 @@ async fn main() -> Result<()> {
     );
     let token = kiln_api::read_token(&args.token_file.context("token file required")?)?;
     let enrollment = kiln_server::auth::Enrollment::load(&args.enrollment_file)?;
+    let workspace = enrollment
+        .as_ref()
+        .map(|enrollment| enrollment.server_id.clone())
+        .unwrap_or_default();
     let auth =
         kiln_server::auth::Authenticator::new(&token, enrollment.map(|e| (e, args.jwks_cache)))?;
-    let router = kiln_server::gateway::router_with_auth(
+    let router = kiln_server::gateway::router_with_workspace(
         &args.host_socket.context("host socket required")?,
         auth,
+        workspace,
     )?;
     let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(
         args.tls_cert.context("TLS certificate required")?,
