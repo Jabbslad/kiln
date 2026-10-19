@@ -370,6 +370,9 @@ dependencies = [
             "deploy/kiln-host.service",
             "deploy/kiln-api.service",
             "deploy/kiln-door.service",
+            "deploy/kiln-door-proxy.service",
+            "deploy/kiln-door-proxy.socket",
+            "deploy/kiln-door-proxy-public.socket",
             "deploy/enroll-dark-forge.sh",
             "deploy/host.example.json",
             "scripts/fetch-firecracker.sh",
@@ -379,6 +382,7 @@ dependencies = [
             "docs/identity-service.md",
             "docs/runtime.md",
             "docs/runbooks/2026-10-19-public-door.md",
+            "docs/runbooks/2026-10-19-door-public-cert.md",
         ):
             path = repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -576,6 +580,9 @@ dependencies = [
             "deploy/kiln-host.service",
             "deploy/kiln-api.service",
             "deploy/kiln-door.service",
+            "deploy/kiln-door-proxy.service",
+            "deploy/kiln-door-proxy.socket",
+            "deploy/kiln-door-proxy-public.socket",
             "deploy/enroll-dark-forge.sh",
             "deploy/host.example.json",
             "scripts/fetch-firecracker.sh",
@@ -585,6 +592,7 @@ dependencies = [
             "docs/identity-service.md",
             "docs/runtime.md",
             "docs/runbooks/2026-10-19-public-door.md",
+            "docs/runbooks/2026-10-19-door-public-cert.md",
         ):
             path = repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
