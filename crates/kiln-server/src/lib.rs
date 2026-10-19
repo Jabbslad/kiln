@@ -1,4 +1,5 @@
 pub mod auth;
+mod dashboard;
 pub mod door;
 pub mod enrollment;
 pub mod gateway;

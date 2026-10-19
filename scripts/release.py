@@ -5,7 +5,6 @@ import argparse
 import hashlib
 import io
 import json
-import re
 import tarfile
 import zipfile
 from pathlib import Path
@@ -19,10 +18,7 @@ TARGETS = (
 
 
 def package(repo, bins, output, version, target, kind, image):
-    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", version):
-        raise ValueError(
-            "version must be vMAJOR.MINOR.PATCH with an optional prerelease suffix"
-        )
+    version = _parse_release_tag(version).tag
     targets = ("web",) if kind == "dashboard" else TARGETS
     if target not in targets or kind not in ("client", "server", "identity", "dashboard"):
         raise ValueError("unsupported target or package kind")
@@ -148,6 +144,12 @@ def package(repo, bins, output, version, target, kind, image):
     with checksum.open("x") as stream:
         stream.write(f"{digest}  {dest.name}\n")
     return dest
+
+
+def _parse_release_tag(version):
+    import release_version
+
+    return release_version.parse_release_tag(version)
 
 
 if __name__ == "__main__":

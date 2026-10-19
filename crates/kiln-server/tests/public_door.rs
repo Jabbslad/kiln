@@ -411,3 +411,75 @@ async fn request_chunks_reach_upstream_before_the_body_finishes() {
     assert_eq!(&response_body[..], b"ok");
     send.await.unwrap();
 }
+
+#[tokio::test]
+async fn dashboard_read_rejects_untrusted_bearers_and_forwards_the_owner_jwt() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::new(std::sync::Mutex::new(None::<String>));
+    let hit = hits.clone();
+    let recorded = seen.clone();
+    let app = axum::Router::new().route(
+        "/api/v1/dashboard",
+        axum::routing::get(move |headers: axum::http::HeaderMap| {
+            let hit = hit.clone();
+            let recorded = recorded.clone();
+            async move {
+                hit.fetch_add(1, Ordering::SeqCst);
+                *recorded.lock().unwrap() = headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                "ok"
+            }
+        }),
+    );
+    let (port, ca_pem) = listen_tls(app).await;
+    let root = tempfile::tempdir().unwrap();
+    let (auth, key) = auth(root.path());
+    let router = door::router(
+        auth,
+        &format!("https://127.0.0.1:{port}"),
+        ca_pem.as_bytes(),
+    )
+    .unwrap();
+    let before = sockets(port);
+    let admin = format!("Bearer {}", "ab".repeat(32));
+    for (label, header) in [
+        ("missing", None),
+        ("bogus", Some("Bearer not-a-jwt".to_string())),
+        ("admin", Some(admin)),
+    ] {
+        let mut request = Request::builder().uri("/api/v1/dashboard");
+        if let Some(header) = header {
+            request = request.header("authorization", header);
+        }
+        let response = router
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{label}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "{label}");
+        assert_eq!(sockets(port), before, "{label}");
+    }
+    let authorization = format!("Bearer {}", token(&key, "owner-a", "kiln:server:server-b"));
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/dashboard")
+                .header("authorization", &authorization)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64).await.unwrap();
+    assert_eq!(&body[..], b"ok");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        seen.lock().unwrap().as_deref(),
+        Some(authorization.as_str())
+    );
+}

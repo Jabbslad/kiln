@@ -18,6 +18,7 @@ struct Gateway {
     auth: Authenticator,
     capacity: Semaphore,
     sessions: Arc<Semaphore>,
+    workspace: String,
 }
 
 pub fn router(socket: &Path, token: &str) -> Result<Router> {
@@ -25,6 +26,14 @@ pub fn router(socket: &Path, token: &str) -> Result<Router> {
 }
 
 pub fn router_with_auth(socket: &Path, auth: Authenticator) -> Result<Router> {
+    router_with_workspace(socket, auth, String::new())
+}
+
+pub fn router_with_workspace(
+    socket: &Path,
+    auth: Authenticator,
+    workspace: String,
+) -> Result<Router> {
     let state = Arc::new(Gateway {
         client: reqwest::Client::builder()
             .unix_socket(socket)
@@ -37,8 +46,10 @@ pub fn router_with_auth(socket: &Path, auth: Authenticator) -> Result<Router> {
         auth,
         capacity: Semaphore::new(32),
         sessions: Arc::new(Semaphore::new(32)),
+        workspace,
     });
     Ok(Router::new()
+        .route("/api/v1/dashboard", get(dashboard))
         .route("/v1/templates", get(read_proxy))
         .route("/v1/boxes", get(read_proxy))
         .route("/v1/boxes/{id}", get(read_proxy))
@@ -117,6 +128,58 @@ async fn ssh_tunnel(
     }
     let upstream = upstream.upgrade().await.map_err(|_| upstream_error())?;
     Ok(crate::ssh::upgrade(request, upstream, permit))
+}
+
+async fn dashboard(
+    State(state): State<Arc<Gateway>>,
+    request: Request,
+) -> Result<Response, Failure> {
+    authenticate(&state, request.headers(), request.uri(), Scope::Read).await?;
+    let observed_at = crate::dashboard::utc_timestamp(crate::dashboard::unix_now());
+    match proxy(Arc::clone(&state), request).await {
+        Ok(response) if response.status().is_success() => {
+            stamp(response, &state.workspace, &observed_at).await
+        }
+        Err(failure) if socket_failed(&failure) => Ok(json_document(
+            StatusCode::OK,
+            crate::dashboard::document(
+                &state.workspace,
+                &observed_at,
+                "offline",
+                &crate::dashboard::Inventory::default(),
+            ),
+        )),
+        Err(failure) => Err(failure),
+        Ok(response) => Ok(response),
+    }
+}
+
+fn socket_failed(failure: &Failure) -> bool {
+    failure.0 == StatusCode::BAD_GATEWAY && failure.1.code == "host_unavailable"
+}
+
+async fn stamp(
+    response: Response,
+    workspace: &str,
+    observed_at: &str,
+) -> Result<Response, Failure> {
+    let (parts, body) = response.into_parts();
+    let bytes = to_bytes(body, kiln_api::MAX_RESPONSE_BYTES)
+        .await
+        .map_err(|_| upstream_error())?;
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Ok(Response::from_parts(parts, Body::from(bytes)));
+    };
+    crate::dashboard::stamp_value(&mut value, workspace, observed_at);
+    Ok(json_document(parts.status, value))
+}
+
+fn json_document(status: StatusCode, body: impl serde::Serialize) -> Response {
+    let mut response = (status, axum::Json(body)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+    response
 }
 
 async fn read_proxy(
@@ -215,4 +278,26 @@ fn upstream_error() -> Failure {
         "host_unavailable",
         "Host connection failed. A submitted operation may have been accepted; query its request ID before retrying.",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn oversized_host_body_is_an_error() {
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::from(vec![b'x'; kiln_api::MAX_RESPONSE_BYTES + 1]))
+            .unwrap();
+        let failure = stamp(response, "server-b", "1970-01-01T00:00:00Z")
+            .await
+            .expect_err("oversized body");
+        assert_eq!(failure.0, StatusCode::BAD_GATEWAY);
+        assert_eq!(failure.1.code, "host_unavailable");
+        let response = failure.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
+        assert!(!bytes.is_empty());
+    }
 }

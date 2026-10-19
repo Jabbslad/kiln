@@ -135,6 +135,7 @@ impl Host {
 
     pub fn router(self: &Arc<Self>) -> Router {
         Router::new()
+            .route("/api/v1/dashboard", get(dashboard))
             .route("/v1/templates", get(templates))
             .route("/v1/boxes", get(boxes))
             .route("/v1/boxes/{id}", get(inspect))
@@ -181,6 +182,124 @@ impl Host {
         };
         Ok(Outcome::Box(view(record)))
     }
+
+    fn dashboard(&self) -> Result<crate::dashboard::Document> {
+        let journal = self.journal.lock().unwrap();
+        let ids = journal.managed_ids()?;
+        let created = journal.create_times()?;
+        let rows = journal.recent(100)?;
+        drop(journal);
+        let mut names = BTreeMap::new();
+        let mut boxes = Vec::new();
+        for id in ids {
+            let Some(record) = read_box(&self.runtime_dir, &id)? else {
+                continue;
+            };
+            if record.id != id || record.name.is_empty() {
+                continue;
+            }
+            let Some(created_at) = created.get(&id).copied() else {
+                continue;
+            };
+            let disk_bytes = box_disk(&self.runtime_dir, &record).and_then(file_len);
+            names.insert(id.clone(), record.name.clone());
+            boxes.push(crate::dashboard::BoxFacts {
+                id,
+                name: record.name,
+                state: record.state,
+                memory_mib: record.memory_mib,
+                vcpus: record.vcpus,
+                disk_bytes,
+                created_at,
+                last_operation: record.operation,
+                last_error: record.last_error,
+                restored_from: record.source,
+            });
+        }
+        let mut operations = Vec::new();
+        for row in rows {
+            let box_name = names
+                .get(&row.box_id)
+                .cloned()
+                .unwrap_or_else(|| row.box_id.clone());
+            operations.push(crate::dashboard::OperationFacts {
+                id: row.id,
+                box_id: row.box_id,
+                box_name,
+                is_create: row.is_create,
+                created_at: row.created_at,
+                operation: row.operation,
+            });
+        }
+        let mut templates = Vec::new();
+        for (name, id) in &self.templates {
+            let Some(view) = self.catalog.iter().find(|template| &template.name == name) else {
+                continue;
+            };
+            templates.push(crate::dashboard::TemplateFacts {
+                id: id.clone(),
+                name: name.clone(),
+                memory_mib: view.memory_mib,
+                vcpus: view.vcpus,
+                development_only: !self.runtime.is_isolated(),
+                disk_bytes: snapshot_disk(&self.runtime_dir, id).and_then(file_len),
+            });
+        }
+        Ok(crate::dashboard::document(
+            "",
+            &crate::dashboard::utc_timestamp(crate::dashboard::unix_now()),
+            "online",
+            &crate::dashboard::Inventory {
+                boxes,
+                templates,
+                operations,
+            },
+        ))
+    }
+}
+
+fn read_box(runtime_dir: &FsPath, id: &str) -> Result<Option<BoxRecord>> {
+    if !kiln_runtime::storage::valid_id(id) {
+        return Ok(None);
+    }
+    let path = runtime_dir.join("boxes").join(id).join("box.json");
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(Some(serde_json::from_slice(&bytes)?))
+}
+
+fn box_disk(runtime_dir: &FsPath, record: &BoxRecord) -> Option<PathBuf> {
+    if !kiln_runtime::storage::valid_id(&record.id) || !kiln_runtime::storage::valid_id(&record.run)
+    {
+        return None;
+    }
+    let mut path = runtime_dir.join("boxes").join(&record.id).join(&record.run);
+    if record.jail.is_some() {
+        path.push("firecracker");
+        path.push(&record.run);
+        path.push("root");
+    }
+    path.push("disk.ext4");
+    Some(path)
+}
+
+fn snapshot_disk(runtime_dir: &FsPath, id: &str) -> Option<PathBuf> {
+    if !kiln_runtime::storage::valid_id(id) {
+        return None;
+    }
+    Some(runtime_dir.join("snapshots").join(id).join("disk.ext4"))
+}
+
+fn file_len(path: PathBuf) -> Option<u64> {
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if metadata.file_type().is_file() {
+        Some(metadata.len())
+    } else {
+        None
+    }
 }
 
 fn view(record: BoxRecord) -> BoxView {
@@ -191,6 +310,12 @@ fn view(record: BoxRecord) -> BoxView {
         memory_mib: record.memory_mib,
         vcpus: record.vcpus,
     }
+}
+
+async fn dashboard(
+    State(host): State<Arc<Host>>,
+) -> Result<Json<crate::dashboard::Document>, Failure> {
+    host.dashboard().map(Json).map_err(Failure::internal)
 }
 
 async fn templates(State(host): State<Arc<Host>>) -> Json<Vec<TemplateView>> {
