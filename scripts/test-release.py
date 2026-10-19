@@ -192,6 +192,27 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(release["target"], "x86_64-unknown-linux-gnu")
             self.assertEqual(release["min_upgrade_from"], "0.3.0")
             self.assertEqual(archive.getmember("install.sh").mode, 0o755)
+            self.assertEqual(names, bootstrap_accepts(names))
+
+
+def bootstrap_accepts(archive_names):
+    """Names deploy/bootstrap/install.sh accepts for this archive."""
+    text = (
+        Path(__file__).resolve().parent.parent / "deploy/bootstrap/install.sh"
+    ).read_text()
+    marker = 'cat > "$work/expected" <<FILES\n'
+    start = text.index(marker) + len(marker)
+    expected = set(text[start : text.index("\nFILES\n", start)].splitlines())
+    if "bin/kiln-network" in archive_names:
+        expected.add("bin/kiln-network")
+    door_proxy = {
+        "deploy/kiln-door-proxy.service",
+        "deploy/kiln-door-proxy.socket",
+        "docs/runbooks/2026-10-19-door-public-cert.md",
+    }
+    if archive_names & door_proxy:
+        expected.update(door_proxy)
+    return expected
 
 
 if __name__ == "__main__":

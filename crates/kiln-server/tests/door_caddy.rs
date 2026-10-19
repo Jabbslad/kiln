@@ -136,20 +136,33 @@ async fn listen_tls(app: axum::Router, name: &str) -> (u16, String) {
     (port, ca_pem)
 }
 
+enum Kind {
+    Create { name: String },
+    Exec,
+    Delete,
+}
+
+struct Stored {
+    kind: Kind,
+    box_id: String,
+    polls: AtomicUsize,
+}
+
 struct OpState {
     hits: Arc<AtomicUsize>,
-    gets: AtomicUsize,
-    ids: Mutex<Option<(String, String)>>,
+    ops: Mutex<std::collections::BTreeMap<String, Stored>>,
+    boxes: Mutex<Vec<kiln_api::BoxView>>,
 }
 
 async fn upstream() -> Upstream {
     let hits = Arc::new(AtomicUsize::new(0));
     let state = Arc::new(OpState {
         hits: hits.clone(),
-        gets: AtomicUsize::new(0),
-        ids: Mutex::new(None),
+        ops: Mutex::new(std::collections::BTreeMap::new()),
+        boxes: Mutex::new(Vec::new()),
     });
     let app = axum::Router::new()
+        .route("/v1/boxes", get(list_boxes))
         .route("/v1/operations", post(accept_exec))
         .route("/v1/operations/{id}", get(poll_exec))
         .with_state(state);
@@ -157,18 +170,38 @@ async fn upstream() -> Upstream {
     Upstream { port, hits, ca_pem }
 }
 
+async fn list_boxes(State(state): State<Arc<OpState>>) -> Bytes {
+    state.hits.fetch_add(1, Ordering::SeqCst);
+    Bytes::from(serde_json::to_vec(&*state.boxes.lock().unwrap()).unwrap())
+}
+
 async fn accept_exec(State(state): State<Arc<OpState>>, body: Bytes) -> (StatusCode, Bytes) {
     state.hits.fetch_add(1, Ordering::SeqCst);
     let submit: Submit = serde_json::from_slice(&body).unwrap();
-    let box_id = submit.action.box_id().unwrap().to_owned();
-    *state.ids.lock().unwrap() = Some((submit.id.clone(), box_id.clone()));
+    let (kind, box_id) = match submit.action {
+        Action::Create { name, .. } => {
+            let box_id = "c".repeat(32);
+            (Kind::Create { name }, box_id)
+        }
+        Action::Exec { id, .. } => (Kind::Exec, id),
+        Action::Delete { id } => (Kind::Delete, id),
+        other => panic!("unexpected action {other:?}"),
+    };
     let op = Operation {
-        id: submit.id,
-        box_id,
+        id: submit.id.clone(),
+        box_id: box_id.clone(),
         state: OperationState::Running,
         result: None,
         error: None,
     };
+    state.ops.lock().unwrap().insert(
+        submit.id,
+        Stored {
+            kind,
+            box_id,
+            polls: AtomicUsize::new(0),
+        },
+    );
     (
         StatusCode::ACCEPTED,
         Bytes::from(serde_json::to_vec(&op).unwrap()),
@@ -180,29 +213,48 @@ async fn poll_exec(
     AxumPath(id): AxumPath<String>,
 ) -> axum::response::Response {
     state.hits.fetch_add(1, Ordering::SeqCst);
-    let (stored_id, box_id) = state.ids.lock().unwrap().clone().unwrap();
-    assert_eq!(id, stored_id);
-    let n = state.gets.fetch_add(1, Ordering::SeqCst);
+    let mut ops = state.ops.lock().unwrap();
+    let stored = ops.get_mut(&id).unwrap();
+    let n = stored.polls.fetch_add(1, Ordering::SeqCst);
+    let box_id = stored.box_id.clone();
     let op = if n == 0 {
         Operation {
-            id: stored_id,
+            id: id.clone(),
             box_id,
             state: OperationState::Running,
             result: None,
             error: None,
         }
     } else {
-        Operation {
-            id: stored_id,
-            box_id,
-            state: OperationState::Succeeded,
-            result: Some(Outcome::Exec(ExecResult {
+        let result = match &stored.kind {
+            Kind::Create { name } => {
+                let view = kiln_api::BoxView {
+                    id: box_id.clone(),
+                    name: name.clone(),
+                    state: "running".into(),
+                    memory_mib: 512,
+                    vcpus: 1,
+                };
+                state.boxes.lock().unwrap().push(view.clone());
+                Outcome::Box(view)
+            }
+            Kind::Exec => Outcome::Exec(ExecResult {
                 stdout: b"kiln-exec-poll\n".to_vec(),
                 stderr: Vec::new(),
                 exit_code: Some(0),
                 truncated: false,
                 timed_out: false,
-            })),
+            }),
+            Kind::Delete => {
+                state.boxes.lock().unwrap().retain(|view| view.id != box_id);
+                Outcome::Deleted { id: box_id.clone() }
+            }
+        };
+        Operation {
+            id,
+            box_id,
+            state: OperationState::Succeeded,
+            result: Some(result),
             error: None,
         }
     };
@@ -210,10 +262,7 @@ async fn poll_exec(
     if n == 0 {
         return (StatusCode::OK, Bytes::from(bytes)).into_response();
     }
-    let chunks: Vec<Bytes> = bytes
-        .chunks(5)
-        .map(Bytes::copy_from_slice)
-        .collect();
+    let chunks: Vec<Bytes> = bytes.chunks(5).map(Bytes::copy_from_slice).collect();
     let stream = stream::unfold(chunks.into_iter(), |mut chunks| async {
         let next = chunks.next()?;
         tokio::time::sleep(Duration::from_millis(15)).await;
@@ -449,41 +498,124 @@ async fn exec_poll_reads_stdout_through_caddy_and_rejected_tokens_do_not_dial() 
     }
 
     let base = format!("https://127.0.0.1:{caddy_port}/");
-    let client =
-        kiln_client::Client::with_bearer(&base, &jwt, Some(caddy_cert.as_bytes())).unwrap();
-    let request_id = "a".repeat(32);
-    let box_id = "b".repeat(32);
-    let mut op = client
-        .submit(&Submit {
-            id: request_id.clone(),
-            action: Action::Exec {
-                id: box_id,
-                request: ExecRequest {
-                    argv: vec!["/bin/echo".into(), "kiln-exec-poll".into()],
-                    cwd: None,
-                    env: Default::default(),
-                    timeout_ms: 1000,
-                },
+    let old = kiln_client::Client::with_bearer(&base, &jwt, Some(door_cert.as_bytes())).unwrap();
+    let err = format!("{:#}", old.list().await.unwrap_err());
+    assert!(
+        err.to_ascii_lowercase().contains("certificate"),
+        "old pin should fail closed against Caddy, got {err}"
+    );
+    assert_eq!(up.hits.load(Ordering::SeqCst), 0);
+    assert_eq!(sockets(up.port), before);
+
+    let profiles = root.path().join("profiles.json");
+    let credential = root.path().join("private/credential.json");
+    kiln_client::profile::save_login(
+        &profiles,
+        "default",
+        kiln_client::profile::CentralProfile {
+            issuer: "https://dark-forge.dev".into(),
+            server: kiln_api::auth::ServerDescriptor {
+                id: "srv_dark_forge".into(),
+                name: "dark-forge".into(),
+                origin: base.clone(),
+                ca_pem: caddy_cert.clone(),
+                revision: 2,
             },
-        })
-        .await
-        .unwrap();
-    assert_eq!(op.state, OperationState::Running);
-    let mut polls = 0;
-    while op.state == OperationState::Running {
-        polls += 1;
-        assert!(polls <= 2, "poll did not finish");
-        op = client.operation(&request_id).await.unwrap();
-    }
-    assert_eq!(polls, 2);
-    match op.result {
+            credential_file: credential,
+            door_trust: kiln_client::profile::DoorTrust::Pin,
+        },
+        &kiln_client::credentials::Credentials {
+            issuer: "https://dark-forge.dev".into(),
+            access_token: String::new(),
+            access_expires_at: 0,
+            refresh_token: "refresh".into(),
+            automation_key_file: None,
+            server_tokens: Default::default(),
+        },
+    )
+    .unwrap();
+    let saved = kiln_client::profile::load(&profiles).unwrap();
+    let kiln_client::profile::Profile::Central(saved) = saved.profiles.get("default").unwrap()
+    else {
+        panic!("login stored a central profile");
+    };
+    assert_eq!(saved.server.ca_pem, caddy_cert);
+    let client =
+        kiln_client::Client::with_bearer(&base, &jwt, Some(saved.server.ca_pem.as_bytes()))
+            .unwrap();
+    assert!(client.list().await.unwrap().is_empty());
+    let created = finish(
+        &client,
+        client
+            .submit(&Submit {
+                id: "a".repeat(32),
+                action: Action::Create {
+                    template: "ubuntu".into(),
+                    name: "door-443".into(),
+                },
+            })
+            .await
+            .unwrap(),
+    )
+    .await;
+    let box_id = match created.result {
+        Some(Outcome::Box(view)) => {
+            assert_eq!(view.name, "door-443");
+            view.id
+        }
+        other => panic!("create read {other:?}"),
+    };
+    assert_eq!(client.list().await.unwrap().len(), 1);
+    let ran = finish(
+        &client,
+        client
+            .submit(&Submit {
+                id: "b".repeat(32),
+                action: Action::Exec {
+                    id: box_id.clone(),
+                    request: ExecRequest {
+                        argv: vec!["/bin/echo".into(), "kiln-exec-poll".into()],
+                        cwd: None,
+                        env: Default::default(),
+                        timeout_ms: 1000,
+                    },
+                },
+            })
+            .await
+            .unwrap(),
+    )
+    .await;
+    match ran.result {
         Some(Outcome::Exec(result)) => {
             assert_eq!(result.stdout, b"kiln-exec-poll\n");
             assert_eq!(result.exit_code, Some(0));
         }
-        other => panic!("client read {other:?}"),
+        other => panic!("exec read {other:?}"),
     }
-    assert_eq!(up.hits.load(Ordering::SeqCst), 3);
+    let deleted = finish(
+        &client,
+        client
+            .submit(&Submit {
+                id: "d".repeat(32),
+                action: Action::Delete { id: box_id },
+            })
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(matches!(deleted.result, Some(Outcome::Deleted { .. })));
+    assert!(client.list().await.unwrap().is_empty());
+}
+
+async fn finish(client: &kiln_client::Client, mut op: Operation) -> Operation {
+    let mut polls = 0;
+    while op.state == OperationState::Running {
+        polls += 1;
+        assert!(polls <= 2, "poll did not finish");
+        op = client.operation(&op.id).await.unwrap();
+    }
+    assert_eq!(polls, 2);
+    op
 }
 
 fn which_caddy() -> String {
