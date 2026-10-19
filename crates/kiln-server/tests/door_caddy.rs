@@ -42,10 +42,23 @@ struct Upstream {
 struct Proxy {
     child: Child,
     port: u16,
+    pid_file: Option<std::path::PathBuf>,
 }
 
 impl Drop for Proxy {
     fn drop(&mut self) {
+        if let Some(path) = &self.pid_file
+            && let Ok(text) = fs::read_to_string(path)
+        {
+            let pid = text.trim();
+            if !pid.is_empty() {
+                let _ = Command::new("sudo")
+                    .args(["-n", "kill", "-KILL", pid])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -334,7 +347,11 @@ os.execv(
         }
         std::thread::sleep(Duration::from_millis(30));
     };
-    Proxy { child, port }
+    Proxy {
+        child,
+        port,
+        pid_file: None,
+    }
 }
 
 fn start_caddy(
@@ -350,9 +367,7 @@ fn start_caddy(
     fs::write(&cert, caddy_cert).unwrap();
     fs::write(&key, caddy_key).unwrap();
     fs::write(&ca, door_ca).unwrap();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    let port = 443;
     let config = dir.join("Caddyfile");
     fs::write(
         &config,
@@ -377,17 +392,55 @@ https://127.0.0.1:{port} {{
         ),
     )
     .unwrap();
+    let home = dir.join("caddy-home");
+    fs::create_dir_all(&home).unwrap();
     let log = fs::File::create(dir.join("caddy.log")).unwrap();
-    let child = Command::new("caddy")
-        .args(["run", "--config"])
-        .arg(&config)
-        .arg("--adapter")
-        .arg("caddyfile")
+    let binary = which_caddy();
+    let pid_file = dir.join("caddy.pid");
+    let mut command = if unsafe { libc::geteuid() } == 0 {
+        let mut command = Command::new(&binary);
+        command
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", &home)
+            .env("XDG_DATA_HOME", &home)
+            .args(["run", "--config"])
+            .arg(&config)
+            .arg("--adapter")
+            .arg("caddyfile");
+        command
+    } else {
+        // Port 443 is privileged. sudo starts Caddy and the pid file is the process Drop stops.
+        let mut command = Command::new("sudo");
+        command
+            .arg("-n")
+            .arg("--")
+            .arg("env")
+            .arg(format!("HOME={}", home.display()))
+            .arg(format!("XDG_CONFIG_HOME={}", home.display()))
+            .arg(format!("XDG_DATA_HOME={}", home.display()))
+            .arg("python3")
+            .arg("-c")
+            .arg(
+                "import os, sys\n\
+                 pid_path, binary, config = sys.argv[1:]\n\
+                 open(pid_path, 'w').write(str(os.getpid()))\n\
+                 os.execv(binary, [binary, 'run', '--config', config, '--adapter', 'caddyfile'])\n",
+            )
+            .arg(&pid_file)
+            .arg(&binary)
+            .arg(&config);
+        command
+    };
+    let child = command
         .stdout(Stdio::from(log.try_clone().unwrap()))
         .stderr(Stdio::from(log))
         .spawn()
         .expect("caddy is required");
-    Proxy { child, port }
+    Proxy {
+        child,
+        port,
+        pid_file: (unsafe { libc::geteuid() } != 0).then_some(pid_file),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -463,8 +516,8 @@ async fn exec_poll_reads_stdout_through_caddy_and_rejected_tokens_do_not_dial() 
     wait_tcp(proxy.port);
     let (caddy_cert, caddy_key) = pem_pair("127.0.0.1");
     let caddy = start_caddy(root.path(), proxy.port, &door_cert, &caddy_cert, &caddy_key);
-    let caddy_port = caddy.port;
-    if wait_tcp_result(caddy_port).is_err() {
+    assert_eq!(caddy.port, 443);
+    if wait_tcp_result(caddy.port).is_err() {
         panic!(
             "caddy did not listen: {}",
             fs::read_to_string(root.path().join("caddy.log")).unwrap_or_default()
@@ -479,14 +532,14 @@ async fn exec_poll_reads_stdout_through_caddy_and_rejected_tokens_do_not_dial() 
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    let url = format!("https://127.0.0.1:{caddy_port}/v1/templates");
+    let url = "https://127.0.0.1/v1/templates";
     let before = sockets(up.port);
     for (label, header) in [
         ("missing", None),
         ("bogus", Some("Bearer not-a-jwt".to_string())),
         ("admin", Some(format!("Bearer {}", "ab".repeat(32)))),
     ] {
-        let mut request = http.get(&url);
+        let mut request = http.get(url);
         if let Some(header) = header {
             request = request.header("authorization", header);
         }
@@ -497,7 +550,8 @@ async fn exec_poll_reads_stdout_through_caddy_and_rejected_tokens_do_not_dial() 
         assert_eq!(sockets(up.port), before, "{label}");
     }
 
-    let base = format!("https://127.0.0.1:{caddy_port}/");
+    let base = "https://127.0.0.1/".to_string();
+    assert!(reqwest::Url::parse(&base).unwrap().port().is_none());
     let old = kiln_client::Client::with_bearer(&base, &jwt, Some(door_cert.as_bytes())).unwrap();
     let err = format!("{:#}", old.list().await.unwrap_err());
     assert!(
@@ -539,7 +593,9 @@ async fn exec_poll_reads_stdout_through_caddy_and_rejected_tokens_do_not_dial() 
     else {
         panic!("login stored a central profile");
     };
+    assert_eq!(saved.server.origin, base);
     assert_eq!(saved.server.ca_pem, caddy_cert);
+    assert_eq!(saved.door_trust, kiln_client::profile::DoorTrust::Pin);
     let client =
         kiln_client::Client::with_bearer(&base, &jwt, Some(saved.server.ca_pem.as_bytes()))
             .unwrap();
