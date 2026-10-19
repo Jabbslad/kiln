@@ -879,3 +879,199 @@ The published v0.4.4 `install.py` rejects Debian 13. This install replaced that 
 The installer prints "Ubuntu / KVM" on Debian. The check itself accepted Debian 13. The message can name the detected OS.
 
 `/etc/kiln/login.token` does not exist on this host. Nothing in this install creates it. Leave it absent unless a separate identity change is requested.
+
+## Cleanup
+
+The temp dirs were removed after Proof's review.
+
+`/var/tmp/kiln-v044-install` was 2.3G. `/var/tmp/kiln-smoke.CFfOY8` was 8.0K. `fuser` is not installed, so each `fuser -v` exited 127 with `command not found`. `lsof +D` on each directory printed nothing and exited 1. `systemctl cat 'kiln*'` exited 0 and `grep -F /var/tmp` exited 1. Grep of `/etc/kiln` and `/opt/kiln` for the two directories, and for `/var/tmp`, exited 1. No unit ExecStart, WorkingDirectory, or config referenced them. `rm -rf` removed only those two paths. No package was installed. The identity units were not restarted or edited.
+
+```sh
+exec 2>&1
+set -u
+echo '=== date ==='
+date -u
+echo '=== ls -la /var/tmp/kiln-v044-install /var/tmp/kiln-smoke.CFfOY8 ==='
+ls -la /var/tmp/kiln-v044-install /var/tmp/kiln-smoke.CFfOY8
+ls_exit=$?
+echo ls_exit:$ls_exit
+echo '=== du -sh /var/tmp/kiln-v044-install /var/tmp/kiln-smoke.CFfOY8 ==='
+du -sh /var/tmp/kiln-v044-install /var/tmp/kiln-smoke.CFfOY8
+du_exit=$?
+echo du_exit:$du_exit
+echo '=== fuser -v /var/tmp/kiln-v044-install ==='
+fuser -v /var/tmp/kiln-v044-install
+fuser_install_exit=$?
+echo fuser_install_exit:$fuser_install_exit
+echo '=== fuser -v /var/tmp/kiln-smoke.CFfOY8 ==='
+fuser -v /var/tmp/kiln-smoke.CFfOY8
+fuser_smoke_exit=$?
+echo fuser_smoke_exit:$fuser_smoke_exit
+echo '=== lsof +D /var/tmp/kiln-v044-install ==='
+lsof +D /var/tmp/kiln-v044-install
+lsof_install_exit=$?
+echo lsof_install_exit:$lsof_install_exit
+echo '=== lsof +D /var/tmp/kiln-smoke.CFfOY8 ==='
+lsof +D /var/tmp/kiln-smoke.CFfOY8
+lsof_smoke_exit=$?
+echo lsof_smoke_exit:$lsof_smoke_exit
+echo '=== systemctl cat kiln* | grep -F /var/tmp ==='
+systemctl cat 'kiln*' | grep -F /var/tmp
+st=("${PIPESTATUS[@]}")
+systemctl_cat_exit=${st[0]}
+grep_units_exit=${st[1]}
+echo systemctl_cat_exit:$systemctl_cat_exit
+echo grep_units_exit:$grep_units_exit
+echo '=== grep -R -n -F -e /var/tmp/kiln-v044-install -e /var/tmp/kiln-smoke.CFfOY8 /etc/kiln /opt/kiln ==='
+grep -R -n -F -e /var/tmp/kiln-v044-install -e /var/tmp/kiln-smoke.CFfOY8 /etc/kiln /opt/kiln
+grep_paths_exit=$?
+echo grep_paths_exit:$grep_paths_exit
+echo '=== grep -R -n -F /var/tmp /etc/kiln /opt/kiln ==='
+grep -R -n -F /var/tmp /etc/kiln /opt/kiln
+grep_vartmp_exit=$?
+echo grep_vartmp_exit:$grep_vartmp_exit
+abort=0
+if [ "$ls_exit" -ne 0 ] || [ "$du_exit" -ne 0 ]; then
+  echo ABORT_LISTING
+  abort=1
+fi
+case "$fuser_install_exit" in
+  0) echo ABORT_FUSER_INSTALL_IN_USE; abort=1 ;;
+  1|127) ;;
+  *) echo ABORT_FUSER_INSTALL_UNEXPECTED; abort=1 ;;
+esac
+case "$fuser_smoke_exit" in
+  0) echo ABORT_FUSER_SMOKE_IN_USE; abort=1 ;;
+  1|127) ;;
+  *) echo ABORT_FUSER_SMOKE_UNEXPECTED; abort=1 ;;
+esac
+if [ "$lsof_install_exit" -ne 1 ] || [ "$lsof_smoke_exit" -ne 1 ]; then
+  echo ABORT_LSOF
+  abort=1
+fi
+if [ "$systemctl_cat_exit" -ne 0 ] || [ "$grep_units_exit" -ne 1 ]; then
+  echo ABORT_UNIT_REFERENCE
+  abort=1
+fi
+if [ "$grep_paths_exit" -ne 1 ] || [ "$grep_vartmp_exit" -ne 1 ]; then
+  echo ABORT_CONFIG_REFERENCE
+  abort=1
+fi
+if [ "$abort" -ne 0 ]; then
+  echo CLEANUP_ABORTED
+  exit 2
+fi
+echo '=== rm -rf -- /var/tmp/kiln-v044-install /var/tmp/kiln-smoke.CFfOY8 ==='
+rm -rf -- /var/tmp/kiln-v044-install /var/tmp/kiln-smoke.CFfOY8
+echo rm_exit:$?
+echo '=== ls -ld /var/tmp/kiln-v044-install /var/tmp/kiln-smoke.CFfOY8 ==='
+ls -ld /var/tmp/kiln-v044-install /var/tmp/kiln-smoke.CFfOY8
+echo ls_ld_exit:$?
+echo '=== command -v kiln-runtime ==='
+command -v kiln-runtime
+echo command_v_exit:$?
+echo '=== PATH=/opt/kiln/bin:$PATH command -v kiln-runtime ==='
+PATH="/opt/kiln/bin:$PATH" command -v kiln-runtime
+echo '=== PATH=/opt/kiln/bin:$PATH kiln-runtime doctor ==='
+PATH="/opt/kiln/bin:$PATH" kiln-runtime doctor
+echo doctor_exit:$?
+echo '=== systemctl show -p ActiveEnterTimestamp,MainPID,NRestarts ==='
+for u in kiln-identity.service kiln-identity-proxy.service kiln-identity-proxy.socket; do
+  echo "--- $u ---"
+  systemctl show -p ActiveEnterTimestamp,MainPID,NRestarts -- "$u"
+done
+echo CLEANUP_DONE
+```
+
+Output:
+
+```text
+=== date ===
+Mon Oct 19 03:25:07 PM UTC 2026
+=== ls -la /var/tmp/kiln-v044-install /var/tmp/kiln-smoke.CFfOY8 ===
+/var/tmp/kiln-smoke.CFfOY8:
+total 12
+drwx------ 2 root root 4096 Oct 19 17:12 .
+drwxrwxrwt 7 root root 4096 Oct 19 17:12 ..
+-rw------- 1 root root  166 Oct 19 17:12 profiles.json
+-rw-r--r-- 1 root root    0 Oct 19 17:12 .profiles.lock
+
+/var/tmp/kiln-v044-install:
+total 194204
+drwx------ 3 root root      4096 Oct 19 17:11 .
+drwxrwxrwt 7 root root      4096 Oct 19 17:12 ..
+-rw------- 1 root root 198843591 Oct 19 17:11 kiln-server-v0.4.4-x86_64-unknown-linux-gnu.tar.gz
+-rw------- 1 root root       117 Oct 19 17:11 kiln-server-v0.4.4-x86_64-unknown-linux-gnu.tar.gz.sha256
+drwx------ 6 root root      4096 Oct 19 17:11 package
+ls_exit:0
+=== du -sh /var/tmp/kiln-v044-install /var/tmp/kiln-smoke.CFfOY8 ===
+2.3G	/var/tmp/kiln-v044-install
+8.0K	/var/tmp/kiln-smoke.CFfOY8
+du_exit:0
+=== fuser -v /var/tmp/kiln-v044-install ===
+bash: line 14: fuser: command not found
+fuser_install_exit:127
+=== fuser -v /var/tmp/kiln-smoke.CFfOY8 ===
+bash: line 18: fuser: command not found
+fuser_smoke_exit:127
+=== lsof +D /var/tmp/kiln-v044-install ===
+lsof_install_exit:1
+=== lsof +D /var/tmp/kiln-smoke.CFfOY8 ===
+lsof_smoke_exit:1
+=== systemctl cat kiln* | grep -F /var/tmp ===
+systemctl_cat_exit:0
+grep_units_exit:1
+=== grep -R -n -F -e /var/tmp/kiln-v044-install -e /var/tmp/kiln-smoke.CFfOY8 /etc/kiln /opt/kiln ===
+grep_paths_exit:1
+=== grep -R -n -F /var/tmp /etc/kiln /opt/kiln ===
+grep_vartmp_exit:1
+=== rm -rf -- /var/tmp/kiln-v044-install /var/tmp/kiln-smoke.CFfOY8 ===
+rm_exit:0
+=== ls -ld /var/tmp/kiln-v044-install /var/tmp/kiln-smoke.CFfOY8 ===
+ls: cannot access '/var/tmp/kiln-v044-install': No such file or directory
+ls: cannot access '/var/tmp/kiln-smoke.CFfOY8': No such file or directory
+ls_ld_exit:2
+=== command -v kiln-runtime ===
+command_v_exit:1
+=== PATH=/opt/kiln/bin:$PATH command -v kiln-runtime ===
+/opt/kiln/bin/kiln-runtime
+=== PATH=/opt/kiln/bin:$PATH kiln-runtime doctor ===
+{
+  "architecture": "x86_64",
+  "development_ready": true,
+  "firecracker_version": "1.17.0",
+  "isolated_ready": false,
+  "jailer_version": "1.17.0",
+  "problems": [],
+  "schema_version": 1
+}
+doctor_exit:0
+=== systemctl show -p ActiveEnterTimestamp,MainPID,NRestarts ===
+--- kiln-identity.service ---
+MainPID=3522047
+NRestarts=0
+ActiveEnterTimestamp=Mon 2026-10-19 12:42:17 CEST
+--- kiln-identity-proxy.service ---
+MainPID=0
+NRestarts=0
+ActiveEnterTimestamp=Mon 2026-10-19 16:51:59 CEST
+--- kiln-identity-proxy.socket ---
+ActiveEnterTimestamp=Sat 2026-10-03 20:14:48 CEST
+CLEANUP_DONE
+```
+
+`ls -ld` printed `No such file or directory` for both paths. `kiln-runtime` is not on root's default `PATH`. `PATH="/opt/kiln/bin:$PATH" kiln-runtime doctor` exited 0 and printed `"development_ready": true`.
+
+```json
+{
+  "architecture": "x86_64",
+  "development_ready": true,
+  "firecracker_version": "1.17.0",
+  "isolated_ready": false,
+  "jailer_version": "1.17.0",
+  "problems": [],
+  "schema_version": 1
+}
+```
+
+`kiln-identity.service` stayed `MainPID=3522047` and `NRestarts=0`. `kiln-identity-proxy.service` stayed `MainPID=0` and `NRestarts=0`. `kiln-identity-proxy.socket` printed the same `ActiveEnterTimestamp` as the pre-install snapshot, `Sat 2026-10-03 20:14:48 CEST`.
