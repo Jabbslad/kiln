@@ -90,6 +90,13 @@ class BootstrapTests(unittest.TestCase):
             '#!/bin/sh\n[ "$*" = "-4 route get 1.1.1.1" ] || exit 2\nprintf "%s\\n" "$ROUTE"\n',
         )
         self.executable(
+            "df",
+            "#!/bin/sh\n"
+            '[ "$1" = -B1 ] || exit 2\n'
+            "printf '%s\\n' 'Filesystem 1B-blocks Used Available Use% Mounted' "
+            "'fixture 30000000000 1 30000000000 1% /'\n",
+        )
+        self.executable(
             "curl",
             f"#!{sys.executable}\n"
             + """
