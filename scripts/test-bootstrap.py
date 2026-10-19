@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -13,6 +14,17 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def pinned_version():
+    text = (ROOT / "deploy/bootstrap/install.sh").read_text()
+    match = re.search(r"(?m)^    version=([0-9]+\.[0-9]+\.[0-9]+)$", text)
+    if match is None:
+        raise AssertionError("install.sh does not pin a release version")
+    return match.group(1)
+
+
+PINNED = pinned_version()
 SERVER_FILES = [
     "bin/kiln-runtime",
     "bin/kiln",
@@ -63,6 +75,7 @@ class BootstrapTests(unittest.TestCase):
             "ROUTE": "1.1.1.1 via 192.168.50.1 dev eth0 src 192.168.50.7 uid 1000\n    cache",
             "EXPECTED_ADDRESS": "192.168.50.7",
             "EXPECTED_UPLINK": "",
+            "PINNED": PINNED,
         }
         self.env.pop("KILN_NETWORK_UPLINK", None)
         self.executable(
@@ -89,7 +102,7 @@ assert '--proto' in args and args[args.index('--proto') + 1] == '=https'
 assert args[args.index('--proto-redir') + 1] == '=https'
 assert '--netrc' not in args and '--config' not in args and '--user' not in args
 assert not any('Authorization' in arg for arg in args)
-assert args[-1].startswith('https://github.com/Jabbslad/kiln/releases/download/v0.4.2/kiln-')
+assert args[-1].startswith('https://github.com/Jabbslad/kiln/releases/download/v' + os.environ['PINNED'] + '/kiln-')
 record = {'args': args}
 with (root / 'requests').open('a') as f:
     f.write(json.dumps(record) + '\\n')
@@ -129,7 +142,9 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
 
     def package(self, members=None, server=False):
         if members is None:
-            members = {"kiln": b"#!/bin/sh\necho 'kiln 0.4.2'\n"}
+            members = {
+                "kiln": f"#!/bin/sh\necho 'kiln {PINNED}'\n".encode()
+            }
         if server:
             members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
             members["install.py"] = (
@@ -217,6 +232,9 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
             else []
         )
 
+    def test_pinned_version_matches_published_release(self):
+        self.assertEqual(pinned_version(), "0.4.2")
+
     def test_client_platforms_install_correct_asset(self):
         for system, arch, expected in [
             ("Linux", "x86_64", "x86_64-unknown-linux-gnu"),
@@ -232,12 +250,12 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
                 binary = self.root / "home/.local/bin/kiln"
                 self.assertEqual(
                     subprocess.check_output([binary, "--version"], text=True),
-                    "kiln 0.4.2\n",
+                    f"kiln {PINNED}\n",
                 )
                 request = self.requests()[-1]
                 self.assertEqual(
                     request["args"][-1],
-                    f"https://github.com/Jabbslad/kiln/releases/download/v0.4.2/kiln-v0.4.2-{expected}.tar.gz",
+                    f"https://github.com/Jabbslad/kiln/releases/download/v{PINNED}/kiln-v{PINNED}-{expected}.tar.gz",
                 )
                 binary.unlink()
 
@@ -314,7 +332,8 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
         code, out = self.run_bootstrap(self.package())
         self.assertEqual(code, 0, out)
         self.assertEqual(
-            subprocess.check_output([binary, "--version"], text=True), "kiln 0.4.2\n"
+            subprocess.check_output([binary, "--version"], text=True),
+            f"kiln {PINNED}\n",
         )
         self.assertEqual(binary.with_name("kiln.previous").read_bytes(), original)
         self.assertEqual(
@@ -398,7 +417,17 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
 
     def test_newer_client_is_not_downgraded(self):
         binary = self.old_client()
-        for version in ("0.4.3", "0.4.10", "0.5.0", "1.0.0"):
+        major, minor, patch = (int(part) for part in PINNED.split("."))
+        newer = {
+            f"{major}.{minor}.{patch + 1}",
+            "0.4.10",
+            "0.5.0",
+            "1.0.0",
+        }
+        pin = tuple(int(part) for part in PINNED.split("."))
+        for version in sorted(newer):
+            if tuple(int(part) for part in version.split(".")) <= pin:
+                continue
             binary.write_text(f"#!/bin/sh\necho 'kiln {version}'\n")
             code, out = self.run_bootstrap(self.package())
             self.assertNotEqual(code, 0, out)
@@ -473,7 +502,7 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
         self.assertEqual(commands[3][0], "python3")
         self.assertTrue(
             self.requests()[0]["args"][-1].endswith(
-                "/kiln-server-v0.4.2-x86_64-unknown-linux-gnu.tar.gz"
+                f"/kiln-server-v{PINNED}-x86_64-unknown-linux-gnu.tar.gz"
             )
         )
 
