@@ -1,6 +1,6 @@
 # Automatic Kiln updates
 
-> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). The updater accepts any strictly newer stable release, refuses downgrades and installs older than 0.3.0, and requires `min_upgrade_from` for a minor or major bump. The published v0.4.4 archive still contains `install.py`.
+> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). The updater accepts any strictly newer stable release, refuses downgrades and installs older than 0.3.0, and requires `min_upgrade_from` for a minor or major bump. The public bootstrap pins v0.4.5 and runs `install.sh` only. Deploying tag v0.4.4 still overlays this tree's `install.sh`, because that archive contains `install.py` and rejects Debian 13.
 
 **Goal:** Re-running the installer installs missing Kiln components, updates
 compatible installations, and leaves identical installations unchanged. No

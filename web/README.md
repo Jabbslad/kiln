@@ -23,7 +23,7 @@ Preview mode uses `src/fixtures.ts`, is labelled across all screens, makes no AP
 
 ## Published dashboard
 
-GitHub releases include `kiln-dashboard-v0.4.4.tar.gz` and its SHA-256 checksum.
+GitHub releases include `kiln-dashboard-v0.4.5.tar.gz` and its SHA-256 checksum.
 The archive contains the production HTML, JavaScript, CSS, bundled fonts, this
 guide, dependency licenses and release metadata; Node is only needed to build from source, not to
 serve the archive. It is separate from the server installer and is not deployed

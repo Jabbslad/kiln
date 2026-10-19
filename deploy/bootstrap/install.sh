@@ -19,10 +19,10 @@ assets() {
     # Updated only after reviewing the release and its checksums.
     cat <<'ASSETS'
 # BEGIN RELEASE ASSETS
-client:x86_64-unknown-linux-gnu 6d4b15357652708f0a0ccc771d4e800ef4b96af30b75be561015d1066eca06ef
-client:x86_64-apple-darwin c6cac894f7106e8b37e55bd80d603a58be9fd78176b0e462d5512c8be22d4cb3
-client:aarch64-apple-darwin 4d562237ffba9de9f58224c570dd22493a9ec0832ccb9b766e61925f242758cb
-server:x86_64-unknown-linux-gnu bbc358efeb977c9a023f6427c4482f8a974eb3b9b0cb714ce07b276eaa15aa1d
+client:x86_64-unknown-linux-gnu ca90d0cbfb50d86c14b940a75a20688c72097bb7929c51b8e42f04b3000528bf
+client:x86_64-apple-darwin 4878112d517c99f7456f4843152498e5b83549d40245f131eaf64b75d756c8b1
+client:aarch64-apple-darwin 9bfd4abf6f51027ed5436093d434e3704052bc47c9b40fb8f87c6551ccf2f748
+server:x86_64-unknown-linux-gnu 9a304c273ae7c1d4de4c370f169866f5fdc3879c88f42d4b1cb2e9a125452c23
 # END RELEASE ASSETS
 ASSETS
 }
@@ -85,23 +85,13 @@ extract() {
     if [ "$mode" = client ]; then
         printf 'kiln\n' > "$work/expected"
     else
-        # v0.4.4's published archive contains install.py. Later archives contain
-        # install.sh. Exactly one of those names is accepted.
-        installer=
-        if grep -qx 'install.sh' "$work/names"; then
-            installer=install.sh
-        fi
-        if grep -qx 'install.py' "$work/names"; then
-            [ -z "$installer" ] || fail 'Unexpected archive contents.'
-            installer=install.py
-        fi
-        [ -n "$installer" ] || fail 'Unexpected archive contents.'
+        grep -qx 'install.sh' "$work/names" || fail 'Unexpected archive contents.'
         cat > "$work/expected" <<FILES
 bin/kiln-runtime
 bin/kiln
 bin/kiln-host
 bin/kiln-api
-$installer
+install.sh
 fetch-firecracker.sh
 README.md
 docs/releases.md
@@ -223,23 +213,15 @@ configure_server() {
 }
 
 install_sqlite3_if_missing() {
-    if [ -f "$work/package/install.sh" ] && ! command -v sqlite3 >/dev/null 2>&1; then
+    if ! command -v sqlite3 >/dev/null 2>&1; then
         as_root env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get update < /dev/null
         as_root env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3 < /dev/null
     fi
 }
 
 run_installer() {
-    if [ -f "$work/package/install.sh" ]; then
-        as_root bash "$work/package/install.sh" "$@" < /dev/null
-        return
-    fi
-    if [ -f "$work/package/install.py" ]; then
-        command -v python3 >/dev/null 2>&1 || fail 'This release installer requires python3.'
-        as_root python3 "$work/package/install.py" "$@" < /dev/null
-        return
-    fi
-    fail 'Package has no installer.'
+    [ -f "$work/package/install.sh" ] || fail 'Package has no installer.'
+    as_root bash "$work/package/install.sh" "$@" < /dev/null
 }
 
 install_server() {
@@ -257,13 +239,9 @@ install_server() {
         printf 'Networking requested: enable host IPv4 forwarding and filtered NAT via %s.\n' "$uplink"
     fi
     resource_preflight
-    if [ -f "$work/package/install.sh" ]; then
-        set -- openssl curl ca-certificates tar passwd
-    else
-        set -- python3 openssl curl ca-certificates tar passwd
-    fi
+    set -- openssl curl ca-certificates tar passwd
     notice="$*"
-    if [ -f "$work/package/install.sh" ] && ! command -v sqlite3 >/dev/null 2>&1; then
+    if ! command -v sqlite3 >/dev/null 2>&1; then
         notice="sqlite3 $notice"
     fi
     printf '%s\n' \
@@ -284,7 +262,7 @@ install_server() {
 }
 
 main() {
-    version=0.4.4
+    version=0.4.5
     work='' staged='' backup_staged='' lock='' upgrade=false
     address='' uplink=${KILN_NETWORK_UPLINK:-} network=false existing_server=false
     trap cleanup EXIT

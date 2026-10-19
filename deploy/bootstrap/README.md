@@ -70,8 +70,8 @@ The client command does not update a server or its guest images.
 
 ## Dashboard preview
 
-[v0.4.4](https://github.com/Jabbslad/kiln/releases/tag/v0.4.4) includes the separate
-`kiln-dashboard-v0.4.4.tar.gz` static frontend and checksum. The installer does
+[v0.4.5](https://github.com/Jabbslad/kiln/releases/tag/v0.4.5) includes the separate
+`kiln-dashboard-v0.4.5.tar.gz` static frontend and checksum. The installer does
 not deploy it. Its `/boxes?preview=1` view uses labelled read-only examples;
 browser authentication and live VM controls are not integrated yet. See the
 [dashboard guide](https://github.com/Jabbslad/kiln/tree/main/web#readme).
@@ -90,13 +90,12 @@ remains Ubuntu 24.04 on every supported host.
 **Running `server` authorizes installation or updating without further confirmation.** Use
 a root shell or an account with passwordless sudo; the script uses `sudo -n` and
 fails instead of asking for a password. Installing and deploying Kiln is shell
-scripts (`deploy/install.sh` in the source tree). The bootstrap is still pinned
-to v0.4.4. That published archive contains `install.py` and no `install.sh`, so
-this pin runs Python for that one archive and installs python3. An archive that
-contains `install.sh` is run with bash. It installs sqlite3 with
-`NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3`
-only when `sqlite3` is not already on `PATH`, and it does not install python3.
-It then checks resources/conflicts before creating accounts,
+scripts, `deploy/install.sh` in the source tree. The bootstrap pins v0.4.5 and
+runs that archive's `install.sh` with bash. It does not run Python. When
+`sqlite3` is missing from `PATH`, it runs `apt-get update` and then
+`DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3`.
+When `sqlite3` is already on `PATH`, that pair of apt commands does not run.
+It then checks resources and conflicts before creating accounts,
 services, TLS credentials, and a 4 GiB warm Ubuntu template. Package configuration
 is non-interactive and retains existing configuration files. No VPN or API
 firewall opening is configured.
@@ -141,8 +140,7 @@ stable release. It compares major.minor.patch as integers, so 0.4.10 is newer
 than 0.4.4. It refuses a downgrade before stopping a service or writing a file.
 Installs older than 0.3.0 are unsupported. A minor or major bump also requires
 `min_upgrade_from` in the package `release.json`; a patch bump does not. An
-identical install is a no-op. The pinned v0.4.4 archive still runs its own
-`install.py`, which only updates the versions that release accepted.
+identical install is a no-op. The pinned v0.4.5 archive runs `install.sh`.
 
 The shell installer reuses the existing address and networking, and preserves
 configuration, credentials, units, Firecracker, guest images, templates and VM
@@ -224,7 +222,7 @@ It remains compatible with the 0.2.1 guest image.
 
 ## Trust and maintenance
 
-The bootstrap pins v0.4.4 release URLs and SHA-256 digests, validates archive contents,
+The bootstrap pins v0.4.5 release URLs and SHA-256 digests, validates archive contents,
 and downloads without authentication. Redirects are HTTPS-only and user curl
 configuration is disabled. Temporary files are removed on normal exit and handled
 signals. A checksum protects integrity under trust in this bootstrap publisher;

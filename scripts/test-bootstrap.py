@@ -30,7 +30,7 @@ SERVER_FILES = [
     "bin/kiln",
     "bin/kiln-host",
     "bin/kiln-api",
-    "install.py",
+    "install.sh",
     "fetch-firecracker.sh",
     "README.md",
     "docs/releases.md",
@@ -174,10 +174,12 @@ if args[0] == 'env' and 'apt-get' in args:
             }
         if server:
             members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
-            members["install.py"] = (
-                b"import os, sys\nexpected = ['--address', os.environ['EXPECTED_ADDRESS'], '--apply']\n"
-                b"if os.environ['EXPECTED_UPLINK']: expected += ['--network-uplink', os.environ['EXPECTED_UPLINK']]\n"
-                b"assert sys.argv[1:] == expected, sys.argv\nassert sys.stdin.read() == ''\nprint('provisioner completed')\n"
+            members["install.sh"] = (
+                b"#!/bin/bash\nset -euo pipefail\n"
+                b'expected="--address ${EXPECTED_ADDRESS} --apply"\n'
+                b'if [ -n "${EXPECTED_UPLINK}" ]; then expected="${expected} --network-uplink ${EXPECTED_UPLINK}"; fi\n'
+                b'[ "$*" = "$expected" ]\n'
+                b"printf '%s\\n' 'provisioner completed'\n"
             )
         with tarfile.open(self.archive, "w:gz") as archive:
             for name, data in members.items():
@@ -261,7 +263,7 @@ if args[0] == 'env' and 'apt-get' in args:
         )
 
     def test_pinned_version_matches_published_release(self):
-        self.assertEqual(pinned_version(), "0.4.4")
+        self.assertEqual(pinned_version(), "0.4.5")
 
     def test_client_platforms_install_correct_asset(self):
         for system, arch, expected in [
@@ -476,8 +478,8 @@ if args[0] == 'env' and 'apt-get' in args:
         (self.root / "etc-kiln").mkdir()
         self.env["ROUTE"] = ""
         members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
-        members["install.py"] = (
-            b"import sys\nassert sys.argv[1:] == ['--apply']\nprint('updated')\n"
+        members["install.sh"] = (
+            b"#!/bin/bash\nset -euo pipefail\n[ \"$*\" = --apply ]\nprintf '%s\\n' updated\n"
         )
         code, out = self.run_bootstrap(self.package(members), args=("server",))
         self.assertEqual(code, 0, out)
@@ -487,7 +489,7 @@ if args[0] == 'env' and 'apt-get' in args:
             for line in (self.root / "privileged").read_text().splitlines()
         ]
         self.assertEqual(commands[0], ["true"])
-        self.assertEqual(commands[1][0], "python3")
+        self.assertEqual(commands[1][0], "bash")
         self.assertEqual(len(commands), 2)
 
     def test_server_unsupported_host_never_requests_privileges(self):
@@ -532,8 +534,9 @@ if args[0] == 'env' and 'apt-get' in args:
         self.assertEqual(commands[0], ["true"])
         self.assertIn("kvm", commands[1][2])
         self.assertEqual(commands[2][-2:], ["apt-get", "update"])
-        self.assertIn("python3", commands[3])
-        self.assertEqual(commands[4][0], "python3")
+        self.assertNotIn("python3", commands[3])
+        self.assertNotIn("sqlite3", commands[3])
+        self.assertEqual(commands[4][0], "bash")
         self.assertTrue(
             self.requests()[0]["args"][-1].endswith(
                 f"/kiln-server-v{PINNED}-x86_64-unknown-linux-gnu.tar.gz"
@@ -689,9 +692,18 @@ if args[0] == 'env' and 'apt-get' in args:
         self.assertEqual(code, 0, out)
         self.assertIn("provisioner completed", out)
 
+    def test_python_archive_is_rejected_before_apt(self):
+        members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
+        del members["install.sh"]
+        members["install.py"] = b"print('must-not-run')\n"
+        code, out = self.run_bootstrap(self.package(members), args=("server",))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("Unexpected archive contents.", out)
+        self.assertNotIn("must-not-run", out)
+        self.assertNotIn("apt-get", self.privileged())
+
     def test_shell_archive_uses_bash_and_sqlite_not_python(self):
         members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
-        del members["install.py"]
         members["install.sh"] = b"""#!/bin/bash
 set -euo pipefail
 got="$*"
@@ -714,7 +726,6 @@ printf '%s\\n' 'provisioner completed'
         (self.root / "etc-kiln").mkdir()
         self.env["ROUTE"] = ""
         members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
-        del members["install.py"]
         members["install.sh"] = b"#!/bin/bash\nset -euo pipefail\n[ \"$*\" = --apply ]\nprintf '%s\\n' updated\n"
         code, out = self.run_bootstrap(self.package(members), args=("server",))
         self.assertEqual(code, 0, out)
@@ -781,7 +792,6 @@ printf '%s\\n' 'provisioner completed'
         self.assertNotIn("apt-get upgrade", text)
         self.assertNotIn("dist-upgrade", text)
         members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
-        del members["install.py"]
         members["install.sh"] = b"#!/bin/bash\nset -euo pipefail\nprintf '%s\\n' 'provisioner completed'\n"
         code, out = self.run_bootstrap(self.package(members), args=("server",))
         self.assertEqual(code, 0, out)
@@ -825,7 +835,6 @@ printf '%s\\n' 'provisioner completed'
         (self.root / "etc-kiln").mkdir()
         self.env.update(ROUTE="", APT_FAIL="update", PATH=self.path_without("sqlite3"))
         members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
-        del members["install.py"]
         members["install.sh"] = b"#!/bin/bash\nprintf '%s\\n' updated\n"
         code, out = self.run_bootstrap(self.package(members), args=("server",))
         self.assertNotEqual(code, 0, out)
