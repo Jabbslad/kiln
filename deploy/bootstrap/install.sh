@@ -98,8 +98,11 @@ docs/releases.md
 docs/remote-client.md
 docs/runtime.md
 docs/identity-service.md
+docs/runbooks/2026-10-19-public-door.md
 deploy/kiln-host.service
 deploy/kiln-api.service
+deploy/kiln-door.service
+deploy/enroll-dark-forge.sh
 deploy/host.example.json
 image/image.json
 image/inputs.json

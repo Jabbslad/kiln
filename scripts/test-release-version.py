@@ -35,6 +35,10 @@ LINUX_CLIENT_URL = (
     "https://github.com/Jabbslad/kiln/releases/download/v9.9.9/"
     "kiln-v9.9.9-x86_64-unknown-linux-gnu.tar.gz"
 )
+LINUX_SERVER_URL = (
+    "https://github.com/Jabbslad/kiln/releases/download/v9.9.9/"
+    "kiln-server-v9.9.9-x86_64-unknown-linux-gnu.tar.gz"
+)
 ASSET_KEYS = (
     "client:x86_64-unknown-linux-gnu",
     "client:x86_64-apple-darwin",
@@ -720,6 +724,15 @@ dependencies = [
         self.assertEqual(record.read_text().splitlines(), [LINUX_CLIENT_URL, LINUX_CLIENT_URL])
         self.assertEqual(linux_archive.read_bytes(), archives[linux_archive.name])
         self.assertEqual(repo_script.read_bytes(), before_repo)
+        server_archive = dist / "kiln-server-v9.9.9-x86_64-unknown-linux-gnu.tar.gz"
+        server_run, server_urls = _run_attached_server(self.root, written, server_archive)
+        server_output = server_run.stdout + server_run.stderr
+        self.assertNotIn("Unexpected archive contents", server_output)
+        self.assertNotIn("checksum mismatch", server_output.lower())
+        self.assertIn("Fresh Kiln installation", server_output)
+        self.assertEqual(server_urls, [LINUX_SERVER_URL])
+        self.assertEqual(server_archive.read_bytes(), archives[server_archive.name])
+        self.assertEqual(repo_script.read_bytes(), before_repo)
 
     def _restore_github_env(self, previous):
         if previous is None:
@@ -779,6 +792,109 @@ def _sidecar_name(key):
     mode, target = key.split(":", 1)
     prefix = {"client": "kiln", "server": "kiln-server"}[mode]
     return f"{prefix}-v9.9.9-{target}.tar.gz.sha256"
+
+
+def _run_attached_server(root, script, archive):
+    fixture = root / "server-fixture"
+    fixture.mkdir()
+    for name in ("kvm", "systemd"):
+        (fixture / name).mkdir()
+    (fixture / "os-release").write_text('ID=ubuntu\nVERSION_ID="24.04"\n')
+    (fixture / "controllers").write_text("cpu memory pids\n")
+    (fixture / "meminfo").write_text("MemAvailable:   8388608 kB\n")
+    text = script.read_text()
+    for old, new in (
+        ("/etc/os-release", str(fixture / "os-release")),
+        ("/dev/kvm", str(fixture / "kvm")),
+        ("/proc/meminfo", str(fixture / "meminfo")),
+        ("/run/systemd/system", str(fixture / "systemd")),
+        ("/sys/fs/cgroup/cgroup.controllers", str(fixture / "controllers")),
+        ("/etc/kiln", str(fixture / "etc-kiln")),
+        ("/opt/kiln", str(fixture / "opt-kiln")),
+        ("/var/lib/kiln", str(fixture / "state-kiln")),
+    ):
+        text = text.replace(old, new)
+    rewritten = root / "server-install.sh"
+    rewritten.write_text(text)
+    rewritten.chmod(0o755)
+    stub = root / "server-stub"
+    stub.mkdir()
+    record = root / "server-urls"
+    (stub / "curl").write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "args = sys.argv[1:]\n"
+        "url = args[-1]\n"
+        'Path(os.environ["CURL_RECORD"]).open("a", encoding="utf-8").write(url + "\\n")\n'
+        f"if url != {LINUX_SERVER_URL!r}:\n"
+        "    sys.exit(1)\n"
+        'output = Path(args[args.index("--output") + 1])\n'
+        'output.write_bytes(Path(os.environ["CURL_ARCHIVE"]).read_bytes())\n'
+        'sys.stdout.write("200")\n'
+    )
+    (stub / "sudo").write_text(
+        f"#!{sys.executable}\n"
+        "import subprocess, sys\n"
+        "args = sys.argv[1:]\n"
+        "if args[:1] == ['-n']:\n"
+        "    args = args[1:]\n"
+        "if args == ['true']:\n"
+        "    raise SystemExit(0)\n"
+        "if args[:1] == ['sh'] and any('kvm' in part for part in args):\n"
+        "    raise SystemExit(0)\n"
+        "if 'apt-get' in args:\n"
+        "    raise SystemExit(0)\n"
+        "if args[:1] == ['bash']:\n"
+        "    raise SystemExit(subprocess.call(args))\n"
+        "raise SystemExit(3)\n"
+    )
+    (stub / "id").write_text("#!/bin/sh\nprintf '1000\\n'\n")
+    (stub / "uname").write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = -s ]; then printf "Linux\\n"; exit 0; fi\n'
+        'if [ "$1" = -m ]; then printf "x86_64\\n"; exit 0; fi\n'
+        "exit 2\n"
+    )
+    (stub / "getconf").write_text(
+        "#!/bin/sh\n"
+        '[ "$1" = GNU_LIBC_VERSION ] || exit 2\n'
+        "printf 'glibc 2.39\\n'\n"
+    )
+    (stub / "ip").write_text(
+        "#!/bin/sh\n"
+        '[ "$*" = "-4 route get 1.1.1.1" ] || exit 2\n'
+        "printf '%s\\n' '1.1.1.1 via 192.168.50.1 dev eth0 src 192.168.50.7'\n"
+    )
+    (stub / "df").write_text(
+        "#!/bin/sh\n"
+        '[ "$1" = -B1 ] || exit 2\n'
+        "printf '%s\\n' 'Filesystem 1B-blocks Used Available Use% Mounted' "
+        "'fixture 30000000000 1 30000000000 1% /'\n"
+    )
+    for path in stub.iterdir():
+        path.chmod(0o755)
+    env = {
+        "PATH": f"{stub}:/usr/bin:/bin",
+        "HOME": str(root / "server-home"),
+        "TMPDIR": str(root / "server-tmp"),
+        "CURL_ARCHIVE": str(archive),
+        "CURL_RECORD": str(record),
+        "LANG": "C",
+    }
+    (root / "server-home").mkdir()
+    (root / "server-tmp").mkdir()
+    completed = subprocess.run(
+        ["sh", str(rewritten), "server"],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        start_new_session=True,
+    )
+    urls = record.read_text().splitlines() if record.exists() else []
+    return completed, urls
 
 
 def _run_installer(script, env):
