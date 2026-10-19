@@ -268,10 +268,14 @@ Start with a **dedicated Ubuntu 24.04 or 26.04 x86-64 systemd host** with usable
 cgroup v2, at least 6 GiB currently available RAM and 24 GiB free on `/var/lib`
 after extracting the package. A 16 GiB+ host is recommended. Allow additional
 temporary space for the downloaded archive and extracted image (about 3 GiB).
-The shell bootstrap manages the system Python 3, OpenSSL, curl, CA certificates, tar and
+The shell bootstrap manages sqlite3, OpenSSL, curl, CA certificates, tar and
 Ubuntu account tools. For manual installation, supply these dependencies yourself;
-the underlying Python provisioner only checks them.
-It downloads checksum-pinned Firecracker/jailer 1.17.0 from GitHub. The package
+`deploy/install.sh` only checks them. Installing and deploying Kiln is shell
+scripts. The published v0.4.4 archive is the exception: it contains `install.py`
+and no `install.sh`, and the bootstrap still runs that Python file for an
+archive that has no shell installer. `scripts/release.py` packages releases in
+CI and does not run on the server.
+The installer downloads checksum-pinned Firecracker/jailer 1.17.0 from GitHub. The package
 already contains the kernel, Ubuntu filesystem and guest agent.
 
 The server must be reachable over your existing LAN or VPN. The installer does
@@ -280,7 +284,7 @@ default; new source packages support explicit `--network-uplink INTERFACE`
 provisioning, including NAT/filtering and a boot unit (see
 [networking](runtime-networking.md)). Pick a stable IPv4 address
 assigned to that private interface. Public addresses and `0.0.0.0` are refused;
-omitting the address when invoking `install.py` directly installs a **local-only**
+omitting the address when invoking `install.sh` directly installs a **local-only**
 endpoint at `127.0.0.1`. The shell bootstrap instead detects a private address.
 
 Download as your normal user (or download on your laptop and securely copy both
@@ -296,7 +300,7 @@ curl -fL --proto '=https' --proto-redir '=https' -O "$BASE/$PACKAGE.sha256"
 sha256sum -c "$PACKAGE.sha256"
 mkdir kiln-server
 tar -xzf "$PACKAGE" -C kiln-server
-sudo -n python3 kiln-server/install.py --address 192.168.1.20 --apply
+sudo -n bash kiln-server/install.sh --address 192.168.1.20 --apply
 ```
 
 Replace `192.168.1.20` with the server's private/VPN address. `--apply` authorizes
@@ -402,10 +406,11 @@ open port 443, install the dashboard, or restart `kiln-identity`. Guest NAT stay
 off. A published release detects one private source address and stops if the
 host's default address is public. A manual run can set the `address` input.
 
-`v0.4.4` deploys with this tree's `install.py`, because that release's own
-installer rejects Debian 13. A newer stable tag deploys with the `install.py`
-from its archive. Tags older than `v0.4.4`, and pre-releases, are refused before
-SSH. The release checksum is verified before either installer runs. After doctor
+`v0.4.4` deploys with this tree's `install.sh`, because that release's own
+archive contains `install.py`, which rejects Debian 13. A newer stable tag
+deploys with the `install.sh` from its archive. Tags older than `v0.4.4`, and
+pre-releases, are refused before SSH. The release checksum is verified before
+either installer runs. Deploy does not use Python on the server. After doctor
 and the health check pass, the deploy creates a box from the `ubuntu-4g`
 template, runs a command in it, checks the output, and deletes the box. The job
 fails if create, exec, the output check, or delete fails.

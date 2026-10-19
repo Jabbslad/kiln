@@ -1,5 +1,7 @@
 # Curl installer implementation plan
 
+> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). Steps below that name `install.py` are historical. The published v0.4.4 archive still contains `install.py`; bootstrap runs that file only for an archive that has no `install.sh`.
+
 > Execute inline with the executing-plans skill. Preserve unrelated dashboard work.
 
 **Goal:** Publish a working curl installer backed by the approved private pilot release.

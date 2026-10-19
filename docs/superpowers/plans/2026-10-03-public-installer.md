@@ -1,5 +1,7 @@
 # Public unattended installation implementation plan
 
+> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). The Python provisioner named below is historical. The published v0.4.4 archive still contains `install.py`; bootstrap runs that file only for an archive that has no `install.sh`.
+
 **Goal:** Publish Kiln source and releases and install without a GitHub token or terminal.
 
 **Architecture:** Keep the existing POSIX bootstrap and Python provisioner. Download

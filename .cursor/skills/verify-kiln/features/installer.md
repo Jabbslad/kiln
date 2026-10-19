@@ -1,6 +1,6 @@
 # Installer
 
-`deploy/bootstrap/install.sh` is the public one-command installer. `client` (the default) downloads a pinned `kiln` binary into `~/.local/bin`. `server` downloads the server package and runs `deploy/install.py` under passwordless sudo. The script in this repo is the source that is copied to `Jabbslad/kiln-install` as `install.sh` plus its public README. Nothing else from the repo belongs there.
+`deploy/bootstrap/install.sh` is the public one-command installer. `client` (the default) downloads a pinned `kiln` binary into `~/.local/bin`. `server` downloads the server package and runs `deploy/install.sh` under passwordless sudo. The script in this repo is the source that is copied to `Jabbslad/kiln-install` as `install.sh` plus its public README. Nothing else from the repo belongs there. Installing and deploying Kiln is shell scripts. The published v0.4.4 archive still contains `install.py`; bootstrap runs that file only when the archive has no `install.sh`.
 
 ## Sub-features
 
@@ -8,7 +8,7 @@
 - `sh install.sh server` detects a private IPv4 from `ip -4 route get 1.1.1.1` and installs.
 - `sh install.sh server --address PRIVATE_IP` selects the address.
 - `sh install.sh server --network` or `--network-uplink INTERFACE` opts into guest egress.
-- `python3 deploy/install.py --address IP --apply` is the provisioner the shell calls. Without `--apply` it only preflights. `--apply` requires root.
+- `bash deploy/install.sh --address IP --apply` is the provisioner the shell calls. Without `--apply` it only preflights. `--apply` requires root outside the test fixture.
 - Checksums are pinned in the `assets` function of `install.sh`. The version variable is set in `main`.
 
 ## How to get to it (user POV)
@@ -40,12 +40,12 @@ python3 scripts/test-release.py
 
 A pass is all three unittest modules exiting 0. Save the combined stdout in `$VERIFY_EVIDENCE/installer-harness.txt`.
 
-`test-bootstrap.py` checks the pinned version and the SHA-256 lines inside `install.sh`, refuses a non-private detected address, and checks that `curl` is invoked with `--proto '=https'`. `test-install.py` imports `deploy/install.py` and redirects its destination paths into a temp directory. `test-release.py` packages tiny stand-in binaries.
+`test-bootstrap.py` checks the pinned version and the SHA-256 lines inside `install.sh`, refuses a non-private detected address, and checks that `curl` is invoked with `--proto '=https'`. `test-install.py` runs `deploy/install.sh` with `KILN_INSTALL_FIXTURE` so destinations stay in a temp directory. `test-release.py` packages tiny stand-in binaries.
 
 ShellCheck, as in CI:
 
 ```sh
-shellcheck scripts/fetch-firecracker.sh images/build-ubuntu.sh deploy/bootstrap/install.sh deploy/github/*.sh
+shellcheck scripts/fetch-firecracker.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh deploy/github/*.sh
 ```
 
 ## Gotchas
