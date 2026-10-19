@@ -47,6 +47,11 @@ enum Command {
         enrollment_file: PathBuf,
         #[arg(long, default_value = "/var/lib/kiln-api/jwks.json")]
         jwks_cache: PathBuf,
+        /// Directory of the unpacked dashboard archive. Missing directories serve no HTML.
+        #[arg(long)]
+        dashboard_root: Option<PathBuf>,
+        #[arg(long, default_value = "/var/lib/kiln-api/dashboard-session")]
+        session_dir: PathBuf,
     },
 }
 
@@ -64,12 +69,29 @@ async fn main() -> Result<()> {
                 upstream_ca,
                 enrollment_file,
                 jwks_cache,
+                dashboard_root,
+                session_dir,
             } => {
                 let enrollment = kiln_server::auth::Enrollment::load(&enrollment_file)?
                     .context("server is not enrolled")?;
-                let auth = kiln_server::auth::Authenticator::central_only(enrollment, jwks_cache)?;
+                let auth =
+                    kiln_server::auth::Authenticator::central_only(enrollment.clone(), jwks_cache)?;
                 let ca = std::fs::read(&upstream_ca).context("upstream CA required")?;
-                kiln_server::door::serve(listen, &tls_cert, &tls_key, auth, &upstream, &ca).await
+                kiln_server::door::serve(
+                    listen,
+                    &tls_cert,
+                    &tls_key,
+                    auth,
+                    &upstream,
+                    &ca,
+                    kiln_server::door::Dashboard {
+                        enrollment,
+                        session_dir,
+                        root: dashboard_root,
+                        identity_ca: None,
+                    },
+                )
+                .await
             }
         };
     }
