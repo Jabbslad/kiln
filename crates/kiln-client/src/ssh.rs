@@ -48,8 +48,8 @@ pub fn parse_copy_endpoint(value: &str) -> Result<Option<(String, String)>> {
         return Ok(None);
     };
     ensure!(
-        kiln_api::valid_id(id),
-        "remote endpoint must use a full 32-character box ID"
+        kiln_api::valid_alias(id),
+        "remote endpoint must use BOX:/absolute/path (box name, full ID or unique ID prefix)"
     );
     ensure!(
         path.starts_with('/') && !path.contains(['\n', '\r']),
@@ -216,13 +216,17 @@ mod tests {
     }
 
     #[test]
-    fn remote_endpoint_requires_full_id_and_absolute_path() {
+    fn remote_endpoint_accepts_box_targets_and_requires_absolute_path() {
         let id = "b".repeat(32);
         assert_eq!(
             parse_copy_endpoint(&format!("{id}:/tmp/a")).unwrap(),
             Some((id, "/tmp/a".into()))
         );
-        for bad in ["name:/tmp/a", "bbbb:relative", "bbbb:/tmp/a\nHost x"] {
+        assert_eq!(
+            parse_copy_endpoint("my-project:/tmp/a").unwrap(),
+            Some(("my-project".into(), "/tmp/a".into()))
+        );
+        for bad in ["bad%name:/tmp/a", "bbbb:relative", "bbbb:/tmp/a\nHost x"] {
             assert!(parse_copy_endpoint(bad).is_err(), "{bad:?}");
         }
         assert_eq!(parse_copy_endpoint("local file").unwrap(), None);

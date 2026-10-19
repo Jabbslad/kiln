@@ -6,6 +6,21 @@ terminal is needed to install. Access to a running Kiln server still requires
 browser login to an enrolled host or a direct administrator profile; public
 downloads do not disable API authentication.
 
+## v0.4.2 CLI usability
+
+Box commands accept names and unique ID prefixes as well as full IDs. Ambiguous
+targets fail with a candidate list. `kiln create` selects the only available
+template and generates a readable name; explicit names and templates still work.
+Human-readable lists have headings and short IDs; JSON and exec byte/exit-code
+contracts are unchanged. SSH/exec errors suggest starting stopped boxes or
+resuming paused ones without doing so automatically.
+
+These are client-side changes; existing v0.4.0/v0.4.1 servers and their boxes
+need no restart, state migration or image rebuild. Existing names are preserved.
+The server package also allows binary-only updates from v0.4.1 with unchanged
+runtime, journal, authentication, guest protocol and unit contracts.
+See [CLI usage and retry rules](remote-client.md#everyday-commands-v042-client).
+
 ## v0.4.1 device-page recovery
 
 The identity service now returns to code entry when a browser remembers an

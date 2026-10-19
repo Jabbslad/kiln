@@ -118,15 +118,20 @@ impl Client {
             bytes.extend_from_slice(&chunk);
         }
         if !status.is_success() {
+            let hint = if status == reqwest::StatusCode::UNAUTHORIZED {
+                "; authentication rejected: run `kiln login` for a central profile, or check the token file for a direct profile"
+            } else {
+                ""
+            };
             if let Ok(error) = serde_json::from_slice::<ApiError>(&bytes) {
                 bail!(
-                    "{} (HTTP {}): {}",
+                    "{} (HTTP {}): {}{hint}",
                     error.code,
                     status.as_u16(),
                     error.message
                 );
             }
-            bail!("server returned HTTP {}", status.as_u16());
+            bail!("server returned HTTP {}{hint}", status.as_u16());
         }
         Ok(serde_json::from_slice(&bytes)?)
     }

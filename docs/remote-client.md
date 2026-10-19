@@ -12,6 +12,45 @@ IPv4 egress are implemented. Previews and multi-tenant security are not included
 SSH/networking require matching v0.2.0 client/server/guest builds; v0.1.1
 packages and existing templates do not include them.
 
+## Everyday commands (v0.4.2 client)
+
+```sh
+kiln create                         # the only available template; generated name
+kiln create --name my-project       # choose your own name
+kiln list
+kiln ssh my-project
+kiln exec my-project -- uname -a
+kiln cp ./README.md my-project:/workspace/README.md
+kiln stop my-project
+kiln start my-project
+```
+
+Box commands accept an exact, case-sensitive name, a full ID, or a unique
+lowercase hexadecimal ID prefix of at least eight characters. Full IDs always
+address that ID directly. Other inputs match names and ID prefixes together;
+ambiguous inputs fail with the candidates' full IDs, never selecting one silently.
+Names are labels, not server-enforced unique identifiers. Existing names are
+unchanged. Generated names look like `quiet-otter-19a7f302`; the suffix reduces
+collisions and the whole name is stable for a given request ID.
+
+Omitting `--template` works only when the server publishes exactly one template.
+With multiple templates, choose explicitly using `--template NAME`; the CLI
+lists the choices rather than prompting or guessing. No profile migration or
+configured default is required.
+
+Human-readable lists show names first, short IDs and column headings. `inspect`
+and mutation results retain full IDs. Scripts should use `--json`: its schema,
+full IDs, binary exec output and exit status behavior are unchanged. Progress
+goes to stderr. Stopped/paused execution and SSH failures suggest `start`/`resume`
+without automatically changing the box state.
+
+After a disconnected mutation, query the printed request ID with
+`kiln operation REQUEST_ID --wait` before retrying. If a retry is needed, use
+the same `--request-id`, resolved full box ID, and original arguments (including
+the printed template/name for creation). Names or catalogs can change between
+invocations; full IDs and explicit template/name arguments avoid that ambiguity.
+Do not retry an old client's unnamed create with a newer client's defaults.
+
 The existing `kiln-runtime` binary remains the local Linux operator tool. It is not the
 laptop client. Do not run local mutations against the runtime while its host
 service is managing it; stop the host service first for template administration.

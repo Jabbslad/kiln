@@ -55,16 +55,21 @@ enum Command {
         #[command(subcommand)]
         command: AuthCommand,
     },
+    /// Open a shell or run a command in a box.
     Ssh {
+        /// Box name, full ID, or unique ID prefix (at least 8 characters).
+        #[arg(value_name = "BOX")]
         id: String,
         #[arg(last = true)]
         command: Vec<String>,
     },
+    /// Copy a file using BOX:/absolute/path for the remote endpoint.
     Cp {
         source: String,
         destination: String,
     },
     SshConfig {
+        #[arg(value_name = "BOX")]
         id: String,
     },
     #[command(hide = true)]
@@ -78,32 +83,40 @@ enum Command {
     Templates,
     List,
     Inspect {
+        #[arg(value_name = "BOX")]
         id: String,
     },
+    /// Create a box; defaults to the only available template and a generated name.
     Create {
         #[arg(long)]
-        template: String,
-        #[arg(long, default_value = "box")]
-        name: String,
+        template: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
     },
     Pause {
+        #[arg(value_name = "BOX")]
         id: String,
     },
     Resume {
+        #[arg(value_name = "BOX")]
         id: String,
     },
     Stop {
+        #[arg(value_name = "BOX")]
         id: String,
         #[arg(long)]
         force: bool,
     },
     Start {
+        #[arg(value_name = "BOX")]
         id: String,
     },
     Delete {
+        #[arg(value_name = "BOX")]
         id: String,
     },
     Exec {
+        #[arg(value_name = "BOX")]
         id: String,
         #[arg(long, default_value_t = 10000)]
         timeout_ms: u64,
@@ -174,10 +187,112 @@ fn json(value: &impl serde::Serialize) -> Result<()> {
 }
 
 fn show_box(record: &BoxView) {
+    show_boxes(std::slice::from_ref(record), false);
+}
+
+fn show_boxes(records: &[BoxView], short_ids: bool) {
+    if records.is_empty() {
+        println!("No boxes yet. Create one with `kiln create`.");
+        return;
+    }
+    let width = records
+        .iter()
+        .map(|b| b.name.len())
+        .max()
+        .unwrap_or(4)
+        .max(4);
+    let id_width = if short_ids { 8 } else { 32 };
     println!(
-        "{}\t{}\t{}\t{} MiB\t{} vCPU",
-        record.id, record.name, record.state, record.memory_mib, record.vcpus
+        "{:<width$}  {:<id_width$}  {:<10}  {:>10}  VCPUS",
+        "NAME", "ID", "STATE", "MEMORY"
     );
+    for b in records {
+        let id = if short_ids {
+            b.id.get(..8).unwrap_or(&b.id)
+        } else {
+            &b.id
+        };
+        println!(
+            "{:<width$}  {:<id_width$}  {:<10}  {:>10}  {}",
+            b.name,
+            id,
+            b.state,
+            format!("{} MiB", b.memory_mib),
+            b.vcpus
+        );
+    }
+}
+
+async fn resolve_box(client: &Client, target: &str) -> Result<String> {
+    // Full IDs retain their direct addressing semantics, without a list request.
+    if kiln_api::valid_id(target) {
+        return Ok(target.to_owned());
+    }
+    anyhow::ensure!(
+        kiln_api::valid_alias(target),
+        "invalid box name or ID; run `kiln list`"
+    );
+    let prefix = target.len() >= 8
+        && target
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    let boxes = client.list().await?;
+    let matches: Vec<_> = boxes
+        .iter()
+        .filter(|b| b.name == target || (prefix && b.id.starts_with(target)))
+        .collect();
+    match matches.as_slice() {
+        [record] => Ok(record.id.clone()),
+        [] => bail!("box '{target}' not found; run `kiln list` to see available boxes"),
+        _ => bail!(
+            "box '{target}' is ambiguous; use a full ID:\n{}",
+            matches
+                .iter()
+                .map(|b| format!("  {}  {}  {}", b.id, b.name, b.state))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    }
+}
+
+async fn box_state_hint(client: &Client, id: &str) -> Option<String> {
+    let record = client.inspect(id).await.ok()?;
+    let command = match record.state.as_str() {
+        "stopped" => "start",
+        "paused" => "resume",
+        _ => return None,
+    };
+    Some(format!(
+        "box '{}' is {}; run `kiln {command} {id}`",
+        record.name, record.state
+    ))
+}
+
+fn generated_name(request_id: &str) -> String {
+    const ADJECTIVES: [&str; 16] = [
+        "bright", "calm", "clear", "cool", "gentle", "happy", "keen", "kind", "lively", "lucky",
+        "nimble", "quiet", "rapid", "steady", "swift", "warm",
+    ];
+    const NOUNS: [&str; 16] = [
+        "badger", "birch", "cedar", "crane", "falcon", "finch", "fox", "heron", "lynx", "maple",
+        "otter", "owl", "panda", "pine", "robin", "wren",
+    ];
+    // Stable for a retried request, with a suffix to avoid a tiny name space.
+    let adjective = request_id.as_bytes()[0].to_ascii_lowercase();
+    let noun = request_id.as_bytes()[1].to_ascii_lowercase();
+    let index = |b: u8| {
+        if b <= b'9' {
+            (b - b'0') as usize
+        } else {
+            (b - b'a' + 10) as usize
+        }
+    };
+    format!(
+        "{}-{}-{}",
+        ADJECTIVES[index(adjective)],
+        NOUNS[index(noun)],
+        &request_id[24..]
+    )
 }
 
 fn epoch() -> u64 {
@@ -509,10 +624,9 @@ async fn run(cli: Cli) -> Result<i32> {
         return Ok(0);
     }
     let profiles = profile::load(&path)?;
-    let selected = profiles
-        .profiles
-        .get(&profile_name)
-        .context("profile not found; use `kiln profile add`")?;
+    let selected = profiles.profiles.get(&profile_name).context(
+        "profile not found; run `kiln login` (or `kiln profile add` for a direct server)",
+    )?;
     if matches!(cli.command, Command::Logout | Command::Auth { .. }) {
         let profile::Profile::Central(central) = selected else {
             bail!("command requires a central profile")
@@ -603,7 +717,8 @@ async fn run(cli: Cli) -> Result<i32> {
             return Ok(0);
         }
         Command::Ssh { id, command } => {
-            let details = ssh_details(&path, &profile_name, id, &client).await?;
+            let id = resolve_box(&client, id).await?;
+            let details = ssh_details(&path, &profile_name, &id, &client).await?;
             let mut process = tokio::process::Command::new("ssh");
             process.args(&details.options).arg(format!("root@{id}"));
             if !command.is_empty() {
@@ -623,17 +738,18 @@ async fn run(cli: Cli) -> Result<i32> {
             let destination_remote = ssh::parse_copy_endpoint(destination)?;
             anyhow::ensure!(
                 source_remote.is_some() ^ destination_remote.is_some(),
-                "exactly one cp endpoint must be a box ID and absolute path"
+                "exactly one cp endpoint must use BOX:/absolute/path"
             );
             let (id, _) = source_remote
                 .as_ref()
                 .or(destination_remote.as_ref())
                 .unwrap();
-            let details = ssh_details(&path, &profile_name, id, &client).await?;
+            let id = resolve_box(&client, id).await?;
+            let details = ssh_details(&path, &profile_name, &id, &client).await?;
             let render = |original: &str, remote: &Option<(String, String)>| {
                 remote.as_ref().map_or_else(
                     || original.to_owned(),
-                    |(id, path)| format!("root@{id}:{path}"),
+                    |(_, path)| format!("root@{id}:{path}"),
                 )
             };
             let status = tokio::process::Command::new("scp")
@@ -647,7 +763,8 @@ async fn run(cli: Cli) -> Result<i32> {
             return Ok(status.code().unwrap_or(255));
         }
         Command::SshConfig { id } => {
-            let details = ssh_details(&path, &profile_name, id, &client).await?;
+            let id = resolve_box(&client, id).await?;
+            let details = ssh_details(&path, &profile_name, &id, &client).await?;
             println!(
                 "Host {}\n  HostName {}\n  User root\n  IdentityFile \"{}\"\n  IdentitiesOnly yes\n  UserKnownHostsFile \"{}\"\n  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking yes\n  HostKeyAlias {}\n  ProxyCommand {} '%h'\n  ForwardAgent no\n  BatchMode yes",
                 details.alias,
@@ -661,14 +778,28 @@ async fn run(cli: Cli) -> Result<i32> {
         }
         _ => {}
     }
+    let request_id = cli.request_id.unwrap_or_else(new_id);
+    anyhow::ensure!(kiln_api::valid_id(&request_id), "invalid request ID");
     let action = match cli.command {
         Command::Templates => {
             let templates = client.templates().await?;
             if cli.json {
                 json(&templates)?;
             } else {
+                let width = templates
+                    .iter()
+                    .map(|t| t.name.len())
+                    .max()
+                    .unwrap_or(8)
+                    .max(8);
+                println!("{:<width$}  {:>10}  VCPUS", "TEMPLATE", "MEMORY");
                 for t in templates {
-                    println!("{}\t{} MiB\t{} vCPU", t.name, t.memory_mib, t.vcpus);
+                    println!(
+                        "{:<width$}  {:>10}  {}",
+                        t.name,
+                        format!("{} MiB", t.memory_mib),
+                        t.vcpus
+                    );
                 }
             }
             return Ok(0);
@@ -678,13 +809,12 @@ async fn run(cli: Cli) -> Result<i32> {
             if cli.json {
                 json(&boxes)?;
             } else {
-                for b in boxes {
-                    show_box(&b);
-                }
+                show_boxes(&boxes, true);
             }
             return Ok(0);
         }
         Command::Inspect { id } => {
+            let id = resolve_box(&client, &id).await?;
             let record = client.inspect(&id).await?;
             if cli.json {
                 json(&record)?;
@@ -703,12 +833,47 @@ async fn run(cli: Cli) -> Result<i32> {
             }
             return show_operation(&op, cli.json);
         }
-        Command::Create { template, name } => Action::Create { template, name },
-        Command::Pause { id } => Action::Pause { id },
-        Command::Resume { id } => Action::Resume { id },
-        Command::Stop { id, force } => Action::Stop { id, force },
-        Command::Start { id } => Action::Start { id },
-        Command::Delete { id } => Action::Delete { id },
+        Command::Create { template, name } => {
+            let template = match template {
+                Some(template) => template,
+                None => {
+                    let templates = client.templates().await?;
+                    match templates.as_slice() {
+                        [template] => template.name.clone(),
+                        [] => bail!(
+                            "no templates available; ask the server operator to configure a template"
+                        ),
+                        _ => bail!(
+                            "multiple templates available; choose with `kiln create --template NAME`: {}",
+                            templates
+                                .iter()
+                                .map(|t| t.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    }
+                }
+            };
+            let name = name.unwrap_or_else(|| generated_name(&request_id));
+            eprintln!("creating {name} with template {template}");
+            Action::Create { template, name }
+        }
+        Command::Pause { id } => Action::Pause {
+            id: resolve_box(&client, &id).await?,
+        },
+        Command::Resume { id } => Action::Resume {
+            id: resolve_box(&client, &id).await?,
+        },
+        Command::Stop { id, force } => Action::Stop {
+            id: resolve_box(&client, &id).await?,
+            force,
+        },
+        Command::Start { id } => Action::Start {
+            id: resolve_box(&client, &id).await?,
+        },
+        Command::Delete { id } => Action::Delete {
+            id: resolve_box(&client, &id).await?,
+        },
         Command::Exec {
             id,
             timeout_ms,
@@ -722,7 +887,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 environment.insert(key.into(), value.into());
             }
             Action::Exec {
-                id,
+                id: resolve_box(&client, &id).await?,
                 request: ExecRequest {
                     argv,
                     cwd,
@@ -740,14 +905,20 @@ async fn run(cli: Cli) -> Result<i32> {
     };
     action.validate().map_err(anyhow::Error::msg)?;
     let request = Submit {
-        id: cli.request_id.unwrap_or_else(new_id),
+        id: request_id,
         action,
     };
-    anyhow::ensure!(kiln_api::valid_id(&request.id), "invalid request ID");
     eprintln!("request {}", request.id);
     let mut op = client.submit(&request).await.with_context(|| format!("request {} may have been accepted; query `kiln operation {}` before retrying; any retry must use --request-id {} and the same arguments", request.id, request.id, request.id))?;
     if !cli.no_wait {
         op = wait(&client, op, cli.wait_seconds).await?;
+    }
+    if !cli.json
+        && matches!(op.state, OperationState::Failed | OperationState::Unknown)
+        && let Action::Exec { id, .. } = &request.action
+        && let Some(hint) = box_state_hint(&client, id).await
+    {
+        eprintln!("{hint}");
     }
     show_operation(&op, cli.json)
 }
@@ -767,7 +938,15 @@ async fn ssh_details(path: &Path, profile: &str, id: &str, client: &Client) -> R
     ssh::safe_config_value(profile)?;
     let alias = format!("kiln-{profile}-{id}");
     let (key, _) = ssh::ensure_key(path, profile)?;
-    let host_key = client.ssh_host_key(id).await?;
+    let host_key = match client.ssh_host_key(id).await {
+        Ok(key) => key,
+        Err(error) => {
+            return Err(match box_state_hint(client, id).await {
+                Some(hint) => error.context(hint),
+                None => error,
+            });
+        }
+    };
     let known_hosts = ssh::write_known_hosts(path, profile, &alias, &host_key)?;
     let executable = std::env::current_exe()?
         .to_str()
