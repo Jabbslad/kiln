@@ -1,0 +1,43 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to install
+        required: false
+        default: latest
+        type: string
+      address:
+        description: Private or VPN IPv4 for the API. Empty detects one private source address.
+        required: false
+        default: ""
+        type: string
+  release:
+    types: [published]
+
+# Runners install a published release. Pull requests and forks never reach this job.
+permissions:
+  contents: read
+
+concurrency:
+  group: dark-forge-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    environment: dark-forge
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+      - name: Install the release
+        env:
+          DARK_FORGE_SSH_KEY: ${{ secrets.DARK_FORGE_SSH_KEY }}
+          DARK_FORGE_KNOWN_HOSTS: ${{ secrets.DARK_FORGE_KNOWN_HOSTS }}
+          KILN_RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+          KILN_ADDRESS: ${{ github.event_name == 'workflow_dispatch' && inputs.address || '' }}
+        run: bash deploy/github/deploy.sh

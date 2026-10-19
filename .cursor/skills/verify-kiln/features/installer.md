@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.
 kiln --version
 ```
 
-On an Ubuntu 24.04 or 26.04 x86-64 host with KVM, cgroup v2, and passwordless sudo:
+On an Ubuntu 24.04, Ubuntu 26.04, or Debian 13 x86-64 host with KVM, cgroup v2, and passwordless sudo:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- server
@@ -45,13 +45,13 @@ A pass is all three unittest modules exiting 0. Save the combined stdout in `$VE
 ShellCheck, as in CI:
 
 ```sh
-shellcheck scripts/fetch-firecracker.sh images/build-ubuntu.sh deploy/bootstrap/install.sh
+shellcheck scripts/fetch-firecracker.sh images/build-ubuntu.sh deploy/bootstrap/install.sh deploy/github/*.sh
 ```
 
 ## Gotchas
 
 - A green harness is not an installed server. Fresh-host provisioning and reboot are still described as unverified in `docs/releases.md`.
-- `deploy/bootstrap/install.sh` `main` pins `version=0.4.3` while `Cargo.toml` and the GitHub pre-release are `v0.4.4`. The harness tests the pin that is in the script, not the workspace version.
-- Server mode requires `/dev/kvm` to exist, Ubuntu 24.04 or 26.04, systemd, and cgroup controllers `cpu`, `memory`, and `pids`. The authoring VM's `/dev/kvm` was not usable by uid 1000 until an ACL was added. The harness stubs those checks.
-- CI runs the three Python modules and ShellCheck in `.github/workflows/build.yml`. That file is the only workflow. It has no dependency advisory scan (`cargo audit`, `cargo-deny`, Dependabot, or OSV).
+- `deploy/bootstrap/install.sh` `main` pins `version=0.4.4`. The harness tests the pin that is in the script.
+- Server mode requires `/dev/kvm` to exist, Ubuntu 24.04, Ubuntu 26.04, or Debian 13, systemd, and cgroup controllers `cpu`, `memory`, and `pids`. The authoring VM's `/dev/kvm` was not usable by uid 1000 until an ACL was added. The harness stubs those checks.
+- CI runs the Python modules and ShellCheck in `.github/workflows/build.yml`. `deploy.yml` and `diagnose.yml` SSH to dark-forge and do not run on pull requests. The build workflow has no dependency advisory scan (`cargo audit`, `cargo-deny`, Dependabot, or OSV).
 - The authoring proof ran the three Python modules from the repo root. All three exited 0 (32 bootstrap tests, 31 install tests, 6 release tests). `shellcheck` was not installed on that machine, so the ShellCheck line stayed unverified. The harness still does not install a server.

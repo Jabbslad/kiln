@@ -136,7 +136,7 @@ On a macOS or supported Linux laptop:
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
 ```
 
-On a dedicated **Ubuntu 24.04 or 26.04 x86-64/KVM** server:
+On a dedicated **Ubuntu 24.04, Ubuntu 26.04, or Debian 13 x86-64/KVM** server:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- server
@@ -362,8 +362,8 @@ Pushes and pull requests run Linux workspace checks, build the server/guest imag
 and run native client TLS/CLI tests on Linux, macOS ARM/Intel and Windows. Archives
 and individual SHA-256 files are available as run artifacts for seven
 days. Use `gh run download RUN_ID --repo OWNER/NAME` for branch builds; do not
-confuse those with a reviewed release. CI uses no credentials beyond the scoped
-GitHub Actions token and never deploys a server. Public workflows/logs/artifacts
+confuse those with a reviewed release. The build workflow uses no credentials
+beyond the scoped GitHub Actions token and does not deploy a server. Public workflows/logs/artifacts
 must not contain credentials or runtime data. Fork PRs use hosted runners and
 read-only permissions; only the tag release job has contents-write permission.
 
@@ -388,3 +388,36 @@ values from verified packages, run `scripts/test-bootstrap.py` and ShellCheck,
 and verify a real anonymous download before publishing the public copy.
 Never publish server state or credentials there.
 The ordinary build workflow has no cross-repository publishing credentials.
+
+## Deploy from GitHub Actions
+
+GitHub-hosted runners install a published server release on `root@dark-forge.dev`.
+`.github/workflows/deploy.yml` runs when a release is published, and from the
+Actions tab on `main`. `.github/workflows/diagnose.yml` is manual and only reads
+the host. Neither workflow runs for a pull request or a fork.
+
+The `dark-forge` environment is the approval gate. The API stays on the installer
+default, a private address at port 8443 with the private CA. The deploy does not
+open port 443, install the dashboard, or restart `kiln-identity`. Guest NAT stays
+off. A published release detects one private source address and stops if the
+host's default address is public. A manual run can set the `address` input.
+
+Run this once on the server as root. It prints the two repository secret values.
+
+```sh
+install -d -m 700 /root/.ssh
+ssh-keygen -t ed25519 -f /root/.ssh/kiln-github-deploy -N "" -C kiln-github-deploy
+cat /root/.ssh/kiln-github-deploy.pub >> /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+printf 'Repository secret DARK_FORGE_SSH_KEY:\n'
+cat /root/.ssh/kiln-github-deploy
+printf 'Repository secret DARK_FORGE_KNOWN_HOSTS:\n'
+printf 'dark-forge.dev %s\n' "$(cat /etc/ssh/ssh_host_ed25519_key.pub)"
+```
+
+In the repository settings, add repository secrets `DARK_FORGE_SSH_KEY` and
+`DARK_FORGE_KNOWN_HOSTS` with those two values. Create an environment named
+`dark-forge` and require your approval. Leave the key out of the environment.
+The workflows read the repository secrets. After the secret is saved, delete the
+private key from the server with `shred -u /root/.ssh/kiln-github-deploy`.
+

@@ -1,0 +1,35 @@
+name: Diagnose
+
+on:
+  workflow_dispatch:
+
+# Read-only host report. Pull requests and forks never reach this job.
+permissions:
+  contents: read
+
+concurrency:
+  group: dark-forge-diagnose
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    environment: dark-forge
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+      - name: Read host state
+        env:
+          DARK_FORGE_SSH_KEY: ${{ secrets.DARK_FORGE_SSH_KEY }}
+          DARK_FORGE_KNOWN_HOSTS: ${{ secrets.DARK_FORGE_KNOWN_HOSTS }}
+        run: bash deploy/github/diagnose-run.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: dark-forge-diagnose
+          path: diagnose.log
+          if-no-files-found: error
+          retention-days: 7
