@@ -113,12 +113,14 @@ class ReleaseTests(unittest.TestCase):
     def test_invalid_version_target_and_missing_binary_make_no_archive(self):
         for version, target in [
             ("../escape", "x86_64-unknown-linux-gnu"),
+            ("v0.1.0-rc.1", "x86_64-unknown-linux-gnu"),
             ("v0.1.0", "arm-unknown"),
         ]:
             with self.assertRaises(ValueError):
                 self.release.package(
                     self.repo, self.bins, self.out, version, target, "client", None
                 )
+            self.assertFalse(self.out.exists(), version)
         (self.bins / "kiln").unlink()
         with self.assertRaises(FileNotFoundError):
             self.package()

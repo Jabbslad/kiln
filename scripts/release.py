@@ -5,7 +5,6 @@ import argparse
 import hashlib
 import io
 import json
-import re
 import tarfile
 import zipfile
 from pathlib import Path
@@ -19,10 +18,7 @@ TARGETS = (
 
 
 def package(repo, bins, output, version, target, kind, image):
-    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", version):
-        raise ValueError(
-            "version must be vMAJOR.MINOR.PATCH with an optional prerelease suffix"
-        )
+    version = _parse_release_tag(version).tag
     targets = ("web",) if kind == "dashboard" else TARGETS
     if target not in targets or kind not in ("client", "server", "identity", "dashboard"):
         raise ValueError("unsupported target or package kind")
@@ -143,6 +139,29 @@ def package(repo, bins, output, version, target, kind, image):
     with checksum.open("x") as stream:
         stream.write(f"{digest}  {dest.name}\n")
     return dest
+
+
+def _parse_release_tag(version):
+    # This file is loaded by path, so a bare import cannot see scripts/.
+    # dataclass also looks the sibling up in sys.modules while it is defined.
+    import importlib.util
+    import sys
+
+    name = "_kiln_release_version"
+    module = sys.modules.get(name)
+    if module is None:
+        path = Path(__file__).with_name("release_version.py")
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load {path}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(name, None)
+            raise
+    return module.parse_release_tag(version)
 
 
 if __name__ == "__main__":
