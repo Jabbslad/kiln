@@ -357,6 +357,7 @@ async fn grants_revocation_ownership_and_expiry_boundaries() {
 
     concurrent_replay(&f, &owner).await;
     registration_scenario(&f, &owner).await;
+    remembered_device_codes(&f, &owner).await;
 
     // Idle expiry is exclusive and persists across reopen.
     let idle = f.device(&owner).await;
@@ -383,6 +384,99 @@ async fn grants_revocation_ownership_and_expiry_boundaries() {
     assert_eq!(count, 1);
 }
 
+async fn browser_page(f: &Fixture, uri: &str) -> String {
+    let response = f
+        .app
+        .clone()
+        .oneshot(
+            Request::get(uri)
+                .header(
+                    "Cookie",
+                    "__Host-kiln_session=browser; __Host-kiln_csrf=csrf",
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    String::from_utf8(
+        to_bytes(response.into_body(), 131072)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap()
+}
+
+async fn remembered_device_codes(f: &Fixture, owner: &str) {
+    for state in ["approved", "denied", "expired", "missing"] {
+        let grant = f
+            .store
+            .create_device("next laptop", "192.0.2.99", now())
+            .unwrap();
+        f.db()
+            .execute(
+                "UPDATE browser_sessions SET requested_code=?1 WHERE hash=?2",
+                rusqlite::params![grant.user_code, Sha256::digest(b"browser").to_vec()],
+            )
+            .unwrap();
+        // OAuth callbacks still need to recover a pending request from the session.
+        assert!(browser_page(f, "/device").await.contains("next laptop"));
+        // Explicitly choosing another code must not restore the remembered request.
+        assert!(
+            browser_page(f, "/device?user_code=")
+                .await
+                .contains("Enter your code.")
+        );
+        let unavailable = browser_page(f, "/device?user_code=INVALID").await;
+        assert!(unavailable.contains("Request unavailable."));
+        let retry = unavailable
+            .split("<a href=")
+            .nth(1)
+            .unwrap()
+            .split('>')
+            .next()
+            .unwrap()
+            .trim_matches('"');
+        assert!(browser_page(f, retry).await.contains("Enter your code."));
+        match state {
+            "approved" | "denied" => f
+                .store
+                .approve_code(&grant.user_code, owner, state == "approved", now())
+                .unwrap(),
+            "expired" => {
+                f.db()
+                    .execute(
+                        "UPDATE pending_devices SET expires_at=?1 WHERE user_code=?2",
+                        rusqlite::params![now(), grant.user_code],
+                    )
+                    .unwrap();
+            }
+            "missing" => {
+                f.db()
+                    .execute(
+                        "DELETE FROM pending_devices WHERE user_code=?1",
+                        [&grant.user_code],
+                    )
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            browser_page(f, "/device")
+                .await
+                .contains("Enter your code."),
+            "remembered {state} request blocks code entry"
+        );
+        assert!(
+            browser_page(f, &format!("/device?user_code={}", grant.user_code))
+                .await
+                .contains("Request unavailable.")
+        );
+    }
+}
+
 async fn registration_scenario(f: &Fixture, owner: &str) {
     let ca = rcgen::generate_simple_self_signed(vec!["localhost".into()])
         .unwrap()
@@ -397,7 +491,8 @@ async fn registration_scenario(f: &Fixture, owner: &str) {
     let code = reg["user_code"].as_str().unwrap();
     assert_ne!(secret, code);
     let now = now();
-    f.db().execute("INSERT INTO browser_sessions(hash,csrf_hash,account_id,expires_at) VALUES(?1,?2,?3,?4)", rusqlite::params![Sha256::digest(b"browser").to_vec(),Sha256::digest(b"csrf").to_vec(),owner,now+43200]).unwrap();
+    f.db().execute("INSERT INTO browser_sessions(hash,csrf_hash,account_id,expires_at,requested_code) VALUES(?1,?2,?3,?4,?5)", rusqlite::params![Sha256::digest(b"browser").to_vec(),Sha256::digest(b"csrf").to_vec(),owner,now+43200,code]).unwrap();
+    assert!(browser_page(f, "/device").await.contains("Enroll a server"));
     let approval = |csrf: &str, origin: &str| {
         Request::builder()
             .method("POST")
@@ -436,6 +531,11 @@ async fn registration_scenario(f: &Fixture, owner: &str) {
             .unwrap()
             .status(),
         StatusCode::OK
+    );
+    assert!(
+        browser_page(f, "/device")
+            .await
+            .contains("Enter your code.")
     );
     assert_eq!(
         f.app

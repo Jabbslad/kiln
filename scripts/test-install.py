@@ -377,10 +377,10 @@ class UpgradeTests(unittest.TestCase):
             path.write_text(f"#!/bin/sh\necho '{reported_name} 0.3.2'\n")
             path.chmod(0o755)
             new = self.bundle / "bin" / name
-            new.write_text(f"#!/bin/sh\necho '{reported_name} 0.4.0'\n")
+            new.write_text(f"#!/bin/sh\necho '{reported_name} 0.4.1'\n")
             new.chmod(0o755)
         (self.bundle / "release.json").write_text(
-            json.dumps({"version": "v0.4.0", "target": "x86_64-unknown-linux-gnu"})
+            json.dumps({"version": "v0.4.1", "target": "x86_64-unknown-linux-gnu"})
         )
         config = {
             "runtime_dir": str(self.paths["STATE"] / "runtime"),
@@ -513,9 +513,9 @@ class UpgradeTests(unittest.TestCase):
         self.assertFalse((self.paths["OPT"] / "upgrades").exists())
         self.assertFalse(any(args[1] == "stop" for args in self.commands))
 
-    def test_v033_update_preserves_enrollment(self):
+    def test_v040_update_preserves_enrollment(self):
         for name, path in self.destinations.items():
-            path.write_bytes(self.original[name].replace(b"0.3.2", b"0.3.3"))
+            path.write_bytes(self.original[name].replace(b"0.3.2", b"0.4.0"))
         self.installer.upgrade(self.bundle, apply=True)
         self.assert_data_preserved()
         self.assertEqual(set(self.active.values()), {"active"})

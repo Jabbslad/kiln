@@ -449,14 +449,13 @@ async fn device_page(
     axum::extract::Query(q): axum::extract::Query<CodeQuery>,
     h: HeaderMap,
 ) -> Response {
+    let explicit_code = q.user_code.is_some();
     let mut code = q.user_code.unwrap_or_default().trim().to_uppercase();
     if code.len() > 16 {
         return err(StatusCode::BAD_REQUEST, "invalid_code");
     }
     let session = cookie(&h, "__Host-kiln_session");
-    if code.is_empty()
-        && let Some(raw) = &session
-    {
+    if !explicit_code && let Some(raw) = &session {
         code = a
             .store
             .db
@@ -475,11 +474,17 @@ async fn device_page(
     }
     let csrf = cookie(&h, "__Host-kiln_csrf").unwrap_or_default();
     let logged_in = session.as_ref().is_some_and(|raw| a.store.db.lock().ok().and_then(|c| c.query_row("SELECT EXISTS(SELECT 1 FROM browser_sessions s JOIN accounts a ON a.id=s.account_id WHERE s.hash=?1 AND s.expires_at>?2 AND a.revoked_at IS NULL)",params![hash(raw),(a.cfg.now)()],|r|r.get::<_,bool>(0)).ok()).unwrap_or(false));
-    if code.is_empty() {
+    let details = if code.is_empty() {
+        None
+    } else {
+        request_details(&a.store, &code, (a.cfg.now)())
+    };
+    // Resume pending OAuth requests, but never trap code entry on a stale one.
+    if code.is_empty() || (!explicit_code && details.is_none()) {
         return secure(page("<h1>Enter your code.</h1><form method=get action=/device><label for=user_code>Code from your terminal</label><input id=user_code name=user_code maxlength=16 required autocomplete=one-time-code><button>Continue</button></form>").into_response());
     }
-    let Some(details) = request_details(&a.store, &code, (a.cfg.now)()) else {
-        return page("<h1>Request unavailable.</h1><p>This code is invalid, expired, or already used. Start a new request from your terminal.</p><a href=/device>Enter another code</a>").into_response();
+    let Some(details) = details else {
+        return page("<h1>Request unavailable.</h1><p>This code is invalid, expired, or already used. Start a new request from your terminal.</p><a href=\"/device?user_code=\">Enter another code</a>").into_response();
     };
     let body = format!(
         "<h1>Approve this request.</h1><p>Confirm that this code and request details match your terminal.</p><div class=code>{}</div>{}{}",

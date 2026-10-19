@@ -6,6 +6,17 @@ terminal is needed to install. Access to a running Kiln server still requires
 browser login to an enrolled host or a direct administrator profile; public
 downloads do not disable API authentication.
 
+## v0.4.1 device-page recovery
+
+The identity service now returns to code entry when a browser remembers an
+approved, denied, expired or consumed request. Pending requests still resume
+after provider sign-in. Explicit invalid codes retain their error page, and
+"Enter another code" opens an empty form even when another request is remembered.
+No browser-cookie clearing, account changes or database migration is required.
+Existing v0.4.0 clients and VM servers work with the corrected identity service;
+they do not need an update for this fix. Binary-only server updates also accept
+v0.4.0 and retain enrollment and guest state.
+
 ## v0.4.0 browser-login pilot
 
 Rerun the normal installer, then run `kiln login`. The client includes the
