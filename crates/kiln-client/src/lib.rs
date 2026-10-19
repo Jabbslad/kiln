@@ -16,6 +16,30 @@ pub struct Client {
     session: Option<auth::Session>,
 }
 
+/// Caddy serves this host on port 443 with a public certificate.
+/// Door commands dial it with public roots. The saved private CA stays in the
+/// profile, so a later login is not asked to store a new CA.
+const PUBLIC_DOOR_ORIGIN: &str = "https://cli.dark-forge.dev";
+
+fn public_door_trust<'a>(url: &str, ca_pem: Option<&'a [u8]>) -> (String, Option<&'a [u8]>) {
+    let public_door = reqwest::Url::parse(url).ok().is_some_and(|parsed| {
+        parsed.scheme() == "https"
+            && parsed
+                .host_str()
+                .is_some_and(|host| host.eq_ignore_ascii_case("cli.dark-forge.dev"))
+            && parsed.username().is_empty()
+            && parsed.password().is_none()
+            && (parsed.path().is_empty() || parsed.path() == "/")
+            && parsed.query().is_none()
+            && parsed.fragment().is_none()
+    });
+    if public_door {
+        (PUBLIC_DOOR_ORIGIN.to_owned(), None)
+    } else {
+        (url.to_owned(), ca_pem)
+    }
+}
+
 impl Client {
     pub fn new(url: &str, token: &str, ca_pem: Option<&[u8]>) -> Result<Self> {
         ensure!(
@@ -50,7 +74,8 @@ impl Client {
         token: Option<&str>,
         session: Option<auth::Session>,
     ) -> Result<Self> {
-        let base = Url::parse(url)?;
+        let (url, ca_pem) = public_door_trust(url, ca_pem);
+        let base = Url::parse(&url)?;
         ensure!(
             base.scheme() == "https"
                 && base.host_str().is_some()
@@ -268,6 +293,56 @@ mod tests {
         assert!(err.to_ascii_lowercase().contains("certificate"), "{err}");
         handle.shutdown();
         task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn public_door_accepts_a_public_certificate_while_the_profile_keeps_the_private_ca() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("profiles.json");
+        let ca = rcgen::generate_simple_self_signed(vec!["cli.dark-forge.dev".into()]).unwrap();
+        let pem = ca.cert.pem();
+        let stored = serde_json::json!({
+            "profiles": {
+                "default": {
+                    "issuer": "https://dark-forge.dev",
+                    "server": {
+                        "id": "srv_dark_forge",
+                        "name": "dark-forge",
+                        "origin": "https://cli.dark-forge.dev:8443",
+                        "ca_pem": pem,
+                        "revision": 1
+                    },
+                    "credential_file": "/tmp/kiln-public-door-credential.json"
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_vec_pretty(&stored).unwrap()).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let loaded = crate::profile::load(&path).unwrap();
+        let crate::profile::Profile::Central(profile) =
+            loaded.profiles.get("default").expect("central profile")
+        else {
+            panic!("stored profile is central");
+        };
+        assert_eq!(profile.server.ca_pem, pem);
+        let (url, trust) = public_door_trust(
+            &profile.server.origin,
+            Some(profile.server.ca_pem.as_bytes()),
+        );
+        assert_eq!(url, "https://cli.dark-forge.dev");
+        assert!(trust.is_none());
+        let token = "ab".repeat(32);
+        let client = Client::new(&profile.server.origin, &token, Some(pem.as_bytes())).unwrap();
+        assert_eq!(client.base.host_str(), Some("cli.dark-forge.dev"));
+        assert_eq!(client.base.port(), None);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let handshake = Client::new("https://example.com/", &token, trust).unwrap();
+        let err = handshake.templates().await.unwrap_err().to_string();
+        assert!(
+            err.contains("HTTP"),
+            "public roots should finish the TLS handshake, got {err}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     #[tokio::test]

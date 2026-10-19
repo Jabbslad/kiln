@@ -123,8 +123,11 @@ fn failed_login_preserves_existing_profile_and_credentials() {
     central.credential_file = root.path().join("private/new.json");
     central.server.ca_pem = "unapproved-ca".into();
     credentials.refresh_token = "new-refresh".into();
-    assert!(
-        kiln_client::profile::save_login(&path, "default", central.clone(), &credentials).is_err()
+    let error = kiln_client::profile::save_login(&path, "default", central.clone(), &credentials)
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "server CA changed; explicit re-enrollment is required"
     );
     assert_eq!(fs::read(path).unwrap(), original);
     assert_eq!(

@@ -1,0 +1,21 @@
+[Unit]
+Description=Private Caddy bridge to the Kiln door
+Requires=kiln-door.service
+After=kiln-door.service
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=256 --exit-idle-time=5min 127.0.0.1:8444
+DynamicUser=yes
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+CapabilityBoundingSet=
+IPAddressDeny=any
+IPAddressAllow=localhost

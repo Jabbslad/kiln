@@ -53,6 +53,12 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         with:
           cache-workspace-crates: 'true'
+      - name: Install Caddy
+        run: |
+          curl -fsSL -o /tmp/caddy.tar.gz https://github.com/caddyserver/caddy/releases/download/v2.10.2/caddy_2.10.2_linux_amd64.tar.gz
+          tar -xzf /tmp/caddy.tar.gz -C /tmp caddy
+          sudo install -m 755 /tmp/caddy /usr/local/bin/caddy
+          caddy version
       - name: Test and lint
         run: |
           cargo fmt --all -- --check
