@@ -53,15 +53,19 @@ class InstallTests(unittest.TestCase):
                     self.assertIn("kiln login", text)
                     self.assertNotIn("kiln-api enroll", text)
 
-    def test_supported_ubuntu_hosts_continue_to_capability_checks(self):
-        for version in ("24.04", "26.04"):
+    def test_supported_hosts_continue_to_capability_checks(self):
+        for distro, version in (
+            ("ubuntu", "24.04"),
+            ("ubuntu", "26.04"),
+            ("debian", "13"),
+        ):
             with (
-                self.subTest(version=version),
+                self.subTest(distro=distro, version=version),
                 patch.object(self.install.platform, "machine", return_value="x86_64"),
                 patch.object(
                     self.install.platform,
                     "freedesktop_os_release",
-                    return_value={"ID": "ubuntu", "VERSION_ID": version},
+                    return_value={"ID": distro, "VERSION_ID": version},
                 ),
                 patch.object(
                     self.install.Path, "is_dir", return_value=False

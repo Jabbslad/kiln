@@ -76,7 +76,7 @@ not deploy it. Its `/boxes?preview=1` view uses labelled read-only examples;
 browser authentication and live VM controls are not integrated yet. See the
 [dashboard guide](https://github.com/Jabbslad/kiln/tree/main/web#readme).
 
-## Server: dedicated Ubuntu 24.04 or 26.04 x86-64/KVM
+## Server: dedicated Ubuntu 24.04, Ubuntu 26.04, or Debian 13 x86-64/KVM
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- server
@@ -85,7 +85,7 @@ curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.
 Use a systemd host with usable `/dev/kvm`, cgroup v2, 6 GiB currently available
 RAM and 24 GiB free on `/var/lib`, plus about 3 GiB temporary extraction space.
 16 GiB+ total RAM is recommended. Containers are not supported. The guest image
-remains Ubuntu 24.04 regardless of the supported host Ubuntu version.
+remains Ubuntu 24.04 on every supported host.
 
 **Running `server` authorizes installation or updating without further confirmation.** Use
 a root shell or an account with passwordless sudo; the script uses `sudo -n` and

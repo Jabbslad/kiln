@@ -94,12 +94,18 @@ def trusted_ancestors(path):
 def preflight(bundle, address):
     address = private_address(address)
     release = platform.freedesktop_os_release()
-    if (
-        platform.machine() != "x86_64"
-        or release.get("ID") != "ubuntu"
-        or release.get("VERSION_ID") not in ("24.04", "26.04")
-    ):
-        raise ValueError("installer supports Ubuntu 24.04 and 26.04 x86-64 only")
+    supported = {
+        ("ubuntu", "24.04"),
+        ("ubuntu", "26.04"),
+        ("debian", "13"),
+    }
+    if platform.machine() != "x86_64" or (
+        release.get("ID"),
+        release.get("VERSION_ID"),
+    ) not in supported:
+        raise ValueError(
+            "installer supports Ubuntu 24.04, Ubuntu 26.04, and Debian 13 x86-64 only"
+        )
     if not Path("/run/systemd/system").is_dir():
         raise ValueError("a booted systemd host is required (not a container)")
     for tool in (
@@ -962,9 +968,11 @@ def provision(args):
     preflight(bundle, address)
     if args.network_uplink is not None:
         network_preflight(args.network_uplink)
+    distro = platform.freedesktop_os_release()
+    host_label = f"{distro.get('ID', 'unknown')} {distro.get('VERSION_ID', '')}".strip()
     print(
         f"Checks passed. Proposed installation:\n"
-        f"  Ubuntu / KVM, endpoint https://{address}:8443\n"
+        f"  {host_label} / KVM, endpoint https://{address}:8443\n"
         "  /opt/kiln, /usr/local/libexec/kiln-*, /etc/kiln, /var/lib/kiln\n"
         "  kiln-api and eight locked VM accounts; UID 70000..70007 / GID 71000..71007\n"
         "  Enable cpu/memory/pids cgroup controllers and three systemd services\n"

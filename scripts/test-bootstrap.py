@@ -506,6 +506,10 @@ assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a
         (self.root / "os-release").write_text('ID=ubuntu\nVERSION_ID="26.04"\n')
         self.test_server_detects_address_and_installs_without_tty()
 
+    def test_debian_13_reaches_server_provisioning(self):
+        (self.root / "os-release").write_text('ID=debian\nVERSION_ID="13"\n')
+        self.test_server_detects_address_and_installs_without_tty()
+
     def test_server_detects_address_and_installs_without_tty(self):
         code, out = self.run_bootstrap(
             self.package(server=True),
