@@ -33,6 +33,10 @@ if [ -n "$address" ]; then
   printf '%s\n' "$address" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' \
     || fail 'address must be an IPv4 literal'
 fi
+# v0.4.4's own installer rejects Debian 13. This tree's install.py admits that
+# host, and its upgrade path accepts only this package version.
+supported_tag=v0.4.4
+[ "$tag" = "$supported_tag" ] || fail "this installer supports only ${supported_tag}; refusing ${tag}"
 
 asset="kiln-server-${tag}-x86_64-unknown-linux-gnu.tar.gz"
 base="https://github.com/Jabbslad/kiln/releases/download/${tag}"
@@ -62,10 +66,10 @@ case "$remote" in
 esac
 bash "$script_dir/ssh.sh" scp "$work/$asset" "$remote/$asset"
 bash "$script_dir/ssh.sh" scp "$work/${asset}.sha256" "$remote/${asset}.sha256"
-# The release archive carries the installer it was built with. Debian 13 support
-# lives in this commit, so the host runs this tree's install.py against that archive.
+# v0.4.4's installer rejects Debian 13, so this copy replaces the one in the archive.
 bash "$script_dir/ssh.sh" scp "$repo_root/deploy/install.py" "$remote/installer.py"
 bash "$script_dir/ssh.sh" scp "$script_dir/install-remote.sh" "$remote/install-remote.sh"
+bash "$script_dir/ssh.sh" scp "$script_dir/smoke.sh" "$remote/smoke.sh"
 if [ -n "$address" ]; then
   bash "$script_dir/ssh.sh" ssh -- bash "$remote/install-remote.sh" "$remote" "$address"
 else

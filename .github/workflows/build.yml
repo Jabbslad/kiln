@@ -56,7 +56,8 @@ jobs:
           python scripts/test-deploy-workflow.py
           shellcheck scripts/fetch-firecracker.sh images/build-ubuntu.sh deploy/bootstrap/install.sh \
             deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
-            deploy/github/install-remote.sh deploy/github/diagnose.sh deploy/github/diagnose-run.sh
+            deploy/github/install-remote.sh deploy/github/smoke.sh \
+            deploy/github/diagnose.sh deploy/github/diagnose-run.sh
       - name: Build production server and local client
         run: |
           cargo build --release --locked -p kiln-server --bins -p kiln-runtime --bin kiln-runtime -p kiln-client --bin kiln

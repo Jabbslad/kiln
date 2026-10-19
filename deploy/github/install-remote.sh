@@ -74,11 +74,11 @@ if [ "$existing" = false ] && [ -z "$address" ]; then
 fi
 
 if [ "$existing" = false ]; then
-  # List-only mode: package installation must not restart kiln-identity or sshd.
+  # List-only mode. Install a package only when it is missing.
   export DEBIAN_FRONTEND=noninteractive
   export NEEDRESTART_MODE=l
   apt-get update
-  apt-get install --no-install-recommends -y \
+  apt-get install --no-install-recommends --no-upgrade -y \
     -o Dpkg::Options::=--force-confdef \
     -o Dpkg::Options::=--force-confold \
     python3 openssl curl ca-certificates tar passwd
@@ -152,6 +152,14 @@ else
   printf 'deploy: skipping the health check because installation failed\n' >&2
 fi
 
+smoke_rc=1
+if [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]; then
+  smoke_rc=0
+  bash "$dir/smoke.sh" "$address" || smoke_rc=$?
+else
+  printf 'deploy: skipping the guest smoke test because installation failed\n' >&2
+fi
+
 printf 'kiln-api NRestarts after: %s\n' "$(restarts)"
 after=$(stamp)
 if [ "$before" != "$after" ]; then
@@ -159,4 +167,4 @@ if [ "$before" != "$after" ]; then
   printf 'before:\n%s\nafter:\n%s\n' "$before" "$after" >&2
   exit 1
 fi
-[ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]
+[ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] && [ "$smoke_rc" -eq 0 ]
