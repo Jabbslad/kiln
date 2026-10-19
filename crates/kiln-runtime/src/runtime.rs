@@ -1223,9 +1223,26 @@ mod tests {
             .current_dir(&run)
             .spawn()
             .unwrap();
-        record.process = Some(process::identify(child.id()).unwrap());
-        runtime.save(&record).unwrap();
-        let result = runtime.inspect(&record.id).await;
+        let result = async {
+            // Unlike boot's pre_exec/fork path, posix_spawn can return before
+            // procfs exposes the new executable. Do not persist the test
+            // binary's identity as the interrupted launcher.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let identity = process::identify(child.id())?;
+                if identity.matches_paths(&run, &[Path::new("/bin/sleep")])? {
+                    record.process = Some(identity);
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err(Error::Invalid("sleep fixture did not finish exec".into()));
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            runtime.save(&record)?;
+            runtime.inspect(&record.id).await
+        }
+        .await;
         let stopped = child.try_wait().unwrap().is_some();
         if !stopped {
             child.kill().unwrap();

@@ -757,7 +757,7 @@ def upgrade(bundle, address=None, network_uplink=None, network=False, apply=Fals
     target = release.get("version", "").removeprefix("v")
     # Binary-only compatibility was reviewed: runtime, journal, guest protocol,
     # Firecracker and unit contracts are unchanged across these releases.
-    if target != "0.4.2" or release.get("target") != "x86_64-unknown-linux-gnu":
+    if target != "0.4.3" or release.get("target") != "x86_64-unknown-linux-gnu":
         raise ValueError("unsupported update package")
     versions = set()
     for name, destination in destinations.items():
@@ -776,7 +776,7 @@ def upgrade(bundle, address=None, network_uplink=None, network=False, apply=Fals
             != f"{reported_name} {target}"
         ):
             raise ValueError(f"package binary version mismatch: {name}")
-    if len(versions) != 1 or not versions <= {"0.3.0", "0.3.2", "0.3.3", "0.4.0", "0.4.1", target}:
+    if len(versions) != 1 or not versions <= {"0.3.0", "0.3.2", "0.3.3", "0.4.0", "0.4.1", "0.4.2", target}:
         raise ValueError(
             "incompatible or mixed installed versions; no downgrade or state migration is supported"
         )

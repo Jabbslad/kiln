@@ -6,6 +6,22 @@ terminal is needed to install. Access to a running Kiln server still requires
 browser login to an enrolled host or a direct administrator profile; public
 downloads do not disable API authentication.
 
+## v0.4.3 recovery-test synchronization
+
+The interrupted-jailer test waits for the child executable and working-directory
+identities before recording its launcher. Linux `posix_spawn` can return while
+procfs still exposes the parent's executable. The race was reproduced with a
+low-priority child on one CPU; the corrected test passed 2,000 repetitions under
+the same conditions. Production launch uses `pre_exec` and Rust's fork/exec
+error-pipe synchronization, which waits beyond executable publication. Process
+identity and PID-reuse protections are unchanged.
+
+This release also includes the previously merged rate-limit persistence,
+exclusive private-CA trust, duplicate-name rejection and guest-listener fixes.
+Binary-only updates accept v0.4.2 and previously supported Kiln versions without
+changing guest/runtime formats. Existing guest images are not replaced. No live
+server deployment or restart was performed for this release.
+
 ## v0.4.2 CLI usability
 
 Box commands accept names and unique ID prefixes as well as full IDs. Ambiguous
