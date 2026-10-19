@@ -2,7 +2,7 @@
 
 Phase 1 record of the upgrade of dark-forge.dev from Kiln 0.4.5 to the published release v0.4.6, tag `v0.4.6` at main `e34af50e7f6f122474d5bb39a1d8f0e3582c438e`. The server archive is `kiln-server-v0.4.6-x86_64-unknown-linux-gnu.tar.gz` from https://github.com/Jabbslad/kiln/releases/tag/v0.4.6. The installer that ran is `install.sh` inside that archive. No app source on the host was edited. The laptop client on the operator VM is the published `kiln-v0.4.6-x86_64-unknown-linux-gnu.tar.gz`, checked against its `.sha256` file. The Jabbslad/kiln-install one-line installer was not used.
 
-Phase 2, the off-server `kiln list` / `create` / `exec` / `delete` proof after Jamie approves, is not in this revision. The deploy key is still on the operator VM and will be shredded at the end of phase 2. Device codes are omitted from this public file. They were printed for the operator in the phase 1 report, and each pending row expires at the UTC time recorded below.
+Phase 2 is the section at the end of this file. Jamie approved both device codes. The off-server proof through `https://cli.dark-forge.dev:8443` passed, and `shred -u` removed the deploy key. Device codes are omitted from this public file. They were printed for the operator in the phase 1 report and were consumed by that approval.
 
 ## Phase 1 result
 
@@ -49,7 +49,7 @@ Keep `0.4.5-RSNr4F` until phase 2's off-server proof has passed and the operator
 
 ## SSH
 
-The remote prefix was `ssh -i <key> -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=<pinned known_hosts> -o BatchMode=yes -o ConnectTimeout=15 root@dark-forge.dev`. Each ssh invocation wrapped the remote script in `timeout`. The scripts below also wrap each command in `timeout`. The deploy key fingerprint is `SHA256:AGD6iqWdOAB1R7LeRTlbIMYyvx+FvkIDw8MTWEVtrd4`. The pinned host key is ED25519 `SHA256:/yIiijBqkbGh9lFju3N9ZhbJGIqv+NjC0R1CyWh9g9s`. The private key is not in this file. It is still present for phase 2.
+The remote prefix was `ssh -i <key> -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=<pinned known_hosts> -o BatchMode=yes -o ConnectTimeout=15 root@dark-forge.dev`. Each ssh invocation wrapped the remote script in `timeout`. The scripts below also wrap each command in `timeout`. The deploy key fingerprint is `SHA256:AGD6iqWdOAB1R7LeRTlbIMYyvx+FvkIDw8MTWEVtrd4`. The pinned host key is ED25519 `SHA256:/yIiijBqkbGh9lFju3N9ZhbJGIqv+NjC0R1CyWh9g9s`. The private key is not in this file. Phase 2 removed it with `shred -u`. A following existence check found the file gone.
 
 ## 1. Before checks
 
@@ -2496,4 +2496,487 @@ Both processes can outlive this run. They cannot outlive those expiry times. If 
 - `/opt/kiln/upgrades/0.4.5-RSNr4F`
 - The v0.4.5 attempt files already on the host were left in place
 
-`/opt/kiln/pending-upgrade.json` does not exist. The smoke profile was removed. The deploy key was not removed in this phase.
+`/opt/kiln/pending-upgrade.json` does not exist. The smoke profile was removed. The deploy key was still present at the end of phase 1. Phase 2 removed it.
+
+## Phase 2
+
+Jamie approved both device codes, server enrollment first and then the client login. This section is the record after that approval. No package was installed. `kiln-identity.service` was not restarted and its unit files were not edited. `/opt/paseo/Caddyfile` was not edited. The deploy key was removed only after the host checks below.
+
+### Result
+
+| Check | Result |
+| --- | --- |
+| Enrollment | `/etc/kiln/identity.json` is present. Owner `acct_4601c6990c454fc5a7d4b8f52f72f700` has one GitHub row, display name `Jabbslad`, subject `3084`. Server `srv_37e8ac65c6524713a9e646efa39b7e2e` is active at `https://cli.dark-forge.dev:8443`. |
+| `enroll-dark-forge.sh` final probe | The first probe, inside the script, returned `000` because the door was not accepting yet. The script exited on that line after it had saved the enrollment and started `kiln-door.service`. A later probe from the host returned 401. |
+| Door | `kiln-door.service` is enabled, active, running, MainPID 3853220, since `Mon 2026-10-19 23:36:03 CEST`. It listens on `78.46.98.73:8443`. `kiln-api` stayed on `127.0.0.1:8443`, MainPID 3853117. |
+| Client login | The waiting `kiln login` exited 0 at `2026-10-19 21:34:59 UTC`, before the server row was saved at 21:36 UTC. It stored the only server visible then, `ser7` at `https://192.168.50.210:8443`. `kiln login --server srv_37e8ac65c6524713a9e646efa39b7e2e` then selected `dark-forge` at `https://cli.dark-forge.dev:8443` with the same session. No new device code was required. |
+| Off-server proof | `kiln 0.4.6`. List was empty. Create `kiln-door` `df601d6b83ce486980d04a310ccdb2fe` was running. Exec printed `kiln-door-ok` and `6.1.155+`. Delete removed it. The next list was empty. |
+| No token | HTTP 401, body `{"code":"unauthorized","message":"A valid credential is required."}` |
+| Admin token | HTTP 401, same body. The token was passed with `curl -H @file` and was not printed. |
+| Invalid token | `Authorization: Bearer invalid-token` returned HTTP 401, same body. |
+| `authorized_keys` | `4a625f4d67cf8e7123cf96c78b21863d23789ef933e20ea5b35c1d068e790f37` |
+| `dpkg` | Phase 2 list matches the before list. sha256 `d388be45b10aa31fa9ab14681dd30f24fa77e122363f6acb724f6f507703807d`. `diff -u` exited 0. |
+| Firewall | `inet filter` `input` still has policy accept and `tcp dport 8443 accept`. The nft diff against the phase 1 ruleset is Docker packet counters only. |
+| Identity and Caddy | `kiln-identity` MainPID stayed 3522047. Unit and config hashes match phase 1. Caddyfile hash stayed `acd7c4ecf177cc065547e3e82e5ffb04202c1a9c101f56a195c3e162a8761eb9`. |
+| Deploy key | `shred -u ~/.ssh/kiln_deploy` exited 0. The file was absent afterward. |
+
+`/opt/kiln/upgrades/0.4.4-8DDh4B` and `/opt/kiln/upgrades/0.4.5-RSNr4F` are still intentional. Keep `0.4.5-RSNr4F` until the operator accepts that v0.4.6 will not be rolled back. `0.4.4-8DDh4B` can be pruned once a return to 0.4.4 is no longer required. This phase did not prune either directory.
+
+### Enrollment script output
+
+The process had exited before this check. Stdout:
+
+```text
+Approve the next code at https://dark-forge.dev while signed in as GitHub user Jabbslad (id 3084).
+The page must show that GitHub login. The stored subject must be 3084.
+```
+
+Stderr, with the user code removed:
+
+```text
+Approve enrollment at https://dark-forge.dev/device with code [device-code redacted].
+Server: https://cli.dark-forge.dev:8443
+CA SHA-256: AF:B5:CF:59:AB:00:F1:C2:C7:E1:87:30:D5:68:AA:F8:04:86:59:D2:95:AB:8A:35:9C:64:11:94:C5:E1:91:B0
+Only approve the request you started on this host.
+```
+
+`/etc/kiln/enrollment.pending.json` is absent. `/etc/kiln/directory.token` exists, mode 0600, and its value is not recorded. `/etc/kiln/identity.json` is mode 0640, root:`kiln-api`.
+
+### Client login
+
+`script` recorded `COMMAND_EXIT_CODE="0"` at `2026-10-19 21:34:59+00:00`. The profile it wrote pointed at server `ser7`, id `srv_fcefac0410a846dcb13a1a83c1a9235c`, origin `https://192.168.50.210:8443`. That was the only active server for the account at that moment. The dark-forge registration was still in progress.
+
+The same credential was then aimed at the enrolled server. No browser prompt ran.
+
+### login-retarget.out
+
+```text
+===== date -u =====
+Mon Oct 19 09:38:02 PM UTC 2026
++ kiln --version
+kiln 0.4.6
+version_exit:0
++ kiln --config /home/ubuntu/.config/kiln/dark-forge-v046.json login --server srv_37e8ac65c6524713a9e646efa39b7e2e
+login_retarget_exit:0
+```
+
+Stderr:
+
+### login-retarget.err
+
+```text
+Already signed in. Use `kiln logout` to change accounts.
+```
+
+After that command the profile origin was `https://cli.dark-forge.dev:8443`, name `dark-forge`, id `srv_37e8ac65c6524713a9e646efa39b7e2e`, issuer `https://dark-forge.dev`. `KILN_IDENTITY_CA` was not set.
+
+### Off-server commands
+
+`PATH` included `/home/ubuntu/.local/bin`. The config was `/home/ubuntu/.config/kiln/dark-forge-v046.json`.
+
+### offserver.out
+
+```text
+===== date -u =====
+Mon Oct 19 09:38:10 PM UTC 2026
++ kiln --version
+kiln 0.4.6
+version_exit:0
++ kiln --config /home/ubuntu/.config/kiln/dark-forge-v046.json list
+No boxes yet. Create one with `kiln create`.
+list_before_exit:0
++ kiln --config /home/ubuntu/.config/kiln/dark-forge-v046.json create --template ubuntu-4g --name kiln-door
+NAME       ID                                STATE           MEMORY  VCPUS
+kiln-door  df601d6b83ce486980d04a310ccdb2fe  running       4096 MiB  1
+create_exit:0
++ kiln --config /home/ubuntu/.config/kiln/dark-forge-v046.json exec kiln-door -- sh -c 'echo kiln-door-ok && uname -r'
+kiln-door-ok
+6.1.155+
+exec_exit:0
++ kiln --config /home/ubuntu/.config/kiln/dark-forge-v046.json delete kiln-door
+deleted df601d6b83ce486980d04a310ccdb2fe
+delete_exit:0
++ kiln --config /home/ubuntu/.config/kiln/dark-forge-v046.json list
+No boxes yet. Create one with `kiln create`.
+list_after_exit:0
+OFFSERVER_DONE
+```
+
+Stderr:
+
+### offserver.err
+
+```text
+creating kiln-door with template ubuntu-4g
+request d892c88567db4cdb9f1bd26c0976c631
+request 6b495153c556478487652eafbb39643b
+request e534b95174304097a35005b9dc675520
+```
+
+### Negative checks
+
+All three requests used `--cacert` with the Kiln private CA, whose SHA-256 fingerprint is `AF:B5:CF:59:AB:00:F1:C2:C7:E1:87:30:D5:68:AA:F8:04:86:59:D2:95:AB:8A:35:9C:64:11:94:C5:E1:91:B0`. The URL was `https://cli.dark-forge.dev:8443/v1/templates`. Response headers came from `curl -D`. The request headers were not logged.
+
+No credential:
+
+```text
+http_code=401
+HTTP/2 401 
+content-type: application/json
+content-length: 67
+date: Mon, 19 Oct 2026 21:37:55 GMT
+
+{"code":"unauthorized","message":"A valid credential is required."}
+```
+
+Administrator token, read on the host and sent with `-H @file`. The file mode was 0600 and was removed with `shred -u`. The captured response did not contain the token.
+
+```text
+http_code=401
+HTTP/2 401 
+content-type: application/json
+content-length: 67
+date: Mon, 19 Oct 2026 21:38:36 GMT
+
+{"code":"unauthorized","message":"A valid credential is required."}
+```
+
+Invalid token. The header was `Authorization: Bearer invalid-token`.
+
+```text
+http_code=401
+HTTP/2 401 
+content-type: application/json
+content-length: 67
+date: Mon, 19 Oct 2026 21:38:37 GMT
+
+{"code":"unauthorized","message":"A valid credential is required."}
+```
+
+A token for a different account was not minted. The invalid bearer is the wrong-credential check.
+
+### Host recheck
+
+Remote script sent to `bash -s`. The outer ssh `timeout` was 80 seconds. ssh exit 0.
+
+### phase2-after.out
+
+```text
+===== date -u =====
+Mon Oct 19 09:38:49 PM UTC 2026
+
+===== BEGIN units =====
++ systemctl show kiln-host.service kiln-api.service kiln-cgroup.service kiln-door.service kiln-identity.service kiln-identity-proxy.service kiln-identity-proxy.socket -p Id\,ActiveState\,SubState\,MainPID\,NRestarts\,ActiveEnterTimestamp\,FragmentPath\,UnitFileState 
+MainPID=3848070
+NRestarts=0
+Id=kiln-host.service
+ActiveState=active
+SubState=running
+FragmentPath=/etc/systemd/system/kiln-host.service
+UnitFileState=enabled
+ActiveEnterTimestamp=Mon 2026-10-19 23:27:34 CEST
+
+MainPID=3853117
+NRestarts=0
+Id=kiln-api.service
+ActiveState=active
+SubState=running
+FragmentPath=/etc/systemd/system/kiln-api.service
+UnitFileState=enabled
+ActiveEnterTimestamp=Mon 2026-10-19 23:36:01 CEST
+
+MainPID=0
+NRestarts=0
+Id=kiln-cgroup.service
+ActiveState=active
+SubState=exited
+FragmentPath=/etc/systemd/system/kiln-cgroup.service
+UnitFileState=enabled
+ActiveEnterTimestamp=Mon 2026-10-19 17:12:01 CEST
+
+MainPID=3853220
+NRestarts=0
+Id=kiln-door.service
+ActiveState=active
+SubState=running
+FragmentPath=/etc/systemd/system/kiln-door.service
+UnitFileState=enabled
+ActiveEnterTimestamp=Mon 2026-10-19 23:36:03 CEST
+
+MainPID=3522047
+NRestarts=0
+Id=kiln-identity.service
+ActiveState=active
+SubState=running
+FragmentPath=/etc/systemd/system/kiln-identity.service
+UnitFileState=enabled
+ActiveEnterTimestamp=Mon 2026-10-19 12:42:17 CEST
+
+MainPID=3849543
+NRestarts=0
+Id=kiln-identity-proxy.service
+ActiveState=active
+SubState=running
+FragmentPath=/etc/systemd/system/kiln-identity-proxy.service
+UnitFileState=static
+ActiveEnterTimestamp=Mon 2026-10-19 23:29:31 CEST
+
+Id=kiln-identity-proxy.socket
+ActiveState=active
+SubState=running
+FragmentPath=/etc/systemd/system/kiln-identity-proxy.socket
+UnitFileState=enabled
+ActiveEnterTimestamp=Sat 2026-10-03 20:14:48 CEST
+
+===== END units exit=0 =====
+
+===== BEGIN authorized-keys-sha =====
++ sha256sum /root/.ssh/authorized_keys 
+4a625f4d67cf8e7123cf96c78b21863d23789ef933e20ea5b35c1d068e790f37  /root/.ssh/authorized_keys
+
+===== END authorized-keys-sha exit=0 =====
+
+===== BEGIN identity-bins =====
++ bash -c sha256sum\ /usr/local/libexec/kiln-identity\* 
+54c89f144ef0407b0abef11a8ffe60c18acdacc82b2f9c90bdf647c1df1d76ea  /usr/local/libexec/kiln-identity
+9e36ca9ae505da5b3704915114e4b39565099871e407ff915f4103d9729eda59  /usr/local/libexec/kiln-identity.rollback-v033
+
+===== END identity-bins exit=0 =====
+
+===== BEGIN identity-units =====
++ bash -c sha256sum\ /etc/systemd/system/kiln-identity.service\ /etc/systemd/system/kiln-identity.service.d/10-provider-readiness.conf\ /etc/systemd/system/kiln-identity-proxy.service\ /etc/systemd/system/kiln-identity-proxy.socket 
+31667738c2b275d7b326abcdfa0b6097c947b62005506693d90ab5df80122554  /etc/systemd/system/kiln-identity.service
+08aca9fe20443428eed6d902c6d9c47999f8361ea7cb7bb9b22fbd84e739f9e2  /etc/systemd/system/kiln-identity.service.d/10-provider-readiness.conf
+f9e0c98316c5f83d12de0abb3b885d6060f8b05a6618ba4f1360e0fbcbd37d6e  /etc/systemd/system/kiln-identity-proxy.service
+d04bd26752276f842f93c7f4f6929cdccfacf81abbdc37b35f44519eca6b5141  /etc/systemd/system/kiln-identity-proxy.socket
+
+===== END identity-units exit=0 =====
+
+===== BEGIN identity-config-hashes =====
++ bash -c find\ /etc/kiln-identity\ -type\ f\ -print0\ \|\ sort\ -z\ \|\ xargs\ -0\ sha256sum 
+7508a7c9782a09e3181a4bd6a70938ba033eb826bcb8d6eafd53a3610061e495  /etc/kiln-identity/github.secret
+9f7da71cffb6cdf12653975b136703b05dc836742879a194ba089733482a3757  /etc/kiln-identity/google.secret
+6e0f03257ca0ed6039f1bd3ba855049a0619beba8789163696836027f8c56abb  /etc/kiln-identity/service.env
+b1b7a26a116cb539bd4a19c4f4a8f9554f6896f6e7303567a4c50ebeefd87eb8  /etc/kiln-identity/signing.pem
+
+===== END identity-config-hashes exit=0 =====
+
+===== BEGIN caddy-hash =====
++ sha256sum /opt/paseo/Caddyfile 
+acd7c4ecf177cc065547e3e82e5ffb04202c1a9c101f56a195c3e162a8761eb9  /opt/paseo/Caddyfile
+
+===== END caddy-hash exit=0 =====
+
+===== BEGIN door-files =====
++ bash -c echo\ \"+\ door.env\"\;\ cat\ /etc/kiln/door.env\;\ echo\;\ echo\ \"+\ identity.conf\"\;\ cat\ /etc/systemd/system/kiln-api.service.d/identity.conf\;\ echo\;\ echo\ \"+\ sha256\ door\ unit\ and\ certs\"\;\ sha256sum\ /etc/systemd/system/kiln-door.service\ /etc/kiln/door.crt\ /etc/kiln/door.env\;\ echo\ \"+\ identity.json\ public\ fields\"\;\ python3\ -c\ \"import\ json\;\ d=json.load\(open\(\\\"/etc/kiln/identity.json\\\"\)\)\;\ print\(\\\"version\\\"\,\ d.get\(\\\"version\\\"\)\)\;\ print\(\\\"issuer\\\"\,\ d.get\(\\\"issuer\\\"\)\)\;\ print\(\\\"owner_id\\\"\,\ d.get\(\\\"owner_id\\\"\)\)\;\ print\(\\\"server_id\\\"\,\ d.get\(\\\"server_id\\\"\)\)\" 
++ door.env
+KILN_DOOR_LISTEN=78.46.98.73:8443
+
++ identity.conf
+[Service]
+StateDirectory=kiln-api
+StateDirectoryMode=0700
+
++ sha256 door unit and certs
+ac923d3219ad16fcd6fbbbd3fe9966c6fef9c88767095ad5606c770e2d92aa85  /etc/systemd/system/kiln-door.service
+4774c3bd1f7f77238938892a2304caf203609b82f711c5e3c26a528efa0d84ba  /etc/kiln/door.crt
+3407aa641a706c1f0bc76ea792940ef94f20348a68462000b5dba6c8a1a8f1a1  /etc/kiln/door.env
++ identity.json public fields
+version 1
+issuer https://dark-forge.dev
+owner_id acct_4601c6990c454fc5a7d4b8f52f72f700
+server_id srv_37e8ac65c6524713a9e646efa39b7e2e
+
+===== END door-files exit=0 =====
+
+===== BEGIN account =====
++ sqlite3 -readonly /var/lib/kiln-identity/identity.db SELECT\ provider\,\ subject\,\ display_name\ FROM\ provider_identities\ WHERE\ account_id=\'acct_4601c6990c454fc5a7d4b8f52f72f700\'\;\ SELECT\ id\,\ origin\,\ active\ FROM\ servers\ WHERE\ id=\'srv_37e8ac65c6524713a9e646efa39b7e2e\'\; 
+github|3084|Jabbslad
+srv_37e8ac65c6524713a9e646efa39b7e2e|https://cli.dark-forge.dev:8443|1
+
+===== END account exit=0 =====
+
+===== BEGIN listen =====
++ bash -c ss\ -lntup\ \|\ awk\ \"NR==1\ \|\|\ /:8443/\" 
+Netid State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess                                                               
+tcp   LISTEN 0      128      78.46.98.73:8443      0.0.0.0:*    users:(("kiln-api",pid=3853220,fd=9))                                
+tcp   LISTEN 0      128        127.0.0.1:8443      0.0.0.0:*    users:(("kiln-api",pid=3853117,fd=9))                                
+
+===== END listen exit=0 =====
+
+===== BEGIN server-probe =====
++ bash -c code=\$\(curl\ --silent\ --show-error\ --cacert\ /etc/kiln/ca.crt\ --resolve\ cli.dark-forge.dev:8443:78.46.98.73\ --output\ /tmp/kiln-door-probe.body\ --write-out\ \"%\{http_code\}\"\ --max-time\ 15\ https://cli.dark-forge.dev:8443/v1/templates\)\;\ echo\ curl_code:\$code\;\ echo\ body:\;\ cat\ /tmp/kiln-door-probe.body\;\ echo\;\ rm\ -f\ /tmp/kiln-door-probe.body 
+curl_code:401
+body:
+{"code":"unauthorized","message":"A valid credential is required."}
+
+===== END server-probe exit=0 =====
+
+===== BEGIN dpkg-after =====
++ bash -c dpkg\ -l\ \>\ /root/dpkg-after-v046-phase2.txt\;\ echo\ dpkg_write_exit:\$\?\;\ sha256sum\ /root/dpkg-before-v046.txt\ /root/dpkg-after-v046.txt\ /root/dpkg-after-v046-phase2.txt\;\ echo\ \"+\ diff\ before\ phase2\"\;\ diff\ -u\ /root/dpkg-before-v046.txt\ /root/dpkg-after-v046-phase2.txt\;\ echo\ diff_exit:\$\? 
+dpkg_write_exit:0
+d388be45b10aa31fa9ab14681dd30f24fa77e122363f6acb724f6f507703807d  /root/dpkg-before-v046.txt
+d388be45b10aa31fa9ab14681dd30f24fa77e122363f6acb724f6f507703807d  /root/dpkg-after-v046.txt
+d388be45b10aa31fa9ab14681dd30f24fa77e122363f6acb724f6f507703807d  /root/dpkg-after-v046-phase2.txt
++ diff before phase2
+diff_exit:0
+
+===== END dpkg-after exit=0 =====
+
+===== BEGIN nft =====
++ bash -c nft\ list\ table\ inet\ filter\;\ echo\;\ nft\ list\ ruleset\ \>\ /root/nft-after-v046-phase2.txt\;\ echo\ nft_exit:\$\?\;\ echo\ \"+\ diff\ nft\ phase1\ after\ vs\ phase2\"\;\ diff\ -u\ /root/nft-after-v046.txt\ /root/nft-after-v046-phase2.txt\;\ echo\ nft_diff_exit:\$\? 
+table inet filter {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		tcp dport 8443 accept
+	}
+}
+
+nft_exit:0
++ diff nft phase1 after vs phase2
+--- /root/nft-after-v046.txt	2026-10-19 23:28:47.953214458 +0200
++++ /root/nft-after-v046-phase2.txt	2026-10-19 23:38:49.541372828 +0200
+@@ -1,51 +1,51 @@
+ table ip nat {
+ 	chain DOCKER {
+-		iifname != "br-164dac86db63" tcp dport 80 counter packets 1595912 bytes 93943119 dnat to 172.18.0.3:80
+-		iifname != "br-164dac86db63" tcp dport 443 counter packets 2361976 bytes 139291519 dnat to 172.18.0.3:443
++		iifname != "br-164dac86db63" tcp dport 80 counter packets 1595949 bytes 93945267 dnat to 172.18.0.3:80
++		iifname != "br-164dac86db63" tcp dport 443 counter packets 2362188 bytes 139304099 dnat to 172.18.0.3:443
+ 		ip daddr 127.0.0.1 iifname != "br-164dac86db63" tcp dport 6767 counter packets 0 bytes 0 dnat to 172.18.0.2:6767
+ 	}
+ 
+ 	chain PREROUTING {
+ 		type nat hook prerouting priority dstnat; policy accept;
+-		fib daddr type local counter packets 19261262 bytes 1236661026 jump DOCKER
++		fib daddr type local counter packets 19262833 bytes 1236766086 jump DOCKER
+ 	}
+ 
+ 	chain OUTPUT {
+ 		type nat hook output priority dstnat; policy accept;
+-		ip daddr != 127.0.0.0/8 fib daddr type local counter packets 2 bytes 120 jump DOCKER
++		ip daddr != 127.0.0.0/8 fib daddr type local counter packets 4 bytes 240 jump DOCKER
+ 	}
+ 
+ 	chain POSTROUTING {
+ 		type nat hook postrouting priority srcnat; policy accept;
+-		ip saddr 172.18.0.0/16 oifname != "br-164dac86db63" counter packets 69147 bytes 4148800 masquerade
++		ip saddr 172.18.0.0/16 oifname != "br-164dac86db63" counter packets 69160 bytes 4149580 masquerade
+ 		ip saddr 172.17.0.0/16 oifname != "docker0" counter packets 458 bytes 27564 masquerade
+ 	}
+ }
+ table ip filter {
+ 	chain DOCKER {
+ 		ip daddr 172.18.0.2 iifname != "br-164dac86db63" oifname "br-164dac86db63" tcp dport 6767 counter packets 0 bytes 0 accept
+-		ip daddr 172.18.0.3 iifname != "br-164dac86db63" oifname "br-164dac86db63" tcp dport 443 counter packets 2361976 bytes 139291519 accept
+-		ip daddr 172.18.0.3 iifname != "br-164dac86db63" oifname "br-164dac86db63" tcp dport 80 counter packets 1595912 bytes 93943119 accept
++		ip daddr 172.18.0.3 iifname != "br-164dac86db63" oifname "br-164dac86db63" tcp dport 443 counter packets 2362188 bytes 139304099 accept
++		ip daddr 172.18.0.3 iifname != "br-164dac86db63" oifname "br-164dac86db63" tcp dport 80 counter packets 1595949 bytes 93945267 accept
+ 		iifname != "docker0" oifname "docker0" counter packets 0 bytes 0 drop
+ 		iifname != "br-164dac86db63" oifname "br-164dac86db63" counter packets 0 bytes 0 drop
+ 	}
+ 
+ 	chain DOCKER-FORWARD {
+-		counter packets 38249155 bytes 13365586686 jump DOCKER-CT
+-		counter packets 28983617 bytes 4665398854 jump DOCKER-INTERNAL
+-		counter packets 28983617 bytes 4665398854 jump DOCKER-BRIDGE
++		counter packets 38253308 bytes 13366381795 jump DOCKER-CT
++		counter packets 28986244 bytes 4665725388 jump DOCKER-INTERNAL
++		counter packets 28986244 bytes 4665725388 jump DOCKER-BRIDGE
+ 		iifname "docker0" counter packets 447013 bytes 31000591 accept
+-		iifname "br-164dac86db63" counter packets 23157870 bytes 4322420964 accept
++		iifname "br-164dac86db63" counter packets 23160248 bytes 4322732770 accept
+ 	}
+ 
+ 	chain DOCKER-BRIDGE {
+ 		oifname "docker0" counter packets 0 bytes 0 jump DOCKER
+-		oifname "br-164dac86db63" counter packets 4434493 bytes 261343648 jump DOCKER
++		oifname "br-164dac86db63" counter packets 4434742 bytes 261358376 jump DOCKER
+ 	}
+ 
+ 	chain DOCKER-CT {
+ 		oifname "docker0" ct state related,established counter packets 715346 bytes 3733100098 accept
+-		oifname "br-164dac86db63" ct state related,established counter packets 8549056 bytes 4953974156 accept
++		oifname "br-164dac86db63" ct state related,established counter packets 8550582 bytes 4954442731 accept
+ 	}
+ 
+ 	chain DOCKER-INTERNAL {
+@@ -53,8 +53,8 @@
+ 
+ 	chain FORWARD {
+ 		type filter hook forward priority filter; policy drop;
+-		counter packets 38249155 bytes 13365586686 jump DOCKER-USER
+-		counter packets 38249155 bytes 13365586686 jump DOCKER-FORWARD
++		counter packets 38253308 bytes 13366381795 jump DOCKER-USER
++		counter packets 38253308 bytes 13366381795 jump DOCKER-FORWARD
+ 	}
+ 
+ 	chain DOCKER-USER {
+nft_diff_exit:1
+
+===== END nft exit=0 =====
+
+===== BEGIN versions =====
++ bash -c for\ b\ in\ /opt/kiln/bin/kiln\ /opt/kiln/bin/kiln-runtime\ /opt/kiln/bin/firecracker\ /opt/kiln/bin/jailer\ /usr/local/libexec/kiln-host\ /usr/local/libexec/kiln-api\ /usr/local/libexec/kiln-identity\;\ do\ echo\ \"---\ \$b\ ---\"\;\ \"\$b\"\ --version\;\ echo\ exit:\$\?\;\ done 
+--- /opt/kiln/bin/kiln ---
+kiln 0.4.6
+exit:0
+--- /opt/kiln/bin/kiln-runtime ---
+kiln-runtime 0.4.6
+exit:0
+--- /opt/kiln/bin/firecracker ---
+Firecracker v1.17.0
+
+2026-10-19T23:38:49.556378524 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0
+exit:0
+--- /opt/kiln/bin/jailer ---
+Jailer v1.17.0
+
+exit:0
+--- /usr/local/libexec/kiln-host ---
+kiln-server 0.4.6
+exit:0
+--- /usr/local/libexec/kiln-api ---
+kiln-server 0.4.6
+exit:0
+--- /usr/local/libexec/kiln-identity ---
+kiln-identity 0.4.1
+exit:0
+
+===== END versions exit=0 =====
+
+===== BEGIN boxes =====
++ bash -c ls\ -la\ /var/lib/kiln/runtime/boxes 
+total 8
+drwx------ 2 root kiln-api 4096 Oct 19 23:38 .
+drwx------ 4 root kiln-api 4096 Oct 19 17:12 ..
+
+===== END boxes exit=0 =====
+PHASE2_AFTER_DONE
+```
+
+Stderr:
+
+### phase2-after.err
+
+```text
+# Warning: table ip nat is managed by iptables-nft, do not touch!
+# Warning: table ip filter is managed by iptables-nft, do not touch!
+# Warning: table ip6 nat is managed by iptables-nft, do not touch!
+```
+
+`kiln-api` MainPID changed from 3848074 to 3853117 because `kiln-api enroll` restarts only the API after it saves enrollment. `kiln-host` stayed MainPID 3848070. The runtime boxes directory was empty after the off-server delete.
+
+The nft diff in that transcript changes Docker packet and byte counters. `table inet filter` is not in the diff, and `nft list table inet filter` still shows only `tcp dport 8443 accept` with policy accept.
+
+### Deploy key removal
+
+On the operator machine, after the host recheck:
+
+```text
+shred -u ~/.ssh/kiln_deploy
+shred_exit:0
+KEY_GONE
+```
+
+The key file was absent after `shred -u`.
