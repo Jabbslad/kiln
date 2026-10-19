@@ -59,12 +59,16 @@ pub fn router(mut cfg: Config, store: Store) -> anyhow::Result<Router> {
             "provider URL must be HTTPS"
         );
     }
-    if cfg.public_origin == PRODUCTION_IDENTITY_ORIGIN {
-        anyhow::ensure!(
-            cfg.production_github(),
+    anyhow::ensure!(
+        cfg.production_github()
+            || (cfg!(feature = "lab-provider") && cfg.public_origin != PRODUCTION_IDENTITY_ORIGIN),
+        "{}",
+        if cfg.public_origin == PRODUCTION_IDENTITY_ORIGIN {
             "https://dark-forge.dev cannot use a substitute identity provider"
-        );
-    }
+        } else {
+            "this identity build accepts only the production GitHub endpoints"
+        }
+    );
     check_private_file(&cfg.signing_key_file)?;
     check_private_file(&cfg.github_secret_file)?;
     check_private_file(&cfg.google_secret_file)?;

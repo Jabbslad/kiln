@@ -688,3 +688,17 @@ async fn dark_forge_rejects_a_substitute_provider() {
     cfg.provider_ca_pem = Some(b"not a certificate".to_vec());
     assert!(kiln_identity::router(cfg, fixture.store).is_err());
 }
+
+#[tokio::test]
+async fn a_substitute_provider_requires_the_lab_feature() {
+    let fixture = Fixture::new();
+    let mut cfg = fixture.cfg.clone();
+    cfg.public_origin = "https://lab.example".into();
+    cfg.github_token_url = "https://fixture.example/token".into();
+    let result = kiln_identity::router(cfg, fixture.store);
+    if cfg!(feature = "lab-provider") {
+        assert!(result.is_ok());
+    } else {
+        assert!(result.is_err());
+    }
+}

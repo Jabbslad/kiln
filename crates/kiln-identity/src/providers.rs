@@ -287,7 +287,8 @@ async fn google_finish_at(
     })
 }
 
-// Lab issuers pass these URLs through. https://dark-forge.dev refuses substitutes in router().
+// The lab-provider feature is what lets a lab issuer pass these URLs through router().
+// https://dark-forge.dev refuses substitutes with or without that feature.
 #[cfg(test)]
 #[allow(dead_code, clippy::too_many_arguments)] // exercised by tests/providers.rs
 pub async fn test_github_finish(

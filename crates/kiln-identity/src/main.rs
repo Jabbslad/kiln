@@ -28,16 +28,44 @@ struct Args {
     /// Trust an X-Forwarded-For value overwritten by the loopback HTTPS proxy.
     #[arg(long)]
     trusted_proxy_loopback: bool,
+    #[cfg(feature = "lab-provider")]
     #[arg(long, default_value = kiln_identity::GITHUB_AUTHORIZE_URL)]
     github_authorize_url: String,
+    #[cfg(feature = "lab-provider")]
     #[arg(long, default_value = kiln_identity::GITHUB_TOKEN_URL)]
     github_token_url: String,
+    #[cfg(feature = "lab-provider")]
     #[arg(long, default_value = kiln_identity::GITHUB_USER_URL)]
     github_user_url: String,
     /// Extra CA for a lab provider. Refused when the public origin is dark-forge.dev.
+    #[cfg(feature = "lab-provider")]
     #[arg(long)]
     provider_ca_file: Option<PathBuf>,
 }
+
+#[cfg(feature = "lab-provider")]
+fn provider_fields(x: &Args) -> anyhow::Result<(String, String, String, Option<Vec<u8>>)> {
+    Ok((
+        x.github_authorize_url.clone(),
+        x.github_token_url.clone(),
+        x.github_user_url.clone(),
+        x.provider_ca_file
+            .as_deref()
+            .map(std::fs::read)
+            .transpose()?,
+    ))
+}
+
+#[cfg(not(feature = "lab-provider"))]
+fn provider_fields(_x: &Args) -> anyhow::Result<(String, String, String, Option<Vec<u8>>)> {
+    Ok((
+        kiln_identity::GITHUB_AUTHORIZE_URL.to_owned(),
+        kiln_identity::GITHUB_TOKEN_URL.to_owned(),
+        kiln_identity::GITHUB_USER_URL.to_owned(),
+        None,
+    ))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let x = Args::parse();
@@ -45,6 +73,8 @@ async fn main() -> anyhow::Result<()> {
         x.listen.ip().is_loopback(),
         "identity service must bind to loopback"
     );
+    let (github_authorize_url, github_token_url, github_user_url, provider_ca_pem) =
+        provider_fields(&x)?;
     let store = Store::open(&x.database)?;
     let app = router(
         Config {
@@ -57,10 +87,10 @@ async fn main() -> anyhow::Result<()> {
             signing_key_id: x.signing_key_id,
             retiring_jwks_file: x.retiring_jwks_file,
             trusted_proxy_loopback: x.trusted_proxy_loopback,
-            github_authorize_url: x.github_authorize_url,
-            github_token_url: x.github_token_url,
-            github_user_url: x.github_user_url,
-            provider_ca_pem: x.provider_ca_file.map(std::fs::read).transpose()?,
+            github_authorize_url,
+            github_token_url,
+            github_user_url,
+            provider_ca_pem,
             now: unix_now,
         },
         store,

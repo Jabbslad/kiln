@@ -1,6 +1,7 @@
 #!/bin/bash
 # Laptop path: netns client -> public TLS door -> identity JWT -> loopback kiln-api -> guest.
-# The GitHub stand-in is a lab issuer. https://dark-forge.dev refuses those URLs.
+# The GitHub stand-in needs a lab-provider build. Release kiln-identity has no substitute flags.
+# https://dark-forge.dev refuses those URLs even with the feature.
 set -euo pipefail
 umask 077
 
@@ -51,10 +52,12 @@ trap cleanup EXIT
 track() { pids+=("$1"); }
 
 need() { command -v "$1" >/dev/null || die "missing $1"; }
-for tool in cargo openssl python3 curl sudo ip socat awk grep install; do
+for tool in cargo openssl python3 curl sudo ip socat awk grep install sqlite3; do
   need "$tool"
 done
 sudo -n true || die "passwordless sudo is required"
+log "checking enroll-dark-forge.sh"
+bash "$repo/deploy/enroll-dark-forge.sh" --self-test
 
 export PATH="$repo/.tools/firecracker-1.17.0:$PATH"
 if [ ! -x "$repo/.tools/firecracker-1.17.0/firecracker" ]; then
@@ -66,8 +69,20 @@ fi
 sudo setfacl -m "u:$(id -un):rw" /dev/kvm
 [ -r /dev/kvm ] && [ -w /dev/kvm ] || die "this user cannot use /dev/kvm"
 
+log "checking the release identity binary has no substitute-provider flags"
+cargo build --release --locked --manifest-path "$repo/Cargo.toml" \
+  -p kiln-identity --bin kiln-identity >/dev/null
+release_help=$("$repo/target/release/kiln-identity" --help)
+case $release_help in
+  *github-authorize-url*|*github-token-url*|*github-user-url*|*provider-ca-file*)
+    die "release kiln-identity accepts a substitute provider"
+    ;;
+esac
+log "release kiln-identity has no substitute-provider flags"
+
 log "building binaries"
 cargo build --locked --manifest-path "$repo/Cargo.toml" \
+  --features kiln-identity/lab-provider \
   -p kiln-runtime --bin kiln-runtime \
   -p kiln-server --bin kiln-host --bin kiln-api \
   -p kiln-identity --bin kiln-identity \
@@ -78,6 +93,10 @@ host_bin=$repo/target/debug/kiln-host
 api_bin=$repo/target/debug/kiln-api
 identity_bin=$repo/target/debug/kiln-identity
 kiln=$repo/target/debug/kiln
+case $("$identity_bin" --help) in
+  *github-authorize-url*) ;;
+  *) die "lab identity build is missing --github-authorize-url" ;;
+esac
 
 mkdir -m 0700 "$work/state" "$work/journal" "$work/run" "$work/home" "$work/bin" "$work/image"
 printf '#!/bin/sh\nexit 1\n' >"$work/bin/xdg-open"
@@ -151,7 +170,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/user":
             login = self.user()
-            self.send_json({"id": 1001 if login == "Jabbslad" else 1002, "login": login})
+            self.send_json({"id": 3084 if login == "Jabbslad" else 1002, "login": login})
             return
         self.send_error(404)
     def do_POST(self):
@@ -301,10 +320,10 @@ sudo chown "root:$(id -gn)" "$work/identity.json"
 sudo chmod 640 "$work/identity.json"
 [ -r "$work/identity.json" ] || die "enrollment file is not readable by the API user"
 subject=$(sqlite3 "$work/identity.db" \
-  "SELECT subject FROM provider_identities WHERE account_id='$owner_id' AND provider='github' AND display_name='Jabbslad';")
+  "SELECT subject FROM provider_identities WHERE account_id='$owner_id' AND provider='github' AND display_name='Jabbslad' AND subject='3084';")
 extra=$(sqlite3 "$work/identity.db" \
-  "SELECT count(*) FROM provider_identities WHERE account_id='$owner_id' AND NOT (provider='github' AND display_name='Jabbslad');")
-[ -n "$subject" ] && [ "$extra" = 0 ] || die "enrolled account was not GitHub user Jabbslad"
+  "SELECT count(*) FROM provider_identities WHERE account_id='$owner_id' AND NOT (provider='github' AND display_name='Jabbslad' AND subject='3084');")
+[ "$subject" = 3084 ] && [ "$extra" = 0 ] || die "enrolled account was not GitHub user Jabbslad subject 3084"
 log "enrolled owner $owner_id is GitHub subject $subject"
 
 write_host() {

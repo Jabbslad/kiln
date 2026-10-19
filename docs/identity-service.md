@@ -58,8 +58,14 @@ The default issuer is `https://dark-forge.dev`; use `--issuer` only for another
 identity service. The server installer prints the command with its actual address.
 For dark-forge, use `deploy/enroll-dark-forge.sh` instead. It passes
 `--url https://cli.dark-forge.dev:8443` and `--local-url https://127.0.0.1:8443`,
-then checks that the approving GitHub login is Jabbslad. The steps and the
-account check are in `docs/runbooks/2026-10-19-public-door.md`.
+then checks that the stored URL is that same origin and that the approving
+GitHub account is login `Jabbslad` and numeric id `3084`. An enrollment that
+already exists is left in place. The release `kiln-identity` binary has no
+`--github-authorize-url`, `--github-token-url`, `--github-user-url`, or
+`--provider-ca-file` flags. Those flags exist only behind the non-default
+`lab-provider` feature, and `https://dark-forge.dev` still refuses a substitute
+provider when that feature is on. `kiln-identity.service` is not edited.
+The steps are in `docs/runbooks/2026-10-19-public-door.md`.
 
 The terminal prints a public approval code/URL. Sign in using GitHub or Google
 and confirm the server endpoint and certificate fingerprint. The registration

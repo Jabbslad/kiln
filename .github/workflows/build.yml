@@ -104,11 +104,18 @@ jobs:
         run: |
           cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client
           # One cargo command unifies features and links h2 into kiln-identity.
+          # lab-provider stays off this command. The release binary cannot select a substitute provider.
           cargo build --release --locked -p kiln-identity
           target/release/kiln-host --help
           target/release/kiln-api --help
           target/release/kiln --version
           target/release/kiln-identity --version
+          case "$(target/release/kiln-identity --help)" in
+            *github-authorize-url*|*github-token-url*|*github-user-url*|*provider-ca-file*)
+              echo "release kiln-identity must not accept a substitute provider" >&2
+              exit 1
+              ;;
+          esac
       - name: Package identity service
         run: |
           python scripts/release.py identity --version "$VERSION" --target x86_64-unknown-linux-gnu \
