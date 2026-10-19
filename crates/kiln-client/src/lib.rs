@@ -69,7 +69,9 @@ impl Client {
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(40));
         if let Some(ca) = ca_pem {
-            builder = builder.add_root_certificate(reqwest::Certificate::from_pem(ca)?);
+            builder = builder
+                .add_root_certificate(reqwest::Certificate::from_pem(ca)?)
+                .tls_built_in_root_certs(false);
         }
         if let Some(token) = token {
             let mut h = header::HeaderValue::from_str(&format!("Bearer {token}"))?;

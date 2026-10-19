@@ -199,8 +199,30 @@ struct TokenForm {
     device_code: Option<String>,
     refresh_token: Option<String>,
 }
-async fn oauth_token(State(a): State<Arc<App>>, Form(f): Form<TokenForm>) -> Response {
+async fn oauth_token(
+    State(a): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    h: HeaderMap,
+    Form(f): Form<TokenForm>,
+) -> Response {
     let now = (a.cfg.now)();
+    // Login polls every 5 seconds. The approval budget of 5 per minute would abort that wait.
+    let limited = (|| -> anyhow::Result<()> {
+        let mut c = a.store.db.lock().unwrap();
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        store::rate(
+            &tx,
+            &format!("token:{}", client_ip(&a.cfg, peer, &h)),
+            now,
+            30,
+            60,
+        )?;
+        tx.commit()?;
+        Ok(())
+    })();
+    if limited.is_err() {
+        return err(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
     let mut c = a.store.db.lock().unwrap();
     let tx = match c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
         Ok(x) => x,
@@ -211,7 +233,10 @@ async fn oauth_token(State(a): State<Arc<App>>, Form(f): Form<TokenForm>) -> Res
             Some(x) => x,
             None => return err(StatusCode::BAD_REQUEST, "invalid_request"),
         };
-        let row=tx.query_row("SELECT name,state,expires_at,next_poll,interval,account_id FROM pending_devices WHERE secret_hash=?1",[hash(&raw)],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,Option<String>>(5)?))).optional().ok().flatten();
+        let row = match tx.query_row("SELECT name,state,expires_at,next_poll,interval,account_id FROM pending_devices WHERE secret_hash=?1",[hash(&raw)],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,Option<String>>(5)?))).optional() {
+            Ok(row) => row,
+            Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        };
         let Some((name, state, exp, next, interval, account)) = row else {
             return err(StatusCode::BAD_REQUEST, "invalid_grant");
         };
@@ -240,13 +265,14 @@ async fn oauth_token(State(a): State<Arc<App>>, Form(f): Form<TokenForm>) -> Res
         let Some(account) = account.filter(|_| state == "approved") else {
             return err(StatusCode::BAD_REQUEST, "invalid_grant");
         };
-        let live: bool = tx
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?1 AND revoked_at IS NULL)",
-                [&account],
-                |r| r.get(0),
-            )
-            .unwrap_or(false);
+        let live: bool = match tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?1 AND revoked_at IS NULL)",
+            [&account],
+            |r| r.get(0),
+        ) {
+            Ok(value) => value,
+            Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        };
         if !live {
             return err(StatusCode::BAD_REQUEST, "invalid_grant");
         }
@@ -273,7 +299,10 @@ async fn oauth_token(State(a): State<Arc<App>>, Form(f): Form<TokenForm>) -> Res
             Some(x) => x,
             None => return err(StatusCode::BAD_REQUEST, "invalid_request"),
         };
-        let row=tx.query_row("SELECT rowid,family_id,device_id,created_at,last_used,absolute_expiry,spent_at,family_revoked_at FROM refresh_tokens WHERE hash=?1",[hash(&raw)],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,Option<i64>>(6)?,r.get::<_,Option<i64>>(7)?))).optional().ok().flatten();
+        let row = match tx.query_row("SELECT rowid,family_id,device_id,created_at,last_used,absolute_expiry,spent_at,family_revoked_at FROM refresh_tokens WHERE hash=?1",[hash(&raw)],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,Option<i64>>(6)?,r.get::<_,Option<i64>>(7)?))).optional() {
+            Ok(row) => row,
+            Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        };
         let Some((rowid, family, did, _, last, absolute, spent, revoked)) = row else {
             return err(StatusCode::BAD_REQUEST, "invalid_grant");
         };
@@ -290,7 +319,10 @@ async fn oauth_token(State(a): State<Arc<App>>, Form(f): Form<TokenForm>) -> Res
             }
             return err(StatusCode::BAD_REQUEST, "invalid_grant");
         }
-        let live:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM devices d JOIN accounts a ON a.id=d.account_id WHERE d.id=?1 AND d.revoked_at IS NULL AND a.revoked_at IS NULL)",[&did],|r|r.get(0)).unwrap_or(false);
+        let live: bool = match tx.query_row("SELECT EXISTS(SELECT 1 FROM devices d JOIN accounts a ON a.id=d.account_id WHERE d.id=?1 AND d.revoked_at IS NULL AND a.revoked_at IS NULL)",[&did],|r|r.get(0)) {
+            Ok(value) => value,
+            Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        };
         if !live || revoked.is_some() || now - last >= 30 * 86400 || now >= absolute {
             return err(StatusCode::BAD_REQUEST, "invalid_grant");
         }
@@ -571,32 +603,39 @@ async fn approve(
     if !matches!(f.decision.as_str(), "approve" | "deny") || f.user_code.len() != 12 {
         return err(StatusCode::BAD_REQUEST, "invalid_request");
     }
+    let limited = (|| -> anyhow::Result<()> {
+        let mut c = a.store.db.lock().unwrap();
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        store::rate(
+            &tx,
+            &format!("approval:{}", client_ip(&a.cfg, peer, &h)),
+            now,
+            5,
+            60,
+        )?;
+        store::rate(&tx, &format!("code:{}", f.user_code), now, 20, 600)?;
+        tx.commit()?;
+        Ok(())
+    })();
+    if limited.is_err() {
+        return err(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
     let mut c = a.store.db.lock().unwrap();
     let tx = match c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
         Ok(tx) => tx,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
     };
-    if store::rate(
-        &tx,
-        &format!("approval:{}", client_ip(&a.cfg, peer, &h)),
-        now,
-        5,
-        60,
-    )
-    .is_err()
-        || store::rate(&tx, &format!("code:{}", f.user_code), now, 20, 600).is_err()
-    {
-        return err(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
-    }
-    let account = tx.query_row(
+    let account = match tx
+        .query_row(
             "SELECT s.account_id FROM browser_sessions s JOIN accounts a ON a.id=s.account_id WHERE s.hash=?1 AND s.csrf_hash=?2 AND s.expires_at>?3 AND a.revoked_at IS NULL",
             params![hash(&raw), hash(&f.csrf), now],
             |r| r.get::<_, Option<String>>(0),
         )
         .optional()
-        .ok()
-        .flatten()
-        .flatten();
+    {
+        Ok(row) => row.flatten(),
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
     let Some(account) = account else {
         return err(StatusCode::UNAUTHORIZED, "login_required");
     };
