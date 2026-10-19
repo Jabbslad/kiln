@@ -6,6 +6,31 @@ terminal is needed to install. Access to a running Kiln server still requires
 browser login to an enrolled host or a direct administrator profile; public
 downloads do not disable API authentication.
 
+## v0.4.5 shell installer
+
+The server archive contains `install.sh`. The script accepts Debian 13 x86-64,
+Ubuntu 24.04, and Ubuntu 26.04. Before an update stops a service, it refuses a
+downgrade and an installation older than 0.3.0. A minor or major bump requires
+`min_upgrade_from` in `release.json`. This package sets that field to `0.3.0`.
+A same-version package leaves the installation unchanged. A patch update from
+v0.4.4 keeps the guest image, the runtime format, configuration, enrollment,
+and disks.
+
+GitHub Actions can install one published release on dark-forge.dev. A second
+workflow only reads that host. The v0.4.4 deploy uploads this tree's
+`install.sh`, because the published v0.4.4 archive contains `install.py` and
+that copy rejects Debian 13. A newer stable tag deploys the `install.sh` inside
+its archive.
+
+A pull request runs the checks and does not build a release package. Branch
+builds restore the Rust, npm, and Playwright caches. Tag builds skip those
+caches. Each identity limits test uses its own clock. The dark-forge first
+install is recorded in `docs/runbooks/2026-10-19-dark-forge-first-install.md`.
+`.cursor/skills/verify-kiln/` drives a checkout and records the evidence.
+
+Publishing this release does not deploy a server or restart a live service.
+The public bootstrap pins the published v0.4.4 assets.
+
 ## v0.4.4 dashboard frontend
 
 The release includes `kiln-dashboard-v0.4.4.tar.gz` with the built React dashboard
