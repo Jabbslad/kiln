@@ -1,6 +1,6 @@
 # Curl installation with private packages
 
-> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). The "reuse install.py" step below is historical. The public bootstrap pins v0.4.6 and runs `install.sh` only. Deploying tag v0.4.4 still overlays this tree's `install.sh`, because that archive contains `install.py` and rejects Debian 13. `scripts/release.py` remains the CI packager and does not run on the server.
+> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). The "reuse install.py" step below is historical. The public bootstrap pins v0.4.7 and runs `install.sh` only. Deploying tag v0.4.4 still overlays this tree's `install.sh`, because that archive contains `install.py` and rejects Debian 13. `scripts/release.py` remains the CI packager and does not run on the server.
 
 ## Outcome
 
@@ -12,8 +12,8 @@ private. No server deployment or private package release has been approved.
 The public installer is `deploy/bootstrap/install.sh` in `Jabbslad/kiln`. The command shapes are:
 
 ```sh
-curl -fsSL https://github.com/Jabbslad/kiln/releases/latest/download/install.sh | sh
-curl -fsSL https://github.com/Jabbslad/kiln/releases/latest/download/install.sh | sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh -s -- server
 ```
 
 ## Distribution

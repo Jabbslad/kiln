@@ -480,12 +480,11 @@ dependencies = [
         source = (REPO / "deploy" / "bootstrap" / "install.sh").read_text()
         version = rv.parse_release_tag("v9.9.9")
         digests = {key: "ab" * 32 for key in ASSET_KEYS}
-        missing = source.replace("    version=0.4.6\n", "", 1)
-        duplicate = source.replace(
-            "    version=0.4.6\n",
-            "    version=0.4.6\n    version=1.2.3\n",
-            1,
-        )
+        pin = re.search(r"(?m)^(    version=[0-9]+\.[0-9]+\.[0-9]+\n)", source)
+        self.assertIsNotNone(pin)
+        pin_line = pin.group(1)
+        missing = source.replace(pin_line, "", 1)
+        duplicate = source.replace(pin_line, pin_line + "    version=1.2.3\n", 1)
         for text in (missing, duplicate):
             with self.assertRaises(ValueError):
                 rv.render_bootstrap(text, version, digests)

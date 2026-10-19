@@ -16,11 +16,8 @@ paths and requires explicit enrollment with a matching server.
 Run locally or in automation (no terminal required):
 
 ```sh
-curl -fsSL https://github.com/Jabbslad/kiln/releases/latest/download/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh
 ```
-
-The command above fetches the installer from the latest published release.
-That installer installs only the version it was published with.
 
 Supports Apple Silicon/Intel macOS and x86-64 Linux with glibc 2.39+. Installs
 `~/.local/bin/kiln` without sudo. Add that directory to PATH if it is not present. No
@@ -54,7 +51,7 @@ release provides the normal installer flow for pilot testing, not production cer
 ### Automatic client updates
 
 ```sh
-curl -fsSL https://github.com/Jabbslad/kiln/releases/latest/download/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh
 kiln --version
 ```
 
@@ -83,7 +80,7 @@ browser authentication and live VM controls are not integrated yet. See the
 ## Server: dedicated Ubuntu 24.04, Ubuntu 26.04, or Debian 13 x86-64/KVM
 
 ```sh
-curl -fsSL https://github.com/Jabbslad/kiln/releases/latest/download/install.sh | sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh -s -- server
 ```
 
 Use a systemd host with usable `/dev/kvm`, cgroup v2, 6 GiB currently available
@@ -110,7 +107,7 @@ public or ambiguous results fail with an error. Detection requires iproute2.
 For a VPN, multi-interface host, or no default route, override it explicitly:
 
 ```sh
-curl -fsSL https://github.com/Jabbslad/kiln/releases/latest/download/install.sh | sh -s -- server --address 100.64.5.6
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh -s -- server --address 100.64.5.6
 ```
 
 Choose a stable address: it becomes the API binding and TLS certificate address.
@@ -120,7 +117,7 @@ Guest networking is off by default. On a fresh host, explicitly opt in to
 filtered IPv4 egress with automatic uplink detection:
 
 ```sh
-curl -fsSL https://github.com/Jabbslad/kiln/releases/latest/download/install.sh | sh -s -- server --network
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh -s -- server --network
 ```
 
 Use `--network-uplink enp1s0` to opt in with an explicit interface instead.
@@ -235,7 +232,7 @@ it is not independent signing. macOS/Windows binaries are not signed/notarized.
 To review rather than pipe directly into a shell:
 
 ```sh
-curl -fsSL https://github.com/Jabbslad/kiln/releases/latest/download/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh -o install.sh
 less install.sh
 sh install.sh
 ```
