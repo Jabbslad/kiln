@@ -163,6 +163,7 @@ async fn grants_revocation_ownership_and_expiry_boundaries() {
         .clone()
         .oneshot(
             Request::post("/oauth/token")
+                .extension(ConnectInfo("192.0.2.1:1234".parse::<SocketAddr>().unwrap()))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(format!("grant_type={}", "x".repeat(17000))))
                 .unwrap(),

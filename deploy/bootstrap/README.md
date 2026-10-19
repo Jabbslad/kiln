@@ -122,8 +122,8 @@ or blindly rerun setup.
 
 ### Automatic server updates
 
-Rerun the same `server` command. v0.4.1 updates healthy, standard Kiln v0.3.0,
-v0.3.2, v0.3.3 or v0.4.0 installations and leaves identical v0.4.1 installations alone. It reuses
+Rerun the same `server` command. v0.4.2 updates healthy, standard Kiln v0.3.0,
+v0.3.2, v0.3.3, v0.4.0 or v0.4.1 installations and leaves identical v0.4.2 installations alone. It reuses
 the existing address and networking, skips apt, and preserves configuration,
 credentials, units, Firecracker, guest images, templates and VM disks. Explicit
 address/network options must agree with the installed configuration.
@@ -164,13 +164,19 @@ On the laptop, run `kiln login` with the same provider/account, then:
 
 ```sh
 kiln templates
-kiln create --template ubuntu-4g --name first-box
+kiln create --name first-box
 kiln list
-kiln exec BOX_ID -- /bin/sh -c 'printf hello'
-kiln ssh BOX_ID
-kiln cp ./local-file BOX_ID:/workspace/remote-file
-kiln ssh-config BOX_ID
+kiln exec first-box -- /bin/sh -c 'printf hello'
+kiln ssh first-box
+kiln cp ./local-file first-box:/workspace/remote-file
+kiln ssh-config first-box
 ```
+
+The v0.4.2 client chooses the only available template; if several are published,
+pass `--template NAME`. Omit `--name` for a generated name. Box commands accept
+names, full IDs or unique ID prefixes (8+ characters); duplicate names fail with
+candidate IDs rather than choosing a box silently. Use `--json` in scripts.
+These CLI improvements do not require a v0.4.0/v0.4.1 server restart or update.
 
 For independent administrator recovery, keep `/etc/kiln/laptop.tar.gz` private.
 Its `CONNECT.txt` configures a direct profile without central login. It contains
@@ -195,7 +201,7 @@ It remains compatible with the 0.2.1 guest image.
 
 ## Trust and maintenance
 
-The bootstrap pins v0.4.1 release URLs and SHA-256 digests, validates archive contents,
+The bootstrap pins v0.4.2 release URLs and SHA-256 digests, validates archive contents,
 and downloads without authentication. Redirects are HTTPS-only and user curl
 configuration is disabled. Temporary files are removed on normal exit and handled
 signals. A checksum protects integrity under trust in this bootstrap publisher;

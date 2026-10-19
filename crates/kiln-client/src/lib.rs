@@ -69,7 +69,9 @@ impl Client {
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(40));
         if let Some(ca) = ca_pem {
-            builder = builder.add_root_certificate(reqwest::Certificate::from_pem(ca)?);
+            builder = builder
+                .add_root_certificate(reqwest::Certificate::from_pem(ca)?)
+                .tls_built_in_root_certs(false);
         }
         if let Some(token) = token {
             let mut h = header::HeaderValue::from_str(&format!("Bearer {token}"))?;
@@ -220,5 +222,84 @@ mod tests {
         }
         assert!(Client::new("https://localhost:8443", &"a".repeat(64), None).is_ok());
         assert!(Client::new("https://localhost", "short", None).is_err());
+    }
+
+    fn error_text(err: &anyhow::Error) -> String {
+        err.chain()
+            .map(|item| item.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[tokio::test]
+    async fn private_ca_reaches_its_own_server_and_not_a_different_ca() {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let pem = cert.cert.pem();
+        let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
+            cert.cert.pem().into_bytes(),
+            cert.signing_key.serialize_pem().into_bytes(),
+        )
+        .await
+        .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let router = axum::Router::new().route(
+            "/v1/templates",
+            axum::routing::get(|| async { axum::Json(serde_json::json!([])) }),
+        );
+        let handle = axum_server::Handle::new();
+        let task = tokio::spawn(
+            axum_server::from_tcp_rustls(listener, tls)
+                .unwrap()
+                .handle(handle.clone())
+                .serve(router.into_make_service()),
+        );
+        let token = "a".repeat(64);
+        let url = format!("https://localhost:{port}/");
+        let trusted = Client::new(&url, &token, Some(pem.as_bytes())).unwrap();
+        assert!(trusted.templates().await.unwrap().is_empty());
+        let other = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let untrusted = Client::new(&url, &token, Some(other.cert.pem().as_bytes())).unwrap();
+        let err = error_text(&untrusted.templates().await.unwrap_err());
+        assert!(err.to_ascii_lowercase().contains("certificate"), "{err}");
+        let public_roots = Client::new(&url, &token, None).unwrap();
+        let err = error_text(&public_roots.templates().await.unwrap_err());
+        assert!(err.to_ascii_lowercase().contains("certificate"), "{err}");
+        handle.shutdown();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn private_ca_does_not_trust_public_roots() {
+        let ca = rcgen::generate_simple_self_signed(vec!["example.com".into()]).unwrap();
+        let token = "ab".repeat(32);
+        let private = Client::new(
+            "https://example.com/",
+            &token,
+            Some(ca.cert.pem().as_bytes()),
+        )
+        .unwrap();
+        let err = error_text(&private.templates().await.unwrap_err());
+        assert!(err.to_ascii_lowercase().contains("certificate"), "{err}");
+        let public = Client::new("https://example.com/", &token, None).unwrap();
+        let err = public.templates().await.unwrap_err().to_string();
+        assert!(
+            err.contains("HTTP"),
+            "public roots should finish the TLS handshake, got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn identity_client_keeps_public_roots() {
+        let client = crate::auth::IdentityClient::new("https://example.com").unwrap();
+        let err = match client.begin_login("laptop").await {
+            Ok(_) => panic!("example.com is not an identity issuer"),
+            Err(err) => err.to_string(),
+        };
+        assert!(
+            err.contains("404") || err.contains("HTTP"),
+            "identity client should finish the TLS handshake, got {err}"
+        );
     }
 }
