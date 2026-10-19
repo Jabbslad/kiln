@@ -75,6 +75,8 @@ def package(repo, bins, output, version, target, kind, image):
                 "docs/remote-client.md": repo / "docs/remote-client.md",
                 "docs/identity-service.md": repo / "docs/identity-service.md",
                 "docs/runtime.md": repo / "docs/runtime.md",
+                "docs/runbooks/2026-10-19-public-door.md": repo
+                / "docs/runbooks/2026-10-19-public-door.md",
             }
         )
         files.update(
@@ -83,6 +85,8 @@ def package(repo, bins, output, version, target, kind, image):
                 for name in (
                     "kiln-host.service",
                     "kiln-api.service",
+                    "kiln-door.service",
+                    "enroll-dark-forge.sh",
                     "host.example.json",
                 )
             }

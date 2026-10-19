@@ -11,5 +11,6 @@ User-facing surfaces on current `main`. Each file is one journey. KVM means a re
 | Templates and checkpoints | [templates-and-checkpoints.md](templates-and-checkpoints.md) | Build a template, clone it, save and restore a checkpoint | Yes |
 | Guest networking | [guest-networking.md](guest-networking.md) | Opt-in isolated IPv4 egress | Yes, plus root and `kiln-network` |
 | Login | [login.md](login.md) | `kiln login` device-code approval | No, but the real identity origin and a provider account |
+| Public door | [public-door.md](public-door.md) | Laptop login through `cli.dark-forge.dev`, then list, create, exec, delete | Yes for the guest. The lab stack uses a stand-in provider |
 | Private CA | [private-ca.md](private-ca.md) | `kiln profile add` with a server CA, then talk to the API | No for an empty catalog |
 | Installer | [installer.md](installer.md) | `install.sh` client or `install.sh server` | Server install yes; the in-repo harness no |

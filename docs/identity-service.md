@@ -9,8 +9,9 @@ applications, or enroll a host automatically.
 
 The identity process has its own SQLite database and no KVM/runtime dependency.
 It stores provider subjects, device credentials, registered endpoints and public
-CA certificates. VM operations, SSH and SFTP go directly from the laptop to the
-private server. The laptop still needs LAN/VPN connectivity.
+CA certificates. VM operations still go to the enrolled server, not through the
+identity service. On dark-forge the laptop dials `https://cli.dark-forge.dev:8443`
+through the public door. Other hosts still need a reachable private address.
 
 ## Provisioning requires explicit operator approval
 
@@ -55,6 +56,10 @@ sudo /usr/local/libexec/kiln-api enroll \
 
 The default issuer is `https://dark-forge.dev`; use `--issuer` only for another
 identity service. The server installer prints the command with its actual address.
+For dark-forge, use `deploy/enroll-dark-forge.sh` instead. It passes
+`--url https://cli.dark-forge.dev:8443` and `--local-url https://127.0.0.1:8443`,
+then checks that the approving GitHub login is Jabbslad. The steps and the
+account check are in `docs/runbooks/2026-10-19-public-door.md`.
 
 The terminal prints a public approval code/URL. Sign in using GitHub or Google
 and confirm the server endpoint and certificate fingerprint. The registration
