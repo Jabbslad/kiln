@@ -5,8 +5,10 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -476,6 +478,117 @@ class UpgradeTests(unittest.TestCase):
         for name, path in self.destinations.items():
             self.assertEqual(path.read_bytes(), self.original[name])
 
+    def stage_versions(self, installed, package, *, identical=False, extra=""):
+        for name, path in self.destinations.items():
+            reported_name = "kiln-server" if name in ("kiln-host", "kiln-api") else name
+            installed_text = f"#!/bin/sh\necho '{reported_name} {installed}'\n"
+            package_text = f"#!/bin/sh\necho '{reported_name} {package}'\n{extra}"
+            path.write_text(installed_text)
+            path.chmod(0o755)
+            new = self.bundle / "bin" / name
+            new.write_text(installed_text if identical else package_text)
+            new.chmod(0o755)
+        (self.bundle / "release.json").write_text(
+            json.dumps(
+                {"version": f"v{package}", "target": "x86_64-unknown-linux-gnu"}
+            )
+        )
+        self.original = {
+            name: path.read_bytes() for name, path in self.destinations.items()
+        }
+
+    def test_newer_release_replaces_binaries(self):
+        for installed, package in (
+            ("0.4.4", "0.4.5"),
+            ("0.4.4", "0.4.10"),
+            ("0.9.0", "0.10.0"),
+        ):
+            with self.subTest(installed=installed, package=package):
+                self.commands.clear()
+                upgrades = self.paths["OPT"] / "upgrades"
+                if upgrades.exists():
+                    shutil.rmtree(upgrades)
+                self.stage_versions(installed, package)
+                self.installer.upgrade(self.bundle)
+                self.assert_original_binaries()
+                self.assertFalse(any(args[1] == "stop" for args in self.commands))
+                self.assertFalse(upgrades.exists())
+                self.installer.upgrade(self.bundle, apply=True)
+                for name, path in self.destinations.items():
+                    self.assertEqual(
+                        path.read_bytes(), (self.bundle / "bin" / name).read_bytes()
+                    )
+                self.assertIn(["systemctl", "stop", "kiln-api.service"], self.commands)
+                self.assertFalse((self.paths["OPT"] / "pending-upgrade.json").exists())
+                self.commands.clear()
+                self.installer.upgrade(self.bundle, apply=True)
+                self.assertFalse(any(args[1] == "stop" for args in self.commands))
+
+    def test_older_release_is_refused_before_any_change(self):
+        for installed, package in (
+            ("0.4.5", "0.4.4"),
+            ("0.4.10", "0.4.4"),
+            ("0.10.0", "0.9.0"),
+        ):
+            with self.subTest(installed=installed, package=package):
+                self.commands.clear()
+                self.health.reset_mock()
+                self.stage_versions(installed, package)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    f"refusing downgrade from {installed} to {package}",
+                ):
+                    self.installer.upgrade(self.bundle, apply=True)
+                self.assert_original_binaries()
+                self.assert_data_preserved()
+                self.assertFalse(any(args[1] == "stop" for args in self.commands))
+                self.health.assert_not_called()
+                self.assertFalse((self.paths["OPT"] / "upgrades").exists())
+                self.assertFalse((self.paths["OPT"] / "pending-upgrade.json").exists())
+
+    def test_same_version_identical_binaries_change_nothing(self):
+        self.stage_versions("0.4.4", "0.4.4", identical=True)
+        self.installer.upgrade(self.bundle, apply=True)
+        self.assert_original_binaries()
+        self.assert_data_preserved()
+        self.assertIn(
+            "Kiln 0.4.4 is already current; nothing changed.",
+            sys.stdout.getvalue(),
+        )
+        self.assertFalse(any(args[1] == "stop" for args in self.commands))
+        self.assertFalse((self.paths["OPT"] / "upgrades").exists())
+        self.installer.upgrade(self.bundle, apply=True)
+        self.assertFalse(any(args[1] == "stop" for args in self.commands))
+
+    def test_same_version_different_binaries_replace_when_applied(self):
+        self.stage_versions("0.4.4", "0.4.4", extra="# rebuilt\n")
+        self.installer.upgrade(self.bundle)
+        self.assert_original_binaries()
+        self.assertFalse(any(args[1] == "stop" for args in self.commands))
+        self.assertFalse((self.paths["OPT"] / "upgrades").exists())
+        self.installer.upgrade(self.bundle, apply=True)
+        for name, path in self.destinations.items():
+            self.assertEqual(
+                path.read_bytes(), (self.bundle / "bin" / name).read_bytes()
+            )
+            self.assertNotEqual(path.read_bytes(), self.original[name])
+        self.assertIn(["systemctl", "stop", "kiln-api.service"], self.commands)
+
+    def test_prerelease_and_foreign_target_are_refused_before_any_change(self):
+        for release in (
+            {"version": "v0.4.5-rc.1", "target": "x86_64-unknown-linux-gnu"},
+            {"version": "v0.4", "target": "x86_64-unknown-linux-gnu"},
+            {"version": "v0.4.5", "target": "aarch64-unknown-linux-gnu"},
+        ):
+            with self.subTest(release=release):
+                self.commands.clear()
+                (self.bundle / "release.json").write_text(json.dumps(release))
+                with self.assertRaisesRegex(ValueError, "unsupported update package"):
+                    self.installer.upgrade(self.bundle, apply=True)
+                self.assert_original_binaries()
+                self.assertFalse(any(args[1] == "stop" for args in self.commands))
+                self.assertFalse((self.paths["OPT"] / "upgrades").exists())
+
     def test_update_preserves_configuration_and_state_and_backs_up_binaries(self):
         self.installer.upgrade(self.bundle, apply=True)
         for name, path in self.destinations.items():
@@ -653,11 +766,13 @@ class UpgradeTests(unittest.TestCase):
             self.installer.upgrade(self.bundle, apply=True)
         self.assertEqual(self.commands, [])
 
-    def test_incompatible_versions_and_overrides_do_not_stop_services(self):
-        for value in ("0.2.2", "0.3.99"):
+    def test_downgrade_and_overrides_do_not_stop_services(self):
+        for value in ("0.4.5", "0.4.10"):
             for name, path in self.destinations.items():
                 path.write_bytes(self.original[name].replace(b"0.3.2", value.encode()))
-            with self.assertRaisesRegex(ValueError, "incompatible"):
+            with self.assertRaisesRegex(
+                ValueError, f"refusing downgrade from {value} to 0.4.4"
+            ):
                 self.installer.upgrade(self.bundle, apply=True)
         for name, path in self.destinations.items():
             path.write_bytes(self.original[name])
