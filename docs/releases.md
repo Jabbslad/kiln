@@ -446,15 +446,17 @@ The ordinary build workflow has no cross-repository publishing credentials.
 ## Deploy from GitHub Actions
 
 GitHub-hosted runners install a published server release on `root@dark-forge.dev`.
-`.github/workflows/deploy.yml` runs when a release is published, and from the
-Actions tab on `main`. `.github/workflows/diagnose.yml` is manual and only reads
-the host. Neither workflow runs for a pull request or a fork.
+`.github/workflows/deploy.yml` runs only from the Actions tab on `main`.
+Publishing a release does not start it. `.github/workflows/diagnose.yml` is
+manual and only reads the host. Neither workflow runs for a pull request or
+a fork.
 
 The `dark-forge` environment is the approval gate. The API stays on the installer
 default, a private address at port 8443 with the private CA. The deploy does not
 open port 443, install the dashboard, or restart `kiln-identity`. Guest NAT stays
-off. A published release detects one private source address and stops if the
-host's default address is public. A manual run can set the `address` input.
+off. When `address` is empty, the deploy detects one private source address.
+The deploy stops if the host's default address is public. A manual run can
+set the `address` input.
 
 `v0.4.4` deploys with this tree's `install.sh`, because that release's own
 archive contains `install.py`, which rejects Debian 13. A newer stable tag

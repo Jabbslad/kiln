@@ -13,8 +13,6 @@ on:
         required: false
         default: ""
         type: string
-  release:
-    types: [published]
 
 # Runners install a published release. Pull requests and forks never reach this job.
 permissions:
@@ -38,6 +36,6 @@ jobs:
         env:
           DARK_FORGE_SSH_KEY: ${{ secrets.DARK_FORGE_SSH_KEY }}
           DARK_FORGE_KNOWN_HOSTS: ${{ secrets.DARK_FORGE_KNOWN_HOSTS }}
-          KILN_RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+          KILN_RELEASE_TAG: ${{ inputs.tag }}
           KILN_ADDRESS: ${{ github.event_name == 'workflow_dispatch' && inputs.address || '' }}
         run: bash deploy/github/deploy.sh
