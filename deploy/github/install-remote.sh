@@ -34,8 +34,11 @@ awk 'substr($0, 1, 1) != "-" { bad = 1 } END { exit bad }' "$extract/types" \
   || fail 'archive contains a non-regular file'
 mkdir "$extract/package"
 tar -xzf "$archive" -C "$extract/package"
-[ -f "$dir/installer.py" ] || fail 'missing reviewed installer'
-install -m 0644 "$dir/installer.py" "$extract/package/install.py"
+# v0.4.4 uploads this tree's installer. A newer release keeps the copy in the archive.
+if [ -f "$dir/installer.py" ]; then
+  install -m 0644 "$dir/installer.py" "$extract/package/install.py"
+fi
+[ -f "$extract/package/install.py" ] || fail 'archive is missing install.py'
 
 stamp() {
   if [ ! -d /run/systemd/system ]; then

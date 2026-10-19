@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Gates for the dark-forge workflows. They do not open a connection."""
 
+import hashlib
+import io
 import os
-import re
+import shutil
 import stat
 import subprocess
+import tarfile
 import tempfile
 import textwrap
 import unittest
@@ -154,14 +157,15 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertNotIn("Leave the key out of the environment", docs)
         self.assertNotIn("repository secret", docs.lower())
 
-    def test_unsupported_tag_is_refused_before_ssh(self):
-        for tag in ("v0.4.3", "v0.4.5", "v0.4.4-rc.1"):
-            result, calls = run_deploy(tag)
+    def test_older_tags_and_prereleases_are_refused_before_ssh(self):
+        for tag in ("v0.4.3", "v0.4.4-rc.1", "v0.5.0-rc.1"):
+            result, calls, ssh_calls = run_deploy(tag)
             self.assertNotEqual(result.returncode, 0, result.stderr)
-            self.assertIn("this installer supports only v0.4.4", result.stderr)
             self.assertIn(f"refusing {tag}", result.stderr)
+            self.assertIn("v0.4.4 and newer stable releases", result.stderr)
             self.assertEqual(calls, [], result.stderr)
-        latest, calls = run_deploy(
+            self.assertEqual(ssh_calls, [], result.stderr)
+        latest, calls, ssh_calls = run_deploy(
             "latest",
             releases='[{"tag_name":"v0.4.3","draft":false}]',
         )
@@ -169,21 +173,50 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertIn("refusing v0.4.3", latest.stderr)
         self.assertTrue(any("api.github.com" in call for call in calls), calls)
         self.assertFalse(any("releases/download" in call for call in calls), calls)
+        self.assertEqual(ssh_calls, [], latest.stderr)
 
-    def test_supported_tag_is_the_installer_package_and_reaches_download(self):
-        install = (ROOT / "deploy/install.py").read_text()
-        match = re.search(r'target != "(\d+\.\d+\.\d+)"', install)
-        self.assertIsNotNone(match)
-        deploy = (ROOT / "deploy/github/deploy.sh").read_text()
-        self.assertIn(f"supported_tag=v{match.group(1)}", deploy)
-        self.assertIn('"$repo_root/deploy/install.py"', deploy)
-        result, calls = run_deploy("v0.4.4")
-        self.assertNotEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("supports only", result.stderr)
-        self.assertTrue(
-            any("kiln-server-v0.4.4-x86_64-unknown-linux-gnu.tar.gz" in call for call in calls),
-            calls,
+    def test_v044_uses_this_tree_and_later_tags_use_the_archive(self):
+        tree = str(ROOT / "deploy/install.py")
+        current, calls, ssh_calls = run_deploy("v0.4.4", archive_installer="print('archive')\n")
+        self.assertEqual(current.returncode, 0, current.stderr)
+        self.assertIn("deployed v0.4.4", current.stdout)
+        self.assertTrue(any(tree in call for call in ssh_calls), ssh_calls)
+        self.assertTrue(any(call.startswith("scp ") and call.endswith("installer.py") for call in ssh_calls), ssh_calls)
+        self.assertTrue(any("kiln-server-v0.4.4-" in call for call in calls), calls)
+
+        later, _, later_ssh = run_deploy("v0.4.5", archive_installer="print('archive-v045')\n")
+        self.assertEqual(later.returncode, 0, later.stderr)
+        self.assertIn("deployed v0.4.5", later.stdout)
+        self.assertFalse(any("install.py" in call or "installer.py" in call for call in later_ssh), later_ssh)
+        self.assertTrue(any("kiln-server-v0.4.5-" in call and call.startswith("scp ") for call in later_ssh), later_ssh)
+
+        numeric, _, numeric_ssh = run_deploy("v0.4.10", archive_installer="print('archive-v0410')\n")
+        self.assertEqual(numeric.returncode, 0, numeric.stderr)
+        self.assertFalse(any("installer.py" in call for call in numeric_ssh), numeric_ssh)
+
+        for tag in ("v0.4.4", "v0.4.5"):
+            failed, _, failed_ssh = run_deploy(
+                tag,
+                archive_installer="print('must-not-run')\n",
+                bad_checksum=True,
+            )
+            self.assertNotEqual(failed.returncode, 0, failed.stdout + failed.stderr)
+            self.assertIn("NOT match", failed.stderr)
+            self.assertEqual(failed_ssh, [], failed.stderr)
+
+        tree_run = run_remote("print('installer=archive')\n", overlay="print('installer=tree')\n")
+        self.assertIn("installer=tree", tree_run.stdout)
+        self.assertNotIn("installer=archive", tree_run.stdout)
+        archive_run = run_remote("print('installer=archive')\n")
+        self.assertIn("installer=archive", archive_run.stdout)
+        self.assertNotIn("installer=tree", archive_run.stdout)
+        mismatch = run_remote(
+            "print('installer=archive')\n",
+            overlay="print('installer=tree')\n",
+            bad_checksum=True,
         )
+        self.assertNotIn("installer=", mismatch.stdout)
+        self.assertIn("NOT match", mismatch.stderr)
 
     def test_apt_installs_missing_packages_without_upgrading(self):
         script = (ROOT / "deploy/github/install-remote.sh").read_text()
@@ -264,33 +297,32 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertIn("delete", command_names(leaked_log))
 
 
-def run_deploy(tag, releases="[]"):
+def run_deploy(tag, releases="[]", archive_installer=None, bad_checksum=False):
     with tempfile.TemporaryDirectory() as tmp:
-        log = Path(tmp) / "curl.log"
-        curl = Path(tmp) / "curl"
-        curl.write_text(
-            textwrap.dedent(
-                f"""\
-                #!/bin/bash
-                printf '%s\\n' "$*" >> {sh_quote(log)}
-                for arg in "$@"; do
-                  case "$arg" in
-                    *api.github.com/repos/Jabbslad/kiln/releases*)
-                      printf '%s\\n' {sh_quote(releases)}
-                      exit 0
-                      ;;
-                  esac
-                done
-                exit 1
-                """
-            )
-        )
+        tmp_path = Path(tmp)
+        log = tmp_path / "curl.log"
+        ssh_log = tmp_path / "ssh.log"
+        archive_path = tmp_path / "release.tar.gz"
+        asset_name = f"kiln-server-{tag}-x86_64-unknown-linux-gnu.tar.gz"
+        checksum_text = ""
+        if archive_installer is not None:
+            blob = tar_bytes({"install.py": archive_installer})
+            archive_path.write_bytes(blob)
+            digest = "0" * 64 if bad_checksum else hashlib.sha256(blob).hexdigest()
+            checksum_text = f"{digest}  {asset_name}\n"
+            ssh = tmp_path / "ssh.sh"
+            ssh.write_text(ssh_stub(ssh_log))
+            ssh.chmod(ssh.stat().st_mode | stat.S_IEXEC)
+        curl = tmp_path / "curl"
+        curl.write_text(curl_stub(log, releases, archive_path if archive_installer is not None else None, checksum_text))
         curl.chmod(curl.stat().st_mode | stat.S_IEXEC)
         env = os.environ.copy()
-        for key in ("GITHUB_EVENT_NAME", "GITHUB_REF", "GITHUB_REPOSITORY"):
+        for key in ("GITHUB_EVENT_NAME", "GITHUB_REF", "GITHUB_REPOSITORY", "KILN_SSH_SH"):
             env.pop(key, None)
         env["PATH"] = f"{tmp}{os.pathsep}{env.get('PATH', '')}"
         env["KILN_RELEASE_TAG"] = tag
+        if archive_installer is not None:
+            env["KILN_SSH_SH"] = str(tmp_path / "ssh.sh")
         result = subprocess.run(
             ["bash", "deploy/github/deploy.sh"],
             cwd=ROOT,
@@ -300,7 +332,107 @@ def run_deploy(tag, releases="[]"):
             check=False,
         )
         calls = log.read_text().splitlines() if log.exists() else []
-        return result, calls
+        ssh_calls = ssh_log.read_text().splitlines() if ssh_log.exists() else []
+        return result, calls, ssh_calls
+
+
+def run_remote(archive_body, overlay=None, bad_checksum=False):
+    remote = Path(subprocess.check_output(["mktemp", "-d", "/tmp/kiln-deploy.XXXXXX"], text=True).strip())
+    fake = Path(tempfile.mkdtemp())
+    try:
+        name = "kiln-server-v0.4.4-x86_64-unknown-linux-gnu.tar.gz"
+        blob = tar_bytes({"install.py": archive_body})
+        (remote / name).write_bytes(blob)
+        digest = "0" * 64 if bad_checksum else hashlib.sha256(blob).hexdigest()
+        (remote / f"{name}.sha256").write_text(f"{digest}  {name}\n")
+        if overlay is not None:
+            (remote / "installer.py").write_text(overlay)
+        apt = fake / "apt-get"
+        apt.write_text("#!/bin/bash\nexit 0\n")
+        apt.chmod(apt.stat().st_mode | stat.S_IEXEC)
+        env = os.environ.copy()
+        env["PATH"] = f"{fake}{os.pathsep}{env.get('PATH', '')}"
+        return subprocess.run(
+            ["bash", str(ROOT / "deploy/github/install-remote.sh"), str(remote), "127.0.0.1"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    finally:
+        shutil.rmtree(remote, ignore_errors=True)
+        shutil.rmtree(fake, ignore_errors=True)
+
+
+def tar_bytes(members):
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for name, text in members.items():
+            payload = text.encode()
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+    return buffer.getvalue()
+
+
+def curl_stub(log, releases, archive_path, checksum_text):
+    archive_literal = repr(str(archive_path)) if archive_path is not None else '""'
+    return textwrap.dedent(
+        f"""\
+        #!/usr/bin/env python3
+        import sys
+        from pathlib import Path
+        args = sys.argv[1:]
+        with open({str(log)!r}, "a", encoding="utf-8") as handle:
+            handle.write(" ".join(args) + "\\n")
+        url = args[-1]
+        output = args[args.index("--output") + 1] if "--output" in args else None
+        if "api.github.com/repos/Jabbslad/kiln/releases" in url and "download" not in url:
+            sys.stdout.write({releases!r} + "\\n")
+            raise SystemExit(0)
+        archive = {archive_literal}
+        if archive and output and url.endswith(".tar.gz"):
+            Path(output).write_bytes(Path(archive).read_bytes())
+            raise SystemExit(0)
+        checksum = {checksum_text!r}
+        if checksum and output and url.endswith(".sha256"):
+            Path(output).write_text(checksum)
+            raise SystemExit(0)
+        raise SystemExit(1)
+        """
+    )
+
+
+def ssh_stub(log):
+    return textwrap.dedent(
+        f"""\
+        #!/bin/bash
+        printf '%s\\n' "$*" >> {sh_quote(log)}
+        if [ "$1" = scp ]; then
+          mkdir -p -- "$(dirname -- "$3")"
+          cp -- "$2" "$3"
+          exit 0
+        fi
+        if [ "$1" = ssh ]; then
+          shift
+          if [ "${{1:-}}" = -- ]; then
+            shift
+          fi
+          if [ "${{1:-}}" = mktemp ]; then
+            shift
+            mktemp "$@"
+            exit 0
+          fi
+          if [ "${{1:-}}" = rm ]; then
+            shift
+            rm "$@"
+            exit 0
+          fi
+          exit 0
+        fi
+        exit 1
+        """
+    )
 
 
 def run_smoke(**env_extra):

@@ -4,6 +4,7 @@ set -euo pipefail
 unset CDPATH
 
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+ssh_sh=${KILN_SSH_SH:-$script_dir/ssh.sh}
 # shellcheck source=/dev/null
 source "$script_dir/guard.sh"
 guard_github_event deploy
@@ -33,10 +34,21 @@ if [ -n "$address" ]; then
   printf '%s\n' "$address" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' \
     || fail 'address must be an IPv4 literal'
 fi
-# v0.4.4's own installer rejects Debian 13. This tree's install.py admits that
-# host, and its upgrade path accepts only this package version.
-supported_tag=v0.4.4
-[ "$tag" = "$supported_tag" ] || fail "this installer supports only ${supported_tag}; refusing ${tag}"
+# v0.4.4's archive installer rejects Debian 13, so that one tag runs this tree's
+# install.py. Newer stable releases run the installer from their own archive.
+# Older tags and pre-releases stop here, before any download or SSH.
+python3 - "$tag" <<'PY' || fail "refusing ${tag}; deploy accepts v0.4.4 and newer stable releases"
+import sys
+
+tag = sys.argv[1]
+if not tag.startswith("v") or "-" in tag:
+    raise SystemExit(1)
+parts = tag[1:].split(".")
+if len(parts) != 3 or not all(part.isdigit() for part in parts):
+    raise SystemExit(1)
+if tuple(int(part) for part in parts) < (0, 4, 4):
+    raise SystemExit(1)
+PY
 
 asset="kiln-server-${tag}-x86_64-unknown-linux-gnu.tar.gz"
 base="https://github.com/Jabbslad/kiln/releases/download/${tag}"
@@ -45,7 +57,7 @@ remote=
 cleanup() {
   rm -rf "$work"
   if [ -n "$remote" ]; then
-    bash "$script_dir/ssh.sh" ssh -- rm -rf -- "$remote" || true
+    bash "$ssh_sh" ssh -- rm -rf -- "$remote" || true
   fi
 }
 trap cleanup EXIT
@@ -59,20 +71,21 @@ curl --fail --silent --show-error --location --proto '=https' --proto-redir '=ht
   sha256sum -c "${asset}.sha256"
 )
 
-remote=$(bash "$script_dir/ssh.sh" ssh -- mktemp -d /tmp/kiln-deploy.XXXXXX)
+remote=$(bash "$ssh_sh" ssh -- mktemp -d /tmp/kiln-deploy.XXXXXX)
 case "$remote" in
   /tmp/kiln-deploy.[A-Za-z0-9]*) ;;
   *) fail "unexpected remote directory: ${remote}" ;;
 esac
-bash "$script_dir/ssh.sh" scp "$work/$asset" "$remote/$asset"
-bash "$script_dir/ssh.sh" scp "$work/${asset}.sha256" "$remote/${asset}.sha256"
-# v0.4.4's installer rejects Debian 13, so this copy replaces the one in the archive.
-bash "$script_dir/ssh.sh" scp "$repo_root/deploy/install.py" "$remote/installer.py"
-bash "$script_dir/ssh.sh" scp "$script_dir/install-remote.sh" "$remote/install-remote.sh"
-bash "$script_dir/ssh.sh" scp "$script_dir/smoke.sh" "$remote/smoke.sh"
+bash "$ssh_sh" scp "$work/$asset" "$remote/$asset"
+bash "$ssh_sh" scp "$work/${asset}.sha256" "$remote/${asset}.sha256"
+if [ "$tag" = "v0.4.4" ]; then
+  bash "$ssh_sh" scp "$repo_root/deploy/install.py" "$remote/installer.py"
+fi
+bash "$ssh_sh" scp "$script_dir/install-remote.sh" "$remote/install-remote.sh"
+bash "$ssh_sh" scp "$script_dir/smoke.sh" "$remote/smoke.sh"
 if [ -n "$address" ]; then
-  bash "$script_dir/ssh.sh" ssh -- bash "$remote/install-remote.sh" "$remote" "$address"
+  bash "$ssh_sh" ssh -- bash "$remote/install-remote.sh" "$remote" "$address"
 else
-  bash "$script_dir/ssh.sh" ssh -- bash "$remote/install-remote.sh" "$remote"
+  bash "$ssh_sh" ssh -- bash "$remote/install-remote.sh" "$remote"
 fi
 printf 'deployed %s\n' "$tag"

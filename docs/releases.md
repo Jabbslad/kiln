@@ -402,12 +402,13 @@ open port 443, install the dashboard, or restart `kiln-identity`. Guest NAT stay
 off. A published release detects one private source address and stops if the
 host's default address is public. A manual run can set the `address` input.
 
-The workflow installs release `v0.4.4` with this tree's `install.py`. That is the
-installer that admits Debian 13, and its update path accepts only a 0.4.4 package.
-Any other tag is refused before SSH. After doctor and the health check pass, the
-deploy creates a box from the `ubuntu-4g` template, runs a command in it, checks
-the output, and deletes the box. The job fails if create, exec, the output check,
-or delete fails.
+`v0.4.4` deploys with this tree's `install.py`, because that release's own
+installer rejects Debian 13. A newer stable tag deploys with the `install.py`
+from its archive. Tags older than `v0.4.4`, and pre-releases, are refused before
+SSH. The release checksum is verified before either installer runs. After doctor
+and the health check pass, the deploy creates a box from the `ubuntu-4g`
+template, runs a command in it, checks the output, and deletes the box. The job
+fails if create, exec, the output check, or delete fails.
 
 Run this once on the server as root. It prints the two environment secret values.
 
