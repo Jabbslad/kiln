@@ -206,7 +206,9 @@ async fn oauth_token(
     Form(f): Form<TokenForm>,
 ) -> Response {
     let now = (a.cfg.now)();
-    // Login polls every 5 seconds. The approval budget of 5 per minute would abort that wait.
+    const DEVICE_POLL_SECONDS: i64 = 5;
+    const TOKEN_RATE_WINDOW: i64 = 60;
+    const TOKEN_RATE_MAX: i64 = TOKEN_RATE_WINDOW / DEVICE_POLL_SECONDS * 2;
     let limited = (|| -> anyhow::Result<()> {
         let mut c = a.store.db.lock().unwrap();
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -214,8 +216,8 @@ async fn oauth_token(
             &tx,
             &format!("token:{}", client_ip(&a.cfg, peer, &h)),
             now,
-            30,
-            60,
+            TOKEN_RATE_MAX,
+            TOKEN_RATE_WINDOW,
         )?;
         tx.commit()?;
         Ok(())

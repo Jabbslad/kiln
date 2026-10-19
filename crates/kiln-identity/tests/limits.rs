@@ -157,7 +157,7 @@ async fn unauthenticated_approvals_hit_the_ip_limit() {
 async fn bad_token_grants_hit_the_ip_limit() {
     let f = Fixture::new();
     let body = "grant_type=urn:ietf:params:oauth:grant-type:device_code&device_code=missing";
-    for attempt in 1..=30 {
+    for attempt in 1..=24 {
         let (status, bytes) = send(&f.app, "/oauth/token", "192.0.2.20", None, None, body).await;
         assert_eq!(
             (status, error_of(&bytes)),
