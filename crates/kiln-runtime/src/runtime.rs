@@ -298,7 +298,18 @@ impl Runtime {
             }
         }
     }
+}
 
+fn ensure_unique_name(records: &[BoxRecord], name: &str) -> Result<()> {
+    if records.iter().any(|record| record.name == name) {
+        return Err(Error::Invalid(format!(
+            "box name '{name}' is already in use"
+        )));
+    }
+    Ok(())
+}
+
+impl Runtime {
     fn records(&self) -> Result<Vec<BoxRecord>> {
         let mut records = Vec::new();
         for entry in fs::read_dir(self.root.join("boxes"))? {
@@ -564,6 +575,7 @@ impl Runtime {
         drop(phase);
         let phase = Phase::start("reservation");
         let records = self.records()?;
+        ensure_unique_name(&records, name)?;
         if records.len() >= 8
             || records.iter().map(|r| r.memory_mib).sum::<u32>() + memory_mib > 16384
         {

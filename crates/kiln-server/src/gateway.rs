@@ -105,11 +105,7 @@ async fn ssh_tunnel(
         .await
         .map_err(|_| upstream_error())?;
     if upstream.status() != StatusCode::SWITCHING_PROTOCOLS {
-        return Err(Failure::new(
-            upstream.status(),
-            "ssh_unavailable",
-            "SSH unavailable; the box must be running a guest-access image.",
-        ));
+        return Err(host_ssh_error(upstream).await);
     }
     if upstream
         .headers()
@@ -193,6 +189,24 @@ async fn proxy(state: Arc<Gateway>, request: Request) -> Result<Response, Failur
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     Ok(response)
+}
+
+async fn host_ssh_error(upstream: reqwest::Response) -> Failure {
+    let status = upstream.status();
+    let bytes = match upstream.bytes().await {
+        Ok(bytes) if bytes.len() <= kiln_api::MAX_RESPONSE_BYTES => bytes,
+        _ => return upstream_error(),
+    };
+    if let Ok(error) = serde_json::from_slice::<kiln_api::ApiError>(&bytes)
+        && !error.code.is_empty()
+    {
+        return Failure::new(status, &error.code, &error.message);
+    }
+    Failure::new(
+        status,
+        "ssh_unavailable",
+        "SSH unavailable; the box must be running a guest-access image.",
+    )
 }
 
 fn upstream_error() -> Failure {

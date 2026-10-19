@@ -157,4 +157,50 @@ mod tests {
         server.abort();
         host.abort();
     }
+
+    #[tokio::test]
+    async fn gateway_forwards_the_host_ssh_error() {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("host.sock");
+        let route = axum::Router::new().route(
+            "/v1/boxes/{id}/ssh",
+            axum::routing::get(|| async {
+                (
+                    StatusCode::CONFLICT,
+                    [("content-type", "application/json")],
+                    r#"{"code":"not_running","message":"SSH requires a running box"}"#,
+                )
+            }),
+        );
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let host = tokio::spawn(async move {
+            axum::serve(listener, route).await.unwrap();
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let token = "a".repeat(64);
+        let gateway = crate::gateway::router(&socket, &token).unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, gateway).await.unwrap();
+        });
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}/v1/boxes/{}/ssh", "b".repeat(32)))
+            .bearer_auth(token)
+            .header(header::CONNECTION, "upgrade")
+            .header(header::UPGRADE, kiln_api::SSH_UPGRADE)
+            .header(
+                kiln_api::SSH_KEY_HEADER,
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("not_running"), "{body}");
+        assert!(body.contains("SSH requires a running box"), "{body}");
+        assert!(!body.contains("ssh_unavailable"), "{body}");
+        server.abort();
+        host.abort();
+    }
 }

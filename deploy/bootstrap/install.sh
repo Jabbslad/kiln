@@ -125,6 +125,20 @@ as_root() {
     if [ "$(id -u)" = 0 ]; then "$@"; else sudo -n "$@"; fi
 }
 
+resource_preflight() {
+    awk '/^MemAvailable:/ {kb=$2} END {exit !(kb+0 >= 6*1024*1024)}' /proc/meminfo \
+        || fail 'at least 6 GiB available host RAM is required for the initial 4 GiB template'
+    avail=$(df -B1 /var/lib | awk 'NR==2 {print $4}')
+    [ "${avail:-0}" -ge $((24 * 1024 * 1024 * 1024)) ] \
+        || fail 'at least 24 GiB free on /var/lib is required for initial copy-backend storage'
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import socket,sys; s=socket.socket(); s.bind((sys.argv[1], 8443))' "$address" \
+            || fail 'The server address must be assigned on this host and port 8443 must be free.'
+    fi
+    as_root sh -c '[ -r /dev/kvm ] && [ -w /dev/kvm ]' < /dev/null \
+        || fail 'Server requires read-write access to /dev/kvm.'
+}
+
 check_upgrade_paths() {
     if [ ! -f "$destination" ] || [ -L "$destination" ]; then
         fail 'Upgrade requires an existing regular file at ~/.local/bin/kiln; symbolic links are refused.'
@@ -215,6 +229,7 @@ install_server() {
         [ -f "$work/package/bin/kiln-network" ] || fail 'This pinned release has no guest networking; a guest-access release is required.'
         printf 'Networking requested: enable host IPv4 forwarding and filtered NAT via %s.\n' "$uplink"
     fi
+    resource_preflight
     printf '%s\n' \
         'Fresh Kiln installation. Fresh-host/reboot validation is outstanding.' \
         'Setup will use sudo to install Ubuntu packages: python3 openssl curl ca-certificates tar passwd.' \

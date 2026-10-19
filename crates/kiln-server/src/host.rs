@@ -202,10 +202,6 @@ async fn ssh_key(
     Path(id): Path<String>,
 ) -> Result<Json<kiln_api::SshReady>, Failure> {
     host.owns(&id)?;
-    let _permit = host
-        .sessions
-        .try_acquire()
-        .map_err(|_| crate::ssh::busy())?;
     host.runtime
         .ssh_host_key(&id)
         .await
@@ -409,4 +405,50 @@ pub async fn bind_socket(path: &FsPath) -> Result<UnixListener> {
     let listener = UnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o660))?;
     Ok(listener)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    #[tokio::test]
+    async fn ssh_key_lookup_does_not_consume_a_tunnel_permit() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let host = Host::open(&Config {
+            runtime_dir: root.path().join("runtime"),
+            journal_dir: root.path().join("journal"),
+            socket: root.path().join("host.sock"),
+            isolation_config: None,
+            allow_unsafe_development: true,
+            templates: Default::default(),
+        })
+        .unwrap();
+        let operation = host
+            .journal
+            .lock()
+            .unwrap()
+            .accept(&Submit {
+                id: "c".repeat(32),
+                action: Action::Create {
+                    template: "base".into(),
+                    name: "box".into(),
+                },
+            })
+            .unwrap();
+        let _held: Vec<_> = (0..32)
+            .map(|_| host.sessions.clone().try_acquire_owned().unwrap())
+            .collect();
+        let response = ssh_key(State(host), Path(operation.box_id))
+            .await
+            .unwrap_err()
+            .into_response();
+        assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(!body.contains("ssh_busy"), "{body}");
+    }
 }
