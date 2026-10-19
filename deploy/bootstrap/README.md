@@ -93,7 +93,9 @@ fails instead of asking for a password. Installing and deploying Kiln is shell
 scripts (`deploy/install.sh` in the source tree). The bootstrap is still pinned
 to v0.4.4. That published archive contains `install.py` and no `install.sh`, so
 this pin runs Python for that one archive and installs python3. An archive that
-contains `install.sh` is run with bash and installs sqlite3 instead of python3.
+contains `install.sh` is run with bash. It installs sqlite3 with
+`NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3`
+only when `sqlite3` is not already on `PATH`, and it does not install python3.
 It then checks resources/conflicts before creating accounts,
 services, TLS credentials, and a 4 GiB warm Ubuntu template. Package configuration
 is non-interactive and retains existing configuration files. No VPN or API

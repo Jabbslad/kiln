@@ -221,6 +221,11 @@ class DeployWorkflowTests(unittest.TestCase):
     def test_apt_installs_missing_packages_without_upgrading(self):
         script = (ROOT / "deploy/github/install-remote.sh").read_text()
         self.assertIn("NEEDRESTART_MODE=l", script)
+        self.assertIn(
+            "NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3",
+            script,
+        )
+        self.assertNotIn("apt-get upgrade", script)
         self.assertIn("apt-get install --no-install-recommends --no-upgrade -y", script)
         pending = subprocess.run(
             ["apt-get", "-s", "upgrade"],
@@ -250,6 +255,20 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertNotIn(f"Inst {name} ", held.stdout)
         self.assertIn(f"Skipping {name}", held.stdout)
         self.assertIn(name, plain.stdout)
+
+    def test_sqlite3_install_is_exact_and_skipped_when_present(self):
+        exact = "NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3"
+        script = (ROOT / "deploy/github/install-remote.sh").read_text()
+        self.assertEqual(script.count(exact), 1)
+        self.assertNotIn("apt-get upgrade", script)
+        for line in script.splitlines():
+            if "sqlite3" in line and "apt-get" in line:
+                self.assertIn(exact, line)
+                self.assertNotIn("openssl", line)
+        self.assertNotIn(exact, "\n".join(apt_lines(hide_sqlite3=False)))
+        missing = apt_lines(hide_sqlite3=True)
+        self.assertEqual(missing.count(exact), 1)
+        self.assertFalse(any(line.startswith("apt-get upgrade") or " apt-get upgrade" in line for line in missing))
 
     def test_smoke_deletes_the_box_when_exec_or_output_fails(self):
         remote = (ROOT / "deploy/github/install-remote.sh").read_text()
@@ -334,6 +353,62 @@ def run_deploy(tag, releases="[]", archive_installer=None, bad_checksum=False):
         calls = log.read_text().splitlines() if log.exists() else []
         ssh_calls = ssh_log.read_text().splitlines() if ssh_log.exists() else []
         return result, calls, ssh_calls
+
+
+def path_without(name, root, *front):
+    hidden = root / "hidden"
+    hidden.mkdir()
+    for directory in os.environ["PATH"].split(os.pathsep):
+        base = Path(directory)
+        if not base.is_dir():
+            continue
+        for entry in base.iterdir():
+            dest = hidden / entry.name
+            if entry.name == name or dest.exists():
+                continue
+            try:
+                dest.symlink_to(entry)
+            except OSError:
+                continue
+    return os.pathsep.join([*front, str(hidden)])
+
+
+def apt_lines(hide_sqlite3):
+    remote = Path(subprocess.check_output(["mktemp", "-d", "/tmp/kiln-deploy.XXXXXX"], text=True).strip())
+    fake = Path(tempfile.mkdtemp())
+    try:
+        name = "kiln-server-v0.4.4-x86_64-unknown-linux-gnu.tar.gz"
+        blob = tar_bytes({"install.sh": "#!/bin/bash\nexit 0\n"})
+        (remote / name).write_bytes(blob)
+        (remote / f"{name}.sha256").write_text(f"{hashlib.sha256(blob).hexdigest()}  {name}\n")
+        log = fake / "apt.log"
+        apt = fake / "apt-get"
+        apt.write_text(
+            "#!/bin/bash\n"
+            f"printf 'NEEDRESTART_MODE=%s apt-get %s\\n' \"${{NEEDRESTART_MODE-}}\" \"$*\" >> {log}\n"
+            "exit 0\n"
+        )
+        apt.chmod(0o755)
+        if hide_sqlite3:
+            path = path_without("sqlite3", fake, str(fake))
+        else:
+            sqlite = fake / "sqlite3"
+            sqlite.write_text("#!/bin/bash\nexit 0\n")
+            sqlite.chmod(0o755)
+            path = str(fake) + os.pathsep + os.environ["PATH"]
+        env = os.environ.copy()
+        env["PATH"] = path
+        subprocess.run(
+            ["bash", str(ROOT / "deploy/github/install-remote.sh"), str(remote), "127.0.0.1"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return log.read_text().splitlines() if log.exists() else []
+    finally:
+        shutil.rmtree(remote, ignore_errors=True)
+        shutil.rmtree(fake, ignore_errors=True)
 
 
 def run_remote(archive_body, overlay=None, bad_checksum=False):

@@ -84,15 +84,10 @@ if [ "$existing" = false ]; then
   apt-get install --no-install-recommends --no-upgrade -y \
     -o Dpkg::Options::=--force-confdef \
     -o Dpkg::Options::=--force-confold \
-    sqlite3 openssl curl ca-certificates tar passwd
-elif ! command -v sqlite3 >/dev/null 2>&1; then
-  export DEBIAN_FRONTEND=noninteractive
-  export NEEDRESTART_MODE=l
-  apt-get update
-  apt-get install --no-install-recommends --no-upgrade -y \
-    -o Dpkg::Options::=--force-confdef \
-    -o Dpkg::Options::=--force-confold \
-    sqlite3
+    openssl curl ca-certificates tar passwd
+fi
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3
 fi
 
 if [ -n "$address" ]; then

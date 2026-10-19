@@ -222,6 +222,12 @@ configure_server() {
     printf 'Server endpoint: https://%s:8443\n' "$address"
 }
 
+install_sqlite3_if_missing() {
+    if [ -f "$work/package/install.sh" ] && ! command -v sqlite3 >/dev/null 2>&1; then
+        as_root env NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3 < /dev/null
+    fi
+}
+
 run_installer() {
     if [ -f "$work/package/install.sh" ]; then
         as_root bash "$work/package/install.sh" "$@" < /dev/null
@@ -237,6 +243,7 @@ run_installer() {
 
 install_server() {
     if [ "$existing_server" = true ]; then
+        install_sqlite3_if_missing
         set -- --apply
         if [ -n "$address" ]; then set -- "$@" --address "$address"; fi
         if [ -n "$uplink" ]; then set -- "$@" --network-uplink "$uplink"; fi
@@ -250,13 +257,17 @@ install_server() {
     fi
     resource_preflight
     if [ -f "$work/package/install.sh" ]; then
-        set -- sqlite3 openssl curl ca-certificates tar passwd
+        set -- openssl curl ca-certificates tar passwd
     else
         set -- python3 openssl curl ca-certificates tar passwd
     fi
+    notice="$*"
+    if [ -f "$work/package/install.sh" ] && ! command -v sqlite3 >/dev/null 2>&1; then
+        notice="sqlite3 $notice"
+    fi
     printf '%s\n' \
         'Fresh Kiln installation. Fresh-host/reboot validation is outstanding.' \
-        "Setup will use sudo to install Ubuntu packages: $*." \
+        "Setup will use sudo to install Ubuntu packages: $notice." \
         'The server command authorizes setup; resource/conflict checks still run before creating kiln accounts and services.' \
         'A failed setup retains runtime state for diagnosis; do not delete it and blindly retry.'
     as_root env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update < /dev/null
@@ -265,6 +276,7 @@ install_server() {
     fi
     as_root env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install --no-install-recommends -y \
         -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" < /dev/null
+    install_sqlite3_if_missing
     set -- --address "$address" --apply
     if [ -n "$uplink" ]; then set -- "$@" --network-uplink "$uplink"; fi
     run_installer "$@"

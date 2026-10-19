@@ -40,6 +40,7 @@ class InstallerTest(unittest.TestCase):
         self.curl_seq = self.root / "curl.seq"
         self.curl_body = self.root / "curl.body"
         self.cp_marker = self.root / "cp-failed"
+        self.mv_marker = self.root / "mv-failed"
         self.sleep_marker = self.root / "sleep-cleared"
         for path in (self.package, self.stubs, self.state):
             path.mkdir()
@@ -167,6 +168,27 @@ if [ -n "${{KILN_CP_FAIL_SOURCE:-}}" ] && [ ! -f {self.cp_marker} ]; then
   done
 fi
 exec /bin/cp "$@"
+""",
+        )
+        write_executable(
+            self.stubs / "mv",
+            f"""#!/bin/bash
+printf '%s\\n' "mv $*" >> {log!s}
+if [ -n "${{KILN_MV_FAIL:-}}" ] && [ ! -f {self.mv_marker} ]; then
+  live=0
+  backup=0
+  for arg in "$@"; do
+    case "$arg" in
+      */.kiln-update-*) live=1 ;;
+      */upgrades/*) backup=1 ;;
+    esac
+  done
+  if [ "$live" = 1 ] && [ "$backup" = 0 ]; then
+    touch {self.mv_marker}
+    exit 1
+  fi
+fi
+exec /bin/mv "$@"
 """,
         )
         for name in ("ip", "nft", "sysctl"):
@@ -475,7 +497,11 @@ class FreshTests(InstallerTest):
                 },
             )
             self.assertIn(b"https://127.0.0.1:8443", archive.extractfile("kiln-connection/CONNECT.txt").read())
-        self.assertIn("Bearer " + token, "\n".join(self.lines("curl ")))
+        curl_log = "\n".join(self.lines("curl "))
+        self.assertNotIn(token, curl_log)
+        self.assertNotIn("Bearer", curl_log)
+        self.assertIn("-H @-", curl_log)
+        self.assertNotIn(token, self.log.read_text())
         opt = self.root / "opt/kiln"
         units = self.root / "etc/systemd/system"
         self.assertEqual((units / "kiln-host.service").read_bytes(), HOST_UNIT.read_bytes())
@@ -774,6 +800,8 @@ class UpgradeTests(InstallerTest):
         cases = (
             ("0.4.5", "0.4.4", {}, "refusing downgrade from 0.4.5 to 0.4.4"),
             ("0.4.10", "0.4.4", {}, "refusing downgrade from 0.4.10 to 0.4.4"),
+            ("0.10.0", "0.9.0", {}, "refusing downgrade from 0.10.0 to 0.9.0"),
+            ("0.4.4", "0.4.6", {"min_upgrade_from": "0.4.5"}, "package requires min_upgrade_from 0.4.5"),
             ("0.2.2", "0.4.4", {}, "older than 0.3.0"),
             ("0.3.0", "0.4.4", {}, "without min_upgrade_from"),
             ("0.9.0", "0.10.0", {}, "without min_upgrade_from"),
@@ -910,6 +938,16 @@ class UpgradeTests(InstallerTest):
         self.assert_original_binaries()
         self.assert_data_preserved()
         self.assert_untouched_neighbors()
+
+        self.plan_curl("ok", "ok", body=UPGRADE_CATALOG)
+        replaced = self.invoke("--apply", KILN_MV_FAIL="1")
+        self.assertNotEqual(replaced.returncode, 0, replaced.stdout)
+        self.assertIn("restored", replaced.stderr)
+        self.assertTrue(self.mv_marker.is_file())
+        self.assert_original_binaries()
+        self.assert_data_preserved()
+        self.assert_untouched_neighbors()
+        self.assertFalse((self.opt / "pending-upgrade.json").exists())
 
     def test_rollback_failure_retains_marker_and_blocks_retry(self):
         self.plan_curl("ok", "fail", "fail", body=UPGRADE_CATALOG)

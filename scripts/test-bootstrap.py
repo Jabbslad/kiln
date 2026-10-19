@@ -153,6 +153,8 @@ if args[0] == 'python3':
     sys.exit(subprocess.call([sys.executable, *args[1:]]))
 if args[0] == 'sh' and len(args) >= 3 and 'kvm' in args[2]:
     sys.exit(0 if (root / 'kvm').exists() else 1)
+if args == ['env', 'NEEDRESTART_MODE=l', 'apt-get', 'install', '-y', '--no-install-recommends', '--no-upgrade', 'sqlite3']:
+    sys.exit(0)
 assert args[:4] == ['env', 'DEBIAN_FRONTEND=noninteractive', 'NEEDRESTART_MODE=a', 'apt-get']
 """,
         )
@@ -701,7 +703,7 @@ printf '%s\\n' 'provisioner completed'
         self.assertEqual(code, 0, out)
         self.assertIn("provisioner completed", out)
         commands = [json.loads(line) for line in (self.root / "privileged").read_text().splitlines()]
-        self.assertIn("sqlite3", commands[3])
+        self.assertNotIn("sqlite3", commands[3])
         self.assertNotIn("python3", commands[3])
         self.assertEqual(commands[4][0], "bash")
 
@@ -718,6 +720,73 @@ printf '%s\\n' 'provisioner completed'
         self.assertEqual(commands[0], ["true"])
         self.assertEqual(commands[1][0], "bash")
         self.assertEqual(len(commands), 2)
+        self.assertNotIn("sqlite3", self.privileged())
+
+    def path_without(self, name):
+        hidden = self.root / f"hide-{name}"
+        hidden.mkdir()
+        for directory in os.environ["PATH"].split(os.pathsep):
+            base = Path(directory)
+            if not base.is_dir():
+                continue
+            for entry in base.iterdir():
+                dest = hidden / entry.name
+                if entry.name == name or dest.exists():
+                    continue
+                try:
+                    dest.symlink_to(entry)
+                except OSError:
+                    continue
+        return str(self.root / "bin") + os.pathsep + str(hidden)
+
+    def test_sqlite3_install_is_exact_and_skipped_when_present(self):
+        exact = [
+            "env",
+            "NEEDRESTART_MODE=l",
+            "apt-get",
+            "install",
+            "-y",
+            "--no-install-recommends",
+            "--no-upgrade",
+            "sqlite3",
+        ]
+        text = (ROOT / "deploy/bootstrap/install.sh").read_text()
+        self.assertIn(
+            "NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3",
+            text,
+        )
+        self.assertNotIn("apt-get upgrade", text)
+        members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
+        del members["install.py"]
+        members["install.sh"] = b"#!/bin/bash\nset -euo pipefail\nprintf '%s\\n' 'provisioner completed'\n"
+        code, out = self.run_bootstrap(self.package(members), args=("server",))
+        self.assertEqual(code, 0, out)
+        present = [json.loads(line) for line in (self.root / "privileged").read_text().splitlines()]
+        self.assertNotIn(exact, present)
+        self.assertTrue(any(command[-2:] == ["apt-get", "update"] for command in present))
+
+        (self.root / "privileged").unlink()
+        self.env["PATH"] = self.path_without("sqlite3")
+        code, out = self.run_bootstrap(self.package(members), args=("server",))
+        self.assertEqual(code, 0, out)
+        missing = [json.loads(line) for line in (self.root / "privileged").read_text().splitlines()]
+        self.assertIn(exact, missing)
+        self.assertEqual(missing.count(exact), 1)
+        general = next(command for command in missing if command[-1] == "passwd")
+        self.assertNotIn("sqlite3", general)
+        self.assertNotIn("python3", general)
+
+        (self.root / "etc-kiln").mkdir()
+        (self.root / "privileged").unlink()
+        self.env["ROUTE"] = ""
+        members["install.sh"] = b"#!/bin/bash\nset -euo pipefail\n[ \"$*\" = --apply ]\nprintf '%s\\n' updated\n"
+        code, out = self.run_bootstrap(self.package(members), args=("server",))
+        self.assertEqual(code, 0, out)
+        existing = [json.loads(line) for line in (self.root / "privileged").read_text().splitlines()]
+        self.assertEqual(existing[0], ["true"])
+        self.assertEqual(existing[1], exact)
+        self.assertEqual(existing[2][0], "bash")
+        self.assertEqual(len(existing), 3)
 
     def test_kvm_access_is_probed_before_apt(self):
         code, out = self.run_bootstrap(self.package(server=True), args=("server",))

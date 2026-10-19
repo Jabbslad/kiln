@@ -576,13 +576,17 @@ EOF
 
 healthcheck() {
   local address=$1 expected=${2:-}
-  local i=0 body norm exp token
-  token=$(tr -d '[:space:]' <"$ETC/admin.token")
+  local i=0 body norm exp
   HEALTH_ERROR="HTTPS readiness failed; inspect journalctl -u kiln-host -u kiln-api"
   while [ "$i" -lt 30 ]; do
-    if body=$(curl --silent --show-error --cacert "$ETC/ca.crt" --noproxy '*' --max-time 2 \
-      -H "Authorization: Bearer $token" \
-      "https://${address}:8443/v1/templates" 2>/dev/null); then
+    # -H @- reads the header from stdin. The token must not be a curl argument:
+    # any local user can read another process's argv from /proc.
+    if body=$(
+      awk 'NR == 1 { printf "Authorization: Bearer %s\n", $0 }' "$ETC/admin.token" |
+        curl --silent --show-error --cacert "$ETC/ca.crt" --noproxy '*' --max-time 2 \
+          -H @- \
+          "https://${address}:8443/v1/templates" 2>/dev/null
+    ); then
       norm=$(printf '%s' "$body" | tr -d '[:space:]')
       case $norm in
         \[*\]) ;;
@@ -790,11 +794,13 @@ atomic_copy() {
     atomic_tmp=
     return 1
   fi
-  chmod 755 "$tmp"
-  sync "$tmp"
-  mv -f -- "$tmp" "$destination"
+  # Callers invoke this under `if !`, which disables set -e for the whole function.
+  # A failing mv would otherwise be hidden by the status of the final sync.
+  chmod 755 "$tmp" || { rm -f -- "$tmp"; atomic_tmp=; return 1; }
+  sync "$tmp" || { rm -f -- "$tmp"; atomic_tmp=; return 1; }
+  mv -f -- "$tmp" "$destination" || { rm -f -- "$tmp"; atomic_tmp=; return 1; }
   atomic_tmp=
-  sync "$dir"
+  sync "$dir" || return 1
 }
 
 regular_file() {
