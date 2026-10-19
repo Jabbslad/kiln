@@ -225,77 +225,55 @@ async fn device_grant_strips_browser_authorization() {
     assert!(hit.cookie.is_none());
 
     let hits = world.hits.load(Ordering::SeqCst);
-    let response = world.call(post_op(&cookie, None, &admin)).await;
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert_eq!(world.hits.load(Ordering::SeqCst), hits);
-
     let response = world
-        .call(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/operations")
-                .header(header::HOST, "cli.test")
-                .header(header::ORIGIN, "https://evil.test")
-                .header(header::COOKIE, &cookie)
-                .header("x-kiln-csrf", &csrf)
-                .header(header::AUTHORIZATION, &admin)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(b"{}".as_slice()))
-                .unwrap(),
-        )
+        .call(req(
+            "POST",
+            "/v1/operations",
+            Some(&cookie),
+            None,
+            Some(br#"{"type":"create"}"#),
+        ))
         .await;
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(world.hits.load(Ordering::SeqCst), hits);
-
+    let response = world.call(post_op(&cookie, Some(&csrf), &admin)).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(world.hits.load(Ordering::SeqCst), hits);
+    let cli = format!("Bearer {}", mint(&world, "owner-a"));
     let response = world
-        .call(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/operations")
-                .header(header::HOST, "cli.test")
-                .header(header::ORIGIN, "https://cli.test")
-                .header(header::COOKIE, &cookie)
-                .header("x-kiln-csrf", &csrf)
-                .header(header::AUTHORIZATION, &admin)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(br#"{"type":"create"}"#.as_slice()))
-                .unwrap(),
-        )
+        .call(req(
+            "POST",
+            "/v1/operations",
+            Some(&cookie),
+            Some(&cli),
+            Some(br#"{"type":"create"}"#),
+        ))
         .await;
     assert_eq!(response.status(), StatusCode::OK);
     let hit = last_seen(&world);
     assert_eq!(hit.path, "/v1/operations");
-    assert_eq!(
-        hit.authorization.as_deref(),
-        Some(format!("Bearer {}", world.identity.jwt).as_str())
-    );
-    assert_ne!(hit.authorization.as_deref(), Some(admin.as_str()));
+    assert_eq!(hit.authorization.as_deref(), Some(cli.as_str()));
     assert!(hit.cookie.is_none());
 
     let op = "a".repeat(32);
+    let hits = world.hits.load(Ordering::SeqCst);
     let response = world
         .call(req(
             "GET",
             &format!("/v1/operations/{op}"),
             Some(&cookie),
-            Some(admin.as_str()),
+            None,
             None,
         ))
         .await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let hit = last_seen(&world);
-    assert_eq!(hit.path, format!("/v1/operations/{op}"));
-    assert_eq!(
-        hit.authorization.as_deref(),
-        Some(format!("Bearer {}", world.identity.jwt).as_str())
-    );
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(world.hits.load(Ordering::SeqCst), hits);
 
     let response = world
         .call(req("GET", "/v1/templates", Some(&cookie), None, None))
         .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let after_cookie_only = world.hits.load(Ordering::SeqCst);
-    let cli = format!("Bearer {}", mint(&world, "owner-a"));
     let response = world
         .call(req("GET", "/v1/templates", None, Some(&cli), None))
         .await;

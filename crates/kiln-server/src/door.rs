@@ -1,7 +1,7 @@
 //! Public TLS door. It checks an identity JWT, then dials loopback kiln-api.
 //! The administrator token is not a JWT and never opens that dial.
-//! A dashboard cookie is a separate session. Those routes send the session
-//! JWT and do not copy the browser `Authorization` header.
+//! A dashboard cookie authorizes `GET /api/v1/dashboard`. That route sends
+//! the session JWT and does not copy the browser `Authorization` header.
 use crate::{
     Failure,
     auth::{Authenticator, Enrollment},
@@ -284,14 +284,7 @@ async fn route(door: &Arc<Door>, request: Request) -> Response {
 }
 
 fn cookie_route(method: &Method, path: &str) -> bool {
-    (method == Method::GET && path == "/api/v1/dashboard")
-        || (method == Method::POST && path == "/v1/operations")
-        || (method == Method::GET && operation_poll(path))
-}
-
-fn operation_poll(path: &str) -> bool {
-    path.strip_prefix("/v1/operations/")
-        .is_some_and(kiln_api::valid_id)
+    method == Method::GET && path == "/api/v1/dashboard"
 }
 
 fn is_api(path: &str) -> bool {
@@ -355,15 +348,6 @@ async fn cookie_proxy(door: &Door, request: Request) -> Response {
     let Some(slot) = load_session(dash, &raw) else {
         return unauthorized();
     };
-    if request.method() == Method::POST
-        && (!origin_matches(request.headers()) || !csrf_matches(request.headers(), &slot).await)
-    {
-        return deny(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "The session check failed.",
-        );
-    }
     let jwt = match operate_jwt(door, dash, &slot).await {
         Jwt::Ready(jwt) => jwt,
         Jwt::Dead => return unauthorized(),
