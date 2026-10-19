@@ -23,7 +23,7 @@ the dashboard automatically.
 Install the macOS/Linux client without prompts or GitHub credentials:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh
 kiln login
 ```
 

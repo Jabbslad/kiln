@@ -347,7 +347,7 @@ git diff --check
 ```
 
 - [ ] Audit the exact staged/public diff for credentials, private hostnames/IPs and runtime files. Commit, push to GitHub and Amp, create the matching release tag, and follow the existing workflow to completion. Do not overwrite a failed or published version tag.
-- [ ] Download every release asset and verify checksums/contents, publish through the existing release process, update bootstrap pins only to verified assets, and synchronize only `deploy/bootstrap/install.sh` and `deploy/bootstrap/README.md` to `Jabbslad/kiln-install`. Verify the anonymous public bootstrap bytes and a fresh installation.
+- [ ] Download every release asset and verify checksums/contents, publish through the existing release process, update bootstrap pins only to verified assets, and verify the anonymous public bootstrap bytes and a fresh installation.
 - [ ] Report precise delivery status: source committed/pushed, release version/assets, real auth/runtime checks, remaining deployment actions and unsupported cases. Publishing a release does not authorize restarting or enrolling the owner's live server.
 
 ## Self-review and execution status
