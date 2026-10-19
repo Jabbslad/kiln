@@ -155,8 +155,8 @@ binaries are not Authenticode-signed.
 Kiln v0.3.0 renames the client to `kiln`, the operator tool to `kiln-runtime`,
 and the host/API services to `kiln-host` and `kiln-api`. Rust crates, release
 archives, guest units, SSH upgrade headers and `KILN_*` environment variables
-use the new identity. Source is `Jabbslad/kiln`; the bootstrap
-and its README are also published in `Jabbslad/kiln-install`.
+use the new identity. Source is `Jabbslad/kiln`. The public bootstrap
+is `deploy/bootstrap/install.sh` in that repository.
 
 This is **not an in-place upgrade from v0.2.x**. Use matching v0.3.0 client,
 server and rebuilt guest images/templates. New installs use `/etc/kiln`,
@@ -184,13 +184,13 @@ does not add support for 26.04. The guest image remains Ubuntu 24.04 on either h
 On a macOS or supported Linux laptop:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh
 ```
 
 On a dedicated **Ubuntu 24.04, Ubuntu 26.04, or Debian 13 x86-64/KVM** server:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh -s -- server
 ```
 
 **v0.3.2 adds public, unattended installation.** Packages use versioned public
@@ -246,7 +246,7 @@ The client installs to `~/.local/bin/kiln` without sudo and prints PATH setup
 instructions if needed. To update, rerun the original command:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh
 ```
 
 This verifies the downloaded checksum and executable version before atomic
@@ -435,12 +435,11 @@ packager includes only named binaries, installer files and pristine image files.
 Changing repository visibility later is a separate decision; this workflow never
 makes that change.
 
-The public installer is maintained in `deploy/bootstrap/`. Only `install.sh` and
-its public `README.md` may be copied to `Jabbslad/kiln-install`. After an approved
+The public installer is `deploy/bootstrap/install.sh`. After an approved
 release is published, update the script's pinned version and SHA-256
 values from verified packages, run `scripts/test-bootstrap.py` and ShellCheck,
-and verify a real anonymous download before publishing the public copy.
-Never publish server state or credentials there.
+and verify a real anonymous download of that script.
+Never publish server state or credentials.
 The ordinary build workflow has no cross-repository publishing credentials.
 
 ## Deploy from GitHub Actions

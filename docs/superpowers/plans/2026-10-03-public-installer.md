@@ -19,7 +19,7 @@ check remains. No existing server is upgraded or migrated.
 - Keep checksum/archive checks, atomic client upgrades and server conflict checks.
 - Preserve unrelated `web/` and dashboard plan; do not deploy to the live host.
 - Audit history and release data before making `Jabbslad/kiln` public.
-- Publish only bootstrap script and README to `Jabbslad/kiln-install`.
+- The public installer is `deploy/bootstrap/install.sh` in `Jabbslad/kiln`.
 - Public availability does not remove Kiln API authentication or grant a new license.
 
 ## Execution

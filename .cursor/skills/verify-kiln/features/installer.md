@@ -1,6 +1,6 @@
 # Installer
 
-`deploy/bootstrap/install.sh` is the public one-command installer. `client` (the default) downloads a pinned `kiln` binary into `~/.local/bin`. `server` downloads the server package and runs `deploy/install.sh` under passwordless sudo. The script in this repo is the source that is copied to `Jabbslad/kiln-install` as `install.sh` plus its public README. Nothing else from the repo belongs there. Installing and deploying Kiln is shell scripts. The bootstrap pins v0.4.6 and runs `install.sh`. An archive whose installer is `install.py` is rejected.
+`deploy/bootstrap/install.sh` is the public one-command installer. `client` (the default) downloads a pinned `kiln` binary into `~/.local/bin`. `server` downloads the server package and runs `deploy/install.sh` under passwordless sudo. Installing and deploying Kiln is shell scripts. The bootstrap pins v0.4.6 and runs `install.sh`. An archive whose installer is `install.py` is rejected.
 
 ## Sub-features
 
@@ -16,14 +16,14 @@
 On a laptop:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh
 kiln --version
 ```
 
 On an Ubuntu 24.04, Ubuntu 26.04, or Debian 13 x86-64 host with KVM, cgroup v2, and passwordless sudo:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln-install/main/install.sh | sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh -s -- server
 ```
 
 That command changes the host: accounts, systemd units, `/var/lib/kiln`, a private CA, and an administrator token. Do not run it on a shared or production machine to "see what happens."
