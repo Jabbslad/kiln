@@ -46,7 +46,7 @@ installs `sqlite3`, it runs `apt-get update`.
 A patch update from v0.4.5 keeps the guest image, the runtime format,
 configuration, enrollment, and disks. Publishing this release does not deploy
 a server or restart a live service. The public bootstrap pins the published
-v0.4.6 assets and runs `install.sh`.
+v0.4.7 assets and runs `install.sh`.
 
 ## v0.4.5 shell installer
 
@@ -71,7 +71,7 @@ install is recorded in `docs/runbooks/2026-10-19-dark-forge-first-install.md`.
 `.cursor/skills/verify-kiln/` drives a checkout and records the evidence.
 
 Publishing this release does not deploy a server or restart a live service.
-The public bootstrap pins the published v0.4.6 assets and runs `install.sh`.
+The public bootstrap pins the published v0.4.7 assets and runs `install.sh`.
 
 ## v0.4.4 dashboard frontend
 
@@ -437,9 +437,17 @@ beyond the scoped GitHub Actions token and does not deploy a server. Public work
 must not contain credentials or runtime data. Fork PRs use hosted runners and
 read-only permissions; only the tag release job has contents-write permission.
 
-For an approved release, update the workspace version, commit the reviewed source
-and push a matching `vMAJOR.MINOR.PATCH` tag. Tag/version mismatches fail. When all
-jobs pass, the workflow creates a **draft release**. Review/download the draft,
+For an approved release, push an annotated `vMAJOR.MINOR.PATCH` tag of the green
+main commit (`git tag -a vX.Y.Z -m "..."`). Do not commit a version bump. The tag
+build stamps that name into the workspace version and the lockfile versions of
+the workspace crates, then compiles. The binaries, archive names, and
+`release.json` use the tag. A tag that is not stable `vMAJOR.MINOR.PATCH` fails
+before compile. Branch and pull-request builds keep the committed workspace
+version. Checking out the tag and building without the stamp produces the
+committed workspace version. Restore `Cargo.toml` and `Cargo.lock` after a local
+stamp so the stamp is not committed. When all jobs pass, the workflow
+creates a **draft release**. The draft includes that filled `install.sh`.
+Review/download the draft,
 verify packages, and record real-host validation and any outstanding limitations
 before publishing it publicly. Reruns do not overwrite
 existing releases. Real KVM tests remain separate; ordinary CI tests do not prove
@@ -451,10 +459,16 @@ packager includes only named binaries, installer files and pristine image files.
 Changing repository visibility later is a separate decision; this workflow never
 makes that change.
 
-The public installer is `deploy/bootstrap/install.sh`. After an approved
-release is published, update the script's pinned version and SHA-256
-values from verified packages, run `scripts/test-bootstrap.py` and ShellCheck,
-and verify a real anonymous download of that script.
+The public install command fetches `deploy/bootstrap/install.sh` from main.
+That file stays a runnable pin of the current published release. After you
+publish, re-pin its version and SHA-256 lines from the published archives.
+`scripts/test-bootstrap.py` fails if that pin is not the latest published
+release. The tag job also attaches `install.sh` and `install.sh.sha256` to
+the draft, and the checksum check includes that sidecar. The attached script
+verifies each archive checksum and installs only that version. Leave the
+public command on the raw main URL until Jamie publishes a release that
+contains `install.sh`. `releases/latest/download/install.sh` returns 404 for
+v0.4.7. A later change can switch the command after that publish.
 Never publish server state or credentials.
 The ordinary build workflow has no cross-repository publishing credentials.
 

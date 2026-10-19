@@ -1,6 +1,6 @@
 # Curl installer implementation plan
 
-> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). Steps below that name `install.py` are historical. The public bootstrap pins v0.4.6 and runs `install.sh` only. Deploying tag v0.4.4 still overlays this tree's `install.sh`, because that archive contains `install.py` and rejects Debian 13.
+> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). Steps below that name `install.py` are historical. The public bootstrap pins v0.4.7 and runs `install.sh` only. Deploying tag v0.4.4 still overlays this tree's `install.sh`, because that archive contains `install.py` and rejects Debian 13.
 
 > Execute inline with the executing-plans skill. Preserve unrelated dashboard work.
 
