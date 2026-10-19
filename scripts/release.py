@@ -42,7 +42,7 @@ def package(repo, bins, output, version, target, kind, image):
             "README.md": repo / "web" / "README.md",
         }
         for path in sorted(assets.iterdir()):
-            if path.is_symlink() or not path.is_file() or path.suffix not in (".js", ".css", ".woff", ".woff2", ".svg"):
+            if path.is_symlink() or not path.is_file() or path.suffix not in (".js", ".css", ".woff", ".woff2", ".svg", ".webp"):
                 raise ValueError(f"unexpected dashboard asset: {path.name}")
             files[f"assets/{path.name}"] = path
         name = f"kiln-dashboard-{version}"

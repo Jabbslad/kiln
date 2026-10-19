@@ -6,6 +6,22 @@ terminal is needed to install. Access to a running Kiln server still requires
 browser login to an enrolled host or a direct administrator profile; public
 downloads do not disable API authentication.
 
+## v0.4.7 website and dashboard design
+
+The static dashboard archive now includes a public landing page at `/` and the
+existing console at `/boxes`. The imported root `design.md` records the shared
+visual system and Kiln adaptations. The landing page uses original, locally
+bundled artwork, real client installation instructions, and explicit links to the
+read-only preview. It makes no host API requests. Console navigation, headings,
+borders, and selection treatments follow the same system.
+
+Browser authentication and live dashboard controls are still not integrated.
+Existing preview gates remain; no VM operations are simulated. The static archive
+is separate from server installation. Publishing it does not deploy either surface,
+restart services, or change runtime state. The runtime behavior is unchanged from
+v0.4.6. Browser validation covers phone/desktop layouts, accessibility, navigation,
+clipboard success and denial, and the existing console interactions.
+
 ## v0.4.6 public door
 
 `kiln-api door` binds one public address and presents a leaf from the existing
@@ -486,4 +502,3 @@ Jobs that set `environment: dark-forge` receive these secrets after that
 approval. A workflow that does not name the environment cannot read them.
 After the secrets are saved, delete the private key from the server with
 `shred -u /root/.ssh/kiln-github-deploy`.
-

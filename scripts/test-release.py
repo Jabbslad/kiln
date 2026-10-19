@@ -61,7 +61,7 @@ class ReleaseTests(unittest.TestCase):
         (self.repo / "web").mkdir()
         (self.repo / "web/README.md").write_text("Frontend only; no live control plane")
         (self.bins / "assets").mkdir()
-        for name in ["index.html", "favicon.svg", "THIRD_PARTY_LICENSES.md", "assets/index-ab.js", "assets/index-cd.css", "assets/font-ef.woff2"]:
+        for name in ["index.html", "favicon.svg", "THIRD_PARTY_LICENSES.md", "assets/index-ab.js", "assets/index-cd.css", "assets/font-ef.woff2", "assets/hero-gh.webp"]:
             (self.bins / name).write_text(name)
         (self.bins / "admin.token").write_text("private")
         path = self.package(kind="dashboard", target="web")
@@ -69,7 +69,7 @@ class ReleaseTests(unittest.TestCase):
         with tarfile.open(path) as archive:
             self.assertEqual(set(archive.getnames()), {
                 "index.html", "favicon.svg", "assets/index-ab.js", "assets/index-cd.css",
-                "assets/font-ef.woff2", "THIRD_PARTY_LICENSES.md", "README.md", "release.json",
+                "assets/font-ef.woff2", "assets/hero-gh.webp", "THIRD_PARTY_LICENSES.md", "README.md", "release.json",
             })
             self.assertEqual(archive.extractfile("assets/index-ab.js").read(), b"assets/index-ab.js")
             self.assertTrue(all(member.mode == 0o644 for member in archive.getmembers()))
