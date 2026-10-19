@@ -503,6 +503,12 @@ async fn exec_poll_reads_stdout_through_caddy_and_rejected_tokens_do_not_dial() 
                 authenticator(&dir),
                 &upstream_url,
                 ca_pem.as_bytes(),
+                door::Dashboard {
+                    enrollment: enrollment(),
+                    session_dir: dir.join("dash-sessions"),
+                    root: None,
+                    identity_ca: None,
+                },
             )
             .await
             .map_err(|error| format!("{error:#}"))
