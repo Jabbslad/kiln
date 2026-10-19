@@ -65,6 +65,7 @@ jobs:
 
   # Pull requests run server-check only. main, tags, and workflow_dispatch package.
   server-package:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -97,7 +98,9 @@ jobs:
           cache-workspace-crates: 'true'
       - name: Build release binaries
         run: |
-          cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client -p kiln-identity
+          cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client
+          # One cargo command unifies features and links h2 into kiln-identity.
+          cargo build --release --locked -p kiln-identity
           target/release/kiln-host --help
           target/release/kiln-api --help
           target/release/kiln --version
@@ -165,16 +168,19 @@ jobs:
         if: runner.os != 'Windows'
         run: python scripts/test-bootstrap.py
       - name: Production binary
+        if: github.event_name != 'pull_request'
         run: |
           cargo build --release --locked -p kiln-client --bin kiln --target ${{ matrix.target }}
           target/${{ matrix.target }}/release/kiln${{ matrix.suffix }} --version
       - name: Package client
+        if: github.event_name != 'pull_request'
         run: |
           VERSION=$(python -c "import tomllib; print('v' + tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
           python scripts/test-release.py
           python scripts/release.py client --version "$VERSION" --target ${{ matrix.target }} \
             --bin-dir target/${{ matrix.target }}/release --output dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name != 'pull_request'
         with:
           name: package-${{ matrix.target }}
           path: dist/*
@@ -183,19 +189,19 @@ jobs:
           compression-level: 0
       # The intel runner is gone. This arm job still publishes package-x86_64-apple-darwin.
       - name: Cross-compile x86_64 macOS client
-        if: matrix.target == 'aarch64-apple-darwin'
+        if: github.event_name != 'pull_request' && matrix.target == 'aarch64-apple-darwin'
         run: |
           rustup target add x86_64-apple-darwin
           cargo build --release --locked -p kiln-client --bin kiln --target x86_64-apple-darwin
           target/x86_64-apple-darwin/release/kiln --version
       - name: Package x86_64 macOS client
-        if: matrix.target == 'aarch64-apple-darwin'
+        if: github.event_name != 'pull_request' && matrix.target == 'aarch64-apple-darwin'
         run: |
           VERSION=$(python -c "import tomllib; print('v' + tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
           python scripts/release.py client --version "$VERSION" --target x86_64-apple-darwin \
             --bin-dir target/x86_64-apple-darwin/release --output dist-x86_64
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: matrix.target == 'aarch64-apple-darwin'
+        if: github.event_name != 'pull_request' && matrix.target == 'aarch64-apple-darwin'
         with:
           name: package-x86_64-apple-darwin
           path: dist-x86_64/*
@@ -235,6 +241,7 @@ jobs:
           npx playwright install --with-deps chromium
           npm run test:browser
       - name: Package static dashboard
+        if: github.event_name != 'pull_request'
         run: |
           VERSION=$(python -c "import tomllib; print('v' + tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
           python scripts/test-release.py
@@ -242,6 +249,7 @@ jobs:
             --bin-dir web/dist --output dist
           (cd dist && sha256sum -c ./*.sha256)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name != 'pull_request'
         with:
           name: package-dashboard
           path: dist/*
