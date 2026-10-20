@@ -723,6 +723,104 @@ class AppSiteRunbook(unittest.TestCase):
         self.assertIn("172.18.0.1:8093", runbook)
         self.assertIn("The browser check is for Kiln Ops after the release.", runbook)
         self.assertIn("This pull request does not run it.", runbook)
+        self.assertNotIn("This procedure does not start `kiln-app.service`.", runbook)
+        self.assertNotIn("Stop if that output shows `127.0.0.1:8093`", runbook)
+        self.assertIn("cannot install dashboard archive", runbook)
+        self.assertIn(
+            "cp -a /usr/local/share/kiln/dashboard /var/backups/kiln-dashboard-app/dashboard",
+            runbook,
+        )
+        self.assertLess(
+            runbook.index("cp -a /usr/local/share/kiln/dashboard"),
+            runbook.index("bash install.sh --apply --dashboard-archive /var/tmp/kiln-dashboard.tar.gz"),
+        )
+        self.assertLess(
+            runbook.index("bash install.sh --apply --dashboard-archive /var/tmp/kiln-dashboard.tar.gz"),
+            runbook.index("systemctl restart kiln-app"),
+        )
+        self.assertLess(
+            runbook.index("systemctl restart kiln-app"),
+            runbook.index("systemctl enable --now kiln-app-proxy.socket"),
+        )
+        self.assertLess(
+            runbook.index("systemctl is-active kiln-app"),
+            runbook.index("systemctl enable --now kiln-app-proxy.socket"),
+        )
+        self.assertIn("http://127.0.0.1:8093/v1/x", runbook)
+        self.assertLess(
+            runbook.index("systemctl enable --now kiln-app-proxy.socket"),
+            runbook.index("getent ahostsv4 app.dark-forge.dev"),
+        )
+        self.assertIn("if ! grep -qx 'app.dark-forge.dev {' /opt/paseo/Caddyfile; then", runbook)
+        self.assertIn("printf '\\n' >> /opt/paseo/Caddyfile", runbook)
+        self.assertLess(
+            runbook.index("getent ahostsv4 app.dark-forge.dev"),
+            runbook.index("docker exec caddy caddy reload"),
+        )
+        self.assertIn("78.46.98.73", runbook)
+        self.assertIn("https://app.dark-forge.dev/", runbook)
+        self.assertIn("https://app.dark-forge.dev/v1/x", runbook)
+        self.assertIn('"code":"not_found"', runbook)
+        self.assertIn("text/html", runbook)
+        self.assertLess(
+            runbook.index("https://app.dark-forge.dev/"),
+            runbook.index('if [ "$rollback" -eq 1 ]; then'),
+        )
+        self.assertLess(
+            runbook.index('if [ "$rollback" -eq 1 ]; then'),
+            runbook.rindex("cp -a /opt/paseo/Caddyfile.bak-app-dark-forge /opt/paseo/Caddyfile"),
+        )
+
+    def test_append_repairs_a_missing_newline_and_does_not_repeat(self):
+        site = ROOT / "deploy/app.Caddyfile"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            live = root / "Caddyfile"
+            live.write_bytes(b'example.test {\n\trespond "ok"\n}')
+            broken = root / "broken.Caddyfile"
+            broken.write_bytes(live.read_bytes() + site.read_bytes())
+            self.assertIn(b"}app.dark-forge.dev {", broken.read_bytes())
+            rejected = subprocess.run(
+                ["caddy", "adapt", "--config", str(broken), "--adapter", "caddyfile"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(rejected.returncode, 0, rejected.stderr)
+            self.assertIn("unrecognized directive", rejected.stderr)
+            self._append_site(live, site)
+            self._append_site(live, site)
+            text = live.read_text()
+            self.assertEqual(text.count("app.dark-forge.dev {"), 1)
+            self.assertNotIn("}app.dark-forge.dev", text)
+            self.assertTrue(text.endswith("\n"))
+            adapted = subprocess.run(
+                ["caddy", "adapt", "--config", str(live), "--adapter", "caddyfile"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(adapted.returncode, 0, adapted.stderr)
+
+    def _append_site(self, live, site):
+        subprocess.run(
+            [
+                "bash",
+                "-c",
+                """
+                caddyfile=$1
+                site=$2
+                if ! grep -qx 'app.dark-forge.dev {' "$caddyfile"; then
+                  if [ -n "$(tail -c1 "$caddyfile")" ]; then
+                    printf '\\n' >> "$caddyfile"
+                  fi
+                  cat "$site" >> "$caddyfile"
+                fi
+                """,
+                "append-site",
+                str(live),
+                str(site),
+            ],
+            check=True,
+        )
 
 
 if __name__ == "__main__":

@@ -6,15 +6,57 @@ Restart `kiln-identity` only after Jamie says yes. This pull request does not ru
 
 `deploy/kiln-identity.service` names the unit `kiln-identity`, the database `/var/lib/kiln-identity/identity.db`, and the binary `/usr/local/libexec/kiln-identity`. The new binary sets `user_version` to 2 when it opens that database. The previous binary refuses `user_version` 2. The new binary has no path back to `user_version` 1.
 
-## Check port 8093
+## Copy the dashboard before the installer
 
-Do this before you edit `/opt/paseo/Caddyfile`. Port 8093 is free in this repository. It is unproven on the live host.
+`deploy/install.sh` removes `/usr/local/share/kiln/dashboard` and then moves the new tree into that path. If the move fails, the installer stops with `cannot install dashboard archive` and the live directory is gone. Copy the live directory before you run the installer. This pull request does not run the installer, and it does not change that swap.
 
 ```sh
+install -d -m 700 /var/backups/kiln-dashboard-app
+if [ -d /usr/local/share/kiln/dashboard ]; then
+  rm -rf /var/backups/kiln-dashboard-app/dashboard
+  cp -a /usr/local/share/kiln/dashboard /var/backups/kiln-dashboard-app/dashboard
+fi
+```
+
+Copy the release `kiln-dashboard` archive to `/var/tmp/kiln-dashboard.tar.gz`. From the extracted server archive, run the installer.
+
+```sh
+bash install.sh --apply --dashboard-archive /var/tmp/kiln-dashboard.tar.gz
+```
+
+If that command stops with `cannot install dashboard archive`, put the copy back and stop.
+
+```sh
+rm -rf /usr/local/share/kiln/dashboard
+cp -a /var/backups/kiln-dashboard-app/dashboard /usr/local/share/kiln/dashboard
+```
+
+Skip the restore when `/usr/local/share/kiln/dashboard` is still there. A failure before the move leaves the live tree in place.
+
+## Start kiln-app
+
+The installer enables `kiln-app.service` and does not start it. Start it now. `127.0.0.1:8093` listening is the state you want after this step.
+
+```sh
+systemctl restart kiln-app
+systemctl is-active kiln-app
+ss -ltn 'sport = :8093'
+curl -sS -D /tmp/kiln-app-loopback.headers -o /tmp/kiln-app-loopback.json http://127.0.0.1:8093/v1/x
+```
+
+Stop unless `systemctl is-active kiln-app` prints `active`, `ss` shows `127.0.0.1:8093`, the headers contain `404` and `application/json`, and the body contains `"code":"not_found"`.
+
+## Start the bridge socket
+
+`deploy/app.Caddyfile` dials `172.18.0.1:8093`. That address is `kiln-app-proxy.socket`. The installer does not enable the socket. Without it, Caddy has no listener and the site returns 502.
+
+```sh
+systemctl enable --now kiln-app-proxy.socket
+systemctl is-active kiln-app-proxy.socket
 ss -ltn 'sport = :8093'
 ```
 
-Stop if that output shows `127.0.0.1:8093` or `172.18.0.1:8093`. This procedure does not start `kiln-app.service`.
+Stop unless `systemctl is-active kiln-app-proxy.socket` prints `active` and `ss` shows `172.18.0.1:8093`. The socket allows only `172.18.0.3/32`. Do not use a connection from the host as the check.
 
 ## Copy the Caddyfile before the edit
 
@@ -25,26 +67,74 @@ cp -a /opt/paseo/Caddyfile /opt/paseo/Caddyfile.bak-app-dark-forge
 sha256sum /opt/paseo/Caddyfile /opt/paseo/Caddyfile.bak-app-dark-forge
 ```
 
-Append only the `app.dark-forge.dev` site from `deploy/app.Caddyfile`. Leave every other site as it is.
+Append the `app.dark-forge.dev` site from `deploy/app.Caddyfile` when that site is not already present. If the live file has no trailing newline, add one first. A bare `cat >>` joins the previous `}` to `app.dark-forge.dev {` and Caddy rejects the file. Leave every other site as it is. Run this from the extracted server archive.
 
 ```sh
-cat deploy/app.Caddyfile >> /opt/paseo/Caddyfile
+if ! grep -qx 'app.dark-forge.dev {' /opt/paseo/Caddyfile; then
+  if [ -n "$(tail -c1 /opt/paseo/Caddyfile)" ]; then
+    printf '\n' >> /opt/paseo/Caddyfile
+  fi
+  cat deploy/app.Caddyfile >> /opt/paseo/Caddyfile
+fi
 ```
+
+Running the block again does not append a second site.
 
 Do not repeat the container recreate in `docs/runbooks/2026-10-20-paseo-caddy-override.md`. Leave `COMPOSE_FILE` as it is. Leave the CA mount as it is.
 
-Validate the edited file with the running container. Reload only after validate exits 0. If validate fails, copy `/opt/paseo/Caddyfile.bak-app-dark-forge` back to `/opt/paseo/Caddyfile` and do not reload.
+Validate the edited file with the running container. If validate fails, copy `/opt/paseo/Caddyfile.bak-app-dark-forge` back to `/opt/paseo/Caddyfile` and do not reload.
 
 ```sh
 docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-docker exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+```
+
+## Check DNS before the reload
+
+Reload only after validate exits 0 and the two names resolve to the same address. On 2026-10-20 both names resolve to `78.46.98.73`. The check compares the addresses. It does not pin that number.
+
+```sh
+app=$(getent ahostsv4 app.dark-forge.dev | awk 'NR==1 { print $1 }')
+apex=$(getent ahostsv4 dark-forge.dev | awk 'NR==1 { print $1 }')
+printf '%s %s\n' "$app" "$apex"
+if [ "$app" != "$apex" ] || [ -z "$app" ]; then
+  cp -a /opt/paseo/Caddyfile.bak-app-dark-forge /opt/paseo/Caddyfile
+  printf '%s\n' 'DNS does not match. Restored the Caddyfile. Did not reload.'
+else
+  docker exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+fi
 ```
 
 The site proxies to `172.18.0.1:8093` in cleartext. It sets `X-Forwarded-For` from the client address. It does not set `Cache-Control`. The listener keeps its asset cache. Caddy obtains the certificate for `app.dark-forge.dev` with the ACME client it already uses.
 
-## Check the existing names
+## Check the sites after reload
 
-After reload, `https://dark-forge.dev/login` stays HTTP 200 and the body contains `Light the way in.` `https://cli.dark-forge.dev/v1/templates` with no credential stays HTTP 401. Public tcp/8443 stays closed. Do not add an accept rule.
+`https://dark-forge.dev/login` stays HTTP 200 and the body contains `Light the way in.` `https://cli.dark-forge.dev/v1/templates` with no credential stays HTTP 401. `https://app.dark-forge.dev/` returns HTTP 200 with `text/html`. `https://app.dark-forge.dev/v1/x` returns HTTP 404 with `application/json` and `"code":"not_found"`. Public tcp/8443 stays closed. Do not add an accept rule.
+
+```sh
+curl -sS -D /tmp/kiln-login.headers -o /tmp/kiln-login.body https://dark-forge.dev/login
+curl -sS -D /tmp/kiln-cli.headers -o /tmp/kiln-cli.body https://cli.dark-forge.dev/v1/templates
+curl -sS -D /tmp/kiln-app.headers -o /tmp/kiln-app.body https://app.dark-forge.dev/
+curl -sS -D /tmp/kiln-app-v1x.headers -o /tmp/kiln-app-v1x.json https://app.dark-forge.dev/v1/x
+```
+
+If sign-in or `:443` is wrong, or the new site is not that 200 and that JSON 404, copy the backup back and reload it.
+
+```sh
+rollback=0
+grep -q 'HTTP/.* 200' /tmp/kiln-login.headers || rollback=1
+grep -q 'Light the way in.' /tmp/kiln-login.body || rollback=1
+grep -q 'HTTP/.* 401' /tmp/kiln-cli.headers || rollback=1
+grep -q 'HTTP/.* 200' /tmp/kiln-app.headers || rollback=1
+grep -q 'text/html' /tmp/kiln-app.headers || rollback=1
+grep -q 'HTTP/.* 404' /tmp/kiln-app-v1x.headers || rollback=1
+grep -q 'application/json' /tmp/kiln-app-v1x.headers || rollback=1
+grep -q '"code":"not_found"' /tmp/kiln-app-v1x.json || rollback=1
+if [ "$rollback" -eq 1 ]; then
+  cp -a /opt/paseo/Caddyfile.bak-app-dark-forge /opt/paseo/Caddyfile
+  docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+  docker exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+fi
+```
 
 `caddy reload` does not restart `kiln-identity`.
 
