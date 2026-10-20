@@ -246,26 +246,43 @@ If any command on 443 fails, leave the public socket up. `:8443` still reaches t
 
 ## Close public tcp/8443
 
-Do this only after the laptop login, list, create, exec, and delete succeed. The rebind leaves `:8443` open on purpose. This step is what closes it.
+Do this only after the laptop login, list, create, exec, and delete succeed on port 443. The rebind leaves `:8443` open on purpose. This step is what closes it.
 
-Stop the public socket, then restart the proxy so the process drops that listening socket. The bridge socket stays up for Caddy.
+`kiln-door-proxy.service` holds both listeners. Its `Sockets=` line names `kiln-door-proxy.socket` and `kiln-door-proxy-public.socket`, so starting or restarting the service starts both, including a socket that is already disabled. `systemctl disable --now kiln-door-proxy-public.socket` removes systemd's fd. The running `systemd-socket-proxyd` keeps the fd it inherited until that process is restarted. A restart done while `Sockets=` still names the public socket listens on `78.46.98.73:8443` again.
+
+Read the units with `systemctl cat` before changing them. Edit `Sockets=` so it names only `kiln-door-proxy.socket`, reload, stop the public socket, then restart the proxy:
 
 ```
+systemctl daemon-reload
 systemctl disable --now kiln-door-proxy-public.socket
 systemctl restart kiln-door-proxy.service
 ```
 
-The v0.4.6 record added `tcp dport 8443 accept` on `inet filter` `input`, and that chain's policy is accept. Deleting the accept rule leaves the port open to a later bind. Add a drop rule, then delete the accept rule by the handle from the list. Do not edit Docker nat rules.
+If the bridge socket or `kiln-door-proxy.service` is inactive after that, start `kiln-door-proxy.socket` and the service again, and check `https://cli.dark-forge.dev/` at once. `systemctl is-enabled kiln-door-proxy-public.socket` prints `disabled`. `ss` shows `172.18.0.1:8444` and does not show `78.46.98.73:8443`. `https://cli.dark-forge.dev/` with no credential returns 401 through Caddy.
 
-`nft add rule` changes the live ruleset only. This host has no `ufw`. A reboot drops the new rule unless a ruleset loaded at boot contains it. Before you treat the drop as permanent, check whether `nftables.service` is enabled and which file it loads.
+`nftables.service` on this host is disabled and inactive. `nft add rule inet filter input tcp dport 8443 drop` changes only the live ruleset and is not loaded on boot. Do not use that rule as the close. The v0.4.6 `tcp dport 8443 accept` rule can stay. With nothing listening, a connection to `78.46.98.73:8443` is refused. Do not edit Docker nat rules.
 
-```
-nft list table inet filter
-nft add rule inet filter input tcp dport 8443 drop
-```
-
-From outside the host, a connection to port 8443 fails. `https://cli.dark-forge.dev/v1/templates` with no credential returns 401.
+The 2026-10-20 close is recorded in `docs/runbooks/2026-10-20-close-public-8443.md`.
 
 ## Roll back
 
-Follow Roll back the Caddy container, then validate the restored Caddyfile. The old container is up before any door change. To put the door itself back on the public address, disable `kiln-door-proxy-public.socket` first so `78.46.98.73:8443` is free, write that address back into `/etc/kiln/door.env`, and restart `kiln-door` only. Stop and disable `kiln-door-proxy.socket` as well when the bridge is no longer needed. If the directory origin changed, PUT `https://cli.dark-forge.dev:8443` with the same `name` and the same `ca_pem`. Leave the drop rule out if you have not closed 8443 yet. `kiln-identity` stays up. While the public socket is still forwarding, a 0.4.6 client can keep using `:8443` without this rollback. A profile that already stored public-root trust dials port 443 only, so that laptop stays down until this Caddy site is restored.
+Follow Roll back the Caddy container, then validate the restored Caddyfile. The old container is up before any door change. To put the door itself back on the public address, disable `kiln-door-proxy-public.socket` first so `78.46.98.73:8443` is free, write that address back into `/etc/kiln/door.env`, and restart `kiln-door` only. Stop and disable `kiln-door-proxy.socket` as well when the bridge is no longer needed. If the directory origin changed, PUT `https://cli.dark-forge.dev:8443` with the same `name` and the same `ca_pem`. The 2026-10-20 close did not add a drop rule. `nftables.service` is disabled, so a live drop is not how that port stays closed. `kiln-identity` stays up. While the public socket is still forwarding, a 0.4.6 client can keep using `:8443` without this rollback. A profile that already stored public-root trust dials port 443 only, so that laptop stays down until this Caddy site is restored.
+
+### Reopen public tcp/8443
+
+This puts `78.46.98.73:8443` back after the 2026-10-20 close. It is a documented path. It was not run.
+
+The close edited `/etc/systemd/system/kiln-door-proxy.service` and disabled `kiln-door-proxy-public.socket`. Restore the backed-up units from `/var/backups/kiln-close-8443-20261020`, reload, start the public socket, and restart the proxy so it inherits that listener again. Then check `ss` and `curl` against port 443.
+
+```
+cp -a /var/backups/kiln-close-8443-20261020/kiln-door-proxy.service /etc/systemd/system/kiln-door-proxy.service
+cp -a /var/backups/kiln-close-8443-20261020/kiln-door-proxy.socket /etc/systemd/system/kiln-door-proxy.socket
+cp -a /var/backups/kiln-close-8443-20261020/kiln-door-proxy-public.socket /etc/systemd/system/kiln-door-proxy-public.socket
+systemctl daemon-reload
+systemctl enable --now kiln-door-proxy-public.socket
+systemctl restart kiln-door-proxy.service
+ss -ltnp | awk 'NR==1 || /:8443/ || /:8444/'
+curl -sS -D - -o /dev/null -w 'cli_http:%{http_code}\n' --max-time 20 https://cli.dark-forge.dev/
+```
+
+`ss` shows `78.46.98.73:8443` and `172.18.0.1:8444`. The `curl` against `https://cli.dark-forge.dev/` on port 443 returns 401. `kiln-identity` stays up.
