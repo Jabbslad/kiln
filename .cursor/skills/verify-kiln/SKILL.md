@@ -12,9 +12,9 @@ Surfaces:
 - `kiln-runtime` on a Linux host with KVM. This is the local box, exec, template, and checkpoint tool.
 - `kiln` over HTTPS to `kiln-host` / `kiln-api`. This is the laptop client, including SSH and a private CA.
 - `kiln login` against the identity service. The client default issuer is `https://dark-forge.dev`.
-- The public door in `features/public-door.md`. A laptop dials `cli.dark-forge.dev:8443` after identity approval. The door checks the token before it dials loopback `kiln-api`.
+- The public door in `features/public-door.md`. A laptop dials `https://cli.dark-forge.dev` on port 443 after identity approval. The door checks the token before it dials loopback `kiln-api`. tcp/8443 is closed.
 - `deploy/bootstrap/install.sh` for client and server install.
-- The dashboard in `web/`. It is a static React app. Preview mode does not call a VM API. `GET /api/v1/dashboard` is served by `kiln-host` and by loopback `kiln-api`. `kiln-door` on `:8443` forwards it for a read-scope owner JWT. The drive is in `features/dashboard.md`.
+- The dashboard in `web/`. It is a static React app. Preview mode does not call a VM API. `GET /api/v1/dashboard` is served by `kiln-host` and by loopback `kiln-api`. `kiln-door` forwards it for a read-scope owner JWT. The public name is `https://cli.dark-forge.dev` on port 443. The drive is in `features/dashboard.md`.
 
 Workspace version is `0.4.8` (`Cargo.toml`).
 

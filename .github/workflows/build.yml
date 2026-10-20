@@ -56,6 +56,18 @@ jobs:
           tar -xzf /tmp/caddy.tar.gz -C /tmp caddy
           sudo install -m 755 /tmp/caddy /usr/local/bin/caddy
           caddy version
+      - name: Socket activation tools
+        run: |
+          missing=
+          command -v systemd-socket-activate >/dev/null || missing=1
+          command -v ss >/dev/null || missing=1
+          if [ ! -x /lib/systemd/systemd-socket-proxyd ] && [ ! -x /usr/lib/systemd/systemd-socket-proxyd ]; then
+            missing=1
+          fi
+          if [ -n "$missing" ]; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y systemd iproute2
+          fi
       - name: Test and lint
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -67,6 +79,7 @@ jobs:
           python scripts/test-release.py
           python scripts/test-install.py
           python scripts/test-bootstrap.py
+          python scripts/test-close-public-door.py
           python scripts/test-caddy-door.py
           python scripts/test-deploy-workflow.py
           shellcheck scripts/fetch-firecracker.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \

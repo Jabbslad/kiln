@@ -10,8 +10,8 @@ applications, or enroll a host automatically.
 The identity process has its own SQLite database and no KVM/runtime dependency.
 It stores provider subjects, device credentials, registered endpoints and public
 CA certificates. VM operations still go to the enrolled server, not through the
-identity service. On dark-forge the laptop dials `https://cli.dark-forge.dev:8443`
-through the public door. Other hosts still need a reachable private address.
+identity service. On dark-forge the laptop dials `https://cli.dark-forge.dev`
+on port 443. tcp/8443 is closed. Other hosts still need a reachable private address.
 
 ## Provisioning requires explicit operator approval
 
@@ -56,11 +56,13 @@ sudo /usr/local/libexec/kiln-api enroll \
 
 The default issuer is `https://dark-forge.dev`; use `--issuer` only for another
 identity service. The server installer prints the command with its actual address.
-For dark-forge, use `deploy/enroll-dark-forge.sh` instead. It passes
-`--url https://cli.dark-forge.dev:8443` and `--local-url https://127.0.0.1:8443`,
+For dark-forge, `deploy/enroll-dark-forge.sh` passes
+`--url https://cli.dark-forge.dev` and `--local-url https://127.0.0.1:8443`,
 then checks that the stored URL is that same origin and that the approving
-GitHub account is login `Jabbslad` and numeric id `3084`. An enrollment that
-already exists is left in place. The release `kiln-identity` binary has no
+GitHub account is login `Jabbslad` and numeric id `3084`. It leaves the door
+on `127.0.0.1:8444` and probes `https://cli.dark-forge.dev/v1/templates` for
+HTTP 401. An enrollment that already exists is left in place.
+The release `kiln-identity` binary has no
 `--github-authorize-url`, `--github-token-url`, `--github-user-url`, or
 `--provider-ca-file` flags. Those flags exist only behind the non-default
 `lab-provider` feature, and `https://dark-forge.dev` still refuses a substitute

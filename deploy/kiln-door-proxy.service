@@ -4,8 +4,8 @@ Requires=kiln-door.service
 After=kiln-door.service
 
 [Service]
-# Both sockets are inherited on start. Restart this service after the public socket is listening.
-Sockets=kiln-door-proxy.socket kiln-door-proxy-public.socket
+# A second name here starts with this service, even when that unit is disabled.
+Sockets=kiln-door-proxy.socket
 ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=256 --exit-idle-time=5min 127.0.0.1:8444
 DynamicUser=yes
 NoNewPrivileges=true

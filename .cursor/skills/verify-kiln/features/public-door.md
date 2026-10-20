@@ -1,8 +1,8 @@
 # Public door
 
-A laptop installs the client, runs `kiln login`, and then `kiln list`, `kiln create`, `kiln exec`, and `kiln delete` against dark-forge. The identity page stays `https://dark-forge.dev`. The API name is `https://cli.dark-forge.dev:8443`. The door on that name checks an identity JWT before it dials loopback `kiln-api`. A request without that JWT does not open the dial. The administrator token is not accepted on the door.
+A laptop installs the client, runs `kiln login`, and then `kiln list`, `kiln create`, `kiln exec`, and `kiln delete` against dark-forge. The identity page stays `https://dark-forge.dev`. The API name is `https://cli.dark-forge.dev` on port 443. tcp/8443 is closed. The door on that name checks an identity JWT before it dials loopback `kiln-api`. A request without that JWT does not open the dial. The administrator token is not accepted on the door.
 
-The approving GitHub account for the real host is login Jabbslad and numeric id 3084. `deploy/enroll-dark-forge.sh` is the operator command. It is shell. It refuses to replace an enrollment it did not create in that run, and it checks the stored URL `https://cli.dark-forge.dev:8443`. The runbook is `docs/runbooks/2026-10-19-public-door.md`. Do not deploy or restart the real server from this skill.
+The approving GitHub account for the real host is login Jabbslad and numeric id 3084. `deploy/enroll-dark-forge.sh` is the operator command. It is shell. It refuses to replace an enrollment it did not create in that run, and it checks the stored URL `https://cli.dark-forge.dev`. The runbook is `docs/runbooks/2026-10-19-public-door.md`. Do not deploy or restart the real server from this skill.
 
 SSH is not served by the public door.
 

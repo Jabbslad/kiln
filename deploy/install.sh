@@ -899,6 +899,30 @@ upgrade_restore() {
   healthcheck "$address" "$catalog" >/dev/null || return 1
 }
 
+close_public_door() {
+  local unit state changed=0 before
+  unit=$UNITS/kiln-door-proxy.service
+  if [ -f "$unit" ] && grep -q '^Sockets=.*kiln-door-proxy-public.socket' "$unit"; then
+    sed -i 's/^Sockets=.*/Sockets=kiln-door-proxy.socket/' "$unit"
+    systemctl daemon-reload
+    changed=1
+  fi
+  state=$(systemctl show --property=LoadState --value kiln-door-proxy-public.socket 2>/dev/null || true)
+  case $state in
+    ""|not-found) ;;
+    *)
+      before=$(systemctl is-active kiln-door-proxy-public.socket 2>/dev/null || true)
+      systemctl disable --now kiln-door-proxy-public.socket
+      if [ "$before" = active ]; then
+        changed=1
+      fi
+      ;;
+  esac
+  if [ "$changed" = 1 ] && systemctl is-active --quiet kiln-door-proxy.service; then
+    systemctl restart kiln-door-proxy.service
+  fi
+}
+
 upgrade() {
   local bundle=$1 address=${2:-} uplink=${3:-} network=${4:-0} apply=${5:-0}
   local pending name dest release target installed found reported count min_from
@@ -1025,6 +1049,9 @@ upgrade() {
     cmp -s "$(dest_for "$name")" "$bundle/bin/$name" || same=0
   done < <(binary_names)
   if [ "$same" = 1 ]; then
+    if [ "$apply" = 1 ]; then
+      close_public_door
+    fi
     printf 'Kiln %s is already current; nothing changed.\n' "$target"
     connection_instructions "$installed_address"
     return 0
@@ -1063,6 +1090,8 @@ upgrade() {
   fi
   rm -f -- "$pending"
   sync "$OPT"
+  printf 'Binaries are already updated. Closing public tcp/8443. A failure here leaves those binaries in place.\n'
+  close_public_door
   printf 'Updated to Kiln %s. Ready: https://%s:8443\nPrevious binaries: %s\n' "$target" "$installed_address" "$backup"
   connection_instructions "$installed_address"
 }

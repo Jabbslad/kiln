@@ -1,5 +1,6 @@
 #!/bin/bash
-# Enroll this host with https://dark-forge.dev and open the public door.
+# Enroll this host with https://dark-forge.dev.
+# Laptops use https://cli.dark-forge.dev on port 443.
 # The account must be GitHub user Jabbslad, numeric id 3084.
 # The directory token is written to a mode 0600 header file. curl reads that
 # file with -H @file. The token is never placed on an argv.
@@ -10,7 +11,7 @@ umask 077
 
 public_host=cli.dark-forge.dev
 identity_origin=https://dark-forge.dev
-expected_origin=https://cli.dark-forge.dev:8443
+expected_origin=https://cli.dark-forge.dev
 expected_login=Jabbslad
 expected_subject=3084
 libexec=/usr/local/libexec/kiln-api
@@ -182,20 +183,20 @@ self_test() {
 CREATE TABLE provider_identities(provider TEXT, subject TEXT, account_id TEXT, display_name TEXT);
 CREATE TABLE servers(id TEXT PRIMARY KEY, origin TEXT, active INTEGER);
 INSERT INTO provider_identities VALUES ('github', '3084', 'owner_a', 'Jabbslad');
-INSERT INTO servers VALUES ('server_b', 'https://cli.dark-forge.dev:8443', 1);
+INSERT INTO servers VALUES ('server_b', 'https://cli.dark-forge.dev', 1);
 SQL
   printf '%s\n' '{"version":1,"issuer":"https://dark-forge.dev","owner_id":"owner_a","server_id":"server_b"}' >"$etc/identity.json"
   assess_enrollment
   [ "$enrollment_state" = match ]
   [ "$subject" = 3084 ]
 
-  sqlite3 "$db" "UPDATE servers SET origin='https://cli.dark-forge.dev:8444' WHERE id='server_b';"
+  sqlite3 "$db" "UPDATE servers SET origin='https://cli.dark-forge.dev:8443' WHERE id='server_b';"
   assess_enrollment
   [ "$enrollment_state" = mismatch ]
-  sqlite3 "$db" "UPDATE servers SET origin='https://cli.dark-forge.dev:8443/' WHERE id='server_b';"
+  sqlite3 "$db" "UPDATE servers SET origin='https://cli.dark-forge.dev/' WHERE id='server_b';"
   assess_enrollment
   [ "$enrollment_state" = mismatch ]
-  sqlite3 "$db" "UPDATE servers SET origin='https://cli.dark-forge.dev:8443', active=0 WHERE id='server_b';"
+  sqlite3 "$db" "UPDATE servers SET origin='https://cli.dark-forge.dev', active=0 WHERE id='server_b';"
   assess_enrollment
   [ "$enrollment_state" = mismatch ]
   sqlite3 "$db" "UPDATE servers SET active=1 WHERE id='server_b';"
@@ -354,22 +355,22 @@ case $action in
 esac
 
 issue_door_certificate
-printf 'KILN_DOOR_LISTEN=%s:8443\n' "$ip" >"$etc/door.env"
+printf 'KILN_DOOR_LISTEN=127.0.0.1:8444\n' >"$etc/door.env"
 chmod 644 "$etc/door.env"
 install -m 644 "$unit_src" /etc/systemd/system/kiln-door.service
 systemctl daemon-reload
 systemctl enable kiln-door.service
 systemctl restart kiln-door.service
-code=$(curl --silent --show-error --cacert "$etc/ca.crt" \
-  --resolve "$public_host:8443:$ip" --output /dev/null --write-out '%{http_code}' \
-  "https://$public_host:8443/v1/templates" || true)
+# Caddy presents the public certificate. The private CA fails that handshake before the status is read.
+code=$(curl --silent --show-error \
+  --resolve "$public_host:443:$ip" --output /dev/null --write-out '%{http_code}' \
+  "https://$public_host/v1/templates" || true)
 [ "$code" = "401" ] || die "unauthenticated probe returned ${code:-none}"
 printf 'Enrolled owner_id %s is GitHub subject %s display name %s.\n' \
   "$owner" "$subject" "$expected_login"
 printf 'Stored server URL is %s.\n' "$expected_origin"
-printf 'Unauthenticated https://%s:8443/v1/templates returned 401.\n' "$public_host"
+printf 'Unauthenticated https://%s/v1/templates returned 401.\n' "$public_host"
 printf 'kiln-identity.service was not edited.\n'
-printf 'If tcp/8443 is filtered, allow it. This script does not change the firewall.\n'
-printf 'An nft example is: nft add rule inet filter input tcp dport 8443 accept\n'
+printf 'This script does not change the firewall.\n'
 printf 'On the laptop, install the client, then run kiln login, kiln list, kiln create, kiln exec, and kiln delete.\n'
 printf 'Do not set KILN_IDENTITY_CA. SSH is not served by the public door.\n'
