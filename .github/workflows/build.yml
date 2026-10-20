@@ -600,6 +600,17 @@ jobs:
             printf '| Stage | Seconds |\n| --- | ---: |\n| publish | %s |\n' "$seconds" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  # A release created with this workflow's GITHUB_TOKEN does not emit
+  # release: published, so the tag calls deploy in the same run.
+  deploy:
+    needs: [draft-release]
+    if: needs.draft-release.result == 'success'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/deploy.yml
+    with:
+      tag: ${{ github.ref_name }}
+
   dry-run-assets:
     needs: [reuse]
     if: >-

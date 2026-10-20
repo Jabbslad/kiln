@@ -1,0 +1,15 @@
+name: Direct main write
+
+on:
+  push:
+
+jobs:
+  pin:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: git push origin HEAD:main
+      - run: git push origin feature:refs/heads/main
+      - name: contents
+        run: |
+          gh api --method PUT /repos/Jabbslad/kiln/contents/deploy/bootstrap/install.sh \
+            -f branch=main

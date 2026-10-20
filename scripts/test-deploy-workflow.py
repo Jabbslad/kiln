@@ -46,7 +46,7 @@ def run_guard(mode, **env):
 
 class DeployWorkflowTests(unittest.TestCase):
     def test_workflows_have_no_pull_request_trigger(self):
-        for name in ("deploy.yml", "diagnose.yml", "deploy-release.yml"):
+        for name in ("deploy.yml", "diagnose.yml"):
             text = workflow(name)
             self.assertNotIn("pull_request", text, name)
             self.assertNotIn("accept-new", text, name)
@@ -56,7 +56,7 @@ class DeployWorkflowTests(unittest.TestCase):
             self.assertIn("environment: dark-forge", text, name)
             self.assertIn("secrets.DARK_FORGE_SSH_KEY", text, name)
             self.assertIn("secrets.DARK_FORGE_KNOWN_HOSTS", text, name)
-        caller = workflow("deploy-release.yml")
+        caller = workflow("build.yml")
         self.assertNotIn("secrets.DARK_FORGE_SSH_KEY", caller)
         self.assertNotIn("secrets.DARK_FORGE_KNOWN_HOSTS", caller)
         self.assertNotIn("environment:", caller)
@@ -73,9 +73,9 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertIn("default: latest", text)
         self.assertEqual(text.count("secrets.DARK_FORGE_SSH_KEY"), 1)
         self.assertIn("name: Install the release\n", text)
-        caller = workflow("deploy-release.yml")
-        self.assertIn("types: [published]", caller)
-        self.assertIn("tag: ${{ github.event.release.tag_name }}", caller)
+        caller = workflow("build.yml")
+        self.assertNotIn("types: [published]", caller)
+        self.assertIn("tag: ${{ github.ref_name }}", caller)
         docs = (ROOT / "docs/releases.md").read_text()
         self.assertIn("Publishing a release runs", docs)
         self.assertNotIn("Publishing a release does not start it.", docs)
