@@ -267,3 +267,22 @@ The 2026-10-20 close is recorded in `docs/runbooks/2026-10-20-close-public-8443.
 ## Roll back
 
 Follow Roll back the Caddy container, then validate the restored Caddyfile. The old container is up before any door change. To put the door itself back on the public address, disable `kiln-door-proxy-public.socket` first so `78.46.98.73:8443` is free, write that address back into `/etc/kiln/door.env`, and restart `kiln-door` only. Stop and disable `kiln-door-proxy.socket` as well when the bridge is no longer needed. If the directory origin changed, PUT `https://cli.dark-forge.dev:8443` with the same `name` and the same `ca_pem`. The 2026-10-20 close did not add a drop rule. `nftables.service` is disabled, so a live drop is not how that port stays closed. `kiln-identity` stays up. While the public socket is still forwarding, a 0.4.6 client can keep using `:8443` without this rollback. A profile that already stored public-root trust dials port 443 only, so that laptop stays down until this Caddy site is restored.
+
+### Reopen public tcp/8443
+
+This puts `78.46.98.73:8443` back after the 2026-10-20 close. It is a documented path. It was not run.
+
+The close edited `/etc/systemd/system/kiln-door-proxy.service` and disabled `kiln-door-proxy-public.socket`. Restore the backed-up units from `/var/backups/kiln-close-8443-20261020`, reload, start the public socket, and restart the proxy so it inherits that listener again. Then check `ss` and `curl` against port 443.
+
+```
+cp -a /var/backups/kiln-close-8443-20261020/kiln-door-proxy.service /etc/systemd/system/kiln-door-proxy.service
+cp -a /var/backups/kiln-close-8443-20261020/kiln-door-proxy.socket /etc/systemd/system/kiln-door-proxy.socket
+cp -a /var/backups/kiln-close-8443-20261020/kiln-door-proxy-public.socket /etc/systemd/system/kiln-door-proxy-public.socket
+systemctl daemon-reload
+systemctl enable --now kiln-door-proxy-public.socket
+systemctl restart kiln-door-proxy.service
+ss -ltnp | awk 'NR==1 || /:8443/ || /:8444/'
+curl -sS -D - -o /dev/null -w 'cli_http:%{http_code}\n' --max-time 20 https://cli.dark-forge.dev/
+```
+
+`ss` shows `78.46.98.73:8443` and `172.18.0.1:8444`. The `curl` against `https://cli.dark-forge.dev/` on port 443 returns 401. `kiln-identity` stays up.
