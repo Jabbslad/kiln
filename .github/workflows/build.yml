@@ -67,6 +67,7 @@ jobs:
           python scripts/test-release.py
           python scripts/test-install.py
           python scripts/test-bootstrap.py
+          python scripts/test-caddy-door.py
           python scripts/test-deploy-workflow.py
           shellcheck scripts/fetch-firecracker.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
