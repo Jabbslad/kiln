@@ -252,6 +252,25 @@ class DecideTests(unittest.TestCase):
         self.assertEqual(blank.description, empty.description)
         self.assertEqual(empty.context, "proof")
 
+    def test_a_backticked_sha_and_a_bold_verdict_word(self):
+        module = load()
+        head = module.HeadSha(full("2724325"))
+        cases = (
+            ("PASS at `2724325`", "success", "PASS at 2724325"),
+            ("**PASS** at 2724325", "success", "PASS at 2724325"),
+            ("**PASS+NOTES** at `2724325`", "success", "PASS+NOTES at 2724325"),
+            ("**FAIL** at `2724325`", "failure", "FAIL at 2724325"),
+            ("PASS at `2724325`.", "success", "PASS at 2724325"),
+        )
+        for line, state, description in cases:
+            with self.subTest(line=line):
+                status = module.decide(
+                    head,
+                    (module.IssueComment(1, "Jabbslad", line + "\n"),),
+                )
+                self.assertEqual(status.state, module.StatusState(state))
+                self.assertEqual(status.description, description)
+
     def test_a_single_asterisk_is_not_an_opener(self):
         module = load()
         head = module.HeadSha(full("539475e"))
@@ -840,9 +859,7 @@ class WorkflowTests(unittest.TestCase):
         issue = text.split("issue_comment:\n", 1)[1].split("\n  pull_request_target:\n", 1)[0]
         target = text.split("pull_request_target:\n", 1)[1].split("\npermissions:\n", 1)[0]
         self.assertEqual(issue.strip(), "types: [created, edited]")
-        self.assertEqual(target.strip(), "types: [synchronize]")
-        self.assertNotIn("opened", text)
-        self.assertNotIn("reopened", text)
+        self.assertEqual(target.strip(), "types: [opened, synchronize, reopened]")
         self.assertIn(
             "if: github.event_name == 'pull_request_target' || github.event.issue.pull_request",
             text,
@@ -868,6 +885,15 @@ class WorkflowTests(unittest.TestCase):
         for forbidden in ("github.sha", "head.sha", "head.ref"):
             self.assertNotIn(forbidden, text)
         self.assertEqual(text.count("run: python scripts/proof_status.py"), 1)
+        step = text.split("- name: Set proof status\n", 1)[1]
+        self.assertTrue(
+            step.startswith(
+                "        env:\n"
+                "          GITHUB_TOKEN: ${{ github.token }}\n"
+                "        run: python scripts/proof_status.py\n"
+            ),
+            step,
+        )
         self.assertIn("\n  status:\n", text)
         self.assertIn("name: proof-status", text)
         self.assertNotRegex(text, r"(?m)^  proof:")

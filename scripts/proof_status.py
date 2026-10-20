@@ -19,7 +19,9 @@ _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _HEAD = re.compile(r"^[0-9a-f]{40}$")
 _VERDICT_SHA = re.compile(r"^[0-9a-f]{7,40}$")
 _LINE = re.compile(
-    r"^(?:(?:`+|\*{2,})\s*)?(PASS\+NOTES|FAIL|PASS)\s+at\s+([0-9a-fA-F]{7,40})(?![0-9a-fA-F])"
+    r"^(?:(?:`+|\*{2,})\s*)?"
+    r"(?:\*{2})?(PASS\+NOTES|FAIL|PASS)(?:\*{2})?"
+    r"\s+at\s+`*([0-9a-fA-F]{7,40})`*(?![0-9a-fA-F])"
 )
 
 

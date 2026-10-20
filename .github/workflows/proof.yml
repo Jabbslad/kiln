@@ -4,7 +4,7 @@ on:
   issue_comment:
     types: [created, edited]
   pull_request_target:
-    types: [synchronize]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
@@ -32,4 +32,6 @@ jobs:
         with:
           python-version: '3.12'
       - name: Set proof status
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: python scripts/proof_status.py
