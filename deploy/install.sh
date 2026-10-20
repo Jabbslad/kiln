@@ -60,6 +60,7 @@ DOCTOR_PATH=/opt/kiln/bin:/usr/sbin:/usr/bin:/sbin:/bin
 atomic_tmp=
 HEALTH_ERROR=
 host_stopped=0
+api_listeners=()
 dashboard_archive=
 DASHBOARD=$SHARE/dashboard
 
@@ -879,8 +880,38 @@ read_version() {
   '
 }
 
+unit_active() {
+  local state
+  state=$(service_property "$1" ActiveState 2>/dev/null | tr -d '[:space:]' || true)
+  case $state in
+    active|activating|reloading) return 0 ;;
+  esac
+  return 1
+}
+
+# kiln-app and kiln-door exec kiln-api and keep the replaced inode until restart.
+# kiln-network has already exited. This installer does not replace kiln-identity.
+restart_api_listener() {
+  local unit=$1
+  unit_active "$unit" || return 0
+  api_listeners+=("$unit")
+  systemctl restart "$unit"
+}
+
+restart_replaced_api_listeners() {
+  local unit
+  [ "${#api_listeners[@]}" -gt 0 ] || return 0
+  for unit in "${api_listeners[@]}"; do
+    systemctl restart "$unit" || return 1
+  done
+}
+
 upgrade_swap() {
-  local catalog=$1 address=$2 name
+  local catalog=$1 address=$2 name api_changed=0
+  api_listeners=()
+  if ! cmp -s "$LIBEXEC/kiln-api" "$bundle/bin/kiln-api"; then
+    api_changed=1
+  fi
   systemctl stop kiln-api.service || return 1
   wait_for_operations "$STATE/journal/operations.sqlite" || return 1
   host_stopped=1
@@ -890,6 +921,10 @@ upgrade_swap() {
   done < <(binary_names)
   systemctl start kiln-host.service || return 1
   systemctl start kiln-api.service || return 1
+  if [ "$api_changed" = 1 ]; then
+    restart_api_listener kiln-app.service || return 1
+    restart_api_listener kiln-door.service || return 1
+  fi
   healthcheck "$address" "$catalog" >/dev/null || return 1
 }
 
@@ -904,6 +939,7 @@ upgrade_restore() {
     systemctl start kiln-host.service || return 1
   fi
   systemctl start kiln-api.service || return 1
+  restart_replaced_api_listeners || return 1
   healthcheck "$address" "$catalog" >/dev/null || return 1
 }
 
@@ -1264,6 +1300,7 @@ remove_dashboard_asides() {
 
 install_app_units() {
   local unit source dest socket_err
+  local -a restart_units=()
   while IFS= read -r unit; do
     source=$bundle/deploy/$unit
     dest=$UNITS/$unit
@@ -1272,6 +1309,9 @@ install_app_units() {
     fi
     if [ -f "$dest" ] && cmp -s "$source" "$dest"; then
       continue
+    fi
+    if unit_active "$unit"; then
+      restart_units+=("$unit")
     fi
     place_file "$source" "$dest" 0644
   done < <(app_unit_names)
@@ -1289,6 +1329,11 @@ install_app_units() {
       printf '%s\n' "$socket_err" >&2
     fi
     die "command failed: systemctl enable --now kiln-app-proxy.socket"
+  fi
+  if [ "${#restart_units[@]}" -gt 0 ]; then
+    for unit in "${restart_units[@]}"; do
+      systemctl restart "$unit" || die "command failed: systemctl restart $unit"
+    done
   fi
 }
 

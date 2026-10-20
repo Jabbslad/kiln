@@ -478,8 +478,12 @@ For an approved release, push an annotated `vMAJOR.MINOR.PATCH` tag of the green
 main commit (`git tag -a vX.Y.Z -m "..."`). The workflow finds that commit's
 successful push of this workflow on main. It checks the run, the archive
 checksums, and build provenance when that commit's workflow emitted provenance.
-It then opens a draft from those archives. `install.sh` is rendered in the tag
-job from the archive checksums. The draft is not published automatically.
+It then publishes that release from those archives. `install.sh` is rendered in the tag
+job from the archive checksums. The job publishes only after `sha256sum -c` and
+`gh attestation verify` succeed for every archive. A reused archive is verified
+with `--source-ref refs/heads/main`. A fallback build is verified with
+`--source-ref refs/tags/vX.Y.Z`. The identity regex is
+`^https://github\.com/Jabbslad/kiln/\.github/workflows/build\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$`.
 If that run is missing, expired, or fails those checks, or the reuse job
 errors, the tag builds from scratch with the Rust, npm, and Playwright
 caches disabled. That fallback
@@ -487,11 +491,9 @@ stamps the tag into the workspace version before it compiles. A tag that is
 not stable `vMAJOR.MINOR.PATCH` fails before compile. Branch and pull-request
 builds keep the committed workspace version. A local stamp still rewrites
 `Cargo.toml` and `Cargo.lock` when they differ. Do not commit that rewrite.
-When the jobs pass, the workflow creates a **draft release**. The draft
-includes that filled `install.sh`.
-Review/download the draft,
-verify packages, and record real-host validation and any outstanding limitations
-before publishing it publicly. Reruns do not overwrite
+When the jobs pass, the workflow publishes the release, including that filled
+`install.sh`. Publishing starts `.github/workflows/deploy-release.yml`.
+Reruns do not overwrite
 existing releases. Real KVM tests remain separate; ordinary CI tests do not prove
 host isolation, reboot persistence or installer success on a real server.
 
@@ -512,7 +514,7 @@ in `Cargo.toml` can move ahead of this pin while a release is prepared.
 the same version. It also requires the tag to be a stable release whose
 archive digests match the pin. A publish edits neither version. The
 publish alone does not fail the test. The tag job also attaches
-`install.sh` and `install.sh.sha256` to the draft, and the checksum check
+`install.sh` and `install.sh.sha256` to the release, and the checksum check
 includes that sidecar. The attached script
 verifies each archive checksum and installs only that version. Leave the
 public command on the raw main URL until Jamie publishes a release that
@@ -524,9 +526,10 @@ The ordinary build workflow has no cross-repository publishing credentials.
 ## Deploy from GitHub Actions
 
 GitHub-hosted runners install a published server release on `root@dark-forge.dev`.
-`.github/workflows/deploy.yml` runs only from the Actions tab on `main`.
-Publishing a release does not start it. `.github/workflows/diagnose.yml` is
-manual and only reads the host. Neither workflow runs for a pull request or
+Publishing a release runs `.github/workflows/deploy-release.yml`, which calls
+`.github/workflows/deploy.yml`. The Actions tab on `main` can still run that
+same workflow. `.github/workflows/diagnose.yml` is
+manual and only reads the host. None of these workflows run for a pull request or
 a fork.
 
 The `dark-forge` environment is the approval gate. The API stays on the installer
@@ -559,9 +562,13 @@ printf 'dark-forge.dev %s\n' "$(cat /etc/ssh/ssh_host_ed25519_key.pub)"
 ```
 
 Create an environment named `dark-forge`. Store `DARK_FORGE_SSH_KEY` and
-`DARK_FORGE_KNOWN_HOSTS` there as environment secrets. Require Jamie as the
-reviewer. Limit deployment branches to `main` and deployment tags to `v*`.
-Jobs that set `environment: dark-forge` receive these secrets after that
-approval. A workflow that does not name the environment cannot read them.
+`DARK_FORGE_KNOWN_HOSTS` there as environment secrets. Leave required reviewers
+off. CI on the current head is the only merge gate, and a reviewer would block
+the tag deploy. Limit deployment branches to `main` and deployment tags to `v*`.
+Jobs that set `environment: dark-forge` receive these secrets. A workflow that
+does not name the environment cannot read them. The only step that reads
+`DARK_FORGE_SSH_KEY` and `DARK_FORGE_KNOWN_HOSTS` is `Install the release` in
+`.github/workflows/deploy.yml`. The release workflow calls that workflow and
+does not read the key itself.
 After the secrets are saved, delete the private key from the server with
 `shred -u /root/.ssh/kiln-github-deploy`.

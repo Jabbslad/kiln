@@ -46,26 +46,40 @@ def run_guard(mode, **env):
 
 class DeployWorkflowTests(unittest.TestCase):
     def test_workflows_have_no_pull_request_trigger(self):
-        for name in ("deploy.yml", "diagnose.yml"):
+        for name in ("deploy.yml", "diagnose.yml", "deploy-release.yml"):
             text = workflow(name)
             self.assertNotIn("pull_request", text, name)
             self.assertNotIn("accept-new", text, name)
             self.assertNotIn("ssh-keyscan", text, name)
+        for name in ("deploy.yml", "diagnose.yml"):
+            text = workflow(name)
             self.assertIn("environment: dark-forge", text, name)
             self.assertIn("secrets.DARK_FORGE_SSH_KEY", text, name)
             self.assertIn("secrets.DARK_FORGE_KNOWN_HOSTS", text, name)
+        caller = workflow("deploy-release.yml")
+        self.assertNotIn("secrets.DARK_FORGE_SSH_KEY", caller)
+        self.assertNotIn("secrets.DARK_FORGE_KNOWN_HOSTS", caller)
+        self.assertNotIn("environment:", caller)
+        self.assertIn("uses: ./.github/workflows/deploy.yml", caller)
 
     def test_deploy_is_manual_from_main(self):
         text = workflow("deploy.yml")
         self.assertIn("workflow_dispatch:", text)
-        self.assertNotIn("release:", text)
+        self.assertIn("workflow_call:", text)
+        self.assertNotIn("\n  release:", text)
         self.assertNotIn("types: [published]", text)
         self.assertIn("group: dark-forge-deploy", text)
         self.assertIn("cancel-in-progress: false", text)
         self.assertIn("default: latest", text)
+        self.assertEqual(text.count("secrets.DARK_FORGE_SSH_KEY"), 1)
+        self.assertIn("name: Install the release\n", text)
+        caller = workflow("deploy-release.yml")
+        self.assertIn("types: [published]", caller)
+        self.assertIn("tag: ${{ github.event.release.tag_name }}", caller)
         docs = (ROOT / "docs/releases.md").read_text()
-        self.assertIn("Publishing a release does not start it.", docs)
-        self.assertNotIn("runs when a release is published", docs)
+        self.assertIn("Publishing a release runs", docs)
+        self.assertNotIn("Publishing a release does not start it.", docs)
+        self.assertIn("Leave required reviewers", docs)
 
     def test_diagnose_is_manual_and_read_only(self):
         text = workflow("diagnose.yml")
@@ -114,7 +128,7 @@ class DeployWorkflowTests(unittest.TestCase):
         self.assertNotEqual(branch.returncode, 0, branch.stderr)
         self.assertIn("only from main", branch.stderr)
 
-    def test_guard_allows_main_dispatch_and_refuses_a_release(self):
+    def test_guard_allows_main_dispatch_and_a_tag_release(self):
         dispatch = run_guard(
             "deploy",
             GITHUB_EVENT_NAME="workflow_dispatch",
@@ -126,10 +140,24 @@ class DeployWorkflowTests(unittest.TestCase):
             "deploy",
             GITHUB_EVENT_NAME="release",
             GITHUB_REPOSITORY="Jabbslad/kiln",
-            GITHUB_REF="refs/tags/v0.4.4",
+            GITHUB_REF="refs/tags/v0.4.12",
         )
-        self.assertNotEqual(release.returncode, 0, release.stderr)
-        self.assertIn("refusing event release", release.stderr)
+        self.assertEqual(release.returncode, 0, release.stderr)
+        called = run_guard(
+            "deploy",
+            GITHUB_EVENT_NAME="workflow_call",
+            GITHUB_REPOSITORY="Jabbslad/kiln",
+            GITHUB_REF="refs/tags/v0.4.12",
+        )
+        self.assertEqual(called.returncode, 0, called.stderr)
+        branch = run_guard(
+            "deploy",
+            GITHUB_EVENT_NAME="release",
+            GITHUB_REPOSITORY="Jabbslad/kiln",
+            GITHUB_REF="refs/heads/main",
+        )
+        self.assertNotEqual(branch.returncode, 0, branch.stderr)
+        self.assertIn("stable tag", branch.stderr)
         diagnose_release = run_guard(
             "diagnose",
             GITHUB_EVENT_NAME="release",
@@ -137,6 +165,7 @@ class DeployWorkflowTests(unittest.TestCase):
             GITHUB_REF="refs/tags/v0.4.4",
         )
         self.assertNotEqual(diagnose_release.returncode, 0, diagnose_release.stderr)
+        self.assertIn("refusing event release", diagnose_release.stderr)
         local = run_guard("deploy")
         self.assertEqual(local.returncode, 0, local.stderr)
 

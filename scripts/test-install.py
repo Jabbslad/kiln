@@ -68,7 +68,7 @@ for arg in "$@"; do
   case "$arg" in
     --property=*) prop=${{arg#--property=}} ;;
     --value|--no-pager) ;;
-    show|stop|start|enable|disable|daemon-reload) ;;
+    show|stop|start|restart|enable|disable|daemon-reload) ;;
     *) service=$arg ;;
   esac
 done
@@ -79,10 +79,28 @@ case "$1" in
         if [ -f {state}/load-state ]; then cat {state}/load-state; else printf '%s\\n' not-found; fi
         ;;
       ActiveState) cat {state}/active-"$service" ;;
+      MainPID)
+        if [ -f {state}/pid-"$service" ]; then cat {state}/pid-"$service"; else printf '%s\\n' 0; fi
+        ;;
       KillMode) cat {state}/killmode ;;
       ExecStart) cat {state}/exec-"$service" ;;
       *) printf '%s\\n' "" ;;
     esac
+    ;;
+  restart)
+    if [ -f {state}/fail-restart-"$service" ]; then
+      rm -f {state}/fail-restart-"$service"
+      exit 1
+    fi
+    old=0
+    if [ -f {state}/pid-"$service" ]; then
+      old=$(tr -d '[:space:]' < {state}/pid-"$service")
+    fi
+    case "$old" in
+      ''|*[!0-9]*) old=0 ;;
+    esac
+    printf '%s\\n' "$((old + 1))" > {state}/pid-"$service"
+    printf '%s\\n' active > {state}/active-"$service"
     ;;
   stop|start)
     for svc in "${{@:2}}"; do
