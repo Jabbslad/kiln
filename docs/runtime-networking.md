@@ -69,3 +69,5 @@ test executable; it also launches real jailed VMs, uses a simulated public HTTP
 endpoint, and cleans its uniquely named cgroup. Neither script modifies the
 runner's shared routes/firewall. Fresh-host installation, reboot persistence,
 and coexistence with other firewall managers still need separate validation.
+
+This sentence is a documentation-only CI probe and is not part of the runbook.
