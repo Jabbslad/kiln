@@ -112,6 +112,7 @@ pub fn router(mut cfg: Config, store: Store) -> anyhow::Result<Router> {
         .route("/device/approve", post(approve))
         .route("/oauth/server", get(oauth_server))
         .route("/oauth/server/token", post(server_token))
+        .route("/oauth/server/revoke", post(revoke_reader))
         .route("/oauth/{provider}", get(oauth_begin))
         .route("/oauth/{provider}/callback", get(oauth_callback))
         .route("/.well-known/jwks.json", get(jwks))
@@ -1225,6 +1226,7 @@ struct ServerQuery {
     state: String,
     code_challenge: String,
     code_challenge_method: String,
+    server_id: String,
 }
 struct PendingServerAuth {
     server_id: String,
@@ -1295,23 +1297,21 @@ fn oauth_limited(a: &App, peer: SocketAddr, headers: &HeaderMap) -> bool {
     })();
     limited.is_err()
 }
-fn enrolled_redirect(
+fn enrolled_server(
     tx: &rusqlite::Transaction<'_>,
+    server_id: &str,
     redirect: &str,
-) -> anyhow::Result<Option<(String, String)>> {
-    let mut stmt = tx.prepare(
-        "SELECT id, owner_id FROM servers WHERE redirect_uri=?1 AND active=1 AND EXISTS(SELECT 1 FROM accounts WHERE id=owner_id AND revoked_at IS NULL)",
-    )?;
-    let rows = stmt
-        .query_map(params![redirect], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    if rows.len() == 1 {
-        Ok(rows.into_iter().next())
-    } else {
-        Ok(None)
+) -> anyhow::Result<Option<String>> {
+    if server_id.is_empty() || server_id.len() > 128 {
+        return Ok(None);
     }
+    Ok(tx
+        .query_row(
+            "SELECT owner_id FROM servers WHERE id=?1 AND redirect_uri=?2 AND active=1 AND EXISTS(SELECT 1 FROM accounts WHERE id=owner_id AND revoked_at IS NULL)",
+            params![server_id, redirect],
+            |row| row.get(0),
+        )
+        .optional()?)
 }
 fn insert_server_code(
     tx: &rusqlite::Transaction<'_>,
@@ -1362,13 +1362,14 @@ async fn oauth_server(
         Ok(tx) => tx,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
     };
-    let enrolled = match enrolled_redirect(&tx, &q.redirect_uri) {
+    let owner = match enrolled_server(&tx, &q.server_id, &q.redirect_uri) {
         Ok(row) => row,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
     };
-    let Some((server, owner)) = enrolled else {
+    let Some(owner) = owner else {
         return err(StatusCode::BAD_REQUEST, "invalid_redirect");
     };
+    let server = q.server_id.as_str();
     let session = cookie(&h, "__Host-kiln_session");
     let account = match session.as_deref() {
         Some(raw) => match tx
@@ -1387,7 +1388,7 @@ async fn oauth_server(
     if account.as_deref() == Some(owner.as_str()) {
         let code = match insert_server_code(
             &tx,
-            &server,
+            server,
             &owner,
             &q.redirect_uri,
             &q.code_challenge,
@@ -1420,8 +1421,8 @@ async fn oauth_server(
     let csrf = secret();
     let wrote = tx
         .execute(
-            "INSERT INTO browser_sessions(hash,csrf_hash,expires_at) VALUES(?1,?2,?3) ON CONFLICT(hash) DO UPDATE SET csrf_hash=?2,expires_at=?3",
-            params![hash(&raw), hash(&csrf), now + 43200],
+            "INSERT INTO browser_sessions(hash,csrf_hash,expires_at) VALUES(?1,?2,?3) ON CONFLICT(hash) DO UPDATE SET csrf_hash=?2,expires_at=?3,account_id=CASE WHEN browser_sessions.expires_at>?4 THEN browser_sessions.account_id ELSE NULL END",
+            params![hash(&raw), hash(&csrf), now + 43200, now],
         )
         .and_then(|_| {
             tx.execute(
@@ -1531,7 +1532,10 @@ async fn server_token(State(a): State<Arc<App>>, h: HeaderMap, body: String) -> 
             Ok(exchange) => exchange,
             Err(_) => return err(StatusCode::BAD_REQUEST, "invalid_request"),
         };
-        return reader_token(&a, &exchange.reader);
+        let Some(presented) = bearer(&h) else {
+            return err(StatusCode::UNAUTHORIZED, "invalid_token");
+        };
+        return reader_token(&a, &exchange.reader, presented);
     }
     let exchange: CodeExchange = match serde_json::from_value(value) {
         Ok(exchange) => exchange,
@@ -1619,7 +1623,7 @@ async fn server_token(State(a): State<Arc<App>>, h: HeaderMap, body: String) -> 
         .into_response(),
     )
 }
-fn reader_token(a: &App, reader: &str) -> Response {
+fn reader_token(a: &App, reader: &str, presented: &str) -> Response {
     let now = (a.cfg.now)();
     let mut c = a.store.db.lock().unwrap();
     let tx = match c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
@@ -1627,8 +1631,8 @@ fn reader_token(a: &App, reader: &str) -> Response {
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
     };
     let row = match tx.query_row(
-        "SELECT r.server_id,r.account_id FROM app_readers r JOIN servers s ON s.id=r.server_id JOIN accounts a ON a.id=r.account_id WHERE r.hash=?1 AND r.expires_at>?2 AND s.active=1 AND a.revoked_at IS NULL AND s.owner_id=r.account_id",
-        params![hash(reader), now],
+        "SELECT r.server_id,r.account_id FROM app_readers r JOIN servers s ON s.id=r.server_id JOIN accounts a ON a.id=r.account_id WHERE r.hash=?1 AND r.expires_at>?2 AND s.login_secret_hash=?3 AND s.active=1 AND a.revoked_at IS NULL AND s.owner_id=r.account_id",
+        params![hash(reader), now, hash(presented)],
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
     ).optional() {
         Ok(row) => row,
@@ -1662,6 +1666,24 @@ struct StatusReq {
 struct StatusBody {
     account_active: bool,
     server_active: bool,
+}
+async fn revoke_reader(
+    State(a): State<Arc<App>>,
+    h: HeaderMap,
+    Json(body): Json<ReaderExchange>,
+) -> Response {
+    let Some(presented) = bearer(&h) else {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
+    let deleted = a.store.db.lock().unwrap().execute(
+        "DELETE FROM app_readers WHERE hash=?1 AND EXISTS(SELECT 1 FROM servers s WHERE s.id=app_readers.server_id AND s.login_secret_hash=?2)",
+        params![hash(&body.reader), hash(presented)],
+    );
+    match deleted {
+        Ok(1) => nostore(StatusCode::NO_CONTENT.into_response()),
+        Ok(_) => err(StatusCode::UNAUTHORIZED, "invalid_token"),
+        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    }
 }
 async fn server_status(
     State(a): State<Arc<App>>,

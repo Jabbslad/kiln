@@ -39,6 +39,100 @@ ABSENT = (
 )
 
 
+def _package_jobs(event, reuse_result, mode, docs_only):
+    """Which package jobs start. A cancelled reuse starts none."""
+    if reuse_result == "cancelled":
+        return False, False
+    verified = reuse_result == "success" and mode == "reuse"
+    build = reuse_result == "skipped" or (event == "push" and not verified)
+    server = event != "pull_request" and build
+    clients = (event != "pull_request" or not docs_only) and (
+        event == "pull_request" or build
+    )
+    return server, clients
+
+
+def _draft(event, tag, reuse_result, mode, packages_ok):
+    """Where the draft reads archives. Empty means the draft does not start."""
+    if event != "push" or not tag or reuse_result == "cancelled":
+        return ""
+    if reuse_result == "success" and mode == "reuse":
+        return "reused"
+    if packages_ok:
+        return "packages"
+    return ""
+
+
+def job_graph():
+    """The tag, main, pull-request, and dry-run graphs for one reuse outcome."""
+    rows = (
+        ("tag reuse", "push", True, "success", "reuse", False, True),
+        ("tag no match", "push", True, "success", "fallback", False, True),
+        ("tag error", "push", True, "failure", "", False, True),
+        ("tag upload error", "push", True, "failure", "reuse", False, True),
+        ("tag timeout", "push", True, "timed_out", "", False, True),
+        ("main", "push", False, "skipped", "", False, True),
+        ("code pr", "pull_request", False, "skipped", "", False, True),
+        ("docs pr", "pull_request", False, "skipped", "", True, True),
+        ("plain dispatch", "workflow_dispatch", False, "skipped", "", False, True),
+        ("dry reuse", "workflow_dispatch", False, "success", "reuse", False, False),
+        ("dry no match", "workflow_dispatch", False, "success", "fallback", False, False),
+        ("dry error", "workflow_dispatch", False, "failure", "", False, False),
+        ("cancelled tag", "push", True, "cancelled", "", False, False),
+    )
+    graph = []
+    for name, event, tag, result, mode, docs_only, packages_ok in rows:
+        server, clients = _package_jobs(event, result, mode, docs_only)
+        draft = _draft(event, tag, result, mode, packages_ok and server and clients)
+        graph.append((name, server, clients, draft))
+    return tuple(graph)
+
+
+EXPECTED_JOBS = (
+    ("tag reuse", False, False, "reused"),
+    ("tag no match", True, True, "packages"),
+    ("tag error", True, True, "packages"),
+    ("tag upload error", True, True, "packages"),
+    ("tag timeout", True, True, "packages"),
+    ("main", True, True, ""),
+    ("code pr", False, True, ""),
+    ("docs pr", False, False, ""),
+    ("plain dispatch", True, True, ""),
+    ("dry reuse", False, False, ""),
+    ("dry no match", False, False, ""),
+    ("dry error", False, False, ""),
+    ("cancelled tag", False, False, ""),
+)
+
+
+def job_if_expression(text, name):
+    """Return one job's if, unfolded, without a later step's if."""
+    lines = text.splitlines()
+    try:
+        start = lines.index(f"  {name}:")
+    except ValueError as exc:
+        raise AssertionError(f"missing job {name}") from exc
+    body = []
+    for line in lines[start + 1 :]:
+        if len(line) > 2 and line.startswith("  ") and line[2] != " ":
+            break
+        body.append(line)
+    for index, line in enumerate(body):
+        if not line.startswith("    if:"):
+            continue
+        folded = line.removeprefix("    if:").strip()
+        if folded in {">-", ">", "|-", "|"}:
+            parts = []
+            for nxt in body[index + 1 :]:
+                if nxt.startswith("      "):
+                    parts.append(nxt.strip())
+                    continue
+                break
+            return " ".join(parts)
+        return folded
+    raise AssertionError(f"{name} has no job if")
+
+
 def _run(sha=SHA, **overrides):
     fields = dict(
         run_id=10,
@@ -219,8 +313,33 @@ class ReuseDecisionTests(unittest.TestCase):
         self.assertIn("actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be", text)
         self.assertIn("dry_run:", text)
         self.assertIn("needs.reuse.outputs.mode == 'fallback'", text)
-        self.assertIn("needs.reuse.outputs.mode == 'reuse'", text)
+        draft_if = job_if_expression(text, "draft-release")
+        self.assertIn(
+            "(needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse')",
+            draft_if,
+        )
+        step_only = (
+            "  other:\n"
+            "    if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'\n"
+            "  draft-release:\n"
+            "    if: >-\n"
+            "      ((needs.reuse.outputs.mode == 'reuse') ||\n"
+            "        (needs.server-package.result == 'success'))\n"
+            "    steps:\n"
+            "      - if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'\n"
+        )
+        self.assertNotIn(
+            "needs.reuse.result == 'success'",
+            job_if_expression(step_only, "draft-release"),
+        )
+        self.assertEqual(
+            text.count("!(needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse')"),
+            3,
+        )
+        self.assertIn("needs.reuse.result != 'success' || needs.reuse.outputs.mode != 'reuse'", text)
+        self.assertEqual(text.count("!startsWith(github.ref, 'refs/tags/v')"), 6)
         self.assertNotIn("--auto", text)
+        self.assertEqual(job_graph(), EXPECTED_JOBS)
 
     def test_fetch_refusal_sets_fallback_without_publishing(self):
         with tempfile.TemporaryDirectory() as tmp:

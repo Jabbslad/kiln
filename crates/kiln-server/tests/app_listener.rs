@@ -276,6 +276,9 @@ fn shipped_units_bind_loopback_and_the_bridge() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let app = std::fs::read_to_string(root.join("deploy/kiln-app.service")).unwrap();
     assert!(app.contains("127.0.0.1:8093"));
+    assert!(app.contains("NoNewPrivileges=yes"));
+    assert!(app.contains("ProtectSystem=strict"));
+    assert!(app.contains("ReadWritePaths=/var/lib/kiln-api"));
     assert!(!app.contains("0.0.0.0"));
     assert!(!app.contains("172.18.0.1"));
     assert!(!app.contains("--tls-cert"));
@@ -345,6 +348,83 @@ async fn deep_link_returns_index_html() {
     let (status, _, body) = text(send(&router, "127.0.0.1:9", get("/missing.js")).await).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(!body.contains("<html"));
+}
+
+#[tokio::test]
+async fn v1_paths_return_json_not_the_dashboard() {
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    let up = upstream_json().await;
+    let (router, _) = open(root.path(), &up);
+    let (status, headers, body) =
+        text(send(&router, "127.0.0.1:9", get("/v1/templates")).await).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        headers
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("application/json"),
+        "{headers:?}"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["code"], "not_found");
+    assert!(!body.contains("<html"));
+    assert_ne!(body, HTML);
+    assert_eq!(up.hits.load(Ordering::SeqCst), 0);
+    let (status, headers, body) = text(send(&router, "127.0.0.1:9", get("/boxes")).await).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    assert_eq!(body, HTML);
+}
+
+#[tokio::test]
+async fn archive_escapes_stay_inside_the_root() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join("archive");
+    archive(&root);
+    let marker = "outside-marker-not-in-archive";
+    std::fs::write(parent.path().join("secret.txt"), marker).unwrap();
+    std::os::unix::fs::symlink(
+        parent.path().join("secret.txt"),
+        root.join("link-to-secret.txt"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(parent.path(), root.join("linkdir")).unwrap();
+    let up = upstream_json().await;
+    let (router, _) = open(&root, &up);
+    for uri in ["/../secret.txt", "/%2e%2e/secret.txt"] {
+        let (status, _, body) = text(send(&router, "127.0.0.1:9", get(uri)).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["code"], "invalid_request", "{uri}");
+        assert!(!body.contains(marker), "{uri}");
+    }
+    for uri in ["/link-to-secret.txt", "/linkdir/secret.txt"] {
+        let (status, headers, body) = text(send(&router, "127.0.0.1:9", get(uri)).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
+        assert!(
+            headers
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("application/json"),
+            "{uri}: {headers:?}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["code"], "not_found", "{uri}");
+        assert!(!body.contains(marker), "{uri}");
+        assert!(!body.contains("<html"), "{uri}");
+    }
 }
 
 #[tokio::test]
@@ -750,6 +830,7 @@ struct Loopback {
     port: u16,
     token_hits: Arc<AtomicUsize>,
     status_hits: Arc<AtomicUsize>,
+    revoke_hits: Arc<AtomicUsize>,
     bodies: Arc<std::sync::Mutex<Vec<String>>>,
     authorizations: Arc<std::sync::Mutex<Vec<String>>>,
 }
@@ -759,10 +840,12 @@ async fn loopback(jwt: String, status_mode: u8) -> Loopback {
     let port = listener.local_addr().unwrap().port();
     let token_hits = Arc::new(AtomicUsize::new(0));
     let status_hits = Arc::new(AtomicUsize::new(0));
+    let revoke_hits = Arc::new(AtomicUsize::new(0));
     let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
     let authorizations = Arc::new(std::sync::Mutex::new(Vec::new()));
     let tokens = token_hits.clone();
     let statuses = status_hits.clone();
+    let revokes = revoke_hits.clone();
     let seen_bodies = bodies.clone();
     let seen_auth = authorizations.clone();
     tokio::spawn(async move {
@@ -773,6 +856,7 @@ async fn loopback(jwt: String, status_mode: u8) -> Loopback {
             let jwt = jwt.clone();
             let tokens = tokens.clone();
             let statuses = statuses.clone();
+            let revokes = revokes.clone();
             let seen_bodies = seen_bodies.clone();
             let seen_auth = seen_auth.clone();
             tokio::spawn(async move {
@@ -794,6 +878,10 @@ async fn loopback(jwt: String, status_mode: u8) -> Loopback {
                         "reader": "fixture-reader",
                     });
                     write_http(&mut socket, "200 OK", &payload.to_string()).await;
+                } else if line.contains("POST /oauth/server/revoke ") {
+                    revokes.fetch_add(1, Ordering::SeqCst);
+                    seen_auth.lock().unwrap().push(authorization);
+                    write_http(&mut socket, "204 No Content", "").await;
                 } else if line.contains("POST /v1/server-status ") {
                     statuses.fetch_add(1, Ordering::SeqCst);
                     if status_mode == 2 {
@@ -815,6 +903,7 @@ async fn loopback(jwt: String, status_mode: u8) -> Loopback {
         port,
         token_hits,
         status_hits,
+        revoke_hits,
         bodies,
         authorizations,
     }
@@ -905,6 +994,7 @@ async fn browser_login(router: &axum::Router, peer: &str) -> (String, String) {
     let pairs: std::collections::HashMap<String, String> =
         location.query_pairs().into_owned().collect();
     assert_eq!(pairs["redirect_uri"], kiln_api::auth::APP_OAUTH_REDIRECT);
+    assert_eq!(pairs["server_id"], "server-b");
     assert_eq!(pairs["code_challenge_method"], "S256");
     assert_eq!(pairs["code_challenge"].len(), 43);
     let attempt_id = cookie_value(attempt);
@@ -1177,6 +1267,7 @@ async fn browser_sign_in_sets_one_session_and_logout_clears_only_that_session() 
     );
     let (status, _, _) = text(send(&router, "127.0.0.1:9", dashboard(&first)).await).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(identity.revoke_hits.load(Ordering::SeqCst), 1);
     let (status, _, body) = text(send(&router, "127.0.0.1:9", dashboard(&second)).await).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 

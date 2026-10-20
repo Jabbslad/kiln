@@ -476,8 +476,9 @@ successful push of this workflow on main. It checks the run, the archive
 checksums, and build provenance when that commit's workflow emitted provenance.
 It then opens a draft from those archives. `install.sh` is rendered in the tag
 job from the archive checksums. The draft is not published automatically.
-If that run is missing, expired, or fails those checks, the tag builds
-from scratch with the Rust, npm, and Playwright caches disabled. That fallback
+If that run is missing, expired, or fails those checks, or the reuse job
+errors, the tag builds from scratch with the Rust, npm, and Playwright
+caches disabled. That fallback
 stamps the tag into the workspace version before it compiles. A tag that is
 not stable `vMAJOR.MINOR.PATCH` fails before compile. Branch and pull-request
 builds keep the committed workspace version. A local stamp still rewrites
