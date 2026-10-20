@@ -507,6 +507,7 @@ mod tests {
                 revision: 1,
             },
             door_trust: crate::profile::DoorTrust::Pin,
+            server_chosen: true,
         };
         let session = Session {
             inner: Arc::new(Inner {

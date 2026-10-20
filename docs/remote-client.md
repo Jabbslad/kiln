@@ -74,12 +74,15 @@ not host paths, jail identities, host fingerprints or Firecracker sockets.
 The installer includes browser login with `https://dark-forge.dev` built in.
 After an operator updates and explicitly enrolls a host, run `kiln login`.
 The browser asks for GitHub/Google sign-in and a separate device approval. One
-owned server is selected automatically; multiple servers prompt for a choice.
+owned server is selected automatically. Several servers prompt on a terminal.
+An unanswered prompt keeps the approved session and prints `kiln login --server`
+with each server id. A later login uses that session instead of a new device code.
 No private server address or CA transfer is needed for this flow. The laptop
 still needs network access to the selected server.
 
 Interactive first-use commands can start the same flow without a URL flag.
-JSON, nonterminal and SSH proxy invocations never launch login.
+JSON and SSH proxy invocations never launch login. A non-terminal `kiln login`
+requests a device code and polls until it is approved or expires.
 Renewal occurs before requests, without retrying VM mutations. `kiln auth status`,
 device revocation, server-scoped automation keys and logout are documented in the
 [identity operator guide](identity-service.md). Repeating login reuses an existing

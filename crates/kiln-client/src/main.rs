@@ -301,6 +301,71 @@ fn epoch() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+fn resume_commands(servers: &[kiln_api::auth::ServerDescriptor]) -> String {
+    let mut lines = vec!["multiple servers available. Resume with one of:".to_string()];
+    for server in servers {
+        lines.push(format!("kiln login --server {}", server.id));
+    }
+    lines.join("\n")
+}
+
+fn read_server_selection(servers: &[kiln_api::auth::ServerDescriptor]) -> Result<usize> {
+    loop {
+        for (n, server) in servers.iter().enumerate() {
+            eprintln!("{}: {} ({})", n + 1, server.name, server.id);
+        }
+        eprint!("Select a server number: ");
+        std::io::stderr().flush()?;
+        let mut input = String::new();
+        let read = std::io::stdin().read_line(&mut input)?;
+        if read == 0 {
+            bail!("no selection");
+        }
+        let Ok(choice) = input.trim().parse::<usize>() else {
+            eprintln!("invalid selection");
+            continue;
+        };
+        let Some(index) = choice.checked_sub(1).filter(|index| *index < servers.len()) else {
+            eprintln!("invalid selection");
+            continue;
+        };
+        return Ok(index);
+    }
+}
+
+fn select_server(
+    servers: Vec<kiln_api::auth::ServerDescriptor>,
+    explicit: Option<&str>,
+    interactive: bool,
+) -> Result<kiln_api::auth::ServerDescriptor> {
+    if let Some(id) = explicit {
+        if let Some(selected) = servers.iter().find(|server| server.id == id).cloned() {
+            return Ok(selected);
+        }
+        if servers.is_empty() {
+            bail!("server ID not found");
+        }
+        bail!("server ID not found\n{}", resume_commands(&servers));
+    }
+    if servers.len() == 1 {
+        return Ok(servers.into_iter().next().unwrap());
+    }
+    if servers.is_empty() {
+        bail!(
+            "no active servers are available; run `kiln-api enroll` on your server, then log in again"
+        );
+    }
+    let chosen = if interactive {
+        read_server_selection(&servers).ok()
+    } else {
+        None
+    };
+    match chosen {
+        Some(index) => Ok(servers.into_iter().nth(index).unwrap()),
+        None => bail!("{}", resume_commands(&servers)),
+    }
+}
+
 fn credential_path(config: &Path, profile: &str) -> PathBuf {
     config
         .parent()
@@ -315,6 +380,11 @@ fn identity_origin(explicit: Option<&str>) -> String {
         .unwrap_or_else(|| kiln_api::auth::DEFAULT_IDENTITY_ORIGIN.to_owned())
 }
 fn open_browser(url: &str) -> Result<()> {
+    // Windows resolves `rundll32` to System32 even when PATH is replaced, so a
+    // `.cmd` stand-in never runs. Tests set this to keep that launch from starting.
+    if std::env::var_os("KILN_BROWSER").is_some_and(|value| value == "0") {
+        bail!("browser launch failed");
+    }
     #[cfg(target_os = "macos")]
     let mut command = std::process::Command::new("open");
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -451,21 +521,19 @@ async fn run(cli: Cli) -> Result<i32> {
                 let session = Session::new(existing.clone())?;
                 let me = session.identity_json(Method::GET, "v1/me", None).await
                     .context("existing session is unavailable; use `kiln logout` before changing accounts")?;
-                if let Some(id) = server {
+                if server.is_some() || !existing.server_chosen {
                     let servers: Vec<kiln_api::auth::ServerDescriptor> = serde_json::from_value(
                         session
                             .identity_json(Method::GET, "v1/servers", None)
                             .await?,
                     )?;
-                    let selected = servers
-                        .into_iter()
-                        .find(|s| &s.id == id)
-                        .context("server ID not found")?;
+                    let selected = select_server(servers, server.map(String::as_str), interactive)?;
                     profile::set(
                         &path,
                         &profile_name,
                         profile::Profile::Central(profile::CentralProfile {
                             server: selected,
+                            server_chosen: true,
                             door_trust: profile::DoorTrust::Pin,
                             ..existing.clone()
                         }),
@@ -506,15 +574,13 @@ async fn run(cli: Cli) -> Result<i32> {
                     server: key.server,
                     credential_file,
                     door_trust: profile::DoorTrust::Pin,
+                    server_chosen: true,
                 },
                 &credentials,
             )?;
             return Ok(0);
         }
-        anyhow::ensure!(
-            interactive,
-            "browser login requires an interactive terminal"
-        );
+        anyhow::ensure!(!cli.json, "browser login requires an interactive terminal");
         let flow = identity.begin_login("kiln CLI").await?;
         eprintln!(
             "Open {} and enter code {}",
@@ -545,43 +611,53 @@ async fn run(cli: Cli) -> Result<i32> {
             }
         };
         let servers = identity.servers(&tokens.access_token).await?;
-        let selected = match server {
-            Some(id) => servers
-                .into_iter()
-                .find(|s| &s.id == id)
-                .context("selected server not found")?,
-            None if servers.len() == 1 => servers.into_iter().next().unwrap(),
-            None if servers.is_empty() => bail!(
-                "no active servers are available; run `kiln-api enroll` on your server, then log in again"
-            ),
-            None => {
-                for (n, s) in servers.iter().enumerate() {
-                    eprintln!("{}: {} ({})", n + 1, s.name, s.id);
-                }
-                eprint!("Select a server number: ");
-                std::io::stderr().flush()?;
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input)?;
-                let n: usize = input.trim().parse().context("invalid selection")?;
-                servers
-                    .into_iter()
-                    .nth(n.checked_sub(1).context("invalid selection")?)
-                    .context("invalid selection")?
-            }
-        };
         let credential_file = std::path::absolute(credential_path(&path, &profile_name))?;
         let credentials = credential_from_login(&issuer, tokens);
-        profile::save_login(
-            &path,
-            &profile_name,
-            profile::CentralProfile {
-                issuer,
-                server: selected,
-                credential_file,
-                door_trust: profile::DoorTrust::Pin,
-            },
-            &credentials,
-        )?;
+        let explicit_known =
+            server.is_some_and(|id| servers.iter().any(|candidate| &candidate.id == id));
+        let keep_approval =
+            !explicit_known && !servers.is_empty() && (server.is_some() || servers.len() > 1);
+        if keep_approval {
+            profile::save_login(
+                &path,
+                &profile_name,
+                profile::CentralProfile {
+                    issuer: issuer.clone(),
+                    server: servers[0].clone(),
+                    credential_file: credential_file.clone(),
+                    door_trust: profile::DoorTrust::Pin,
+                    server_chosen: false,
+                },
+                &credentials,
+            )?;
+        }
+        let selected = select_server(servers, server.map(String::as_str), interactive)?;
+        if keep_approval {
+            profile::set(
+                &path,
+                &profile_name,
+                profile::Profile::Central(profile::CentralProfile {
+                    issuer,
+                    server: selected,
+                    credential_file,
+                    door_trust: profile::DoorTrust::Pin,
+                    server_chosen: true,
+                }),
+            )?;
+        } else {
+            profile::save_login(
+                &path,
+                &profile_name,
+                profile::CentralProfile {
+                    issuer,
+                    server: selected,
+                    credential_file,
+                    door_trust: profile::DoorTrust::Pin,
+                    server_chosen: true,
+                },
+                &credentials,
+            )?;
+        }
         if explicit_login {
             return Ok(0);
         }
@@ -617,6 +693,9 @@ async fn run(cli: Cli) -> Result<i32> {
                     for (name, entry) in profiles.profiles {
                         let origin = match entry {
                             profile::Profile::Direct(p) => p.url,
+                            profile::Profile::Central(p) if !p.server_chosen => {
+                                "(server not chosen)".to_string()
+                            }
                             profile::Profile::Central(p) => p.server.origin,
                         };
                         println!("{name}\t{origin}");
@@ -703,6 +782,12 @@ async fn run(cli: Cli) -> Result<i32> {
             }
             _ => unreachable!(),
         }
+    }
+    if let profile::Profile::Central(central) = selected {
+        anyhow::ensure!(
+            central.server_chosen,
+            "server is not chosen; run `kiln login --server SERVER_ID`"
+        );
     }
     let client = selected.client()?;
     match &cli.command {

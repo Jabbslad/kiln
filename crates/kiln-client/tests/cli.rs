@@ -8,7 +8,7 @@ use std::{
     fs,
     path::Path,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -416,7 +416,6 @@ async fn scripts_json_proxy_and_explicit_missing_profiles_never_launch_login() {
             "must-not-create",
         ],
         vec!["ssh-proxy", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
-        vec!["--issuer", "https://identity.example.test", "login"],
     ] {
         let output = cli(&config, &args).await;
         assert!(!output.status.success(), "{args:?}");
@@ -432,34 +431,623 @@ async fn scripts_json_proxy_and_explicit_missing_profiles_never_launch_login() {
 
 #[tokio::test]
 async fn login_has_a_default_issuer_and_preserves_explicit_overrides() {
+    let help = tokio::process::Command::new(env!("CARGO_BIN_EXE_kiln"))
+        .args(["login", "--help"])
+        .output()
+        .await
+        .unwrap();
+    let help_text = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        help.status.success() && help_text.contains("https://dark-forge.dev"),
+        "{help_text}"
+    );
     let root = tempfile::tempdir().unwrap();
-    for (environment, explicit, expected) in [
-        (None, None, "browser login requires an interactive terminal"),
-        (Some("http://invalid.test"), None, "HTTPS"),
+    let config = root.path().join("profiles.json");
+    for (environment, args, expected) in [
+        (Some("http://invalid.test"), vec!["login"], "HTTPS"),
         (
             Some("http://invalid.test"),
-            Some("https://override.example.test"),
+            vec!["--issuer", "https://127.0.0.1:1", "login"],
+            "connect",
+        ),
+        (
+            None,
+            vec!["--json", "--issuer", "https://127.0.0.1:1", "login"],
             "browser login requires an interactive terminal",
         ),
     ] {
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_kiln"));
-        command.env_remove("KILN_IDENTITY_URL").args([
-            "--config",
-            root.path().join("profiles.json").to_str().unwrap(),
-        ]);
+        command
+            .env_remove("KILN_IDENTITY_URL")
+            .stdin(std::process::Stdio::null())
+            .args(["--config", config.to_str().unwrap()])
+            .args(&args);
         if let Some(value) = environment {
             command.env("KILN_IDENTITY_URL", value);
         }
-        if let Some(value) = explicit {
-            command.args(["--issuer", value]);
-        }
-        let output = command.arg("login").output().await.unwrap();
+        let output = command.output().await.unwrap();
         let error = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success());
-        assert!(error.contains(expected), "{error}");
-        assert!(output.stdout.is_empty());
-        assert!(!root.path().join("profiles.json").exists());
+        assert!(!output.status.success(), "{args:?} {error}");
+        assert!(error.contains(expected), "{args:?} {error}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        assert!(!config.exists(), "{args:?}");
     }
+}
+
+struct IdentityFixture {
+    /// Owns the temp directory for the CA, config, and credential files.
+    #[allow(dead_code)]
+    root: tempfile::TempDir,
+    origin: String,
+    ca: std::path::PathBuf,
+    bin_dir: std::path::PathBuf,
+    config: std::path::PathBuf,
+    routes: Arc<Mutex<Vec<String>>>,
+    handle: axum_server::Handle<std::net::SocketAddr>,
+}
+
+impl Drop for IdentityFixture {
+    fn drop(&mut self) {
+        self.handle.shutdown();
+    }
+}
+
+impl IdentityFixture {
+    fn route_count(&self, route: &str) -> usize {
+        self.routes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|seen| seen.as_str() == route)
+            .count()
+    }
+
+    fn profile(&self) -> Option<serde_json::Value> {
+        fs::read(&self.config)
+            .ok()
+            .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+    }
+
+    async fn login(&self, args: &[&str], stdin: std::process::Stdio) -> std::process::Output {
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_kiln"))
+            .env_remove("KILN_IDENTITY_URL")
+            .env("KILN_IDENTITY_CA", &self.ca)
+            .env("KILN_BROWSER", "0")
+            .env("PATH", &self.bin_dir)
+            .stdin(stdin)
+            .arg("--config")
+            .arg(&self.config)
+            .arg("--issuer")
+            .arg(&self.origin)
+            .arg("login")
+            .args(args)
+            .output()
+            .await
+            .unwrap()
+    }
+}
+
+async fn identity_fixture(servers: &[(&str, &str)]) -> IdentityFixture {
+    let root = tempfile::tempdir().unwrap();
+    let bin_dir = root.path().join("bin");
+    fs::create_dir(&bin_dir).unwrap();
+    // PATH is only this directory. Linux launches `xdg-open` and macOS launches
+    // `open`. Windows still finds System32 `rundll32.exe`, so login() also sets
+    // KILN_BROWSER=0 and open_browser does not spawn.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for name in ["xdg-open", "open"] {
+            let opener = bin_dir.join(name);
+            fs::write(&opener, "#!/bin/sh\nexit 1\n").unwrap();
+            fs::set_permissions(&opener, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    let listed = servers
+        .iter()
+        .map(|(id, name)| {
+            serde_json::json!({
+                "id": id,
+                "name": name,
+                "origin": format!("https://{name}.example"),
+                "ca_pem": "pem",
+                "revision": 1
+            })
+        })
+        .collect::<Vec<_>>();
+    let routes = Arc::new(Mutex::new(Vec::new()));
+    let record = routes.clone();
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let pem = cert.cert.pem();
+    let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
+        pem.as_bytes().to_vec(),
+        cert.signing_key.serialize_pem().into_bytes(),
+    )
+    .await
+    .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let origin = format!("https://localhost:{port}");
+    let router = Router::new()
+        .route(
+            "/oauth/device/code",
+            post({
+                let record = record.clone();
+                let origin = origin.clone();
+                move || {
+                    let record = record.clone();
+                    let origin = origin.clone();
+                    async move {
+                        record
+                            .lock()
+                            .unwrap()
+                            .push("POST /oauth/device/code".into());
+                        Json(serde_json::json!({
+                            "device_code": "device",
+                            "user_code": "code",
+                            "verification_uri": format!("{origin}/device"),
+                            "verification_uri_complete": format!("{origin}/device"),
+                            "expires_in": 60,
+                            "interval": 1
+                        }))
+                    }
+                }
+            }),
+        )
+        .route(
+            "/oauth/token",
+            post({
+                let record = record.clone();
+                move || {
+                    let record = record.clone();
+                    async move {
+                        record.lock().unwrap().push("POST /oauth/token".into());
+                        Json(serde_json::json!({
+                            "access_token": "central",
+                            "token_type": "Bearer",
+                            "expires_in": 60,
+                            "refresh_token": "session"
+                        }))
+                    }
+                }
+            }),
+        )
+        .route(
+            "/v1/me",
+            get({
+                let record = record.clone();
+                move || {
+                    let record = record.clone();
+                    async move {
+                        record.lock().unwrap().push("GET /v1/me".into());
+                        Json(serde_json::json!({"account_id": "account", "device_id": "device"}))
+                    }
+                }
+            }),
+        )
+        .route(
+            "/v1/servers",
+            get({
+                let record = record.clone();
+                move || {
+                    let record = record.clone();
+                    let listed = listed.clone();
+                    async move {
+                        record.lock().unwrap().push("GET /v1/servers".into());
+                        Json(listed)
+                    }
+                }
+            }),
+        );
+    let handle = axum_server::Handle::new();
+    let service = axum_server::from_tcp_rustls(listener, tls)
+        .unwrap()
+        .handle(handle.clone())
+        .serve(router.into_make_service());
+    tokio::spawn(async move {
+        service.await.unwrap();
+    });
+    let ca = root.path().join("ca.pem");
+    fs::write(&ca, pem).unwrap();
+    IdentityFixture {
+        config: root.path().join("profiles.json"),
+        root,
+        origin,
+        ca,
+        bin_dir,
+        routes,
+        handle,
+    }
+}
+
+fn null_stdin() -> std::process::Stdio {
+    std::process::Stdio::null()
+}
+
+fn chosen(profile: &serde_json::Value) -> bool {
+    profile["profiles"]["default"]["server_chosen"]
+        .as_bool()
+        .unwrap_or(true)
+}
+
+#[tokio::test]
+async fn login_without_a_terminal_refuses_multiple_servers() {
+    let fixture = identity_fixture(&[("srv_ser7", "ser7"), ("srv_dark_forge", "dark-forge")]).await;
+    let output = fixture.login(&[], null_stdin()).await;
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{error}");
+    assert!(error.contains("Browser could not be opened"), "{error}");
+    assert!(error.contains("kiln login --server srv_ser7"), "{error}");
+    assert!(
+        error.contains("kiln login --server srv_dark_forge"),
+        "{error}"
+    );
+    assert!(!error.contains("Select a server number"), "{error}");
+    assert!(output.stdout.is_empty(), "login must not write stdout");
+    let profile = fixture.profile().expect("approved session is kept");
+    assert!(!chosen(&profile), "{profile}");
+    assert_eq!(fixture.route_count("POST /oauth/device/code"), 1);
+    let again = fixture.login(&[], null_stdin()).await;
+    let again_error = String::from_utf8_lossy(&again.stderr);
+    assert!(!again.status.success(), "{again_error}");
+    assert!(
+        again_error.contains("kiln login --server srv_dark_forge"),
+        "{again_error}"
+    );
+    assert_eq!(
+        fixture.route_count("POST /oauth/device/code"),
+        1,
+        "a known server list must not request another device code: {:?}",
+        fixture.routes.lock().unwrap()
+    );
+    let resume = fixture
+        .login(&["--server", "srv_dark_forge"], null_stdin())
+        .await;
+    let resume_error = String::from_utf8_lossy(&resume.stderr);
+    assert!(resume.status.success(), "{resume_error}");
+    assert_eq!(fixture.route_count("POST /oauth/device/code"), 1);
+    let profile = fixture.profile().unwrap();
+    assert_eq!(
+        profile["profiles"]["default"]["server"]["id"],
+        "srv_dark_forge"
+    );
+    assert!(chosen(&profile), "{profile}");
+}
+
+#[cfg(unix)]
+struct Reap(Option<std::process::Child>);
+
+#[cfg(unix)]
+impl Drop for Reap {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn login_on_a_pty_with_no_input_keeps_the_approved_session() {
+    use std::io::{ErrorKind, Read};
+    use std::os::unix::io::FromRawFd;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    fn open_pty() -> (std::fs::File, std::fs::File) {
+        let mut master_fd = 0;
+        let mut slave_fd = 0;
+        let opened = unsafe {
+            libc::openpty(
+                &mut master_fd,
+                &mut slave_fd,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(opened, 0);
+        let flags = unsafe { libc::fcntl(master_fd, libc::F_GETFL) };
+        assert!(flags >= 0);
+        assert_eq!(
+            unsafe { libc::fcntl(master_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) },
+            0
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(master_fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+            0
+        );
+        assert_eq!(
+            unsafe { libc::fcntl(slave_fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+            0
+        );
+        (unsafe { std::fs::File::from_raw_fd(master_fd) }, unsafe {
+            std::fs::File::from_raw_fd(slave_fd)
+        })
+    }
+
+    fn read_available(master: &mut std::fs::File, captured: &mut Vec<u8>) {
+        let mut buf = [0u8; 1024];
+        loop {
+            match master.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => captured.extend_from_slice(&buf[..n]),
+                Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                Err(_) => break,
+            }
+        }
+    }
+
+    let fixture = identity_fixture(&[("srv_ser7", "ser7"), ("srv_dark_forge", "dark-forge")]).await;
+    let (input_master, input_slave) = open_pty();
+    let (mut error_master, error_slave) = open_pty();
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_kiln"))
+        .env_remove("KILN_IDENTITY_URL")
+        .env("KILN_IDENTITY_CA", &fixture.ca)
+        .env("PATH", &fixture.bin_dir)
+        .stdin(Stdio::from(input_slave))
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(error_slave))
+        .arg("--config")
+        .arg(&fixture.config)
+        .arg("--issuer")
+        .arg(&fixture.origin)
+        .arg("login")
+        .spawn()
+        .unwrap();
+    let mut child = Reap(Some(child));
+    let mut captured = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut saw_prompt = false;
+    while Instant::now() < deadline {
+        read_available(&mut error_master, &mut captured);
+        if String::from_utf8_lossy(&captured).contains("Select a server number") {
+            saw_prompt = true;
+            break;
+        }
+        if child.0.as_mut().unwrap().try_wait().unwrap().is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let text = String::from_utf8_lossy(&captured);
+    assert!(saw_prompt, "{text}");
+    let profile = fixture
+        .profile()
+        .expect("the approved session is saved before the picker waits");
+    assert!(!chosen(&profile), "{profile}");
+    assert_eq!(fixture.route_count("POST /oauth/device/code"), 1);
+    drop(input_master);
+    let status = loop {
+        if let Some(status) = child.0.as_mut().unwrap().try_wait().unwrap() {
+            break status;
+        }
+        read_available(&mut error_master, &mut captured);
+        if Instant::now() > deadline + Duration::from_secs(5) {
+            panic!(
+                "picker kept waiting after stdin closed: {}",
+                String::from_utf8_lossy(&captured)
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    };
+    child.0.take();
+    let settle = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < settle {
+        read_available(&mut error_master, &mut captured);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let text = String::from_utf8_lossy(&captured);
+    assert!(!status.success(), "{text}");
+    assert!(text.contains("kiln login --server srv_ser7"), "{text}");
+    assert!(
+        text.contains("kiln login --server srv_dark_forge"),
+        "{text}"
+    );
+    let resume = fixture.login(&["--server", "srv_ser7"], null_stdin()).await;
+    let resume_error = String::from_utf8_lossy(&resume.stderr);
+    assert!(resume.status.success(), "{resume_error}");
+    assert_eq!(
+        fixture.route_count("POST /oauth/device/code"),
+        1,
+        "{:?}",
+        fixture.routes.lock().unwrap()
+    );
+    let profile = fixture.profile().unwrap();
+    assert_eq!(profile["profiles"]["default"]["server"]["id"], "srv_ser7");
+    assert!(chosen(&profile), "{profile}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn login_on_a_pty_accepts_a_server_number() {
+    use std::io::{ErrorKind, Read, Write};
+    use std::os::unix::io::FromRawFd;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let fixture = identity_fixture(&[("srv_ser7", "ser7"), ("srv_dark_forge", "dark-forge")]).await;
+    let mut master_fd = 0;
+    let mut slave_fd = 0;
+    assert_eq!(
+        unsafe {
+            libc::openpty(
+                &mut master_fd,
+                &mut slave_fd,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        },
+        0
+    );
+    for fd in [master_fd, slave_fd] {
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+            0
+        );
+    }
+    let flags = unsafe { libc::fcntl(master_fd, libc::F_GETFL) };
+    assert_eq!(
+        unsafe { libc::fcntl(master_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) },
+        0
+    );
+    let mut master = unsafe { std::fs::File::from_raw_fd(master_fd) };
+    let slave = unsafe { std::fs::File::from_raw_fd(slave_fd) };
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_kiln"))
+        .env_remove("KILN_IDENTITY_URL")
+        .env("KILN_IDENTITY_CA", &fixture.ca)
+        .env("PATH", &fixture.bin_dir)
+        .stdin(Stdio::from(slave.try_clone().unwrap()))
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(slave))
+        .arg("--config")
+        .arg(&fixture.config)
+        .arg("--issuer")
+        .arg(&fixture.origin)
+        .arg("login")
+        .spawn()
+        .unwrap();
+    let mut child = Reap(Some(child));
+    let mut captured = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        let mut buf = [0u8; 1024];
+        match master.read(&mut buf) {
+            Ok(n) if n > 0 => captured.extend_from_slice(&buf[..n]),
+            Ok(_) => break,
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+            Err(_) => break,
+        }
+        if String::from_utf8_lossy(&captured).contains("Select a server number") {
+            master.write_all(b"nope\n2\n").unwrap();
+            break;
+        }
+        if child.0.as_mut().unwrap().try_wait().unwrap().is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let status = loop {
+        let mut buf = [0u8; 1024];
+        match master.read(&mut buf) {
+            Ok(n) if n > 0 => captured.extend_from_slice(&buf[..n]),
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+            Err(_) => {}
+        }
+        if let Some(status) = child.0.as_mut().unwrap().try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline + Duration::from_secs(5) {
+            panic!("{}", String::from_utf8_lossy(&captured));
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    };
+    child.0.take();
+    let text = String::from_utf8_lossy(&captured);
+    assert!(status.success(), "{text}");
+    assert!(text.contains("invalid selection"), "{text}");
+    assert_eq!(fixture.route_count("POST /oauth/device/code"), 1);
+    let profile = fixture.profile().unwrap();
+    assert_eq!(
+        profile["profiles"]["default"]["server"]["id"],
+        "srv_dark_forge"
+    );
+    assert!(chosen(&profile), "{profile}");
+}
+
+#[tokio::test]
+async fn login_without_a_terminal_selects_the_only_server() {
+    let fixture = identity_fixture(&[("srv_ser7", "ser7")]).await;
+    let output = fixture.login(&[], null_stdin()).await;
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{error}");
+    assert!(error.contains("Browser could not be opened"), "{error}");
+    assert!(!error.contains("Select a server number"), "{error}");
+    assert!(output.stdout.is_empty());
+    let profile = fixture.profile().expect("one server is saved");
+    assert_eq!(profile["profiles"]["default"]["server"]["name"], "ser7");
+    assert_eq!(profile["profiles"]["default"]["server"]["id"], "srv_ser7");
+    assert!(chosen(&profile), "{profile}");
+    assert_eq!(fixture.route_count("GET /v1/servers"), 1);
+}
+
+#[tokio::test]
+async fn login_with_an_unknown_server_keeps_the_approval() {
+    let fixture = identity_fixture(&[("srv_ser7", "ser7"), ("srv_dark_forge", "dark-forge")]).await;
+    let output = fixture
+        .login(&["--server", "srv_missing"], null_stdin())
+        .await;
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{error}");
+    assert!(error.contains("server ID not found"), "{error}");
+    assert!(error.contains("kiln login --server srv_ser7"), "{error}");
+    let profile = fixture.profile().expect("approval kept");
+    assert!(!chosen(&profile), "{profile}");
+    assert_eq!(fixture.route_count("POST /oauth/device/code"), 1);
+    let resume = fixture
+        .login(&["--server", "srv_dark_forge"], null_stdin())
+        .await;
+    let resume_error = String::from_utf8_lossy(&resume.stderr);
+    assert!(resume.status.success(), "{resume_error}");
+    assert_eq!(fixture.route_count("POST /oauth/device/code"), 1);
+    let profile = fixture.profile().unwrap();
+    assert_eq!(
+        profile["profiles"]["default"]["server"]["id"],
+        "srv_dark_forge"
+    );
+    assert!(chosen(&profile), "{profile}");
+}
+
+#[tokio::test]
+async fn profile_list_marks_an_unchosen_server() {
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("profiles.json");
+    let credential = root.path().join("credential.json");
+    let body = serde_json::json!({
+        "profiles": {
+            "pending": {
+                "issuer": "https://identity.example",
+                "server": {
+                    "id": "srv_ser7",
+                    "name": "ser7",
+                    "origin": "https://ser7.example",
+                    "ca_pem": "pem",
+                    "revision": 1
+                },
+                "credential_file": credential,
+                "door_trust": "pin",
+                "server_chosen": false
+            },
+            "ready": {
+                "issuer": "https://identity.example",
+                "server": {
+                    "id": "srv_dark_forge",
+                    "name": "dark-forge",
+                    "origin": "https://dark-forge.example",
+                    "ca_pem": "pem",
+                    "revision": 1
+                },
+                "credential_file": credential,
+                "door_trust": "pin"
+            }
+        }
+    });
+    fs::write(&config, serde_json::to_vec(&body).unwrap()).unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_kiln"))
+        .args(["--config", config.to_str().unwrap(), "profile", "list"])
+        .output()
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{error}");
+    assert!(text.contains("pending\t(server not chosen)"), "{text}");
+    assert!(!text.contains("ser7.example"), "{text}");
+    assert!(text.contains("ready\thttps://dark-forge.example"), "{text}");
 }
 
 #[tokio::test]
