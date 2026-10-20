@@ -224,8 +224,14 @@ jobs:
           REUSE_EVENT: ${{ github.event_name }}
           REUSE_SHA: ${{ github.sha }}
           REUSE_SHA_INPUT: ${{ inputs.reuse_sha }}
-          REUSE_VERSION: ${{ github.event_name == 'push' && github.ref_name || '' }}
-        run: python3 scripts/reuse_release.py fetch --dist dist
+        # REUSE_VERSION stays unset. fetch reads Cargo.toml at that commit.
+        # Main named the archives with that version, which can differ from the tag.
+        run: |
+          if [ "$REUSE_EVENT" = workflow_dispatch ] && [ -z "$REUSE_SHA_INPUT" ]; then
+            REUSE_SHA_INPUT=$(gh api "repos/${GH_REPO}/commits/main" --jq .sha)
+            export REUSE_SHA_INPUT
+          fi
+          python3 scripts/reuse_release.py fetch --dist dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.decide.outputs.mode == 'reuse'
         with:
@@ -577,10 +583,42 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.reuse.outputs.mode == 'reuse' && needs.reuse.outputs.version || github.ref_name }}
           REUSE_MODE: ${{ needs.reuse.outputs.mode }}
         run: |
           started=$(date +%s)
-          python3 scripts/reuse_release.py finish --version "$TAG" --dist dist
+          python3 scripts/reuse_release.py finish --version "$VERSION" --dist dist
+          if [ "$REUSE_MODE" = reuse ]; then
+            built=$(sed -n 's/^    version=//p' dist/install.sh)
+            release=${TAG#v}
+            if [ -n "$built" ] && [ "$built" != "$release" ]; then
+              escaped=$(printf '%s\n' "$built" | sed 's/[.]/\\./g')
+              for path in dist/*; do
+                name=$(basename "$path")
+                new=$(printf '%s\n' "$name" | sed "s/-v${escaped}\\([.-]\\)/-v${release}\\1/")
+                [ "$name" = "$new" ] && continue
+                case "$name" in
+                  *.sha256)
+                    digest=$(awk 'NR==1 { print $1 }' "$path")
+                    printf '%s  %s\n' "$digest" "${new%.sha256}" >"$path"
+                    ;;
+                esac
+                mv "$path" "dist/$new"
+              done
+              awk -v release="$release" '
+                {
+                  gsub("kiln-v\\$version-", "kiln-v" release "-")
+                  gsub("kiln-server-v\\$version-", "kiln-server-v" release "-")
+                  gsub("releases/download/v\\$version/", "releases/download/v" release "/")
+                  print
+                }
+              ' dist/install.sh >dist/install.sh.new
+              chmod 755 dist/install.sh.new
+              mv dist/install.sh.new dist/install.sh
+              digest=$(sha256sum dist/install.sh | awk '{ print $1 }')
+              printf '%s  install.sh\n' "$digest" >dist/install.sh.sha256
+            fi
+          fi
           (cd dist && sha256sum -c ./*.sha256)
           if [ "$REUSE_MODE" = reuse ]; then
             source_ref=refs/heads/main

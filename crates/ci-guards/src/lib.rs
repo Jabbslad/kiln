@@ -565,6 +565,57 @@ fn strip_comment(line: &str) -> &str {
     line.split_once(" #").map(|(head, _)| head).unwrap_or(line)
 }
 
+pub fn reuse_lookup_violations(workflow: &str) -> Vec<String> {
+    let jobs = job_blocks(workflow);
+    let mut violations = Vec::new();
+    let Some((_, reuse)) = jobs.iter().find(|(name, _)| name == "reuse") else {
+        return vec!["reuse job is missing".to_string()];
+    };
+    let decide = step_from(reuse, "id: decide");
+    if decide.contains("github.ref_name") {
+        violations.push(
+            "reuse looks up archives by the git tag; main names them with the committed workspace version"
+                .to_string(),
+        );
+    }
+    if !decide.contains("commits/main") {
+        violations
+            .push("a dry run with an empty reuse_sha does not look up main's commit".to_string());
+    }
+    let Some((_, draft)) = jobs.iter().find(|(name, _)| name == "draft-release") else {
+        violations.push("draft-release job is missing".to_string());
+        return violations;
+    };
+    if !draft.contains("needs.reuse.outputs.version") || draft.contains("finish --version \"$TAG\"")
+    {
+        violations.push(
+            "draft-release finish checks the git tag against main's archive names".to_string(),
+        );
+    }
+    if !draft.contains("${TAG#v}") {
+        violations.push(
+            "publish keeps the workspace version in the asset name, so deploy cannot download kiln-server-${tag}"
+                .to_string(),
+        );
+    }
+    violations
+}
+
+fn step_from(job: &str, marker: &str) -> String {
+    let lines: Vec<&str> = job.lines().collect();
+    let Some(start) = lines.iter().position(|line| line.contains(marker)) else {
+        return String::new();
+    };
+    let mut body = vec![lines[start]];
+    for line in lines.iter().skip(start + 1) {
+        if line.starts_with("      - ") {
+            break;
+        }
+        body.push(*line);
+    }
+    body.join("\n")
+}
+
 pub fn deploy_caller_violations(workflow: &str) -> Vec<String> {
     let jobs = job_blocks(workflow);
     let mut violations = Vec::new();
