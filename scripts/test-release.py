@@ -57,7 +57,7 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(archive.namelist(), ["kiln.exe"])
             self.assertEqual(archive.read("kiln.exe"), b"binary-kiln.exe")
 
-    def test_dashboard_contains_only_static_build_and_usage(self):
+    def test_dashboard_contains_only_static_assets(self):
         (self.repo / "web").mkdir()
         (self.repo / "web/README.md").write_text("Frontend only; no live control plane")
         (self.bins / "assets").mkdir()
@@ -69,13 +69,10 @@ class ReleaseTests(unittest.TestCase):
         with tarfile.open(path) as archive:
             self.assertEqual(set(archive.getnames()), {
                 "index.html", "favicon.svg", "assets/index-ab.js", "assets/index-cd.css",
-                "assets/font-ef.woff2", "assets/hero-gh.webp", "THIRD_PARTY_LICENSES.md", "README.md", "release.json",
+                "assets/font-ef.woff2", "assets/hero-gh.webp",
             })
             self.assertEqual(archive.extractfile("assets/index-ab.js").read(), b"assets/index-ab.js")
             self.assertTrue(all(member.mode == 0o644 for member in archive.getmembers()))
-            self.assertEqual(json.load(archive.extractfile("release.json")), {
-                "version": "v0.1.0", "target": "web",
-            })
         self.assertEqual(Path(str(path) + ".sha256").read_text().split()[0],
                          hashlib.sha256(path.read_bytes()).hexdigest())
         # Dashboard packaging runs on Linux; Windows client builders need not

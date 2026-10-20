@@ -626,6 +626,9 @@ install_fresh() {
   local bundle=$1 address=$2 uplink=${3:-}
   local name slot uid gid template_id services runtime ids
   address=$(private_address "$address")
+  if [ -n "$dashboard_archive" ]; then
+    refuse_dashboard_destination
+  fi
   mkdir -m 755 "$ETC"
   chmod 755 "$ETC"
   mkdir -m 700 "$STATE"
@@ -1218,6 +1221,33 @@ dashboard_bytes_match() {
   return "$mismatched"
 }
 
+refuse_dashboard_destination() {
+  if [ -L "$DASHBOARD" ]; then
+    die "refusing symlink dashboard destination"
+  fi
+  trusted_ancestors "$SHARE"
+}
+
+install_staged_dashboard() {
+  local stage=$1 previous
+  if [ ! -d "$DASHBOARD" ]; then
+    mv -- "$stage" "$DASHBOARD" || { rm -rf -- "$stage"; die "cannot install dashboard archive"; }
+    return 0
+  fi
+  previous=$(mktemp -d "$SHARE/.dashboard.XXXXXX") || { rm -rf -- "$stage"; die "cannot install dashboard archive"; }
+  rmdir -- "$previous" || { rm -rf -- "$stage" "$previous"; die "cannot install dashboard archive"; }
+  if ! mv -- "$DASHBOARD" "$previous"; then
+    rm -rf -- "$stage"
+    die "cannot install dashboard archive"
+  fi
+  if ! mv -- "$stage" "$DASHBOARD"; then
+    mv -- "$previous" "$DASHBOARD" || die "cannot restore the dashboard"
+    rm -rf -- "$stage"
+    die "cannot install dashboard archive"
+  fi
+  rm -rf -- "$previous"
+}
+
 install_app_units() {
   local unit source dest
   while IFS= read -r unit; do
@@ -1245,11 +1275,8 @@ install_app_units() {
 install_dashboard() {
   local stage parent
   [ -n "$dashboard_archive" ] || return 0
-  if [ -L "$DASHBOARD" ]; then
-    die "refusing symlink dashboard destination"
-  fi
+  refuse_dashboard_destination
   parent=$(dirname "$SHARE")
-  trusted_ancestors "$SHARE"
   mkdir -p -- "$SHARE"
   chmod 755 "$parent" "$SHARE"
   stage=$(mktemp -d "$SHARE/.dashboard.XXXXXX")
@@ -1268,8 +1295,7 @@ install_dashboard() {
   if dashboard_bytes_match "$stage"; then
     rm -rf -- "$stage"
   else
-    rm -rf -- "$DASHBOARD"
-    mv -- "$stage" "$DASHBOARD" || die "cannot install dashboard archive"
+    install_staged_dashboard "$stage"
   fi
   install_app_units
 }

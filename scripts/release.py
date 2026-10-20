@@ -34,8 +34,6 @@ def package(repo, bins, output, version, target, kind, image):
         files = {
             "index.html": bins / "index.html",
             "favicon.svg": bins / "favicon.svg",
-            "THIRD_PARTY_LICENSES.md": bins / "THIRD_PARTY_LICENSES.md",
-            "README.md": repo / "web" / "README.md",
         }
         for path in sorted(assets.iterdir()):
             if path.is_symlink() or not path.is_file() or path.suffix not in (".js", ".css", ".woff", ".woff2", ".svg", ".webp"):
@@ -135,7 +133,7 @@ def package(repo, bins, output, version, target, kind, image):
                     )
                     with path.open("rb") as source:
                         archive.addfile(info, source)
-                if kind in ("server", "identity", "dashboard"):
+                if kind in ("server", "identity"):
                     payload = {"version": version, "target": target}
                     if kind == "server":
                         payload["min_upgrade_from"] = "0.3.0"
