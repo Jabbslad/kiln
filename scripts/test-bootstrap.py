@@ -777,18 +777,12 @@ if args[0] == 'env' and 'apt-get' in args:
         self.assertNotEqual(code, 0, out)
         self.assertIn("Unexpected archive contents.", out)
 
-    def test_v049_names_pass_and_the_caddy_pair_is_independent(self):
+    def test_pinned_archive_names_pass_and_the_caddy_pair_is_independent(self):
         names = published_server_names()
         self.assertIn("deploy/kiln-door-proxy.service", names)
-        self.assertTrue(set(CADDY_PAIR).isdisjoint(names))
+        self.assertTrue(set(CADDY_PAIR).issubset(names))
         members = dict.fromkeys(names, b"fixture\n")
         code, out = self.run_bootstrap(self.package(members), args=("server",))
-        self.assertNotEqual(code, 0, out)
-        self.assertNotIn("Unexpected archive contents.", out)
-        with_caddy = dict(members)
-        for name in CADDY_PAIR:
-            with_caddy[name] = b"fixture\n"
-        code, out = self.run_bootstrap(self.package(with_caddy), args=("server",))
         self.assertNotEqual(code, 0, out)
         self.assertNotIn("Unexpected archive contents.", out)
         without_door = dict.fromkeys(
@@ -799,7 +793,7 @@ if args[0] == 'env' and 'apt-get' in args:
         self.assertNotIn("Unexpected archive contents.", out)
         for name in CADDY_PAIR:
             half = dict(members)
-            half[name] = b"fixture\n"
+            del half[name]
             code, out = self.run_bootstrap(self.package(half), args=("server",))
             self.assertNotEqual(code, 0, out)
             self.assertIn("Unexpected archive contents.", out)

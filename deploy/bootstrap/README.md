@@ -70,8 +70,8 @@ The client command does not update a server or its guest images.
 
 ## Website and dashboard preview
 
-[v0.4.9](https://github.com/Jabbslad/kiln/releases/tag/v0.4.9) includes the separate
-`kiln-dashboard-v0.4.9.tar.gz` static frontend and checksum. The installer does
+[v0.4.10](https://github.com/Jabbslad/kiln/releases/tag/v0.4.10) includes the separate
+`kiln-dashboard-v0.4.10.tar.gz` static frontend and checksum. The installer does
 not deploy it. `/` is the public landing page, styled from the committed `design.md`.
 Its `/boxes?preview=1` view uses labelled read-only examples;
 browser authentication and live VM controls are not integrated yet. See the
@@ -91,7 +91,7 @@ remains Ubuntu 24.04 on every supported host.
 **Running `server` authorizes installation or updating without further confirmation.** Use
 a root shell or an account with passwordless sudo; the script uses `sudo -n` and
 fails instead of asking for a password. Installing and deploying Kiln is shell
-scripts, `deploy/install.sh` in the source tree. The bootstrap pins v0.4.9 and
+scripts, `deploy/install.sh` in the source tree. The bootstrap pins v0.4.10 and
 runs that archive's `install.sh` with bash. It does not run Python. When
 `sqlite3` is missing from `PATH`, it runs `apt-get update` and then
 `DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3`.
@@ -141,7 +141,7 @@ stable release. It compares major.minor.patch as integers, so 0.4.10 is newer
 than 0.4.4. It refuses a downgrade before stopping a service or writing a file.
 Installs older than 0.3.0 are unsupported. A minor or major bump also requires
 `min_upgrade_from` in the package `release.json`; a patch bump does not. An
-identical install is a no-op. The pinned v0.4.9 archive runs `install.sh`.
+identical install is a no-op. The pinned v0.4.10 archive runs `install.sh`.
 
 The shell installer reuses the existing address and networking, and preserves
 configuration, credentials, units, Firecracker, guest images, templates and VM
@@ -223,7 +223,7 @@ It remains compatible with the 0.2.1 guest image.
 
 ## Trust and maintenance
 
-The bootstrap pins v0.4.9 release URLs and SHA-256 digests, validates archive contents,
+The bootstrap pins v0.4.10 release URLs and SHA-256 digests, validates archive contents,
 and downloads without authentication. Redirects are HTTPS-only and user curl
 configuration is disabled. Temporary files are removed on normal exit and handled
 signals. A checksum protects integrity under trust in this bootstrap publisher;
