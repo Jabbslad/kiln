@@ -8,7 +8,7 @@ Stop until Jamie says yes at deploy time. This step touches the login service. D
 
 The yes covers every touch below.
 
-- Editing `/opt/paseo/Caddyfile` and recreating the Caddy container from `deploy/caddy-compose.yaml`. That process fronts `https://dark-forge.dev` sign-in.
+- Editing `/opt/paseo/Caddyfile` and recreating paseo's `caddy` service with `deploy/paseo-caddy.override.yaml`. That process fronts `https://dark-forge.dev` sign-in.
 - Reading `/var/lib/kiln-identity/identity.db` for the server name and the `ca_pem` bytes.
 - `PUT https://dark-forge.dev/v1/servers/SERVER_ID` to set `origin` to `https://cli.dark-forge.dev`, with the same `name` and the same `ca_pem`. The call reads `/etc/kiln/directory.token` into a mode 0600 header file. Do not print the token.
 
@@ -57,6 +57,8 @@ Confirm ports 80 and 443 reach the Caddy container. From outside the host, `http
 
 ## Recreate Caddy
 
+Caddy is the `caddy` service of the paseo compose project. Its network is `paseo_default`, its volumes are `paseo_caddy_data` and `paseo_caddy_config`, and the same Caddyfile serves `app.nowcode.com` and `hub.nowcode.com`. Do not start a second Caddy container. `deploy/paseo-caddy.override.yaml` adds `ipv4_address: 172.18.0.3` on the existing `default` network and a read-only bind of `/etc/kiln/ca.crt`. It does not set the image, the ports, the Caddyfile mount, or the volumes.
+
 Caddy requests the certificate for `cli.dark-forge.dev` when the container comes back. There is no `tls` certificate line in the new site. Do not add one.
 
 Copy the live file and record both hashes.
@@ -66,7 +68,7 @@ cp -a /opt/paseo/Caddyfile /opt/paseo/Caddyfile.bak-door-443
 sha256sum /opt/paseo/Caddyfile /opt/paseo/Caddyfile.bak-door-443
 ```
 
-Add the site in `deploy/door.Caddyfile`. Leave the `dark-forge.dev` site as it is.
+Add the site in `deploy/door.Caddyfile`. Leave the `dark-forge.dev` site and the nowcode sites as they are.
 
 ```
 cli.dark-forge.dev {
@@ -81,38 +83,56 @@ cli.dark-forge.dev {
 }
 ```
 
-`/etc/kiln/ca.crt` is the path inside the container. `deploy/caddy-compose.yaml` bind-mounts the host file there with `read_only: true` when Docker creates the container. `docker update` cannot add a mount. A copy placed in the running container disappears on the next recreate.
+`/etc/kiln/ca.crt` is the path inside the container. The override bind-mounts the host file there with `read_only: true` when Docker creates the container. `docker update` cannot add a mount. A copy placed in the running container disappears on the next recreate.
 
 The bind sets `create_host_path: false`. Create fails when `/etc/kiln/ca.crt` is missing. A short `-v` of a missing path creates a directory, and Caddy then has no certificate file to read.
 
 Do not mount `/etc/kiln`, `/etc/kiln/ca.key`, `/etc/kiln/door.key`, or `/etc/kiln/directory.token`. The certificate is mode 0644. Leave the private keys mode 0600.
 
-The door socket allows only `172.18.0.3/32`. The compose file pins that address on subnet `172.18.0.0/16` with gateway `172.18.0.1`. That gateway is the socket `ListenStream`. A recreate that assigns another address no longer matches the allow list, and port 443 stops reaching the door.
+The door socket allows only `172.18.0.3/32`. The override pins that address. A recreate that assigns another address no longer matches the allow list, and port 443 stops reaching the door.
 
-This host already has a bridge on `172.18.0.0/16` with gateway `172.18.0.1`. Do not create a second network on that subnet. Inspect the network that owns `172.18.0.1`. Set the compose network to `external: true` and that network's name. Keep `ipv4_address: 172.18.0.3`.
+## Pre-flight
 
-The image default is `caddy:2.10.2`. On that version, `caddy adapt` accepts `tls_trust_pool file` and warns on `tls_trusted_ca_certs`. If the running container uses another tag, set `KILN_CADDY_IMAGE` to that tag and adapt the edited Caddyfile with that image before you recreate.
+Do this before anything is stopped. The running caddy container already holds `172.18.0.3`. A check that the address is free would always abort.
 
-`caddy-data` and `caddy-config` keep ACME storage across recreate. If the running container already mounts a volume at `/data`, use that volume. A new empty volume makes Caddy request the public certificate again.
+```
+docker network inspect paseo_default --format '{{json .IPAM.Config}}'
+```
 
-Validate, and stop if validate fails.
+Abort unless a `Subnet` in that IPAM Config contains `172.18.0.3`.
+
+```
+docker network inspect paseo_default --format '{{json .Containers}}'
+```
+
+Abort if any container other than paseo's `caddy` service holds `172.18.0.3`. That service has compose labels `com.docker.compose.project=paseo` and `com.docker.compose.service=caddy`. The running caddy container is allowed to hold the address.
+
+On Docker 29.1.3 with Compose 2.40.3, a compose default network created without an explicit subnet still has an automatic subnet in IPAM Config, and a fixed address is accepted when that subnet contains `172.18.0.3`. `paseo_default` is a user-defined network. The error `user specified IP address is supported on user defined networks only` applies to the built-in `bridge` network, not to `paseo_default`.
+
+If no configured subnet contains `172.18.0.3`, abort the procedure. Do not stop caddy. Docker refuses the pin with `no configured subnet contains IP address 172.18.0.3` and, on this Docker, leaves the existing container running. Replacing `paseo_default` with a new subnet disconnects every container on it, including caddy, paseo, paseo-hub, and paseo-hub-db. That needs a separate plan. Do not create a second bridge on `172.18.0.0/16`.
+
+The running image is `caddy:2`. The override does not change it. On `caddy:2.10.2`, `caddy adapt` accepts `tls_trust_pool file` and warns on `tls_trusted_ca_certs`. Validate the edited Caddyfile with the image the container already uses, and stop if validate fails.
 
 ```
 docker run --rm \
   --mount type=bind,source=/opt/paseo/Caddyfile,target=/etc/caddy/Caddyfile,readonly \
   --mount type=bind,source=/etc/kiln/ca.crt,target=/etc/kiln/ca.crt,readonly \
-  "${KILN_CADDY_IMAGE:-caddy:2.10.2}" \
+  caddy:2 \
   caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 ```
 
-If a container already publishes ports 80 and 443, stop that container after validate succeeds. Recreate from this compose file. Do not copy the certificate into the container. Do not restart `kiln-identity`. If the new container does not stay up, start the previous container again.
+Copy `deploy/paseo-caddy.override.yaml` to `/opt/paseo/paseo-caddy.override.yaml`. In `/opt/paseo/.env`, set `COMPOSE_FILE` to the compose file paseo already uses, a colon, and `paseo-caddy.override.yaml`. If `COMPOSE_FILE` is already set, append `:paseo-caddy.override.yaml` to that value. Do not drop the existing file from the list. A later plain `docker compose up` in `/opt/paseo` keeps the pin and the CA mount.
+
+`paseo_caddy_data` and `paseo_caddy_config` stay the service volumes. The override does not declare new ones. A new volume would make Caddy request the public certificate again.
+
+From `/opt/paseo`, recreate only caddy. Do not copy the certificate into the container. Do not restart `kiln-identity`.
 
 ```
-docker compose -p kiln-door-caddy -f deploy/caddy-compose.yaml up -d --force-recreate
+docker compose up -d --force-recreate --no-deps caddy
 systemctl show kiln-identity.service -p MainPID -p NRestarts -p ActiveEnterTimestamp
 ```
 
-The new container address is `172.18.0.3`. `/etc/kiln/ca.crt` is mounted read-only. The identity MainPID and ActiveEnterTimestamp match the values recorded at the start.
+The container address is `172.18.0.3`. `/etc/kiln/ca.crt` is mounted read-only. The nowcode sites still answer. The identity MainPID and ActiveEnterTimestamp match the values recorded at the start.
 
 Prove the existing sign-in, not only the new name. From outside the host, the body of `https://dark-forge.dev/login` contains `Light the way in.` A non-error status is not enough. On the laptop, with the released client and without `KILN_IDENTITY_CA`, run a login that does not replace the saved default profile.
 
@@ -122,14 +142,21 @@ kiln --profile sign-in-check login
 
 Approve the device code. The command must exit 0.
 
-If the page is not the sign-in page, or that login does not finish, restore the backup before any other change.
-
-```
-cp -a /opt/paseo/Caddyfile.bak-door-443 /opt/paseo/Caddyfile
-docker compose -p kiln-door-caddy -f deploy/caddy-compose.yaml up -d --force-recreate
-```
+If the page is not the sign-in page, or that login does not finish, roll back the Caddy container before any other change.
 
 Stop. Do not rebind the door.
+
+## Roll back the Caddy container
+
+Restore `/opt/paseo/Caddyfile` from `/opt/paseo/Caddyfile.bak-door-443`. Remove `paseo-caddy.override.yaml` from `COMPOSE_FILE` in `/opt/paseo/.env`. The recreated container holds ports 80 and 443 and `172.18.0.3`. Remove it before starting the old config. From `/opt/paseo`:
+
+```
+docker compose stop caddy
+docker compose rm -f caddy
+docker compose up -d --no-deps caddy
+```
+
+The old caddy container comes back without the CA mount. `paseo_caddy_data` and `paseo_caddy_config` are the same volumes. Do not restart `kiln-identity`.
 
 ## Check the issued certificate
 
@@ -241,4 +268,4 @@ From outside the host, a connection to port 8443 fails. `https://cli.dark-forge.
 
 ## Roll back
 
-Restore `/opt/paseo/Caddyfile` from `/opt/paseo/Caddyfile.bak-door-443`, validate, and recreate with `docker compose -p kiln-door-caddy -f deploy/caddy-compose.yaml up -d --force-recreate`. The pinned address and the read-only CA mount stay. To put the door itself back on the public address, disable `kiln-door-proxy-public.socket` first so `78.46.98.73:8443` is free, write that address back into `/etc/kiln/door.env`, and restart `kiln-door` only. Stop and disable `kiln-door-proxy.socket` as well when the bridge is no longer needed. If the directory origin changed, PUT `https://cli.dark-forge.dev:8443` with the same `name` and the same `ca_pem`. Leave the drop rule out if you have not closed 8443 yet. `kiln-identity` stays up. While the public socket is still forwarding, a 0.4.6 client can keep using `:8443` without this rollback. A profile that already stored public-root trust dials port 443 only, so that laptop stays down until this Caddy site is restored.
+Follow Roll back the Caddy container, then validate the restored Caddyfile. The old container is up before any door change. To put the door itself back on the public address, disable `kiln-door-proxy-public.socket` first so `78.46.98.73:8443` is free, write that address back into `/etc/kiln/door.env`, and restart `kiln-door` only. Stop and disable `kiln-door-proxy.socket` as well when the bridge is no longer needed. If the directory origin changed, PUT `https://cli.dark-forge.dev:8443` with the same `name` and the same `ca_pem`. Leave the drop rule out if you have not closed 8443 yet. `kiln-identity` stays up. While the public socket is still forwarding, a 0.4.6 client can keep using `:8443` without this rollback. A profile that already stored public-root trust dials port 443 only, so that laptop stays down until this Caddy site is restored.

@@ -1,0 +1,12 @@
+services:
+  caddy:
+    networks:
+      default:
+        ipv4_address: 172.18.0.3
+    volumes:
+      - type: bind
+        source: ${KILN_CA_CERT:-/etc/kiln/ca.crt}
+        target: /etc/kiln/ca.crt
+        read_only: true
+        bind:
+          create_host_path: false

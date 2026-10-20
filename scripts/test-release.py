@@ -136,7 +136,7 @@ class ReleaseTests(unittest.TestCase):
             "deploy/kiln-door-proxy.service",
             "deploy/kiln-door-proxy.socket",
             "deploy/kiln-door-proxy-public.socket",
-            "deploy/caddy-compose.yaml",
+            "deploy/paseo-caddy.override.yaml",
             "deploy/door.Caddyfile",
             "deploy/enroll-dark-forge.sh",
             "docs/runbooks/2026-10-19-door-public-cert.md",
@@ -176,7 +176,7 @@ class ReleaseTests(unittest.TestCase):
                     "deploy/kiln-door-proxy.service",
                     "deploy/kiln-door-proxy.socket",
                     "deploy/kiln-door-proxy-public.socket",
-                    "deploy/caddy-compose.yaml",
+                    "deploy/paseo-caddy.override.yaml",
                     "deploy/door.Caddyfile",
                     "deploy/enroll-dark-forge.sh",
                     "deploy/host.example.json",
@@ -218,7 +218,7 @@ def bootstrap_accepts(archive_names):
         "deploy/kiln-door-proxy.socket",
         "deploy/kiln-door-proxy-public.socket",
         "docs/runbooks/2026-10-19-door-public-cert.md",
-        "deploy/caddy-compose.yaml",
+        "deploy/paseo-caddy.override.yaml",
         "deploy/door.Caddyfile",
     }
     if archive_names & door_proxy:

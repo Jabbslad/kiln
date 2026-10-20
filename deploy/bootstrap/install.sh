@@ -115,23 +115,28 @@ FILES
         if grep -qx 'bin/kiln-network' "$work/names"; then
             printf 'bin/kiln-network\n' >> "$work/expected"
         fi
-        # The door proxy units, the Caddy compose, the door site, and the
-        # public-cert runbook ship together. The pinned v0.4.7 archive does
-        # not have them. A later archive that has one must have all of them,
-        # and no other extra names.
+        # The door proxy units and their runbook ship together. The pinned
+        # v0.4.7 archive does not have them. A later archive that has one must
+        # have all four, and no other extra names.
         if grep -qx 'deploy/kiln-door-proxy.service' "$work/names" \
             || grep -qx 'deploy/kiln-door-proxy.socket' "$work/names" \
             || grep -qx 'deploy/kiln-door-proxy-public.socket' "$work/names" \
-            || grep -qx 'docs/runbooks/2026-10-19-door-public-cert.md' "$work/names" \
-            || grep -qx 'deploy/caddy-compose.yaml' "$work/names" \
-            || grep -qx 'deploy/door.Caddyfile' "$work/names"
+            || grep -qx 'docs/runbooks/2026-10-19-door-public-cert.md' "$work/names"
         then
             printf '%s\n' \
                 deploy/kiln-door-proxy.service \
                 deploy/kiln-door-proxy.socket \
                 deploy/kiln-door-proxy-public.socket \
-                docs/runbooks/2026-10-19-door-public-cert.md \
-                deploy/caddy-compose.yaml \
+                docs/runbooks/2026-10-19-door-public-cert.md >> "$work/expected"
+        fi
+        # The paseo Caddy override and the door site are their own pair.
+        # v0.4.9 has the four door files and neither of these. An archive
+        # that has one of them must have both, with or without the door files.
+        if grep -qx 'deploy/paseo-caddy.override.yaml' "$work/names" \
+            || grep -qx 'deploy/door.Caddyfile' "$work/names"
+        then
+            printf '%s\n' \
+                deploy/paseo-caddy.override.yaml \
                 deploy/door.Caddyfile >> "$work/expected"
         fi
     fi

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""The door Caddy container keeps 172.18.0.3 and a read-only CA across recreate."""
+"""Paseo's caddy service keeps 172.18.0.3 and a read-only CA across recreate."""
 
+import ipaddress
+import json
 import os
 import shutil
 import socket
@@ -14,13 +16,15 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-COMPOSE = ROOT / "deploy/caddy-compose.yaml"
+OVERRIDE = ROOT / "deploy/paseo-caddy.override.yaml"
 DOOR = ROOT / "deploy/door.Caddyfile"
 SOCKET = ROOT / "deploy/kiln-door-proxy.socket"
 RUNBOOK = ROOT / "docs/runbooks/2026-10-19-door-public-cert.md"
 PIN = "172.18.0.3"
 GATEWAY = "172.18.0.1"
 CA_TARGET = "/etc/kiln/ca.crt"
+IMAGE = "caddy:2.10.2"
+REFUSAL = "no configured subnet contains IP address 172.18.0.3"
 
 
 def docker_base():
@@ -59,23 +63,75 @@ def bind_target(text, target):
     return None
 
 
+def ipam_config(base, network):
+    raw = subprocess.check_output(
+        base + ["network", "inspect", network, "--format", "{{json .IPAM.Config}}"],
+        text=True,
+    )
+    print(f"ipam {network} {raw.strip()}", flush=True)
+    return json.loads(raw) or []
+
+
+def subnet_contains(configs, pin):
+    address = ipaddress.ip_address(pin)
+    for item in configs:
+        subnet = (item or {}).get("Subnet") or ""
+        if subnet and address in ipaddress.ip_network(subnet, strict=False):
+            return True
+    return False
+
+
+def pin_holders(base, network, pin):
+    raw = subprocess.check_output(base + ["network", "inspect", network], text=True)
+    holders = []
+    for cid, info in (json.loads(raw)[0].get("Containers") or {}).items():
+        ip = (info.get("IPv4Address") or "").split("/")[0]
+        if ip == pin:
+            holders.append(cid)
+    return holders
+
+
+def paseo_caddy(base, cid):
+    raw = subprocess.check_output(
+        base + ["inspect", "-f", "{{json .Config.Labels}}", cid], text=True
+    )
+    labels = json.loads(raw) or {}
+    return (
+        labels.get("com.docker.compose.project") == "paseo"
+        and labels.get("com.docker.compose.service") == "caddy"
+    )
+
+
+def preflight(base, network):
+    """Abort unless IPAM Config contains the pin and only paseo caddy holds it."""
+    if not subnet_contains(ipam_config(base, network), PIN):
+        return False, f"no subnet contains {PIN}"
+    for cid in pin_holders(base, network, PIN):
+        if not paseo_caddy(base, cid):
+            return False, f"another container holds {PIN}"
+    return True, "ok"
+
+
 class DoorCaddyContract(unittest.TestCase):
     def test_pinned_address_matches_the_door_socket(self):
         socket_text = SOCKET.read_text()
-        compose = COMPOSE.read_text()
+        override = OVERRIDE.read_text()
         self.assertIn(f"IPAddressAllow={PIN}/32\n", socket_text)
         self.assertIn(f"ListenStream={GATEWAY}:8444\n", socket_text)
-        self.assertIn(f"ipv4_address: {PIN}\n", compose)
-        self.assertIn("subnet: 172.18.0.0/16\n", compose)
-        self.assertIn(f"gateway: {GATEWAY}\n", compose)
+        self.assertIn(f"ipv4_address: {PIN}\n", override)
         allow = socket_text.split("IPAddressAllow=", 1)[1].split("/", 1)[0]
-        pinned = compose.split("ipv4_address:", 1)[1].split()[0]
+        pinned = override.split("ipv4_address:", 1)[1].split()[0]
         self.assertEqual(allow, pinned)
+        self.assertNotIn("subnet:", override)
+        self.assertNotIn("kiln-edge", override)
+        self.assertNotIn("image:", override)
+        self.assertNotIn("ports:", override)
 
     def test_ca_bind_is_read_only_at_create_and_is_not_the_key_directory(self):
-        compose = COMPOSE.read_text()
-        mount = bind_target(compose, CA_TARGET)
+        override = OVERRIDE.read_text()
+        mount = bind_target(override, CA_TARGET)
         self.assertIsNotNone(mount)
+        self.assertEqual(len(bind_blocks(override)), 1)
         self.assertIn("source: ${KILN_CA_CERT:-/etc/kiln/ca.crt}\n", mount)
         self.assertIn("read_only: true\n", mount)
         self.assertIn("create_host_path: false", mount)
@@ -83,17 +139,11 @@ class DoorCaddyContract(unittest.TestCase):
         self.assertTrue(source.endswith("ca.crt}"))
         self.assertNotEqual(source, "/etc/kiln")
         for secret in ("ca.key", "door.key", "directory.token", "tls.key"):
-            self.assertNotIn(secret, compose)
-        self.assertNotIn("kiln-identity", compose)
-        self.assertNotIn("8092", compose)
-        caddyfile = bind_target(compose, "/etc/caddy/Caddyfile")
-        self.assertIsNotNone(caddyfile)
-        self.assertIn("read_only: true\n", caddyfile)
-        self.assertIn("create_host_path: false", caddyfile)
-        self.assertIn("source: ${KILN_CADDYFILE:-/opt/paseo/Caddyfile}\n", caddyfile)
-        self.assertIn("caddy-data:/data\n", compose)
-        self.assertIn("caddy-config:/config\n", compose)
-        self.assertIn("image: ${KILN_CADDY_IMAGE:-caddy:2.10.2}\n", compose)
+            self.assertNotIn(secret, override)
+        self.assertNotIn("kiln-identity", override)
+        self.assertNotIn("8092", override)
+        self.assertNotIn("caddy-data", override)
+        self.assertNotIn("/etc/caddy/Caddyfile", override)
 
     def test_door_site_trusts_the_mounted_ca_with_the_current_directive(self):
         door = DOOR.read_text()
@@ -106,13 +156,81 @@ class DoorCaddyContract(unittest.TestCase):
         self.assertNotIn("tls_trusted_ca_certs", door)
         self.assertNotIn("tls_trusted_ca_certs /etc/kiln/ca.crt", runbook)
         self.assertIn("tls_trust_pool file {", runbook)
-        self.assertIn(
-            "docker compose -p kiln-door-caddy -f deploy/caddy-compose.yaml up -d --force-recreate",
-            runbook,
-        )
+        self.assertIn("docker network inspect paseo_default", runbook)
+        self.assertIn("A check that the address is free would always abort.", runbook)
+        self.assertIn(REFUSAL, runbook)
+        self.assertIn("That needs a separate plan.", runbook)
+        self.assertIn("COMPOSE_FILE", runbook)
+        self.assertIn("docker compose stop caddy\n", runbook)
+        self.assertIn("docker compose rm -f caddy\n", runbook)
+        self.assertIn("docker compose up -d --no-deps caddy\n", runbook)
+        self.assertNotIn("kiln-door-caddy", runbook)
+        self.assertNotIn("caddy-compose.yaml", runbook)
 
 
 class DoorCaddyRecreate(unittest.TestCase):
+    def test_preflight_aborts_when_no_subnet_contains_the_pin(self):
+        if os.environ.get("KILN_CADDY_DOCKER") != "1":
+            self.skipTest("set KILN_CADDY_DOCKER=1 to recreate the container")
+        base = docker_base()
+        if base is None:
+            self.fail("docker is not available")
+        network = "paseo_nosub"
+        name = "kiln-nosub-caddy"
+        work = Path(tempfile.mkdtemp(prefix="kiln-caddy-nosub-"))
+        self.addCleanup(shutil.rmtree, work, True)
+        self.addCleanup(self.remove, base, name, network, work)
+        subprocess.call(base + ["rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.call(base + ["network", "rm", network], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.check_call(
+            base + ["network", "create", "--subnet", "172.19.0.0/16", "--gateway", "172.19.0.1", network],
+            stdout=subprocess.DEVNULL,
+        )
+        compose = work / "compose.yaml"
+        compose.write_text(textwrap.dedent(f"""\
+            services:
+              caddy:
+                image: {IMAGE}
+                command: ["sleep", "60"]
+                container_name: {name}
+                restart: unless-stopped
+            networks:
+              default:
+                name: {network}
+                external: true
+            """))
+        subprocess.check_call(
+            base + ["compose", "-p", "paseo-nosub", "-f", str(compose), "up", "-d"],
+            stdout=subprocess.DEVNULL,
+        )
+        before = self.state(base, name)
+        ok, reason = preflight(base, network)
+        print(f"preflight {ok} {reason}", flush=True)
+        self.assertFalse(ok)
+        self.assertEqual(reason, f"no subnet contains {PIN}")
+        after = self.state(base, name)
+        self.assertEqual(before, after)
+        self.assertEqual(after[1], "running")
+        print(f"untouched {before[0][:12]} {after[1]}", flush=True)
+        ca = work / "ca.crt"
+        ca.write_text("placeholder\n")
+        cmd = ["compose", "-p", "paseo-nosub", "-f", str(compose), "-f", str(OVERRIDE),
+               "up", "-d", "--force-recreate"]
+        env = os.environ.copy()
+        env["KILN_CA_CERT"] = str(ca)
+        if base[0] == "sudo":
+            cmd = ["sudo", "env", f"KILN_CA_CERT={ca}", "docker", *cmd]
+        else:
+            cmd = [*base, *cmd]
+        refused = subprocess.run(cmd, text=True, capture_output=True, env=env)
+        print(refused.stderr, flush=True)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn(REFUSAL, refused.stderr)
+        still = self.state(base, name)
+        self.assertEqual(still[0], before[0])
+        self.assertEqual(still[1], "running")
+        print(f"compose-refused still {still[0][:12]} {still[1]}", flush=True)
+
     def test_recreate_keeps_the_address_the_ca_and_the_401(self):
         if os.environ.get("KILN_CADDY_DOCKER") != "1":
             self.skipTest("set KILN_CADDY_DOCKER=1 to recreate the container")
@@ -123,13 +241,176 @@ class DoorCaddyRecreate(unittest.TestCase):
 
     def recreate(self, base):
         work = Path(tempfile.mkdtemp(prefix="kiln-caddy-proof-"))
+        project = work / "paseo"
+        project.mkdir()
         self.addCleanup(shutil.rmtree, work, True)
-        project = "kiln-caddy-proof"
-        compose = ["compose", "-p", project, "-f", str(COMPOSE)]
-        self.addCleanup(self.down, base, compose)
-
+        self.addCleanup(self.down_paseo, base, project)
         self.lost_copy(base, work)
+        subprocess.call(base + ["rm", "-f", "caddy"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.prepare_volumes(base)
+        ca, public, public_key, leaf, leaf_key = self.certs(work)
+        caddyfile = project / "Caddyfile"
+        caddyfile.write_text(textwrap.dedent("""\
+            {
+            	admin off
+            	auto_https off
+            }
+            http://app.nowcode.com {
+            	respond "nowcode-stand-in"
+            }
+            """))
+        (project / "compose.yaml").write_text(textwrap.dedent(f"""\
+            services:
+              caddy:
+                image: {IMAGE}
+                container_name: caddy
+                restart: unless-stopped
+                ports:
+                  - "80:80"
+                  - "443:443"
+                volumes:
+                  - type: bind
+                    source: ./Caddyfile
+                    target: /etc/caddy/Caddyfile
+                    read_only: true
+                    bind:
+                      create_host_path: false
+                  - type: bind
+                    source: {public}
+                    target: /etc/caddy/public.crt
+                    read_only: true
+                    bind:
+                      create_host_path: false
+                  - type: bind
+                    source: {public_key}
+                    target: /etc/caddy/public.key
+                    read_only: true
+                    bind:
+                      create_host_path: false
+                  - paseo_caddy_data:/data
+                  - paseo_caddy_config:/config
+            volumes:
+              paseo_caddy_data:
+                name: paseo_caddy_data
+                external: true
+              paseo_caddy_config:
+                name: paseo_caddy_config
+                external: true
+            """))
+        (project / ".env").write_text("COMPOSE_PROJECT_NAME=paseo\n")
+        subprocess.call(base + ["rm", "-f", "caddy"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.compose(base, project, ["up", "-d"])
+        first = self.container_id(base, project)
+        address = self.address(base, first)
+        print(f"address-before {address}", flush=True)
+        ok, reason = preflight(base, "paseo_default")
+        self.assertTrue(ok, reason)
+        stranger = subprocess.run(
+            base + ["run", "-d", "--name", "kiln-caddy-stranger", "--network", "paseo_default",
+                    "--ip", PIN, IMAGE, "sleep", "60"],
+            text=True, capture_output=True,
+        )
+        if stranger.returncode == 0:
+            self.addCleanup(
+                subprocess.call, base + ["rm", "-f", "kiln-caddy-stranger"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            blocked, why = preflight(base, "paseo_default")
+            print(f"stranger-preflight {blocked} {why}", flush=True)
+            self.assertFalse(blocked)
+            self.assertEqual(why, f"another container holds {PIN}")
+            self.assertEqual(self.state(base, "caddy")[0], first)
+            print(f"stranger-left-caddy {first[:12]} running", flush=True)
+            subprocess.check_call(base + ["rm", "-f", "kiln-caddy-stranger"], stdout=subprocess.DEVNULL)
+        else:
+            print(f"stranger-not-started {stranger.stderr.strip()}", flush=True)
+        ok, reason = preflight(base, "paseo_default")
+        print(f"preflight {ok} {reason}", flush=True)
+        self.assertTrue(ok, reason)
+        head, rest = DOOR.read_text().split("{", 1)
+        caddyfile.write_text(
+            "{\n\tadmin off\n\tauto_https off\n}\nhttps://"
+            + head
+            + "{\n\ttls /etc/caddy/public.crt /etc/caddy/public.key\n"
+            + rest
+            + "\nhttp://app.nowcode.com {\n\trespond \"nowcode-stand-in\"\n}\n"
+        )
+        (project / ".env").write_text(
+            "COMPOSE_PROJECT_NAME=paseo\n"
+            f"COMPOSE_FILE=compose.yaml:{OVERRIDE}\n"
+            f"KILN_CA_CERT={ca}\n"
+        )
+        self.compose(base, project, ["up", "-d", "--force-recreate", "--no-deps", "caddy"])
+        pinned = self.container_id(base, project)
+        self.assert_container(base, pinned, ca)
+        standin = StandIn(leaf, leaf_key)
+        standin.start()
+        self.addCleanup(standin.stop)
+        body = self.curl()
+        print(f"through-caddy {body!r}", flush=True)
+        self.assertEqual(body, "door-stand-in 401 from 172.18.0.3\n")
+        extra = self.curl_extra()
+        print(f"extra-site {extra!r}", flush=True)
+        self.assertEqual(extra, "nowcode-stand-in")
+        denied = self.host_status()
+        print(f"other-source {denied[0]} {denied[1]!r}", flush=True)
+        self.assertEqual(denied[0], 403)
+        self.assertNotIn(f"from {PIN}", denied[1])
+        self.assertEqual(self.markers(base, pinned), ("data-marker\n", "config-marker\n"))
+        print("markers data-marker config-marker", flush=True)
+        rendered = subprocess.check_output(base + ["compose", "config"], cwd=project, text=True)
+        self.assertIn(f"ipv4_address: {PIN}", rendered)
+        self.assertIn(CA_TARGET, rendered)
+        self.compose(base, project, ["up", "-d"])
+        plain = self.container_id(base, project)
+        self.assert_container(base, plain, ca)
+        print(f"plain-up {self.address(base, plain)}", flush=True)
+        self.compose(base, project, ["up", "-d", "--force-recreate", "--no-deps", "caddy"])
+        again = self.container_id(base, project)
+        self.assertNotEqual(pinned, again)
+        print(f"recreated {pinned[:12]} then {again[:12]}", flush=True)
+        self.assert_container(base, again, ca)
+        again_body = self.curl()
+        print(f"through-caddy-after {again_body!r}", flush=True)
+        self.assertEqual(again_body, "door-stand-in 401 from 172.18.0.3\n")
+        self.assertEqual(self.curl_extra(), "nowcode-stand-in")
+        self.assertEqual(self.markers(base, again), ("data-marker\n", "config-marker\n"))
+        caddyfile.write_text(textwrap.dedent("""\
+            {
+            	admin off
+            	auto_https off
+            }
+            http://app.nowcode.com {
+            	respond "nowcode-stand-in"
+            }
+            """))
+        (project / ".env").write_text("COMPOSE_PROJECT_NAME=paseo\n")
+        self.compose(base, project, ["stop", "caddy"])
+        self.compose(base, project, ["rm", "-f", "caddy"])
+        self.compose(base, project, ["up", "-d", "--no-deps", "caddy"])
+        rolled = self.container_id(base, project)
+        status = self.state(base, "caddy")
+        self.assertEqual(status[1], "running")
+        self.assertNotEqual(rolled, again)
+        mounts = json.loads(subprocess.check_output(
+            base + ["inspect", "-f", "{{json .Mounts}}", rolled], text=True
+        ))
+        self.assertNotIn(CA_TARGET, [item.get("Destination") for item in mounts])
+        rolled_extra = self.curl_extra()
+        self.assertEqual(rolled_extra, "nowcode-stand-in")
+        self.assertEqual(self.markers(base, rolled), ("data-marker\n", "config-marker\n"))
+        print(f"rollback {rolled[:12]} running ca-mount-absent extra {rolled_extra!r}", flush=True)
+        adapted = subprocess.check_output(
+            base + ["run", "--rm", "-v", f"{DOOR}:/etc/caddy/Caddyfile:ro",
+                    IMAGE, "caddy", "adapt", "--config", "/etc/caddy/Caddyfile",
+                    "--adapter", "caddyfile"],
+            stderr=subprocess.PIPE, text=True,
+        )
+        self.assertIn('"provider":"file"', adapted)
+        self.assertIn(CA_TARGET, adapted)
+        self.assertNotIn("deprecated", adapted)
 
+    def certs(self, work):
         ca_key = work / "ca.key"
         ca = work / "ca.crt"
         leaf_key = work / "standin.key"
@@ -137,21 +418,16 @@ class DoorCaddyRecreate(unittest.TestCase):
         public_key = work / "public.key"
         public = work / "public.crt"
         subprocess.check_call(
-            [
-                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
-                "-subj", "/CN=kiln private CA",
-                "-keyout", str(ca_key), "-out", str(ca),
-            ],
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
+             "-subj", "/CN=kiln private CA", "-keyout", str(ca_key), "-out", str(ca)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         ca_key.chmod(0o600)
         ca.chmod(0o644)
         subprocess.check_call(
-            [
-                "openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes",
-                "-subj", "/CN=cli.dark-forge.dev",
-                "-keyout", str(leaf_key), "-out", str(work / "standin.csr"),
-            ],
+            ["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes",
+             "-subj", "/CN=cli.dark-forge.dev", "-keyout", str(leaf_key),
+             "-out", str(work / "standin.csr")],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         ext = work / "standin.ext"
@@ -161,119 +437,43 @@ class DoorCaddyRecreate(unittest.TestCase):
             "subjectAltName=DNS:cli.dark-forge.dev\n"
         )
         subprocess.check_call(
-            [
-                "openssl", "x509", "-req", "-in", str(work / "standin.csr"),
-                "-CA", str(ca), "-CAkey", str(ca_key),
-                "-set_serial", "1", "-days", "2", "-sha256",
-                "-extfile", str(ext), "-out", str(leaf),
-            ],
+            ["openssl", "x509", "-req", "-in", str(work / "standin.csr"),
+             "-CA", str(ca), "-CAkey", str(ca_key), "-set_serial", "1", "-days", "2",
+             "-sha256", "-extfile", str(ext), "-out", str(leaf)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         leaf_key.chmod(0o600)
         subprocess.check_call(
-            [
-                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
-                "-subj", "/CN=cli.dark-forge.dev",
-                "-addext", "subjectAltName=DNS:cli.dark-forge.dev",
-                "-keyout", str(public_key), "-out", str(public),
-            ],
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2",
+             "-subj", "/CN=cli.dark-forge.dev", "-addext", "subjectAltName=DNS:cli.dark-forge.dev",
+             "-keyout", str(public_key), "-out", str(public)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         public.chmod(0o644)
         public_key.chmod(0o644)
-        door = DOOR.read_text()
-        head, rest = door.split("{", 1)
-        caddyfile = work / "Caddyfile"
-        caddyfile.write_text(
-            "{\n\tadmin off\n\tauto_https off\n}\nhttps://"
-            + head
-            + "{\n\ttls /etc/caddy/public.crt /etc/caddy/public.key\n"
-            + rest
+        return ca, public, public_key, leaf, leaf_key
+
+    def prepare_volumes(self, base):
+        for volume in ("paseo_caddy_data", "paseo_caddy_config"):
+            subprocess.call(base + ["volume", "rm", volume], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.check_call(base + ["volume", "create", volume], stdout=subprocess.DEVNULL)
+        subprocess.check_call(
+            base + ["run", "--rm", "--entrypoint", "sh",
+                    "-v", "paseo_caddy_data:/data", "-v", "paseo_caddy_config:/config",
+                    IMAGE, "-c", "echo data-marker >/data/marker && echo config-marker >/config/marker"],
+            stdout=subprocess.DEVNULL,
         )
-        env = os.environ.copy()
-        env.update(
-            {
-                "KILN_CADDYFILE": str(caddyfile),
-                "KILN_CA_CERT": str(ca),
-                "KILN_CADDY_IMAGE": "caddy:2.10.2",
-            }
-        )
-        # sudo drops the caller environment, so pass the three paths explicitly.
-        if base[0] == "sudo":
-            base = [
-                "sudo", "env",
-                f"KILN_CADDYFILE={caddyfile}",
-                f"KILN_CA_CERT={ca}",
-                "KILN_CADDY_IMAGE=caddy:2.10.2",
-                *base[1:],
-            ]
-        # The public cert mounts are test-only. The production file has no tls line.
-        override = work / "override.yaml"
-        override.write_text(
-            textwrap.dedent(
-                f"""\
-                services:
-                  caddy:
-                    volumes:
-                      - type: bind
-                        source: {public}
-                        target: /etc/caddy/public.crt
-                        read_only: true
-                        bind:
-                          create_host_path: false
-                      - type: bind
-                        source: {public_key}
-                        target: /etc/caddy/public.key
-                        read_only: true
-                        bind:
-                          create_host_path: false
-                """
-            )
-        )
-        up = base + compose + ["-f", str(override), "up", "-d", "--force-recreate"]
-        subprocess.check_call(up, env=env, stdout=subprocess.DEVNULL)
-        first = self.container_id(base, compose, env)
-        self.assert_container(base, first, ca)
-        standin = StandIn(leaf, leaf_key)
-        standin.start()
-        self.addCleanup(standin.stop)
-        first_body = self.curl()
-        print(f"through-caddy {first_body!r}", flush=True)
-        self.assertEqual(first_body, "door-stand-in 401 from 172.18.0.3\n")
-        denied = self.host_status()
-        print(f"other-source {denied[0]} {denied[1]!r}", flush=True)
-        self.assertEqual(denied[0], 403)
-        self.assertIn("from ", denied[1])
-        self.assertNotIn(f"from {PIN}", denied[1])
-        subprocess.check_call(up, env=env, stdout=subprocess.DEVNULL)
-        second = self.container_id(base, compose, env)
-        self.assertNotEqual(first, second)
-        print(f"recreated {first[:12]} then {second[:12]}", flush=True)
-        self.assert_container(base, second, ca)
-        second_body = self.curl()
-        print(f"through-caddy-after {second_body!r}", flush=True)
-        self.assertEqual(second_body, "door-stand-in 401 from 172.18.0.3\n")
-        adapted = subprocess.check_output(
-            base + ["run", "--rm", "-v", f"{DOOR}:/etc/caddy/Caddyfile:ro",
-                    "caddy:2.10.2", "caddy", "adapt",
-                    "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"],
-            stderr=subprocess.PIPE, text=True,
-        )
-        self.assertIn('"provider":"file"', adapted)
-        self.assertIn(CA_TARGET, adapted)
-        self.assertNotIn("deprecated", adapted)
+
+    def compose(self, base, project, args):
+        subprocess.check_call(base + ["compose", *args], cwd=project, stdout=subprocess.DEVNULL)
 
     def lost_copy(self, base, work):
-        """A file copied into a running container is gone after recreate."""
         source = work / "copied.crt"
         source.write_text("copied-ca\n")
         name = "kiln-caddy-copy-loss"
-        subprocess.call(
-            base + ["rm", "-f", name],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
+        subprocess.call(base + ["rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.check_call(
-            base + ["run", "-d", "--name", name, "caddy:2.10.2", "sleep", "30"],
+            base + ["run", "-d", "--name", name, IMAGE, "sleep", "30"],
             stdout=subprocess.DEVNULL,
         )
         self.addCleanup(
@@ -291,7 +491,7 @@ class DoorCaddyRecreate(unittest.TestCase):
         self.assertEqual(inside, "copied-ca\n")
         subprocess.check_call(base + ["rm", "-f", name], stdout=subprocess.DEVNULL)
         subprocess.check_call(
-            base + ["run", "-d", "--name", name, "caddy:2.10.2", "sleep", "30"],
+            base + ["run", "-d", "--name", name, IMAGE, "sleep", "30"],
             stdout=subprocess.DEVNULL,
         )
         missing = subprocess.run(
@@ -300,30 +500,35 @@ class DoorCaddyRecreate(unittest.TestCase):
         self.assertNotEqual(missing.returncode, 0)
         subprocess.check_call(base + ["rm", "-f", name], stdout=subprocess.DEVNULL)
 
-    def container_id(self, base, compose, env):
-        raw = subprocess.check_output(base + compose + ["ps", "-q"], env=env, text=True).strip()
+    def container_id(self, base, project):
+        raw = subprocess.check_output(base + ["compose", "ps", "-q"], cwd=project, text=True).strip()
         self.assertNotEqual(raw, "")
         return raw.splitlines()[0]
 
-    def assert_container(self, base, container, ca):
-        address = subprocess.check_output(
+    def address(self, base, container):
+        return subprocess.check_output(
             base + ["inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", container],
             text=True,
         ).strip()
+
+    def state(self, base, name):
+        raw = subprocess.check_output(
+            base + ["inspect", "-f", "{{.Id}} {{.State.Status}}", name], text=True
+        ).split()
+        return raw[0], raw[1]
+
+    def assert_container(self, base, container, ca):
+        address = self.address(base, container)
         self.assertEqual(address, PIN)
         print(f"address {address}", flush=True)
-        mounts = subprocess.check_output(
-            base + ["exec", container, "cat", "/proc/mounts"], text=True,
-        )
+        mounts = subprocess.check_output(base + ["exec", container, "cat", "/proc/mounts"], text=True)
         matched = [line for line in mounts.splitlines() if f" {CA_TARGET} " in line]
         self.assertEqual(len(matched), 1, mounts)
         self.assertIn(" ro,", matched[0])
         print(matched[0], flush=True)
         body = subprocess.check_output(base + ["exec", container, "cat", CA_TARGET])
         self.assertEqual(body, ca.read_bytes())
-        listing = subprocess.check_output(
-            base + ["exec", container, "ls", "-1", "/etc/kiln"], text=True,
-        )
+        listing = subprocess.check_output(base + ["exec", container, "ls", "-1", "/etc/kiln"], text=True)
         self.assertEqual(listing.split(), ["ca.crt"])
         wrote = subprocess.run(
             base + ["exec", container, "touch", CA_TARGET], text=True, capture_output=True,
@@ -331,17 +536,34 @@ class DoorCaddyRecreate(unittest.TestCase):
         self.assertNotEqual(wrote.returncode, 0)
         self.assertIn("Read-only file system", wrote.stderr)
 
+    def markers(self, base, container):
+        data = subprocess.check_output(base + ["exec", container, "cat", "/data/marker"], text=True)
+        config = subprocess.check_output(base + ["exec", container, "cat", "/config/marker"], text=True)
+        return data, config
+
     def curl(self):
         last = ""
         for _ in range(20):
             completed = subprocess.run(
-                [
-                    "curl", "-sk", "--resolve", "cli.dark-forge.dev:443:127.0.0.1",
-                    "--max-time", "5", "https://cli.dark-forge.dev/v1/templates",
-                ],
+                ["curl", "-sk", "--resolve", "cli.dark-forge.dev:443:127.0.0.1",
+                 "--max-time", "5", "https://cli.dark-forge.dev/v1/templates"],
                 text=True, capture_output=True,
             )
             if completed.returncode == 0 and completed.stdout.startswith("door-stand-in "):
+                return completed.stdout
+            last = completed.stderr or completed.stdout
+            time.sleep(0.25)
+        self.fail(last)
+
+    def curl_extra(self):
+        last = ""
+        for _ in range(20):
+            completed = subprocess.run(
+                ["curl", "-s", "--resolve", "app.nowcode.com:80:127.0.0.1",
+                 "--max-time", "5", "http://app.nowcode.com/"],
+                text=True, capture_output=True,
+            )
+            if completed.returncode == 0 and completed.stdout:
                 return completed.stdout
             last = completed.stderr or completed.stdout
             time.sleep(0.25)
@@ -359,14 +581,26 @@ class DoorCaddyRecreate(unittest.TestCase):
                         break
                     data += chunk
         head, _, body = data.partition(b"\r\n\r\n")
-        status = int(head.split()[1])
-        return status, body.decode()
+        return int(head.split()[1]), body.decode()
 
-    def down(self, base, compose):
+    def down_paseo(self, base, project):
         subprocess.call(
-            base + compose + ["down", "--remove-orphans"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            base + ["compose", "down", "--remove-orphans"],
+            cwd=project, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        subprocess.call(base + ["rm", "-f", "caddy", "kiln-caddy-stranger"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for volume in ("paseo_caddy_data", "paseo_caddy_config"):
+            subprocess.call(base + ["volume", "rm", volume], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def remove(self, base, name, network, work):
+        compose = work / "compose.yaml"
+        if compose.exists():
+            subprocess.call(
+                base + ["compose", "-p", "paseo-nosub", "-f", str(compose), "down", "--remove-orphans"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        subprocess.call(base + ["rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.call(base + ["network", "rm", network], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 class StandIn:
