@@ -1,6 +1,6 @@
 # Curl installation with private packages
 
-> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). The "reuse install.py" step below is historical. The public bootstrap pins v0.4.7 and runs `install.sh` only. Deploying tag v0.4.4 still overlays this tree's `install.sh`, because that archive contains `install.py` and rejects Debian 13. `scripts/release.py` remains the CI packager and does not run on the server.
+> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). The "reuse install.py" step below is historical. The public bootstrap pins v0.4.9 and runs `install.sh` only. Deploying tag v0.4.4 still overlays this tree's `install.sh`, because that archive contains `install.py` and rejects Debian 13. `scripts/release.py` remains the CI packager and does not run on the server.
 
 ## Outcome
 

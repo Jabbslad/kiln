@@ -409,7 +409,9 @@ https://127.0.0.1:{port} {{
 	reverse_proxy https://127.0.0.1:{proxy_port} {{
 		transport http {{
 			tls_server_name cli.dark-forge.dev
-			tls_trusted_ca_certs {ca}
+			tls_trust_pool file {{
+				pem_file {ca}
+			}}
 		}}
 	}}
 }}

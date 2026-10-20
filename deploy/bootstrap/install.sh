@@ -19,10 +19,10 @@ assets() {
     # Updated only after reviewing the release and its checksums.
     cat <<'ASSETS'
 # BEGIN RELEASE ASSETS
-client:x86_64-unknown-linux-gnu d043a3fb075bd1adfc2fc895c9a812d1f9986738ca6c974fe3c272b3f17641d7
-client:x86_64-apple-darwin d6c6c3126c95e3aad6f4d9f4a99f56c97a11a11e72c5f2091f0e646c27e99d62
-client:aarch64-apple-darwin 08f43ed3455e0673cbd8fb7468ff2268ddcae42ac03cf5b1d316552c1de7dfc3
-server:x86_64-unknown-linux-gnu b8bb88f3f2e7bade9ea17228d91dc8feb2bb8a0e0f2b34277e0adf4d99d0e06b
+client:x86_64-unknown-linux-gnu 72ae7cc17ab14af069b844140c17a8d7e8460597b7ef135e15fec2fb89776850
+client:x86_64-apple-darwin 94af608deaf240fc7debd9fcb1e8b18aa21f8ab1bbbb631c9b3ce20fa287dd74
+client:aarch64-apple-darwin 96b8552d723d24b0a4daa760ff15d11f8afe6aaa0b93f9b3f60cacac7eb1c610
+server:x86_64-unknown-linux-gnu c5685705b0eb2367aa90a42288c8e6c47e7dda6971b77e9ec93fb293d356b2db
 # END RELEASE ASSETS
 ASSETS
 }
@@ -128,6 +128,16 @@ FILES
                 deploy/kiln-door-proxy.socket \
                 deploy/kiln-door-proxy-public.socket \
                 docs/runbooks/2026-10-19-door-public-cert.md >> "$work/expected"
+        fi
+        # The paseo Caddy override and the door site are their own pair.
+        # v0.4.9 has the four door files and neither of these. An archive
+        # that has one of them must have both, with or without the door files.
+        if grep -qx 'deploy/paseo-caddy.override.yaml' "$work/names" \
+            || grep -qx 'deploy/door.Caddyfile' "$work/names"
+        then
+            printf '%s\n' \
+                deploy/paseo-caddy.override.yaml \
+                deploy/door.Caddyfile >> "$work/expected"
         fi
     fi
     sort "$work/expected" > "$work/expected.sorted"
@@ -279,7 +289,7 @@ install_server() {
 }
 
 main() {
-    version=0.4.7
+    version=0.4.9
     work='' staged='' backup_staged='' lock='' upgrade=false
     address='' uplink=${KILN_NETWORK_UPLINK:-} network=false existing_server=false
     trap cleanup EXIT
