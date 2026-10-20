@@ -338,7 +338,7 @@ async fn dispatch(app: &App, peer: SocketAddr, request: Request) -> Response {
 }
 
 fn classify(method: &Method, path: &str) -> Kind {
-    if path == "/api" || path.starts_with("/api/") {
+    if path == "/api" || path.starts_with("/api/") || path == "/v1" || path.starts_with("/v1/") {
         if method == Method::GET && path == "/api/v1/dashboard" {
             Kind::Dashboard
         } else {

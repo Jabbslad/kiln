@@ -105,6 +105,34 @@ EXPECTED_JOBS = (
 )
 
 
+def job_if_expression(text, name):
+    """Return one job's if, unfolded, without a later step's if."""
+    lines = text.splitlines()
+    try:
+        start = lines.index(f"  {name}:")
+    except ValueError as exc:
+        raise AssertionError(f"missing job {name}") from exc
+    body = []
+    for line in lines[start + 1 :]:
+        if len(line) > 2 and line.startswith("  ") and line[2] != " ":
+            break
+        body.append(line)
+    for index, line in enumerate(body):
+        if not line.startswith("    if:"):
+            continue
+        folded = line.removeprefix("    if:").strip()
+        if folded in {">-", ">", "|-", "|"}:
+            parts = []
+            for nxt in body[index + 1 :]:
+                if nxt.startswith("      "):
+                    parts.append(nxt.strip())
+                    continue
+                break
+            return " ".join(parts)
+        return folded
+    raise AssertionError(f"{name} has no job if")
+
+
 def _run(sha=SHA, **overrides):
     fields = dict(
         run_id=10,
@@ -285,7 +313,25 @@ class ReuseDecisionTests(unittest.TestCase):
         self.assertIn("actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be", text)
         self.assertIn("dry_run:", text)
         self.assertIn("needs.reuse.outputs.mode == 'fallback'", text)
-        self.assertIn("needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'", text)
+        draft_if = job_if_expression(text, "draft-release")
+        self.assertIn(
+            "(needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse')",
+            draft_if,
+        )
+        step_only = (
+            "  other:\n"
+            "    if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'\n"
+            "  draft-release:\n"
+            "    if: >-\n"
+            "      ((needs.reuse.outputs.mode == 'reuse') ||\n"
+            "        (needs.server-package.result == 'success'))\n"
+            "    steps:\n"
+            "      - if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'\n"
+        )
+        self.assertNotIn(
+            "needs.reuse.result == 'success'",
+            job_if_expression(step_only, "draft-release"),
+        )
         self.assertEqual(
             text.count("!(needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse')"),
             3,

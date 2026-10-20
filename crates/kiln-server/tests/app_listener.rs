@@ -276,6 +276,9 @@ fn shipped_units_bind_loopback_and_the_bridge() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let app = std::fs::read_to_string(root.join("deploy/kiln-app.service")).unwrap();
     assert!(app.contains("127.0.0.1:8093"));
+    assert!(app.contains("NoNewPrivileges=yes"));
+    assert!(app.contains("ProtectSystem=strict"));
+    assert!(app.contains("ReadWritePaths=/var/lib/kiln-api"));
     assert!(!app.contains("0.0.0.0"));
     assert!(!app.contains("172.18.0.1"));
     assert!(!app.contains("--tls-cert"));
@@ -345,6 +348,83 @@ async fn deep_link_returns_index_html() {
     let (status, _, body) = text(send(&router, "127.0.0.1:9", get("/missing.js")).await).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(!body.contains("<html"));
+}
+
+#[tokio::test]
+async fn v1_paths_return_json_not_the_dashboard() {
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    let up = upstream_json().await;
+    let (router, _) = open(root.path(), &up);
+    let (status, headers, body) =
+        text(send(&router, "127.0.0.1:9", get("/v1/templates")).await).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        headers
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("application/json"),
+        "{headers:?}"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["code"], "not_found");
+    assert!(!body.contains("<html"));
+    assert_ne!(body, HTML);
+    assert_eq!(up.hits.load(Ordering::SeqCst), 0);
+    let (status, headers, body) = text(send(&router, "127.0.0.1:9", get("/boxes")).await).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    assert_eq!(body, HTML);
+}
+
+#[tokio::test]
+async fn archive_escapes_stay_inside_the_root() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join("archive");
+    archive(&root);
+    let marker = "outside-marker-not-in-archive";
+    std::fs::write(parent.path().join("secret.txt"), marker).unwrap();
+    std::os::unix::fs::symlink(
+        parent.path().join("secret.txt"),
+        root.join("link-to-secret.txt"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(parent.path(), root.join("linkdir")).unwrap();
+    let up = upstream_json().await;
+    let (router, _) = open(&root, &up);
+    for uri in ["/../secret.txt", "/%2e%2e/secret.txt"] {
+        let (status, _, body) = text(send(&router, "127.0.0.1:9", get(uri)).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["code"], "invalid_request", "{uri}");
+        assert!(!body.contains(marker), "{uri}");
+    }
+    for uri in ["/link-to-secret.txt", "/linkdir/secret.txt"] {
+        let (status, headers, body) = text(send(&router, "127.0.0.1:9", get(uri)).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
+        assert!(
+            headers
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("application/json"),
+            "{uri}: {headers:?}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["code"], "not_found", "{uri}");
+        assert!(!body.contains(marker), "{uri}");
+        assert!(!body.contains("<html"), "{uri}");
+    }
 }
 
 #[tokio::test]
