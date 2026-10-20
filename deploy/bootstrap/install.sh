@@ -19,10 +19,10 @@ assets() {
     # Updated only after reviewing the release and its checksums.
     cat <<'ASSETS'
 # BEGIN RELEASE ASSETS
-client:x86_64-unknown-linux-gnu 72ae7cc17ab14af069b844140c17a8d7e8460597b7ef135e15fec2fb89776850
-client:x86_64-apple-darwin 94af608deaf240fc7debd9fcb1e8b18aa21f8ab1bbbb631c9b3ce20fa287dd74
-client:aarch64-apple-darwin 96b8552d723d24b0a4daa760ff15d11f8afe6aaa0b93f9b3f60cacac7eb1c610
-server:x86_64-unknown-linux-gnu c5685705b0eb2367aa90a42288c8e6c47e7dda6971b77e9ec93fb293d356b2db
+client:x86_64-unknown-linux-gnu 8707652de26659f18f78e87142c21e6d42db385e31fc44d06cf7583c0a81bd35
+client:x86_64-apple-darwin dd8c7e5267a22e0f4c4e4ed1344d8bb167a8b9bdca6700fd8af512a3b71fa308
+client:aarch64-apple-darwin a565a8de22632d5f3363839297d6eee3a7420b35f17ea856b784a925e1c4b50a
+server:x86_64-unknown-linux-gnu f8ebc05462c03ca42612872f8c9d39ed0ef1003a00d19572b64fca82cb483673
 # END RELEASE ASSETS
 ASSETS
 }
@@ -317,7 +317,7 @@ install_server() {
 }
 
 main() {
-    version=0.4.9
+    version=0.4.10
     work='' staged='' backup_staged='' lock='' upgrade=false
     address='' uplink=${KILN_NETWORK_UPLINK:-} network=false existing_server=false
     trap cleanup EXIT
