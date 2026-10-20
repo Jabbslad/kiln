@@ -194,6 +194,14 @@ if [ -n "${{KILN_MV_FAIL:-}}" ] && [ ! -f {self.mv_marker} ]; then
     exit 1
   fi
 fi
+if [ -n "${{KILN_MV_FAIL_DASHBOARD:-}}" ] && [ ! -f {self.mv_marker} ]; then
+  case "${{!#}}" in
+    */share/kiln/dashboard)
+      touch {self.mv_marker}
+      exit 1
+      ;;
+  esac
+fi
 exec /bin/mv "$@"
 """,
         )
@@ -610,6 +618,81 @@ class FreshTests(InstallerTest):
         self.assertNotEqual(again.returncode, 0, again.stdout)
         self.assertIn("regular file", again.stderr)
         self.assertFalse((self.root / "etc/systemd/system/kiln-app.service").exists())
+
+    def test_dashboard_dotdot_member_is_refused_before_writes(self):
+        self.assert_dashboard_member_refused("assets/..")
+
+    def test_dashboard_dotdot_child_is_refused_before_writes(self):
+        self.assert_dashboard_member_refused("assets/../index.html")
+
+    def assert_dashboard_member_refused(self, name):
+        self.fresh_ready()
+        self.stage_app_units()
+        archive = self.write_dashboard_archive(
+            {name: b"pwned\n", "index.html": b"<html></html>\n"}
+        )
+        result = self.invoke(
+            "--address",
+            "127.0.0.1",
+            "--apply",
+            "--dashboard-archive",
+            str(archive),
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(f"not a safe relative path: {name}", result.stderr)
+        self.assertFalse((self.root / "etc/kiln").exists())
+        self.assertFalse(self.dashboard_dir().exists())
+
+    def test_symlink_dashboard_destination_is_refused_before_writes(self):
+        self.fresh_ready()
+        self.stage_app_units()
+        share = self.root / "usr/local/share/kiln"
+        share.mkdir(parents=True)
+        target = self.root / "kept-dashboard"
+        target.mkdir()
+        (target / "keep").write_text("safe")
+        dashboard = share / "dashboard"
+        dashboard.symlink_to(target)
+        archive = self.write_dashboard_archive({"index.html": b"<html>dashboard</html>\n"})
+        result = self.invoke(
+            "--address",
+            "127.0.0.1",
+            "--apply",
+            "--dashboard-archive",
+            str(archive),
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("refusing symlink dashboard destination", result.stderr)
+        self.assertTrue(dashboard.is_symlink())
+        self.assertEqual((target / "keep").read_text(), "safe")
+        self.assertFalse((self.root / "etc/kiln").exists())
+        self.assertFalse((self.root / "opt/kiln").exists())
+        self.assertFalse((self.root / "etc/systemd/system/kiln-app.service").exists())
+
+    def test_symlink_share_ancestor_is_refused_before_writes(self):
+        self.fresh_ready()
+        self.stage_app_units()
+        parent = self.root / "usr/local/share"
+        parent.mkdir(parents=True)
+        target = self.root / "kept-share"
+        target.mkdir()
+        (target / "keep").write_text("safe")
+        share = parent / "kiln"
+        share.symlink_to(target)
+        archive = self.write_dashboard_archive({"index.html": b"<html>dashboard</html>\n"})
+        result = self.invoke(
+            "--address",
+            "127.0.0.1",
+            "--apply",
+            "--dashboard-archive",
+            str(archive),
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(f"symlink destination ancestor: {share}", result.stderr)
+        self.assertTrue(share.is_symlink())
+        self.assertEqual((target / "keep").read_text(), "safe")
+        self.assertFalse((self.root / "etc/kiln").exists())
+        self.assertFalse((self.root / "opt/kiln").exists())
 
     def test_packaged_door_unit_has_no_dashboard_root_and_installer_skips_caddy(self):
         door = (ROOT / "deploy/kiln-door.service").read_text()
@@ -1080,6 +1163,40 @@ class UpgradeTests(InstallerTest):
         self.assert_extract_matches_archive(changed, self.dashboard_dir())
         self.assert_data_preserved()
         self.assert_no_dashboard_fetch(third)
+
+    def test_failed_dashboard_replace_keeps_the_installed_tree(self):
+        self.write_release("0.4.4", min_upgrade_from="0.3.0")
+        self.write_versions("0.4.4", "0.4.4")
+        self.stage_app_units()
+        archive = self.write_dashboard_archive(
+            {
+                "index.html": b"<html>one</html>\n",
+                "assets/app.js": b"console.log(1)\n",
+            }
+        )
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        first = self.invoke("--apply", "--dashboard-archive", str(archive))
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        index = self.dashboard_dir() / "index.html"
+        self.assertEqual(index.read_bytes(), b"<html>one</html>\n")
+        changed = self.write_dashboard_archive(
+            {
+                "index.html": b"<html>two</html>\n",
+                "assets/app.js": b"console.log(1)\n",
+            }
+        )
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        failed = self.invoke(
+            "--apply",
+            "--dashboard-archive",
+            str(changed),
+            KILN_MV_FAIL_DASHBOARD="1",
+        )
+        self.assertNotEqual(failed.returncode, 0, failed.stdout)
+        self.assertIn("cannot install dashboard archive", failed.stderr)
+        self.assertEqual(index.read_bytes(), b"<html>one</html>\n")
+        self.assertEqual(list(self.dashboard_dir().parent.glob(".dashboard.*")), [])
+        self.assert_data_preserved()
 
     def test_check_only_does_not_mutate_or_stop_services(self):
         result = self.invoke()

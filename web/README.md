@@ -28,10 +28,9 @@ Preview mode uses `src/fixtures.ts`, is labelled across all screens, makes no AP
 ## Published dashboard
 
 GitHub releases include `kiln-dashboard-v0.4.10.tar.gz` and its SHA-256 checksum.
-The archive contains both surfaces: production HTML, JavaScript, CSS, imagery, bundled fonts, this
-guide, dependency licenses and release metadata; Node is only needed to build from source, not to
-serve the archive. It is separate from the server installer and is not deployed
-or connected to a host automatically.
+The archive contains the static build: production HTML, JavaScript, CSS, imagery, and bundled fonts.
+Node is only needed to build from source, not to serve the archive. It is separate from the server
+installer and is not deployed or connected to a host automatically.
 
 Extract it into a static web root served at `/`, with SPA fallback to
 `index.html`. `/` is the public landing page. Open `/boxes?preview=1` for the labelled design preview. On `/boxes` without
