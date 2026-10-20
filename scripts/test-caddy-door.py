@@ -726,6 +726,10 @@ class AppSiteRunbook(unittest.TestCase):
         self.assertNotIn("This procedure does not start `kiln-app.service`.", runbook)
         self.assertNotIn("Stop if that output shows `127.0.0.1:8093`", runbook)
         self.assertIn("cannot install dashboard archive", runbook)
+        self.assertIn("cannot restore the dashboard", runbook)
+        self.assertIn("The live directory is already back.", runbook)
+        self.assertIn("Leave the backup where it is.", runbook)
+        self.assertNotIn("the live directory is gone", runbook)
         self.assertIn(
             "cp -a /usr/local/share/kiln/dashboard /var/backups/kiln-dashboard-app/dashboard",
             runbook,
@@ -752,7 +756,12 @@ class AppSiteRunbook(unittest.TestCase):
             runbook.index("getent ahostsv4 app.dark-forge.dev"),
         )
         self.assertIn("}app.dark-forge.dev {", runbook)
-        self.assertIn("if ! grep -qx 'app.dark-forge.dev {' /opt/paseo/Caddyfile; then", runbook)
+        self.assertNotIn("grep -q '}app.dark-forge.dev {'", runbook)
+        self.assertNotIn("if ! grep -qx 'app.dark-forge.dev {' /opt/paseo/Caddyfile; then", runbook)
+        self.assertIn('line == "}app.dark-forge.dev {"', runbook)
+        self.assertIn('line == "app.dark-forge.dev {"', runbook)
+        dns_block = self._fenced_sh("getent ahostsv4 app.dark-forge.dev")
+        self.assertLess(dns_block.index("caddy validate"), dns_block.index("caddy reload"))
         self.assertIn("printf '\\n' >> /opt/paseo/Caddyfile", runbook)
         self.assertIn("awk '{ print $1 }' | sort -u", runbook)
         self.assertIn('[ -z "$apex" ]', runbook)
@@ -834,6 +843,53 @@ class AppSiteRunbook(unittest.TestCase):
             )
             self.assertEqual(checked.returncode, 0, checked.stderr)
 
+    def test_append_keeps_crlf_comments_and_indentation(self):
+        site = (ROOT / "deploy/app.Caddyfile").read_bytes()
+        header, _, body = site.partition(b"\n")
+        self.assertEqual(header, b"app.dark-forge.dev {")
+        body_crlf = body.replace(b"\n", b"\r\n")
+        prefix = b'example.test {\r\n\trespond "ok"\r\n'
+        glued = prefix + b"}" + header + b"\r\n" + body_crlf
+        already = prefix + b"}\r\n" + header + b"\r\n" + body_crlf
+        comment = b'example.test {\n\trespond "ok"\n}\n# keep }app.dark-forge.dev { in this note\n'
+        indented = b'example.test {\n\trespond "ok"\n  }app.dark-forge.dev {\n}\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            glued_path = root / "glued"
+            glued_path.write_bytes(glued)
+            self._append_site(glued_path, ROOT / "deploy/app.Caddyfile")
+            repaired = glued_path.read_bytes()
+            self._append_site(glued_path, ROOT / "deploy/app.Caddyfile")
+            self.assertEqual(glued_path.read_bytes(), repaired)
+            self.assertTrue(repaired.startswith(prefix))
+            self.assertTrue(repaired.endswith(body_crlf))
+            self.assertEqual(repaired.count(b"app.dark-forge.dev {"), 1)
+            self.assertNotIn(b"}app.dark-forge.dev", repaired)
+            checked = subprocess.run(
+                ["caddy", "validate", "--config", str(glued_path), "--adapter", "caddyfile"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            self.assertNotIn("ambiguous", checked.stderr)
+            split_path = root / "split"
+            split_path.write_bytes(already)
+            self._append_site(split_path, ROOT / "deploy/app.Caddyfile")
+            self.assertEqual(split_path.read_bytes(), already)
+            comment_path = root / "comment"
+            comment_path.write_bytes(comment)
+            self._append_site(comment_path, ROOT / "deploy/app.Caddyfile")
+            commented = comment_path.read_bytes()
+            self.assertTrue(commented.startswith(comment))
+            self.assertIn(b"# keep }app.dark-forge.dev { in this note\n", commented)
+            self.assertEqual(commented.count(b"\napp.dark-forge.dev {"), 1)
+            indent_path = root / "indent"
+            indent_path.write_bytes(indented)
+            self._append_site(indent_path, ROOT / "deploy/app.Caddyfile")
+            indented_out = indent_path.read_bytes()
+            self.assertTrue(indented_out.startswith(indented))
+            self.assertIn(b"\n  }app.dark-forge.dev {\n", indented_out)
+
     def test_dns_compares_every_address(self):
         same_app = "\n".join([
             "10.0.0.2 STREAM app.dark-forge.dev",
@@ -879,6 +935,22 @@ class AppSiteRunbook(unittest.TestCase):
                 restored, reloaded = self._dns_check(app_rows, apex_rows)
                 self.assertEqual(restored, restore, name)
                 self.assertEqual(reloaded, not restore, name)
+
+    def test_dns_reload_follows_validate_exit(self):
+        rows = "\n".join([
+            "78.46.98.73 STREAM name",
+            "78.46.98.73 DGRAM",
+            "78.46.98.73 RAW",
+            "",
+        ])
+        app = rows.replace("name", "app.dark-forge.dev")
+        apex = rows.replace("name", "dark-forge.dev")
+        restored, reloaded = self._dns_check(app, apex, validate_exit=1)
+        self.assertTrue(restored)
+        self.assertFalse(reloaded)
+        kept, reloaded_ok = self._dns_check(app, apex, validate_exit=0)
+        self.assertFalse(kept)
+        self.assertTrue(reloaded_ok)
 
     def test_rollback_reload_follows_validate(self):
         real = shutil.which("caddy")
@@ -967,7 +1039,7 @@ class AppSiteRunbook(unittest.TestCase):
         return block.replace("/opt/paseo/Caddyfile", '"$caddyfile"')
 
     def _append_site(self, live, site):
-        block = self._host_paths(self._fenced_sh("grep -qx 'app.dark-forge.dev {'"))
+        block = self._host_paths(self._fenced_sh("printf '\\n' >> /opt/paseo/Caddyfile"))
         block = block.replace("deploy/app.Caddyfile", '"$site"')
         completed = subprocess.run(
             ["bash", "-c", "caddyfile=$1\nsite=$2\n" + block, "append-site", str(live), str(site)],
@@ -976,7 +1048,7 @@ class AppSiteRunbook(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
-    def _dns_check(self, app_rows, apex_rows):
+    def _dns_check(self, app_rows, apex_rows, validate_exit=0):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             answers = root / "answers"
@@ -987,7 +1059,15 @@ class AppSiteRunbook(unittest.TestCase):
             bindir.mkdir()
             log = root / "docker.log"
             (bindir / "getent").write_text("#!/bin/sh\ncat \"$GETENT_DIR/$2\"\n")
-            (bindir / "docker").write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\n")
+            (bindir / "docker").write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\n"
+                "printf '%s\\n' 'Valid configuration'\n"
+                "if [ \"$4\" = validate ]; then\n"
+                f"  exit {int(validate_exit)}\n"
+                "fi\n"
+                "exit 0\n"
+            )
             os.chmod(bindir / "getent", 0o755)
             os.chmod(bindir / "docker", 0o755)
             live = root / "Caddyfile"
