@@ -85,11 +85,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install Caddy
-        run: |
-          curl -fsSL -o /tmp/caddy.tar.gz https://github.com/caddyserver/caddy/releases/download/v2.10.2/caddy_2.10.2_linux_amd64.tar.gz
-          tar -xzf /tmp/caddy.tar.gz -C /tmp caddy
-          sudo install -m 755 /tmp/caddy /usr/local/bin/caddy
-          caddy version
+        run: bash scripts/install-caddy.sh
       - name: Python checks
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -147,11 +143,7 @@ jobs:
           cache-workspace-crates: 'true'
       - name: Install Caddy
         if: steps.queue.outputs.skip_tests != 'true'
-        run: |
-          curl -fsSL -o /tmp/caddy.tar.gz https://github.com/caddyserver/caddy/releases/download/v2.10.2/caddy_2.10.2_linux_amd64.tar.gz
-          tar -xzf /tmp/caddy.tar.gz -C /tmp caddy
-          sudo install -m 755 /tmp/caddy /usr/local/bin/caddy
-          caddy version
+        run: bash scripts/install-caddy.sh
       - name: Socket activation tools
         if: steps.queue.outputs.skip_tests != 'true'
         run: |
@@ -183,7 +175,7 @@ jobs:
           python scripts/test-ci-docs-only.py
           python scripts/test-reuse-release.py
           python scripts/test-merge-queue-tested.py
-          shellcheck scripts/fetch-firecracker.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
+          shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/enroll-dark-forge.sh \
             deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
             deploy/github/install-remote.sh deploy/github/smoke.sh \

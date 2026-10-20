@@ -1263,7 +1263,7 @@ remove_dashboard_asides() {
 }
 
 install_app_units() {
-  local unit source dest
+  local unit source dest socket_err
   while IFS= read -r unit; do
     source=$bundle/deploy/$unit
     dest=$UNITS/$unit
@@ -1284,7 +1284,10 @@ install_app_units() {
   if ! systemctl enable kiln-app.service >/dev/null 2>&1; then
     die "command failed: systemctl enable kiln-app.service"
   fi
-  if ! systemctl enable --now kiln-app-proxy.socket >/dev/null 2>&1; then
+  if ! socket_err=$(systemctl enable --now kiln-app-proxy.socket 2>&1); then
+    if [ -n "$socket_err" ]; then
+      printf '%s\n' "$socket_err" >&2
+    fi
     die "command failed: systemctl enable --now kiln-app-proxy.socket"
   fi
 }
