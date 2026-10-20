@@ -5,7 +5,8 @@ on:
     paths:
       - deploy/bootstrap/install.sh
       - docs/releases.md
-      - scripts/check_bootstrap_pins.py
+      - scripts/check-bootstrap-pins.sh
+      - scripts/test-bootstrap-pins.sh
       - .github/workflows/bootstrap-pins.yml
 
   schedule:
@@ -23,10 +24,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
       - name: Check published bootstrap pins
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python scripts/check_bootstrap_pins.py
+        run: sh scripts/check-bootstrap-pins.sh

@@ -101,7 +101,8 @@ jobs:
           python scripts/test-reuse-release.py
           python scripts/test-merge-queue-tested.py
           python scripts/test-proof-status.py
-          python scripts/test-check-bootstrap-pins.py
+          sh scripts/test-caddy-endings.sh
+          sh scripts/test-bootstrap-pins.sh
 
   server-check:
     needs: changes
@@ -178,8 +179,9 @@ jobs:
           python scripts/test-reuse-release.py
           python scripts/test-merge-queue-tested.py
           python scripts/test-proof-status.py
-          python scripts/test-check-bootstrap-pins.py
-          shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
+          sh scripts/test-caddy-endings.sh
+          sh scripts/test-bootstrap-pins.sh
+          shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-bootstrap-pins.sh scripts/test-bootstrap-pins.sh scripts/test-caddy-endings.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/enroll-dark-forge.sh \
             deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
             deploy/github/install-remote.sh deploy/github/smoke.sh \
