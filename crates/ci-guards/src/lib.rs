@@ -564,3 +564,529 @@ fn is_use(line: &str) -> bool {
 fn strip_comment(line: &str) -> &str {
     line.split_once(" #").map(|(head, _)| head).unwrap_or(line)
 }
+
+pub fn deploy_caller_violations(workflow: &str) -> Vec<String> {
+    let jobs = job_blocks(workflow);
+    let mut violations = Vec::new();
+    if !jobs
+        .iter()
+        .any(|(_, body)| calls_deploy(body) && needs_job(body, "draft-release"))
+    {
+        violations.push(
+            "no job calls ./.github/workflows/deploy.yml and needs draft-release".to_string(),
+        );
+    }
+    for (name, body) in &jobs {
+        if calls_deploy(body) && !needs_job(body, "draft-release") {
+            violations.push(format!(
+                "{name} calls ./.github/workflows/deploy.yml without needing draft-release"
+            ));
+        }
+    }
+    violations
+}
+
+pub fn release_event_violations(workflow: &str) -> Vec<String> {
+    let lines: Vec<&str> = workflow
+        .lines()
+        .map(|line| line.trim_end_matches('\r'))
+        .collect();
+    let Some(start) = lines.iter().position(|line| is_on_header(line)) else {
+        return Vec::new();
+    };
+    let rest = lines[start]
+        .split_once(':')
+        .map(|(_, rest)| rest.trim())
+        .unwrap_or("");
+    if inline_on_includes_release(rest) {
+        return vec!["workflow triggers on release".to_string()];
+    }
+    if !rest.is_empty() && !is_yaml_fold(rest) {
+        return Vec::new();
+    }
+    let mut violations = Vec::new();
+    for line in &lines[start + 1..] {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if indent == 0 {
+            break;
+        }
+        if indent == 2 && is_release_event_line(trimmed) {
+            violations.push("workflow triggers on release".to_string());
+        }
+    }
+    violations
+}
+
+pub fn main_push_violations(workflow: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    for script in run_scripts(workflow) {
+        let lines: Vec<&str> = script.lines().collect();
+        for command in shell_commands(&lines) {
+            let text = strip_unquoted_comment(&command.text);
+            if pushes_to_main(&text) {
+                violations.push(format!("run script pushes to main: {}", one_line(&text)));
+            }
+            if contents_api_on_main(&text) {
+                violations.push(format!(
+                    "run script writes the contents API on main: {}",
+                    one_line(&text)
+                ));
+            }
+        }
+    }
+    violations
+}
+
+fn job_blocks(workflow: &str) -> Vec<(String, String)> {
+    let lines: Vec<&str> = workflow
+        .lines()
+        .map(|line| line.trim_end_matches('\r'))
+        .collect();
+    let Some(jobs_at) = lines.iter().position(|line| line.trim() == "jobs:") else {
+        return Vec::new();
+    };
+    let mut headers = Vec::new();
+    let mut section_end = lines.len();
+    for (offset, line) in lines.iter().enumerate().skip(jobs_at + 1) {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if indent == 0 {
+            section_end = offset;
+            break;
+        }
+        if indent == 2 && line.trim_end().ends_with(':') {
+            headers.push((offset, line.trim().trim_end_matches(':').trim().to_string()));
+        }
+    }
+    let mut blocks = Vec::new();
+    for (index, (start, name)) in headers.iter().enumerate() {
+        let next = headers
+            .get(index + 1)
+            .map(|(offset, _)| *offset)
+            .unwrap_or(section_end);
+        blocks.push((name.clone(), lines[start + 1..next].join("\n")));
+    }
+    blocks
+}
+
+fn calls_deploy(body: &str) -> bool {
+    body.lines().any(|line| {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        indent == 4 && uses_deploy(trimmed.trim_end())
+    })
+}
+
+fn uses_deploy(trimmed: &str) -> bool {
+    let Some(rest) = trimmed.strip_prefix("uses:") else {
+        return false;
+    };
+    let path = rest.split_whitespace().next().unwrap_or("");
+    path == "./.github/workflows/deploy.yml"
+}
+
+fn needs_job(body: &str, job: &str) -> bool {
+    let lines: Vec<&str> = body.lines().collect();
+    let Some(index) = lines.iter().position(|line| {
+        let trimmed = line.trim_start();
+        line.len() - trimmed.len() == 4 && trimmed.starts_with("needs:")
+    }) else {
+        return false;
+    };
+    let after = lines[index]
+        .split_once("needs:")
+        .map(|(_, rest)| rest.trim())
+        .unwrap_or("");
+    let mut items = Vec::new();
+    if after.is_empty() || is_yaml_fold(after) {
+        for line in &lines[index + 1..] {
+            if line.trim().is_empty() || line.trim_start().starts_with('#') {
+                continue;
+            }
+            if line.len() - line.trim_start().len() <= 4 {
+                break;
+            }
+            let item = line
+                .trim()
+                .trim_start_matches("- ")
+                .trim()
+                .trim_matches(|ch| ch == '"' || ch == '\'' || ch == ',');
+            if !item.is_empty() {
+                items.push(item.to_string());
+            }
+        }
+    } else {
+        let inner = after.trim().trim_matches(|ch| ch == '[' || ch == ']');
+        for part in inner.split(',') {
+            let item = part.trim().trim_matches(|ch| ch == '"' || ch == '\'');
+            if !item.is_empty() {
+                items.push(item.to_string());
+            }
+        }
+    }
+    items.iter().any(|item| item == job)
+}
+
+fn is_on_header(line: &str) -> bool {
+    let trimmed = line.trim_end();
+    if trimmed.is_empty() || trimmed.starts_with(' ') || trimmed.starts_with('#') {
+        return false;
+    }
+    let key = trimmed
+        .split_once(':')
+        .map(|(key, _)| key.trim())
+        .unwrap_or("");
+    key.trim_matches(|ch| ch == '"' || ch == '\'') == "on"
+}
+
+fn inline_on_includes_release(rest: &str) -> bool {
+    let rest = rest.trim();
+    if rest.is_empty() || is_yaml_fold(rest) {
+        return false;
+    }
+    let scalar = rest.trim_matches(|ch| ch == '"' || ch == '\'');
+    if scalar == "release" {
+        return true;
+    }
+    let inner = rest.trim().trim_matches(|ch| ch == '[' || ch == ']');
+    inner
+        .split(',')
+        .any(|item| item.trim().trim_matches(|ch| ch == '"' || ch == '\'') == "release")
+}
+
+fn is_yaml_fold(value: &str) -> bool {
+    matches!(value, ">" | ">-" | "|" | "|-" | "|+" | ">+")
+}
+
+fn is_release_event_line(trimmed: &str) -> bool {
+    let key = trimmed
+        .split_once(':')
+        .map(|(key, _)| key.trim())
+        .unwrap_or(trimmed);
+    key.trim_matches(|ch| ch == '"' || ch == '\'') == "release"
+}
+
+fn pushes_to_main(command: &str) -> bool {
+    split_chain(command)
+        .iter()
+        .any(|segment| segment_pushes_to_main(segment))
+}
+
+fn segment_pushes_to_main(segment: &str) -> bool {
+    let tokens = tokenize(segment);
+    if git_push_destinations(&tokens)
+        .iter()
+        .any(|destination| destination == "main" || destination == "refs/heads/main")
+    {
+        return true;
+    }
+    tokens
+        .iter()
+        .any(|token| token.contains("git ") && segment_pushes_to_main(token))
+}
+
+fn git_push_destinations(tokens: &[String]) -> Vec<String> {
+    let mut index = 0;
+    while index < tokens.len() {
+        let word = tokens[index].as_str();
+        if word == "sudo" || word == "command" || word == "env" {
+            index += 1;
+            continue;
+        }
+        if word.contains('=') && !word.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        break;
+    }
+    if index >= tokens.len() || !is_git(tokens[index].as_str()) {
+        return Vec::new();
+    }
+    index += 1;
+    while index < tokens.len() && tokens[index].starts_with('-') {
+        if matches!(
+            tokens[index].as_str(),
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace"
+        ) {
+            index += 2;
+            continue;
+        }
+        index += 1;
+    }
+    if index >= tokens.len() || tokens[index] != "push" {
+        return Vec::new();
+    }
+    index += 1;
+    let mut positionals = Vec::new();
+    while index < tokens.len() {
+        let arg = tokens[index].as_str();
+        if arg == "--" {
+            positionals.extend(tokens[index + 1..].iter().cloned());
+            break;
+        }
+        if matches!(
+            arg,
+            "-c" | "--repo" | "--receive-pack" | "--exec" | "-o" | "--push-option"
+        ) {
+            index += 2;
+            continue;
+        }
+        if arg.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        positionals.push(tokens[index].clone());
+        index += 1;
+    }
+    let specs = if positionals.len() >= 2 {
+        &positionals[1..]
+    } else {
+        &positionals[..]
+    };
+    specs.iter().map(|spec| push_destination(spec)).collect()
+}
+
+fn is_git(word: &str) -> bool {
+    word == "git" || word.ends_with("/git")
+}
+
+fn push_destination(spec: &str) -> String {
+    let spec = spec.trim_start_matches('+');
+    spec.rsplit_once(':')
+        .map(|(_, destination)| destination.to_string())
+        .unwrap_or_else(|| spec.to_string())
+}
+
+fn contents_api_on_main(command: &str) -> bool {
+    if !mentions_contents_api(command) {
+        return false;
+    }
+    let branches = branch_values(&normalize_for_branch(command));
+    if !branches.is_empty() {
+        return branches
+            .iter()
+            .any(|branch| branch == "main" || branch == "refs/heads/main");
+    }
+    is_contents_write(command)
+}
+
+fn mentions_contents_api(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    lower.contains("/contents/")
+        || lower.contains("/contents?")
+        || lower.contains("/contents ")
+        || lower.ends_with("/contents")
+}
+
+fn normalize_for_branch(command: &str) -> String {
+    let mut flat = String::new();
+    for ch in command.chars() {
+        if matches!(ch, '"' | '\'' | '`' | '{' | '}' | ',') {
+            flat.push(' ');
+        } else {
+            flat.push(ch.to_ascii_lowercase());
+        }
+    }
+    flat.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn branch_values(normalized: &str) -> Vec<String> {
+    let tokens: Vec<&str> = normalized.split_whitespace().collect();
+    let mut values = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        let next = tokens.get(index + 1).copied();
+        let third = tokens.get(index + 2).copied();
+        if let Some(value) = branch_assignment(token, next, third) {
+            values.push(value);
+        }
+    }
+    values
+}
+
+fn branch_assignment(token: &str, next: Option<&str>, third: Option<&str>) -> Option<String> {
+    if let Some(rest) = token.strip_prefix("branch=") {
+        return branch_name(rest);
+    }
+    if token.strip_suffix(':') == Some("branch") {
+        return next.and_then(branch_name);
+    }
+    if token == "branch" {
+        if matches!(next, Some("=" | ":")) {
+            return third.and_then(branch_name);
+        }
+        if let Some(next) = next
+            && let Some(rest) = next.strip_prefix('=').or_else(|| next.strip_prefix(':'))
+        {
+            return branch_name(rest);
+        }
+    }
+    None
+}
+
+fn branch_name(value: &str) -> Option<String> {
+    let value = value.trim_matches(|ch: char| ch == ':' || ch == '=' || ch == ',');
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '_' | '.' | '-'))
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn is_contents_write(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    let tokens: Vec<&str> = lower
+        .split_whitespace()
+        .map(|token| token.trim_matches(|ch: char| "\"'`".contains(ch)))
+        .collect();
+    for (index, token) in tokens.iter().enumerate() {
+        if let Some(method) = write_method_token(token)
+            && is_write_method(method)
+        {
+            return true;
+        }
+        if matches!(*token, "-x" | "--request" | "--method")
+            && tokens
+                .get(index + 1)
+                .is_some_and(|next| is_write_method(next))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn write_method_token(token: &str) -> Option<&str> {
+    if let Some(value) = token.strip_prefix("--method=") {
+        return Some(value);
+    }
+    if let Some(value) = token.strip_prefix("-x")
+        && !value.is_empty()
+    {
+        return Some(value);
+    }
+    None
+}
+
+fn is_write_method(value: &str) -> bool {
+    matches!(value, "put" | "patch" | "post" | "delete")
+}
+
+fn split_chain(command: &str) -> Vec<String> {
+    let chars: Vec<char> = command.chars().collect();
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            }
+            current.push(ch);
+            index += 1;
+            continue;
+        }
+        if matches!(ch, '\'' | '"' | '`') {
+            quote = Some(ch);
+            current.push(ch);
+            index += 1;
+            continue;
+        }
+        if ch == ';' {
+            parts.push(std::mem::take(&mut current));
+            index += 1;
+            continue;
+        }
+        if matches!(ch, '&' | '|') && chars.get(index + 1) == Some(&ch) {
+            parts.push(std::mem::take(&mut current));
+            index += 2;
+            continue;
+        }
+        current.push(ch);
+        index += 1;
+    }
+    if !current.trim().is_empty() {
+        parts.push(current);
+    }
+    parts
+        .into_iter()
+        .filter(|part| !part.trim().is_empty())
+        .collect()
+}
+
+fn tokenize(command: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    for ch in command.chars() {
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+        if matches!(ch, '\'' | '"' | '`') {
+            quote = Some(ch);
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn strip_unquoted_comment(command: &str) -> String {
+    let mut out = String::new();
+    let mut quote = None;
+    for ch in command.chars() {
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            }
+            out.push(ch);
+            continue;
+        }
+        if ch == '#' {
+            break;
+        }
+        if matches!(ch, '\'' | '"' | '`') {
+            quote = Some(ch);
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn one_line(text: &str) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() > 160 {
+        let end = flat
+            .char_indices()
+            .nth(157)
+            .map(|(index, _)| index)
+            .unwrap_or(flat.len());
+        format!("{}...", &flat[..end])
+    } else {
+        flat
+    }
+}

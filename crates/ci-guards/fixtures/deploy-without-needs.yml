@@ -1,0 +1,13 @@
+name: Deploy without the publish job
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy.yml
+    with:
+      tag: ${{ github.ref_name }}
+    permissions:
+      contents: read
