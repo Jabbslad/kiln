@@ -649,5 +649,81 @@ class StandIn:
             self.httpd.server_close()
 
 
+APP_SITE = """\
+app.dark-forge.dev {
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Robots-Tag "noindex, nofollow"
+	}
+	request_body {
+		max_size 80KB
+	}
+	reverse_proxy 172.18.0.1:8093 {
+		header_up X-Forwarded-For {http.request.remote.host}
+		transport http {
+			dial_timeout 3s
+			response_header_timeout 75s
+		}
+	}
+}
+"""
+
+
+class AppSiteRunbook(unittest.TestCase):
+    def test_site_is_cleartext_and_the_runbook_can_restore_identity(self):
+        site = (ROOT / "deploy/app.Caddyfile").read_text()
+        runbook = (ROOT / "docs/runbooks/2026-10-20-app-dark-forge-caddy.md").read_text()
+        unit = (ROOT / "deploy/kiln-identity.service").read_text()
+        binary = "/usr/local/libexec/kiln-identity"
+        database = "/var/lib/kiln-identity/identity.db"
+        self.assertEqual(site, APP_SITE)
+        self.assertEqual(site.count("reverse_proxy "), 1)
+        self.assertNotIn("tls_trust_pool", site)
+        self.assertNotIn("8443", site)
+        self.assertNotIn("dns-01", site)
+        self.assertIn(f"ExecStart={binary} ", unit)
+        self.assertIn(f"--database {database} ", unit)
+        self.assertIn("--signing-key-file ", unit)
+        self.assertNotIn("signing.pem", runbook)
+        self.assertNotIn("dns-01", runbook)
+        self.assertNotIn(".pem", runbook)
+        self.assertNotIn(".key", runbook)
+        self.assertIn(binary, runbook)
+        self.assertIn(database, runbook)
+        self.assertIn("identity.db-wal", runbook)
+        self.assertIn("identity.db-shm", runbook)
+        yes = "Restart `kiln-identity` only after Jamie says yes."
+        self.assertIn(yes, runbook)
+        self.assertLess(runbook.index(yes), runbook.index("systemctl start kiln-identity"))
+        self.assertLess(
+            runbook.index(f"sha256sum {database}"),
+            runbook.index("systemctl start kiln-identity"),
+        )
+        self.assertIn("systemctl stop kiln-identity", runbook)
+        self.assertIn("sha256sum -c /var/backups/kiln-identity-app/checksums", runbook)
+        self.assertIn(
+            "install -m 755 /var/backups/kiln-identity-app/kiln-identity "
+            + binary,
+            runbook,
+        )
+        self.assertLess(
+            runbook.index("cp -a /opt/paseo/Caddyfile /opt/paseo/Caddyfile.bak-app-dark-forge"),
+            runbook.index("cat deploy/app.Caddyfile >> /opt/paseo/Caddyfile"),
+        )
+        self.assertIn("caddy validate", runbook)
+        self.assertIn("caddy reload", runbook)
+        self.assertIn("https://dark-forge.dev/login", runbook)
+        self.assertIn("Light the way in.", runbook)
+        self.assertIn("https://cli.dark-forge.dev/v1/templates", runbook)
+        self.assertIn("HTTP 401", runbook)
+        self.assertIn("tcp/8443 stays closed.", runbook)
+        self.assertIn("Do not add an accept rule.", runbook)
+        self.assertNotIn("dport 8443 accept", runbook)
+        self.assertIn("127.0.0.1:8093", runbook)
+        self.assertIn("172.18.0.1:8093", runbook)
+        self.assertIn("The browser check is for Kiln Ops after the release.", runbook)
+        self.assertIn("This pull request does not run it.", runbook)
+
+
 if __name__ == "__main__":
     unittest.main()

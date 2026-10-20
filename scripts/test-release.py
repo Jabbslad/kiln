@@ -140,6 +140,7 @@ class ReleaseTests(unittest.TestCase):
             "deploy/kiln-door-proxy.socket",
             "deploy/paseo-caddy.override.yaml",
             "deploy/door.Caddyfile",
+            "deploy/app.Caddyfile",
             "deploy/enroll-dark-forge.sh",
             "docs/runbooks/2026-10-19-door-public-cert.md",
             "deploy/host.example.json",
@@ -150,6 +151,7 @@ class ReleaseTests(unittest.TestCase):
             "docs/identity-service.md",
             "docs/runtime.md",
             "docs/runbooks/2026-10-19-public-door.md",
+            "docs/runbooks/2026-10-20-app-dark-forge-caddy.md",
         ]:
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -182,6 +184,7 @@ class ReleaseTests(unittest.TestCase):
                     "deploy/kiln-door-proxy.socket",
                     "deploy/paseo-caddy.override.yaml",
                     "deploy/door.Caddyfile",
+                    "deploy/app.Caddyfile",
                     "deploy/enroll-dark-forge.sh",
                     "deploy/host.example.json",
                     "fetch-firecracker.sh",
@@ -192,6 +195,7 @@ class ReleaseTests(unittest.TestCase):
                     "docs/runtime.md",
                     "docs/runbooks/2026-10-19-public-door.md",
                     "docs/runbooks/2026-10-19-door-public-cert.md",
+                    "docs/runbooks/2026-10-20-app-dark-forge-caddy.md",
                     "image/image.json",
                     "image/inputs.json",
                     "image/rootfs.ext4",
@@ -216,6 +220,16 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(bootstrap_accepts(partial), names)
             self.assertNotEqual(partial, bootstrap_accepts(partial))
             self.assertEqual(bootstrap_accepts(names - app_units), names - app_units)
+            app_site = {
+                "deploy/app.Caddyfile",
+                "docs/runbooks/2026-10-20-app-dark-forge-caddy.md",
+            }
+            self.assertTrue(app_site <= names)
+            site_half = set(names)
+            site_half.remove("deploy/app.Caddyfile")
+            self.assertEqual(bootstrap_accepts(site_half), names)
+            self.assertNotEqual(site_half, bootstrap_accepts(site_half))
+            self.assertEqual(bootstrap_accepts(names - app_site), names - app_site)
             door = Path(__file__).resolve().parent.parent / "deploy/kiln-door.service"
             self.assertNotIn("dashboard-root", door.read_text())
             self.assertFalse(any(name.startswith("kiln-dashboard-") for name in names))
@@ -254,6 +268,12 @@ def bootstrap_accepts(archive_names):
     }
     if archive_names & app_units:
         expected.update(app_units)
+    app_site = {
+        "deploy/app.Caddyfile",
+        "docs/runbooks/2026-10-20-app-dark-forge-caddy.md",
+    }
+    if archive_names & app_site:
+        expected.update(app_site)
     return expected
 
 

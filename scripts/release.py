@@ -75,6 +75,8 @@ def package(repo, bins, output, version, target, kind, image):
                 / "docs/runbooks/2026-10-19-public-door.md",
                 "docs/runbooks/2026-10-19-door-public-cert.md": repo
                 / "docs/runbooks/2026-10-19-door-public-cert.md",
+                "docs/runbooks/2026-10-20-app-dark-forge-caddy.md": repo
+                / "docs/runbooks/2026-10-20-app-dark-forge-caddy.md",
             }
         )
         files.update(
@@ -91,6 +93,7 @@ def package(repo, bins, output, version, target, kind, image):
                     "kiln-door-proxy.socket",
                     "paseo-caddy.override.yaml",
                     "door.Caddyfile",
+                    "app.Caddyfile",
                     "enroll-dark-forge.sh",
                     "host.example.json",
                 )
