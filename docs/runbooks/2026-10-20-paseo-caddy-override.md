@@ -496,24 +496,124 @@ The exec command was `/bin/sh -c 'uname -a'`.
 
 ## Roll back
 
-This deploy did not roll back. If `:443`, the unauthenticated 401, the sign-in page, or either nowcode site fails after a later change, remove the new caddy container before starting the old config. Do not run `docker compose down` for the whole project. That would stop paseo, hub, and the database.
+These rollback steps were not executed on the host. The 2026-10-20 deploy left `/opt/paseo/Caddyfile` on `tls_trust_pool file` and left this line in `/opt/paseo/.env`:
 
-From `/opt/paseo`, while `COMPOSE_FILE` still names the override:
-
-```sh
-docker compose stop caddy
-docker compose rm -f caddy
+```text
+COMPOSE_FILE=/opt/paseo/docker-compose.yml:/opt/paseo/paseo-caddy.override.yaml
 ```
 
-Restore `/opt/paseo/Caddyfile` from `/root/kiln-caddy-backup-20261020T090400Z/Caddyfile`. Restore `/opt/paseo/docker-compose.yml` from the same directory if it was edited. It was not edited on this deploy. Remove `/opt/paseo/.env`, because it did not exist before, or restore it from `env` in that directory if a later change had a previous file. Remove `/opt/paseo/paseo-caddy.override.yaml` from `COMPOSE_FILE`. Then:
+Do not run `docker compose down` for the whole project. That would stop paseo, hub, and the database. Do not restart `kiln-identity`.
+
+### Revert only the Caddyfile
+
+Keep `paseo-caddy.override.yaml` in `COMPOSE_FILE`. The override is the read-only `/etc/kiln/ca.crt` mount and the `172.18.0.3` pin. The backup `/root/kiln-caddy-backup-20261020T090400Z/Caddyfile` still has the `cli.dark-forge.dev` site and `tls_trusted_ca_certs /etc/kiln/ca.crt`. Caddy loads that file while it builds the reverse proxy. A container started without the mount has no CA file, `caddy run` exits, and sign-in, both nowcode sites, and the door go down together. Do not remove the override on this path, and do not delete `/opt/paseo/.env`.
+
+`/opt/paseo/docker-compose.yml` was not edited. Leave it.
+
+From `/opt/paseo`. Copy the live file aside, then put the backup in place. The running process has no `--watch` flag, so the copy does not reload it.
+
+```sh
+cp -a /opt/paseo/Caddyfile /opt/paseo/Caddyfile.pre-rollback
+cp -a /root/kiln-caddy-backup-20261020T090400Z/Caddyfile /opt/paseo/Caddyfile
+```
+
+Validate before any reload. Use the image the container already runs, `sha256:df7f1c2fb114453b951de51a98efc010db1655a92c2e86be6706714e2417a78d`, and mount the Caddyfile and the CA the same way the service does. The throwaway container is enough. `docker compose exec` reads the same bind mount inside the running container.
+
+```sh
+docker run --rm \
+  --mount type=bind,source=/opt/paseo/Caddyfile,target=/etc/caddy/Caddyfile,readonly \
+  --mount type=bind,source=/etc/kiln/ca.crt,target=/etc/kiln/ca.crt,readonly \
+  sha256:df7f1c2fb114453b951de51a98efc010db1655a92c2e86be6706714e2417a78d \
+  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+```
+
+```sh
+docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+```
+
+If validate fails, put the live file back and stop. Do not reload and do not recreate.
+
+```sh
+cp -a /opt/paseo/Caddyfile.pre-rollback /opt/paseo/Caddyfile
+```
+
+If validate prints `Valid configuration`, reload the running process. This keeps the container, the address, and the CA mount.
+
+```sh
+docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+```
+
+If reload fails, copy `/opt/paseo/Caddyfile.pre-rollback` back over `/opt/paseo/Caddyfile` and validate that file before another reload. The known-good file from this deploy has sha256 `7d2c3722f08e360d125c18cdcbb95faceb692032df704a61893657083434475f`.
+
+### Checks after that reload
+
+Record the status codes. Sign-in must be 200 and the body must contain `Light the way in.` Both nowcode sites must be 200. Record the `:443` status. With the backup door site still in the file, and the CA still mounted, `https://cli.dark-forge.dev/v1/templates` with no credential is 401 on the Let's Encrypt certificate.
+
+```sh
+curl -sS -o /dev/null -w 'login:%{http_code}\n' --max-time 20 https://dark-forge.dev/login
+curl -sS -o /dev/null -w 'app:%{http_code}\n' --max-time 20 http://app.nowcode.com/
+curl -sS -o /dev/null -w 'hub:%{http_code}\n' --max-time 20 http://hub.nowcode.com/
+curl -sS -o /dev/null -w 'door443:%{http_code}\n' --max-time 20 https://cli.dark-forge.dev/v1/templates
+docker inspect caddy --format 'ip={{index .NetworkSettings.Networks.paseo_default.IPAddress}} {{range .Mounts}}{{.Destination}} RW={{.RW}} {{end}}'
+```
+
+The address must still be `172.18.0.3`, and `/etc/kiln/ca.crt` must still be `RW=false`. These commands were not run as a rollback. The deploy checks above are the last ones that ran.
+
+### Remove the override
+
+These steps were not executed on the host either. Use them only to drop the pin and the CA mount. Do this after the Caddyfile no longer names `cli.dark-forge.dev` and no longer mentions `/etc/kiln/ca.crt`. The backup `Caddyfile` is the wrong file for this path. It still has `tls_trusted_ca_certs /etc/kiln/ca.crt`. `/opt/paseo/Caddyfile.bak-door-443` was already on disk and was not read. Use it only after confirming it has no `cli.dark-forge.dev` block and no `ca.crt` reference.
+
+Start from the live file. Copy it aside first.
+
+```sh
+cp -a /opt/paseo/Caddyfile /opt/paseo/Caddyfile.pre-rollback
+```
+
+Delete the `cli.dark-forge.dev` site from `/opt/paseo/Caddyfile`. Leave `dark-forge.dev`, `http://app.nowcode.com`, and `http://hub.nowcode.com` as they are. Keep the override in `COMPOSE_FILE` until validate succeeds. Then:
+
+```sh
+grep -nE 'cli\.dark-forge\.dev|ca\.crt|tls_trust_pool|tls_trusted_ca_certs' /opt/paseo/Caddyfile
+```
+
+The grep must print nothing. Do not validate, and do not change `COMPOSE_FILE`, while the grep still matches. Then:
+
+```sh
+docker run --rm \
+  --mount type=bind,source=/opt/paseo/Caddyfile,target=/etc/caddy/Caddyfile,readonly \
+  --mount type=bind,source=/etc/kiln/ca.crt,target=/etc/kiln/ca.crt,readonly \
+  sha256:df7f1c2fb114453b951de51a98efc010db1655a92c2e86be6706714e2417a78d \
+  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+```
+
+If validate fails, copy `/opt/paseo/Caddyfile.pre-rollback` back and stop. Leave `COMPOSE_FILE` unchanged.
+
+If validate prints `Valid configuration`, remove only the override from `COMPOSE_FILE`. The label file stays:
+
+```text
+COMPOSE_FILE=/opt/paseo/docker-compose.yml
+```
+
+Recreate caddy alone. Do not recreate paseo, hub, or the database.
 
 ```sh
 docker compose up -d --no-deps caddy
 ```
 
-Confirm caddy is up, `https://dark-forge.dev/login` contains `Light the way in.`, both nowcode hostnames answer, and `https://cli.dark-forge.dev/v1/templates` returns 401 if the door site is still in the restored Caddyfile. The restored file from this backup still has the door site with `tls_trusted_ca_certs`, and the old container will not have the CA mount. A copied CA inside an old container does not come back with the volume. Do not restart `kiln-identity`.
+If that recreate fails, put the override back on `COMPOSE_FILE`, restore `/opt/paseo/Caddyfile.pre-rollback`, validate it, and run `docker compose up -d --no-deps caddy` again.
 
-Re-check caddy is at `172.18.0.3` after any paseo update. The door socket allows only that address. A plain `docker compose up -d` in `/opt/paseo` keeps the pin only while `COMPOSE_FILE` still lists `paseo-caddy.override.yaml` after every file in the `config_files` label. On this host that plain command also plans to recreate `paseo-hub` because of `pull_policy: always`.
+### Checks after removing the override
+
+Record the same status codes. Sign-in must be 200. `http://app.nowcode.com/` and `http://hub.nowcode.com/` must be 200. Record the `:443` status for `https://cli.dark-forge.dev/v1/templates`. That name is no longer a site, so do not expect the door 401. `docker inspect` will not show `172.18.0.3` from the override or the `/etc/kiln/ca.crt` mount. These commands were not run.
+
+```sh
+curl -sS -o /dev/null -w 'login:%{http_code}\n' --max-time 20 https://dark-forge.dev/login
+curl -sS -o /dev/null -w 'app:%{http_code}\n' --max-time 20 http://app.nowcode.com/
+curl -sS -o /dev/null -w 'hub:%{http_code}\n' --max-time 20 http://hub.nowcode.com/
+curl -sS -o /dev/null -w 'door443:%{http_code}\n' --max-time 20 https://cli.dark-forge.dev/v1/templates
+docker inspect caddy --format 'ip={{index .NetworkSettings.Networks.paseo_default.IPAddress}} {{range .Mounts}}{{.Destination}} RW={{.RW}} {{end}}'
+```
+
+Re-check caddy is at `172.18.0.3` after any paseo update while the override stays in `COMPOSE_FILE`. The door socket allows only that address. A plain `docker compose up -d` in `/opt/paseo` keeps the pin only while `COMPOSE_FILE` still lists `paseo-caddy.override.yaml` after every file in the `config_files` label. On this host that plain command also plans to recreate `paseo-hub` because of `pull_policy: always`.
 
 ## Preflight transcript
 
