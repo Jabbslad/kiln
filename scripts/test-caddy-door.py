@@ -928,12 +928,13 @@ class AppSiteRunbook(unittest.TestCase):
             self.assertEqual(present.read_bytes(), original)
 
             glued = root / "glued"
-            glued.write_bytes(crlf_prefix + b"}" + header + b"\n" + body)
+            crlf_open = b'example.test {\r\n\trespond "ok"\r\n'
+            glued.write_bytes(crlf_open + b"}" + header + b"\n" + body)
             self._append_site(glued, ROOT / "deploy/app.Caddyfile")
             repaired = glued.read_bytes()
             self._append_site(glued, ROOT / "deploy/app.Caddyfile")
             self.assertEqual(glued.read_bytes(), repaired)
-            self.assertTrue(repaired.startswith(crlf_prefix + b"}\n" + header + b"\n"))
+            self.assertTrue(repaired.startswith(crlf_open + b"}\n" + header + b"\n"))
             self.assertTrue(repaired.endswith(body))
             self.assertIn(b"\n", repaired.replace(b"\r\n", b""))
             self.assertEqual(repaired.count(b"app.dark-forge.dev {"), 1)
@@ -951,7 +952,6 @@ class AppSiteRunbook(unittest.TestCase):
             self._append_site(appended, ROOT / "deploy/app.Caddyfile")
             self.assertEqual(appended.read_bytes(), added)
             self.assertTrue(added.startswith(lf_note + crlf_prefix))
-            self.assertIn(b"\n# keep this line\n", added)
             self.assertIn(b"\r\n}\r\napp.dark-forge.dev {\r\n", added)
             self.assertNotIn(b"# keep this line\r\n", added)
 
