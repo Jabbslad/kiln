@@ -114,9 +114,10 @@ fn challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
-fn server_path(redirect: &str, verifier: &str, state: &str) -> String {
+fn server_path(server: &str, redirect: &str, verifier: &str, state: &str) -> String {
     let mut query = url::form_urlencoded::Serializer::new(String::new());
     query.append_pair("redirect_uri", redirect);
+    query.append_pair("server_id", server);
     query.append_pair("state", state);
     query.append_pair("code_challenge", &challenge(verifier));
     query.append_pair("code_challenge_method", "S256");
@@ -233,7 +234,7 @@ async fn server_oauth_is_single_use_and_split_from_the_directory_token() {
         .store
         .create_server(&owner, "one", "https://192.0.2.9", "test CA", now())
         .unwrap();
-    let enrolled = server_path(APP_OAUTH_REDIRECT, VERIFIER, "state-one");
+    let enrolled = server_path(&server, APP_OAUTH_REDIRECT, VERIFIER, "state-one");
     let (status, _, body) = f
         .raw("GET", &enrolled, "192.0.2.10:9", None, None, None)
         .await;
@@ -292,7 +293,12 @@ async fn server_oauth_is_single_use_and_split_from_the_directory_token() {
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
 
-    let wrong_uri = server_path("https://evil.example/oauth/callback", VERIFIER, "state-one");
+    let wrong_uri = server_path(
+        &server,
+        "https://evil.example/oauth/callback",
+        VERIFIER,
+        "state-one",
+    );
     let (status, _, body) = f
         .raw("GET", &wrong_uri, "192.0.2.12:9", None, None, None)
         .await;
@@ -329,7 +335,7 @@ async fn server_oauth_is_single_use_and_split_from_the_directory_token() {
     let (status, headers, body) = f
         .raw(
             "GET",
-            &server_path(APP_OAUTH_REDIRECT, VERIFIER, "state-other"),
+            &server_path(&server, APP_OAUTH_REDIRECT, VERIFIER, "state-other"),
             "192.0.2.14:9",
             None,
             Some("__Host-kiln_session=other-session"),
@@ -345,7 +351,7 @@ async fn server_oauth_is_single_use_and_split_from_the_directory_token() {
     let (status, headers, body) = f
         .raw(
             "GET",
-            &server_path(APP_OAUTH_REDIRECT, VERIFIER, "state-new"),
+            &server_path(&server, APP_OAUTH_REDIRECT, VERIFIER, "state-new"),
             "192.0.2.15:9",
             None,
             None,
@@ -439,6 +445,7 @@ async fn server_oauth_is_single_use_and_split_from_the_directory_token() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(json_error(&body), "invalid_grant");
+    let refresh = json!({"reader": reader}).to_string();
     let (status, _, body) = f
         .raw(
             "POST",
@@ -446,7 +453,18 @@ async fn server_oauth_is_single_use_and_split_from_the_directory_token() {
             "192.0.2.18:9",
             None,
             None,
-            Some(&json!({"reader": reader}).to_string()),
+            Some(&refresh),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    let (status, _, body) = f
+        .raw(
+            "POST",
+            "/oauth/server/token",
+            "192.0.2.18:9",
+            Some(&login),
+            None,
+            Some(&refresh),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -454,6 +472,50 @@ async fn server_oauth_is_single_use_and_split_from_the_directory_token() {
         claims(json(&body)["access_token"].as_str().unwrap()).scope,
         Scope::Read
     );
+    let (status, _, body) = f
+        .raw(
+            "POST",
+            "/oauth/server/revoke",
+            "192.0.2.18:9",
+            None,
+            None,
+            Some(&refresh),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    let (status, _, body) = f
+        .raw(
+            "POST",
+            "/oauth/server/token",
+            "192.0.2.18:9",
+            Some(&login),
+            None,
+            Some(&refresh),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _, body) = f
+        .raw(
+            "POST",
+            "/oauth/server/revoke",
+            "192.0.2.18:9",
+            Some(&login),
+            None,
+            Some(&refresh),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (status, _, body) = f
+        .raw(
+            "POST",
+            "/oauth/server/token",
+            "192.0.2.18:9",
+            Some(&login),
+            None,
+            Some(&refresh),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
 
     let pkce = owner_code(&f, &enrolled).await;
     let (status, _, body) = f
@@ -684,6 +746,164 @@ async fn server_oauth_is_single_use_and_split_from_the_directory_token() {
     }
 }
 
+async fn install_login(f: &Fixture, server: &str, directory: &str, peer: &str) -> String {
+    let install = json!({"redirect_uri": APP_OAUTH_REDIRECT}).to_string();
+    let (status, _, body) = f
+        .raw(
+            "POST",
+            &format!("/v1/servers/{server}/app-login"),
+            peer,
+            Some(directory),
+            None,
+            Some(&install),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    json(&body)["login_token"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn two_servers_share_the_redirect_and_keep_their_owners() {
+    CLOCK.store(3_000, Ordering::SeqCst);
+    let f = Fixture::new();
+    let owner_a = f
+        .store
+        .seed_account("github", "301", "owner-a", now())
+        .unwrap();
+    let owner_b = f
+        .store
+        .seed_account("github", "302", "owner-b", now())
+        .unwrap();
+    let (server_a, directory_a) = f
+        .store
+        .create_server(&owner_a, "a", "https://192.0.2.21", "ca", now())
+        .unwrap();
+    let (server_b, directory_b) = f
+        .store
+        .create_server(&owner_b, "b", "https://192.0.2.22", "ca", now())
+        .unwrap();
+    let _login_a = install_login(&f, &server_a, &directory_a, "192.0.2.23:9").await;
+    let login_b = install_login(&f, &server_b, &directory_b, "192.0.2.24:9").await;
+    remember(&f, &owner_a, "session-a");
+    remember(&f, &owner_b, "session-b");
+    let path_a = server_path(&server_a, APP_OAUTH_REDIRECT, VERIFIER, "state-a");
+    let path_b = server_path(&server_b, APP_OAUTH_REDIRECT, VERIFIER, "state-b");
+
+    let (status, headers, body) = f
+        .raw(
+            "GET",
+            &path_a,
+            "192.0.2.25:9",
+            None,
+            Some("__Host-kiln_session=session-a"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{body}");
+    let code_a = query(
+        &url::Url::parse(headers.get("location").unwrap().to_str().unwrap()).unwrap(),
+        "code",
+    );
+    let (status, _, body) = f
+        .raw(
+            "GET",
+            &path_b,
+            "192.0.2.26:9",
+            None,
+            Some("__Host-kiln_session=session-b"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{body}");
+    let before = code_count(&f);
+    let (status, _, body) = f
+        .raw(
+            "GET",
+            &path_b,
+            "192.0.2.27:9",
+            None,
+            Some("__Host-kiln_session=session-a"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("This account cannot continue"), "{body}");
+    let (status, _, body) = f
+        .raw(
+            "GET",
+            &path_a,
+            "192.0.2.28:9",
+            None,
+            Some("__Host-kiln_session=session-b"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("This account cannot continue"), "{body}");
+    assert_eq!(code_count(&f), before);
+
+    let exchange = json!({
+        "code": code_a,
+        "code_verifier": VERIFIER,
+        "redirect_uri": APP_OAUTH_REDIRECT,
+    })
+    .to_string();
+    let (status, _, body) = f
+        .raw(
+            "POST",
+            "/oauth/server/token",
+            "192.0.2.29:9",
+            Some(&login_b),
+            None,
+            Some(&exchange),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(code_count(&f), before);
+}
+
+#[tokio::test]
+async fn an_expired_signed_in_session_does_not_issue_a_code() {
+    CLOCK.store(4_000, Ordering::SeqCst);
+    let f = Fixture::new();
+    let owner = f
+        .store
+        .seed_account("github", "401", "owner", now())
+        .unwrap();
+    let (server, directory) = f
+        .store
+        .create_server(&owner, "one", "https://192.0.2.31", "ca", now())
+        .unwrap();
+    install_login(&f, &server, &directory, "192.0.2.32:9").await;
+    let session = "c".repeat(43);
+    remember(&f, &owner, &session);
+    f.db()
+        .execute("UPDATE browser_sessions SET expires_at=?1", [now() - 1])
+        .unwrap();
+    let path = server_path(&server, APP_OAUTH_REDIRECT, VERIFIER, "state-stale");
+    let header = format!("__Host-kiln_session={session}");
+    let cookie = Some(header.as_str());
+    let (status, _, body) = f
+        .raw("GET", &path, "192.0.2.33:9", None, cookie, None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("Continue with GitHub"), "{body}");
+    assert_eq!(code_count(&f), 0);
+    let account: Option<String> = f
+        .db()
+        .query_row("SELECT account_id FROM browser_sessions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(account.is_none());
+    let (status, _, body) = f
+        .raw("GET", &path, "192.0.2.34:9", None, cookie, None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("Continue with GitHub"), "{body}");
+    assert_eq!(code_count(&f), 0);
+}
+
 async fn owner_code(f: &Fixture, path: &str) -> String {
     let (status, headers, body) = f
         .raw(
@@ -813,7 +1033,7 @@ mod lab {
         let (status, headers, body) = fixture
             .raw(
                 "GET",
-                &server_path(APP_OAUTH_REDIRECT, VERIFIER, "state-lab"),
+                &server_path(&server, APP_OAUTH_REDIRECT, VERIFIER, "state-lab"),
                 "192.0.2.41:9",
                 None,
                 None,
