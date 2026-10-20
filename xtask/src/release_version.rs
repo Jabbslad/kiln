@@ -1,3 +1,4 @@
+use crate::register_cases;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -45,6 +46,7 @@ static ASSET_LINE_RE: LazyLock<Regex> =
 static HEX64_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[0-9a-f]{64}$").expect("hex digest"));
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReleaseVersion {
     major: i64,
     minor: i64,
@@ -300,7 +302,9 @@ pub fn render_bootstrap(
         };
         let line_ending = ending(&lines[*index]).to_string();
         let Some(digest) = digests.get(key) else {
-            return Err(format!("release digest for {key:?} must be 64 lowercase hex"));
+            return Err(format!(
+                "release digest for {key:?} must be 64 lowercase hex"
+            ));
         };
         lines[*index] = format!("{prefix} {digest}{line_ending}");
     }
@@ -1035,7 +1039,9 @@ fn atomic_write(path: &Path, data: &[u8], mode: Option<u32>) -> Result<(), Strin
     if let Some(mode) = mode {
         set_mode(tmp.path(), mode)?;
     }
-    tmp.persist(path).map(|_| ()).map_err(|err| err.to_string())?;
+    tmp.persist(path)
+        .map(|_| ())
+        .map_err(|err| err.to_string())?;
     Ok(())
 }
 
@@ -1221,6 +1227,7 @@ fn py_json_repr(value: Option<&serde_json::Value>) -> String {
     }
 }
 
+#[derive(Debug)]
 enum RunError {
     Start,
     Timeout,
@@ -2402,7 +2409,7 @@ fn rewrite_release_json(archive: &Path, version: &str) {
         header.set_cksum();
         dst.append(&header, data.as_slice()).unwrap();
     }
-    let encoder = dst.finish().unwrap();
+    let encoder = dst.into_inner().unwrap();
     encoder.finish().unwrap();
 }
 

@@ -275,11 +275,16 @@ async fn https_lifecycle_and_crashed_host_never_replay_exec() {
         let alias = format!("kiln-default-{id}");
         // Editors open direct-tcpip channels to their guest-local server.
         output_of_forwarding_probe(&client, &id, &ssh_config, &alias).await;
-        let output = tokio::process::Command::new("python3")
-            .arg(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../scripts/test-ssh-pty.py"
-            ))
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+        let output = tokio::process::Command::new("cargo")
+            .arg("run")
+            .arg("--manifest-path")
+            .arg(&manifest)
+            .arg("--locked")
+            .arg("--package")
+            .arg("xtask")
+            .arg("--")
+            .arg("ssh-pty")
             .arg(&ssh_config)
             .arg(&alias)
             .output()

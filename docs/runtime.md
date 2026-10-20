@@ -50,7 +50,7 @@ The pinned kernel embeds an experimental userspace `bpfilter_umh` helper. Warm m
 The shared lifecycle suite checks independent clone identity, fresh daemon/bus invocation IDs, journal identity, Python/systemd-run, agent restart, disk and memory persistence, and cold restart of a custom credential-using service. Additional raw-vsock tests inject a retained FD into an exited service, a systemd credential, an identity-verification failure, and a marker-write failure:
 
 ```sh
-python3 scripts/test-warm-guest.py images/output/ubuntu-warm/image.json \
+cargo xtask warm-guest images/output/ubuntu-warm/image.json \
   .tools/firecracker-1.17.0/firecracker .amp/in/artifacts/warm-wire
 ```
 

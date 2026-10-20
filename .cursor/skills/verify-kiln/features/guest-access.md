@@ -19,7 +19,7 @@ kiln cp ./note.txt BOX:/root/note.txt
 kiln ssh-config BOX
 ```
 
-`scripts/test-ssh-pty.py SSH_CONFIG HOST` drives an interactive session that already has an SSH config: it checks `stty size` is `31 97` and that the guest does not print `System is booting up`.
+`cargo xtask ssh-pty SSH_CONFIG HOST` drives an interactive session that already has an SSH config: it checks `stty size` is `31 97` and that the guest does not print `System is booting up`.
 
 ## Driving it with tmux
 
@@ -29,7 +29,7 @@ tmux send-keys -t kiln-ssh 'kiln --config "$KILN_CONFIG" ssh "$BOX_ID" -- printf
 tmux capture-pane -p -t kiln-ssh
 ```
 
-A pass prints `auth-ssh-ok` and `EXIT:0`. For a failing guest command the client returns the remote status (`scripts/test-central-login.py` expects exit 37). `kiln cp` is a pass when the destination file's bytes match the source and `scp` exits 0.
+A pass prints `auth-ssh-ok` and `EXIT:0`. For a failing guest command the client returns the remote status (`cargo xtask central-login` expects exit 37). `kiln cp` is a pass when the destination file's bytes match the source and `scp` exits 0.
 
 `ssh-config` is a pass when the printed block contains `ProxyCommand`, `IdentitiesOnly yes`, and `GlobalKnownHostsFile /dev/null`, and the identity file mode is owner-only.
 
@@ -38,5 +38,5 @@ A pass prints `auth-ssh-ok` and `EXIT:0`. For a failing guest command the client
 - The BusyBox fixture has no `sshd`. `images/build-ubuntu.sh` checks `usr/sbin/sshd` and related paths exist in the root tarball. It does not check `/sbin/ip` (see `guest-networking.md`).
 - Guest images and templates are not upgraded by installing a new client or host binary. An old disk can still print the PAM `System is booting up` warning.
 - SSH and SFTP need the box `running`. A stopped or paused box produces the start/resume hint and does not change the box.
-- `scripts/test-central-login.py` refuses a direct administrator profile. It does not perform login.
+- `cargo xtask central-login` refuses a direct administrator profile. It does not perform login.
 - This journey was not driven in the authoring proof. It needs KVM, an Ubuntu image, and a reachable API. CI does not run `scripts/test-network-kvm.sh` or the ignored lifecycle tests (`.github/workflows/build.yml`).

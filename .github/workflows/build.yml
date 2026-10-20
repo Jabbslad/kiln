@@ -31,7 +31,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
   # A documentation pull request or merge group skips the compile jobs below.
@@ -68,7 +67,7 @@ jobs:
             exit 0
           fi
           # --no-renames lists both sides. A rename out of Rust still builds.
-          git diff --name-only --no-renames "$base" "$head" | python scripts/ci_docs_only.py >> "$GITHUB_OUTPUT"
+          git diff --name-only --no-renames "$base" "$head" | cargo xtask ci-docs-only >> "$GITHUB_OUTPUT"
 
   # This job runs on a heavy diff too. server-check installs Caddy, so
   # skipping this job hides a missing binary until the next docs-only pull request.
@@ -81,26 +80,23 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
       - name: Install Caddy
         run: bash scripts/install-caddy.sh
-      - name: Python checks
+      - name: Repository checks
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python scripts/test-ci-docs-only.py
-          python scripts/test-release-version.py
-          python scripts/test-release.py
-          python scripts/test-install.py
-          python scripts/test-bootstrap.py
-          python scripts/test-close-public-door.py
-          python scripts/test-caddy-door.py
-          python scripts/test-deploy-workflow.py
-          python scripts/test-reuse-release.py
-          python scripts/test-merge-queue-tested.py
-          python scripts/test-proof-status.py
+          cargo xtask test-ci-docs-only
+          cargo xtask test-release-version
+          cargo xtask test-release
+          cargo xtask test-install
+          cargo xtask test-bootstrap
+          cargo xtask test-close-public-door
+          cargo xtask test-caddy-door
+          cargo xtask test-deploy-workflow
+          cargo xtask test-reuse-release
+          cargo xtask test-merge-queue-tested
+          cargo xtask test-repo-guard
           bash scripts/test-listener-restart.sh
           sh scripts/test-caddy-endings.sh
           sh scripts/test-bootstrap-pins.sh
@@ -117,13 +113,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
       - name: Merge queue already tested this tree
         id: queue
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: python scripts/merge_queue_tested.py
+        run: cargo xtask merge-queue-tested
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: steps.queue.outputs.skip_tests != 'true'
         with:
@@ -135,7 +128,7 @@ jobs:
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
-        run: python scripts/release_version.py resolve --ref-type "$REF_TYPE" --ref-name "$REF_NAME"
+        run: cargo xtask release-version resolve --ref-type "$REF_TYPE" --ref-name "$REF_NAME"
       - name: Toolchain
         if: steps.queue.outputs.skip_tests != 'true'
         run: rustup show
@@ -168,18 +161,18 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-          cargo test --workspace --all-features --locked
-          python scripts/test-release-version.py
-          python scripts/test-release.py
-          python scripts/test-install.py
-          python scripts/test-bootstrap.py
-          python scripts/test-close-public-door.py
-          python scripts/test-caddy-door.py
-          python scripts/test-deploy-workflow.py
-          python scripts/test-ci-docs-only.py
-          python scripts/test-reuse-release.py
-          python scripts/test-merge-queue-tested.py
-          python scripts/test-proof-status.py
+          cargo test --workspace --all-features --locked --exclude xtask
+          cargo xtask test-release-version
+          cargo xtask test-release
+          cargo xtask test-install
+          cargo xtask test-bootstrap
+          cargo xtask test-close-public-door
+          cargo xtask test-caddy-door
+          cargo xtask test-deploy-workflow
+          cargo xtask test-ci-docs-only
+          cargo xtask test-reuse-release
+          cargo xtask test-merge-queue-tested
+          cargo xtask test-repo-guard
           bash scripts/test-listener-restart.sh
           sh scripts/test-caddy-endings.sh
           sh scripts/test-bootstrap-pins.sh
@@ -222,7 +215,7 @@ jobs:
           REUSE_SHA: ${{ github.sha }}
           REUSE_SHA_INPUT: ${{ inputs.reuse_sha }}
           REUSE_VERSION: ${{ github.event_name == 'push' && github.ref_name || '' }}
-        run: python3 scripts/reuse_release.py fetch --dist dist
+        run: cargo xtask reuse-release fetch --dist dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.decide.outputs.mode == 'reuse'
         with:
@@ -248,14 +241,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
       - name: Stamp release version
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
-        run: python scripts/release_version.py resolve --ref-type "$REF_TYPE" --ref-name "$REF_NAME"
+        run: cargo xtask release-version resolve --ref-type "$REF_TYPE" --ref-name "$REF_NAME"
       - name: Toolchain
         run: rustup show
       # Tag builds ship binaries, so they do not restore or save a cache.
@@ -272,7 +262,7 @@ jobs:
           cargo build --release --locked -p kiln-identity
           target/release/kiln-host --help
           target/release/kiln-api --help
-          python scripts/release_version.py check-binary --version "$VERSION" -- \
+          cargo xtask release-version check-binary --version "$VERSION" -- \
             target/release/kiln \
             target/release/kiln-runtime \
             target/release/kiln-host \
@@ -286,7 +276,7 @@ jobs:
           esac
       - name: Package identity service
         run: |
-          python scripts/release.py identity --version "$VERSION" --target x86_64-unknown-linux-gnu \
+          cargo xtask release identity --version "$VERSION" --target x86_64-unknown-linux-gnu \
             --bin-dir target/release --output dist
       - name: Build pinned warm guest image without root
         run: |
@@ -296,7 +286,7 @@ jobs:
           bash images/build-ubuntu.sh images/output/release '' systemd_warm
       - name: Package server with prebuilt image
         run: |
-          python scripts/release.py server --version "$VERSION" --target x86_64-unknown-linux-gnu \
+          cargo xtask release server --version "$VERSION" --target x86_64-unknown-linux-gnu \
             --bin-dir target/release --image-dir images/output/release --output dist
           (cd dist && sha256sum -c ./*.sha256)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -342,18 +332,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
       - name: Merge queue already tested this tree
         id: queue
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: python scripts/merge_queue_tested.py
+        run: cargo xtask merge-queue-tested
       - name: Stamp release version
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
-        run: python scripts/release_version.py resolve --ref-type "$REF_TYPE" --ref-name "$REF_NAME"
+        run: cargo xtask release-version resolve --ref-type "$REF_TYPE" --ref-name "$REF_NAME"
       - name: Toolchain
         run: rustup show
       # Tag builds ship binaries, so they do not restore or save a cache.
@@ -369,18 +356,18 @@ jobs:
         if: runner.os != 'Windows' && steps.queue.outputs.skip_tests != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python scripts/test-bootstrap.py
+        run: cargo xtask test-bootstrap
       - name: Production binary
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: |
           cargo build --release --locked -p kiln-client --bin kiln --target ${{ matrix.target }}
-          python scripts/release_version.py check-binary --version "$VERSION" -- \
+          cargo xtask release-version check-binary --version "$VERSION" -- \
             target/${{ matrix.target }}/release/kiln${{ matrix.suffix }}
       - name: Package client
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: |
-          python scripts/test-release.py
-          python scripts/release.py client --version "$VERSION" --target ${{ matrix.target }} \
+          cargo xtask test-release
+          cargo xtask release client --version "$VERSION" --target ${{ matrix.target }} \
             --bin-dir target/${{ matrix.target }}/release --output dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
@@ -396,12 +383,12 @@ jobs:
         run: |
           rustup target add x86_64-apple-darwin
           cargo build --release --locked -p kiln-client --bin kiln --target x86_64-apple-darwin
-          python scripts/release_version.py check-binary --version "$VERSION" -- \
+          cargo xtask release-version check-binary --version "$VERSION" -- \
             target/x86_64-apple-darwin/release/kiln
       - name: Package x86_64 macOS client
         if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && matrix.target == 'aarch64-apple-darwin'
         run: |
-          python scripts/release.py client --version "$VERSION" --target x86_64-apple-darwin \
+          cargo xtask release client --version "$VERSION" --target x86_64-apple-darwin \
             --bin-dir target/x86_64-apple-darwin/release --output dist-x86_64
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && matrix.target == 'aarch64-apple-darwin'
@@ -431,18 +418,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
       - name: Merge queue already tested this tree
         id: queue
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: python scripts/merge_queue_tested.py
+        run: cargo xtask merge-queue-tested
       - name: Stamp release version
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
-        run: python scripts/release_version.py resolve --ref-type "$REF_TYPE" --ref-name "$REF_NAME"
+        run: cargo xtask release-version resolve --ref-type "$REF_TYPE" --ref-name "$REF_NAME"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -475,8 +459,8 @@ jobs:
       - name: Package static dashboard
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: |
-          python scripts/test-release.py
-          python scripts/release.py dashboard --version "$VERSION" --target web \
+          cargo xtask test-release
+          cargo xtask release dashboard --version "$VERSION" --target web \
             --bin-dir web/dist --output dist
           (cd dist && sha256sum -c ./*.sha256)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -536,7 +520,7 @@ jobs:
       - name: Required check
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-        run: python scripts/required_gate.py
+        run: cargo xtask required-gate
 
   draft-release:
     needs: [server-check, reuse, server-package, client, dashboard, attest]
@@ -577,7 +561,7 @@ jobs:
           REUSE_MODE: ${{ needs.reuse.outputs.mode }}
         run: |
           started=$(date +%s)
-          python3 scripts/reuse_release.py finish --version "$TAG" --dist dist
+          cargo xtask reuse-release finish --version "$TAG" --dist dist
           (cd dist && sha256sum -c ./*.sha256)
           if [ "$REUSE_MODE" = reuse ]; then
             source_ref=refs/heads/main
@@ -620,7 +604,7 @@ jobs:
         env:
           VERSION: ${{ needs.reuse.outputs.version }}
         run: |
-          python3 scripts/reuse_release.py finish --version "$VERSION" --dist dist
+          cargo xtask reuse-release finish --version "$VERSION" --dist dist
           (cd dist && sha256sum -c ./*.sha256)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

@@ -1,3 +1,4 @@
+use crate::register_cases;
 use crate::repo_root;
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -6,7 +7,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -787,7 +788,7 @@ impl Fixture {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         unsafe {
-            command.pre_exec(|| unsafe {
+            command.pre_exec(|| {
                 if libc::setsid() == -1 {
                     Err(io::Error::last_os_error())
                 } else {
@@ -1003,7 +1004,8 @@ fn server_detects_address_and_installs_without_tty(fix: &Fixture) {
         commands[3]
     );
     assert_eq!(commands[4][0], "bash");
-    let url = request_url(&fix.requests()[0]);
+    let requests = fix.requests();
+    let url = request_url(&requests[0]);
     assert!(
         url.ends_with(&format!(
             "/kiln-server-v{version}-x86_64-unknown-linux-gnu.tar.gz"
@@ -1108,7 +1110,8 @@ fn test_client_platforms_install_correct_asset() {
             command_stdout(&binary, &["--version"]),
             format!("kiln {version}\n")
         );
-        let url = request_url(fix.requests().last().expect("download recorded"));
+        let requests = fix.requests();
+        let url = request_url(requests.last().expect("download recorded"));
         assert_eq!(
             url,
             format!(
