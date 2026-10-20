@@ -406,7 +406,7 @@ def _rewrite_manifest(manifest: str, cargo: str) -> str:
 
 def _rewrite_lock(lock: str, names: tuple[str, ...], cargo: str) -> str:
     header, blocks = _split_lock(lock)
-    if "\nversion = 4\n" not in f"\n{header}":
+    if not any(_body(line) == "version = 4" for line in header.splitlines(keepends=True)):
         raise ValueError("Cargo.lock header version is not 4")
     infos = [_inspect_block(block) for block in blocks]
     hits: dict[str, list[int]] = {name: [] for name in names}
