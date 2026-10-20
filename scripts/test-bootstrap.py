@@ -26,6 +26,36 @@ def pinned_version():
     return match.group(1)
 
 
+def recorded_bootstrap_version():
+    text = (ROOT / "docs/releases.md").read_text()
+    matches = re.findall(
+        r"(?m)^The published bootstrap pin is v([0-9]+\.[0-9]+\.[0-9]+)\.$",
+        text,
+    )
+    if len(matches) != 1:
+        raise AssertionError("releases.md needs exactly one published bootstrap pin")
+    return matches[0]
+
+
+def pinned_digests():
+    text = (ROOT / "deploy/bootstrap/install.sh").read_text()
+    rows = re.findall(r"(?m)^(client|server):(\S+) ([0-9a-f]{64})$", text)
+    if not rows:
+        raise AssertionError("install.sh does not pin release archives")
+    names = {
+        "client": "kiln-v{version}-{target}.tar.gz",
+        "server": "kiln-server-v{version}-{target}.tar.gz",
+    }
+    version = pinned_version()
+    digests = {}
+    for mode, target, digest in rows:
+        name = names[mode].format(version=version, target=target)
+        if name in digests:
+            raise AssertionError(f"install.sh pins {name} twice")
+        digests[name] = digest
+    return digests
+
+
 PINNED = pinned_version()
 CADDY_PAIR = [
     "deploy/paseo-caddy.override.yaml",
@@ -300,6 +330,8 @@ if args[0] == 'env' and 'apt-get' in args:
         )
 
     def test_pinned_version_matches_published_release(self):
+        version = pinned_version()
+        self.assertEqual(version, recorded_bootstrap_version())
         headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "kiln-bootstrap-test",
@@ -308,17 +340,20 @@ if args[0] == 'env' and 'apt-get' in args:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(
-            "https://api.github.com/repos/Jabbslad/kiln/releases/latest",
+            f"https://api.github.com/repos/Jabbslad/kiln/releases/tags/v{version}",
             headers=headers,
         )
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
                 payload = json.load(response)
         except urllib.error.URLError as exc:
-            self.fail(f"cannot read the latest published release: {exc}")
-        self.assertEqual(payload["tag_name"], "v" + pinned_version())
+            self.fail(f"cannot read published release v{version}: {exc}")
+        self.assertEqual(payload["tag_name"], "v" + version)
         self.assertFalse(payload["draft"])
         self.assertFalse(payload["prerelease"])
+        published = {asset["name"]: asset.get("digest") for asset in payload["assets"]}
+        for name, digest in pinned_digests().items():
+            self.assertEqual(published.get(name), "sha256:" + digest, name)
 
     def test_client_platforms_install_correct_asset(self):
         for system, arch, expected in [
