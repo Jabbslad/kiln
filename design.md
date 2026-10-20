@@ -626,3 +626,16 @@ this section defines the deliberate adaptations for Kiln's public page and conso
 - Verify both surfaces at desktop and phone widths, plus intermediate breakpoints.
   Exercise navigation, install-command copy (and failure), explicit preview and
   disconnected states, existing dialogs, and automated accessibility checks.
+- On dark-forge, a laptop reaches the host at `https://cli.dark-forge.dev` on
+  port 443. The paseo override pins Caddy at `172.18.0.3`. Caddy dials
+  `https://172.18.0.1:8444` and trusts the Kiln CA with `tls_trust_pool`.
+  `kiln-door-proxy` listens only on that private socket, and the socket accepts
+  `172.18.0.3` only. The installers do not install a public door socket on port
+  8443. An upgrade disables `kiln-door-proxy-public.socket` when that unit is
+  still present. Port 8443 is the host admin API.
+  The packaged `kiln-api` unit binds it on `127.0.0.1`. Dark-forge enrollment
+  refuses any other bind.
+- When `kiln login` must ask which server to use, it saves the approved session
+  before the prompt. Leaving the prompt unanswered keeps that session. A later
+  `kiln login --server` with a server id updates the same profile and does not
+  start a new approval.
