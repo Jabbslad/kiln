@@ -904,6 +904,39 @@ async fn an_expired_signed_in_session_does_not_issue_a_code() {
     assert_eq!(code_count(&f), 0);
 }
 
+#[tokio::test]
+async fn a_provider_start_does_not_revive_an_expired_session() {
+    CLOCK.store(5_000, Ordering::SeqCst);
+    let f = Fixture::new();
+    let owner = f
+        .store
+        .seed_account("github", "501", "owner", now())
+        .unwrap();
+    let (server, directory) = f
+        .store
+        .create_server(&owner, "one", "https://192.0.2.51", "ca", now())
+        .unwrap();
+    install_login(&f, &server, &directory, "192.0.2.52:9").await;
+    let session = "d".repeat(43);
+    remember(&f, &owner, &session);
+    f.db()
+        .execute("UPDATE browser_sessions SET expires_at=?1", [now() - 1])
+        .unwrap();
+    let header = format!("__Host-kiln_session={session}");
+    let cookie = Some(header.as_str());
+    let (status, _, body) = f
+        .raw("GET", "/oauth/github", "192.0.2.53:9", None, cookie, None)
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{body}");
+    let path = server_path(&server, APP_OAUTH_REDIRECT, VERIFIER, "state-revived");
+    let (status, headers, body) = f
+        .raw("GET", &path, "192.0.2.54:9", None, cookie, None)
+        .await;
+    assert_ne!(status, StatusCode::SEE_OTHER, "{body}");
+    assert!(headers.get("location").is_none(), "{headers:?}");
+    assert_eq!(code_count(&f), 0);
+}
+
 async fn owner_code(f: &Fixture, path: &str) -> String {
     let (status, headers, body) = f
         .raw(
