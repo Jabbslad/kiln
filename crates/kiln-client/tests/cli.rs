@@ -416,7 +416,6 @@ async fn scripts_json_proxy_and_explicit_missing_profiles_never_launch_login() {
             "must-not-create",
         ],
         vec!["ssh-proxy", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
-        vec!["--issuer", "https://identity.example.test", "login"],
     ] {
         let output = cli(&config, &args).await;
         assert!(!output.status.success(), "{args:?}");
@@ -432,33 +431,48 @@ async fn scripts_json_proxy_and_explicit_missing_profiles_never_launch_login() {
 
 #[tokio::test]
 async fn login_has_a_default_issuer_and_preserves_explicit_overrides() {
+    let help = tokio::process::Command::new(env!("CARGO_BIN_EXE_kiln"))
+        .args(["login", "--help"])
+        .output()
+        .await
+        .unwrap();
+    let help_text = String::from_utf8_lossy(&help.stdout);
+    assert!(
+        help.status.success() && help_text.contains("https://dark-forge.dev"),
+        "{help_text}"
+    );
     let root = tempfile::tempdir().unwrap();
-    for (environment, explicit, expected) in [
-        (None, None, "browser login requires an interactive terminal"),
-        (Some("http://invalid.test"), None, "HTTPS"),
+    let config = root.path().join("profiles.json");
+    for (environment, args, expected) in [
+        (Some("http://invalid.test"), vec!["login"], "HTTPS"),
         (
             Some("http://invalid.test"),
-            Some("https://override.example.test"),
+            vec!["--issuer", "https://127.0.0.1:1", "login"],
+            "connect",
+        ),
+        (
+            None,
+            vec!["--json", "--issuer", "https://127.0.0.1:1", "login"],
             "browser login requires an interactive terminal",
         ),
     ] {
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_kiln"));
-        command.env_remove("KILN_IDENTITY_URL").args([
-            "--config",
-            root.path().join("profiles.json").to_str().unwrap(),
-        ]);
+        command
+            .env_remove("KILN_IDENTITY_URL")
+            .stdin(std::process::Stdio::from(
+                std::fs::File::open("/dev/null").unwrap(),
+            ))
+            .args(["--config", config.to_str().unwrap()])
+            .args(&args);
         if let Some(value) = environment {
             command.env("KILN_IDENTITY_URL", value);
         }
-        if let Some(value) = explicit {
-            command.args(["--issuer", value]);
-        }
-        let output = command.arg("login").output().await.unwrap();
+        let output = command.output().await.unwrap();
         let error = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success());
-        assert!(error.contains(expected), "{error}");
-        assert!(output.stdout.is_empty());
-        assert!(!root.path().join("profiles.json").exists());
+        assert!(!output.status.success(), "{args:?} {error}");
+        assert!(error.contains(expected), "{args:?} {error}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        assert!(!config.exists(), "{args:?}");
     }
 }
 

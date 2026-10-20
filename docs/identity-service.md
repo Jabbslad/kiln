@@ -93,7 +93,7 @@ start login; scripts, JSON mode, SSH proxy processes
 and explicit missing profiles never open browsers automatically.
 
 The browser URL and public code are printed to stderr if browser launch fails.
-One server is selected automatically; multiple servers prompt for a selection.
+One server is selected automatically. Several servers prompt on a terminal. Without a terminal, login prints the server names and `kiln login --server <name>`, then exits with an error.
 `kiln login --server SERVER_ID` selects explicitly. Use a separate `--profile`
 for an existing direct administrator profile. A changed issuer or CA is rejected,
 not accepted silently. Keep the admin recovery profile and `laptop.tar.gz` private.

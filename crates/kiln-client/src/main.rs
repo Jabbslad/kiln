@@ -511,10 +511,7 @@ async fn run(cli: Cli) -> Result<i32> {
             )?;
             return Ok(0);
         }
-        anyhow::ensure!(
-            interactive,
-            "browser login requires an interactive terminal"
-        );
+        anyhow::ensure!(!cli.json, "browser login requires an interactive terminal");
         let flow = identity.begin_login("kiln CLI").await?;
         eprintln!(
             "Open {} and enter code {}",
@@ -554,6 +551,16 @@ async fn run(cli: Cli) -> Result<i32> {
             None if servers.is_empty() => bail!(
                 "no active servers are available; run `kiln-api enroll` on your server, then log in again"
             ),
+            None if !interactive => {
+                let names = servers
+                    .iter()
+                    .map(|server| format!("{} ({})", server.name, server.id))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                bail!(
+                    "multiple servers available; choose with `kiln login --server <name>`: {names}"
+                )
+            }
             None => {
                 for (n, s) in servers.iter().enumerate() {
                     eprintln!("{}: {} ({})", n + 1, s.name, s.id);

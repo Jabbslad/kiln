@@ -32,7 +32,7 @@ tmux new-session -d -s kiln-login -c "$PWD" -- "${SHELL:-bash}" -l
 tmux send-keys -t kiln-login 'kiln --config "$KILN_CONFIG" --issuer https://dark-forge.dev login' C-m
 ```
 
-The session must be a TTY. `browser login requires an interactive terminal` is the error otherwise. Capture the pane. A pass is exit 0, `kiln --config "$KILN_CONFIG" auth status` JSON containing `device_id` and `account_id`, and a profile file that has `issuer` and `credential_file` and no `token_file`.
+The session must be a TTY to choose among several servers. `kiln --json login` still exits before a device code with `browser login requires an interactive terminal`. A login with stdin closed still starts the device flow. One server is saved. Several servers exit non-zero, print `kiln login --server <name>` and the server names, and do not wait for a selection. Capture the pane. A pass is exit 0, `kiln --config "$KILN_CONFIG" auth status` JSON containing `device_id` and `account_id`, and a profile file that has `issuer` and `credential_file` and no `token_file`.
 
 Do not run this against `https://dark-forge.dev` from an unattended agent. Approval needs a real GitHub or Google account, and a successful login writes a credential.
 

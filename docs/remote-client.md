@@ -74,7 +74,8 @@ not host paths, jail identities, host fingerprints or Firecracker sockets.
 The installer includes browser login with `https://dark-forge.dev` built in.
 After an operator updates and explicitly enrolls a host, run `kiln login`.
 The browser asks for GitHub/Google sign-in and a separate device approval. One
-owned server is selected automatically; multiple servers prompt for a choice.
+owned server is selected automatically. Several servers prompt on a terminal.
+A non-terminal login exits with those names and `kiln login --server <name>`.
 No private server address or CA transfer is needed for this flow. The laptop
 still needs network access to the selected server.
 
