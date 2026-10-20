@@ -665,6 +665,7 @@ async fn exec_poll_reads_stdout_through_caddy_and_rejected_tokens_do_not_dial() 
             },
             credential_file: credential,
             door_trust: kiln_client::profile::DoorTrust::Pin,
+            server_chosen: true,
         },
         &kiln_client::credentials::Credentials {
             issuer: "https://dark-forge.dev".into(),

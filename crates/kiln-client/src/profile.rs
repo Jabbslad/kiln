@@ -27,6 +27,14 @@ pub enum DoorTrust {
     PublicRoots,
 }
 
+fn default_server_chosen() -> bool {
+    true
+}
+
+fn server_is_chosen(value: &bool) -> bool {
+    *value
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CentralProfile {
@@ -36,6 +44,13 @@ pub struct CentralProfile {
     /// Set by `kiln login`. Missing on a profile written before that login.
     #[serde(default)]
     pub door_trust: DoorTrust,
+    /// Missing or true on a finished login. False keeps an approved session
+    /// while the operator still has to pass `--server`.
+    #[serde(
+        default = "default_server_chosen",
+        skip_serializing_if = "server_is_chosen"
+    )]
+    pub server_chosen: bool,
 }
 
 #[derive(Serialize, Deserialize)]
