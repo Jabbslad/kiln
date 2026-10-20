@@ -21,6 +21,9 @@ Publishing this release does not deploy a server or restart a live service.
 The public bootstrap still pins the published v0.4.7 assets and runs
 `install.sh`.
 
+v0.4.8 was tagged but never released. The Windows stamp failed and #31 fixed
+it. v0.4.9 is the release that carries these changes.
+
 ## v0.4.7 website and dashboard design
 
 The static dashboard archive now includes a public landing page at `/` and the
