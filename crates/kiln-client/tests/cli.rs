@@ -8,7 +8,7 @@ use std::{
     fs,
     path::Path,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -460,6 +460,187 @@ async fn login_has_a_default_issuer_and_preserves_explicit_overrides() {
         assert!(output.stdout.is_empty());
         assert!(!root.path().join("profiles.json").exists());
     }
+}
+
+struct LoginProbe {
+    output: std::process::Output,
+    routes: Vec<String>,
+    profile: Option<serde_json::Value>,
+}
+
+async fn login_with_servers(servers: &[(&str, &str)]) -> LoginProbe {
+    let root = tempfile::tempdir().unwrap();
+    let bin_dir = root.path().join("bin");
+    fs::create_dir(&bin_dir).unwrap();
+    let opener = bin_dir.join("xdg-open");
+    fs::write(&opener, "#!/bin/sh\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&opener, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let listed = servers
+        .iter()
+        .map(|(id, name)| {
+            serde_json::json!({
+                "id": id,
+                "name": name,
+                "origin": format!("https://{name}.example"),
+                "ca_pem": "pem",
+                "revision": 1
+            })
+        })
+        .collect::<Vec<_>>();
+    let routes = Arc::new(Mutex::new(Vec::new()));
+    let record = routes.clone();
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let pem = cert.cert.pem();
+    let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
+        pem.as_bytes().to_vec(),
+        cert.signing_key.serialize_pem().into_bytes(),
+    )
+    .await
+    .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let origin = format!("https://localhost:{port}");
+    let router = Router::new()
+        .route(
+            "/oauth/device/code",
+            post({
+                let record = record.clone();
+                let origin = origin.clone();
+                move || {
+                    let record = record.clone();
+                    let origin = origin.clone();
+                    async move {
+                        record
+                            .lock()
+                            .unwrap()
+                            .push("POST /oauth/device/code".into());
+                        Json(serde_json::json!({
+                            "device_code": "device",
+                            "user_code": "code",
+                            "verification_uri": format!("{origin}/device"),
+                            "verification_uri_complete": format!("{origin}/device"),
+                            "expires_in": 60,
+                            "interval": 1
+                        }))
+                    }
+                }
+            }),
+        )
+        .route(
+            "/oauth/token",
+            post({
+                let record = record.clone();
+                move || {
+                    let record = record.clone();
+                    async move {
+                        record.lock().unwrap().push("POST /oauth/token".into());
+                        Json(serde_json::json!({
+                            "access_token": "central",
+                            "token_type": "Bearer",
+                            "expires_in": 60,
+                            "refresh_token": "session"
+                        }))
+                    }
+                }
+            }),
+        )
+        .route(
+            "/v1/servers",
+            get({
+                let record = record.clone();
+                move || {
+                    let record = record.clone();
+                    let listed = listed.clone();
+                    async move {
+                        record.lock().unwrap().push("GET /v1/servers".into());
+                        Json(listed)
+                    }
+                }
+            }),
+        );
+    let handle = axum_server::Handle::new();
+    let service = axum_server::from_tcp_rustls(listener, tls)
+        .unwrap()
+        .handle(handle.clone())
+        .serve(router.into_make_service());
+    tokio::spawn(async move {
+        service.await.unwrap();
+    });
+    let ca = root.path().join("ca.pem");
+    fs::write(&ca, pem).unwrap();
+    let config = root.path().join("profiles.json");
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_kiln"))
+        .env_remove("KILN_IDENTITY_URL")
+        .env("KILN_IDENTITY_CA", &ca)
+        .env("PATH", &bin_dir)
+        .stdin(std::process::Stdio::from(
+            std::fs::File::open("/dev/null").unwrap(),
+        ))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "--issuer",
+            &origin,
+            "login",
+        ])
+        .output()
+        .await
+        .unwrap();
+    handle.shutdown();
+    let profile = fs::read(&config)
+        .ok()
+        .map(|bytes| serde_json::from_slice(&bytes).unwrap());
+    LoginProbe {
+        output,
+        routes: routes.lock().unwrap().clone(),
+        profile,
+    }
+}
+
+#[tokio::test]
+async fn login_without_a_terminal_refuses_multiple_servers() {
+    let probe = login_with_servers(&[("srv_ser7", "ser7"), ("srv_dark_forge", "dark-forge")]).await;
+    let error = String::from_utf8_lossy(&probe.output.stderr);
+    assert!(!probe.output.status.success(), "{error}");
+    assert!(error.contains("--server <name>"), "{error}");
+    assert!(error.contains("ser7"), "{error}");
+    assert!(error.contains("dark-forge"), "{error}");
+    assert!(!error.contains("Select a server number"), "{error}");
+    assert!(
+        probe.output.stdout.is_empty(),
+        "login must not write stdout"
+    );
+    assert!(
+        probe.profile.is_none(),
+        "a refused choice must not save a profile"
+    );
+    assert!(
+        probe.routes.iter().any(|route| route == "GET /v1/servers"),
+        "the server list is known before the refusal: {:?}",
+        probe.routes
+    );
+}
+
+#[tokio::test]
+async fn login_without_a_terminal_selects_the_only_server() {
+    let probe = login_with_servers(&[("srv_ser7", "ser7")]).await;
+    let error = String::from_utf8_lossy(&probe.output.stderr);
+    assert!(probe.output.status.success(), "{error}");
+    assert!(!error.contains("Select a server number"), "{error}");
+    assert!(probe.output.stdout.is_empty());
+    let profile = probe.profile.expect("one server is saved");
+    assert_eq!(profile["profiles"]["default"]["server"]["name"], "ser7");
+    assert_eq!(profile["profiles"]["default"]["server"]["id"], "srv_ser7");
+    assert!(
+        probe.routes.iter().any(|route| route == "GET /v1/servers"),
+        "{:?}",
+        probe.routes
+    );
 }
 
 #[tokio::test]
