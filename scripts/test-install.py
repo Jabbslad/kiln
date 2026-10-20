@@ -558,9 +558,7 @@ class FreshTests(InstallerTest):
         for name in APP_UNITS:
             self.assertEqual((units / name).read_bytes(), (ROOT / "deploy" / name).read_bytes())
         self.assertIn("systemctl enable kiln-app.service", self.lines())
-        self.assertFalse(
-            any("enable" in line and "kiln-app-proxy" in line for line in self.lines())
-        )
+        self.assertIn("systemctl enable --now kiln-app-proxy.socket", self.lines())
         self.assertTrue((units / "kiln-api.service").is_file())
         self.assert_no_dashboard_fetch(result)
 
@@ -1253,6 +1251,73 @@ class UpgradeTests(InstallerTest):
         self.assert_extract_matches_archive(changed, self.dashboard_dir())
         self.assertEqual(list(share.glob(".dashboard.*")), [])
         self.assertEqual((share / "keep").read_text(), "keep\n")
+        self.assert_data_preserved()
+
+    def test_rerun_after_killed_dashboard_swap_keeps_files_and_symlinks(self):
+        self.write_release("0.4.4", min_upgrade_from="0.3.0")
+        self.write_versions("0.4.4", "0.4.4")
+        self.stage_app_units()
+        archive = self.write_dashboard_archive(
+            {
+                "index.html": b"<html>one</html>\n",
+                "assets/app.js": b"console.log(1)\n",
+            }
+        )
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        first = self.invoke("--apply", "--dashboard-archive", str(archive))
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        share = self.dashboard_dir().parent
+        old = share / ".dashboard.oldtree"
+        killed = share / ".dashboard.killed"
+        notes = share / ".dashboard.notes"
+        star = share / ".dashboard.*"
+        outside = self.root / "outside-target"
+        link = share / ".dashboard.link"
+        dangling = share / ".dashboard.dangling"
+        self.dashboard_dir().rename(old)
+        killed.mkdir()
+        (killed / "index.html").write_bytes(b"<html>killed</html>\n")
+        notes.write_text("notes\n")
+        star.write_text("star\n")
+        outside.mkdir()
+        (outside / "canary").write_text("canary\n")
+        link.symlink_to(outside)
+        dangling.symlink_to(self.root / "missing-target")
+        changed = self.write_dashboard_archive(
+            {
+                "index.html": b"<html>two</html>\n",
+                "assets/app.js": b"console.log(2)\n",
+            }
+        )
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        blocked = self.invoke(
+            "--apply",
+            "--dashboard-archive",
+            str(changed),
+            KILN_MV_FAIL_DASHBOARD="1",
+        )
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout)
+        self.assertFalse(self.dashboard_dir().exists())
+        self.assertTrue(killed.is_dir())
+        self.assertEqual(notes.read_text(), "notes\n")
+        self.assertEqual(star.read_text(), "star\n")
+        self.assertTrue(link.is_symlink())
+        self.assertEqual((outside / "canary").read_text(), "canary\n")
+        self.assertTrue(dangling.is_symlink())
+        self.log.write_text("")
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        again = self.invoke("--apply", "--dashboard-archive", str(changed))
+        self.assertEqual(again.returncode, 0, again.stderr + again.stdout)
+        self.assert_extract_matches_archive(changed, self.dashboard_dir())
+        self.assertFalse(killed.exists())
+        self.assertFalse(old.exists())
+        self.assertEqual(notes.read_text(), "notes\n")
+        self.assertEqual(star.read_text(), "star\n")
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.resolve(), outside.resolve())
+        self.assertEqual((outside / "canary").read_text(), "canary\n")
+        self.assertTrue(dangling.is_symlink())
+        self.assertIn("systemctl enable --now kiln-app-proxy.socket", self.lines())
         self.assert_data_preserved()
 
     def test_failed_dashboard_restore_removes_the_staged_extract(self):

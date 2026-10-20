@@ -1256,7 +1256,7 @@ install_staged_dashboard() {
 remove_dashboard_asides() {
   local aside
   for aside in "$SHARE"/.dashboard.*; do
-    if [ -e "$aside" ] || [ -L "$aside" ]; then
+    if [ -d "$aside" ] && [ ! -L "$aside" ]; then
       rm -rf -- "$aside"
     fi
   done
@@ -1283,6 +1283,9 @@ install_app_units() {
   systemctl daemon-reload
   if ! systemctl enable kiln-app.service >/dev/null 2>&1; then
     die "command failed: systemctl enable kiln-app.service"
+  fi
+  if ! systemctl enable --now kiln-app-proxy.socket >/dev/null 2>&1; then
+    die "command failed: systemctl enable --now kiln-app-proxy.socket"
   fi
 }
 
