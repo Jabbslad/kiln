@@ -1,10 +1,9 @@
 use anyhow::{Context, Result, ensure};
 #[cfg(unix)]
+use std::fs;
+use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
 
 pub fn safe_config_value(value: &str) -> Result<()> {
     ensure!(
