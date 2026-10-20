@@ -7,6 +7,10 @@ pub const DEFAULT_IDENTITY_ORIGIN: &str = match option_env!("KILN_DEFAULT_IDENTI
     None => "https://dark-forge.dev",
 };
 
+/// Enrolled redirect for the dashboard authorization code.
+/// Identity refuses every other redirect.
+pub const APP_OAUTH_REDIRECT: &str = "https://app.dark-forge.dev/oauth/callback";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {

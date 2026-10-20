@@ -313,11 +313,14 @@ function Disconnected({ message, retry }: { message: string; retry: () => void }
         <span>{message}</span>
       </div>
       <div className="disconnected-actions">
+        <a className="button primary" href="/login">
+          Sign in
+        </a>
         <button className="button" onClick={retry}>
           <RefreshCw size={14} />
           Retry connection
         </button>
-        <Link className="button primary" to="/boxes?preview=1">
+        <Link className="button" to="/boxes?preview=1">
           Explore design preview <ArrowUpRight size={15} />
         </Link>
       </div>

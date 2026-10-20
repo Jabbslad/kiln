@@ -444,26 +444,22 @@ async fn missing_api_path_is_json() {
 }
 
 #[tokio::test]
-async fn read_scope_is_proxied_and_other_account_is_rejected() {
+async fn browser_authorization_is_ignored_and_the_session_cookie_is_proxied() {
     let root = tempfile::tempdir().unwrap();
     archive(root.path());
     let up = upstream_json().await;
-    let (router, key) = open(root.path(), &up);
-    let (status, _, body) = text(
-        send(
-            &router,
-            "127.0.0.1:9",
-            bearer("/api/v1/dashboard", &token(&key, "owner-b", Scope::Read)),
-        )
-        .await,
+    let (auth, key) = auth(root.path());
+    let read = token(&key, "owner-a", Scope::Read);
+    let (router, cookie) = app_listener::router_with_read_session(
+        auth,
+        &format!("https://127.0.0.1:{}", up.port),
+        up.ca_pem.as_bytes(),
+        Some(root.path()),
+        &read,
     )
-    .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(parsed["code"], "unauthorized");
-    assert_eq!(up.hits.load(Ordering::SeqCst), 0);
+    .unwrap();
     for scope in [Scope::Read, Scope::Operate] {
-        let (status, headers, body) = text(
+        let (status, _, body) = text(
             send(
                 &router,
                 "127.0.0.1:9",
@@ -472,12 +468,23 @@ async fn read_scope_is_proxied_and_other_account_is_rejected() {
             .await,
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["code"], "unauthorized");
     }
-    assert_eq!(up.hits.load(Ordering::SeqCst), 2);
+    assert_eq!(up.hits.load(Ordering::SeqCst), 0);
+    let request = Request::builder()
+        .uri("/api/v1/dashboard")
+        .header("cookie", format!("__Host-kiln_app={cookie}"))
+        .header("authorization", "Bearer from-the-browser")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = text(send(&router, "127.0.0.1:9", request).await).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["schema_version"], 1);
+    assert_eq!(up.hits.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -602,6 +609,7 @@ async fn door_still_rejects_an_unauthenticated_templates_read() {
         .oneshot(
             Request::builder()
                 .uri("/v1/templates")
+                .header("cookie", "__Host-kiln_app=dashboard-session")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -632,16 +640,21 @@ async fn static_file_over_eight_mib_is_refused() {
 async fn dashboard_body_over_one_mib_is_refused() {
     let root = tempfile::tempdir().unwrap();
     let up = upstream_huge().await;
-    let (router, key) = open(root.path(), &up);
-    let (status, _, body) = text(
-        send(
-            &router,
-            "127.0.0.1:9",
-            bearer("/api/v1/dashboard", &token(&key, "owner-a", Scope::Read)),
-        )
-        .await,
+    let (auth, key) = auth(root.path());
+    let (router, cookie) = app_listener::router_with_read_session(
+        auth,
+        &format!("https://127.0.0.1:{}", up.port),
+        up.ca_pem.as_bytes(),
+        Some(root.path()),
+        &token(&key, "owner-a", Scope::Read),
     )
-    .await;
+    .unwrap();
+    let request = Request::builder()
+        .uri("/api/v1/dashboard")
+        .header("cookie", format!("__Host-kiln_app={cookie}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, body) = text(send(&router, "127.0.0.1:9", request).await).await;
     assert_ne!(status, StatusCode::OK);
     assert!(!body.contains(&"y".repeat(64)));
     assert!(body.len() < 1024, "{}", body.len());
@@ -651,16 +664,31 @@ async fn dashboard_body_over_one_mib_is_refused() {
 async fn rate_limit_is_checked_before_the_upstream_dial() {
     let root = tempfile::tempdir().unwrap();
     let up = upstream_json().await;
-    let (router, key) = open(root.path(), &up);
-    let token = token(&key, "owner-a", Scope::Read);
+    let (auth, key) = auth(root.path());
+    let (router, cookie) = app_listener::router_with_read_session(
+        auth,
+        &format!("https://127.0.0.1:{}", up.port),
+        up.ca_pem.as_bytes(),
+        Some(root.path()),
+        &token(&key, "owner-a", Scope::Read),
+    )
+    .unwrap();
     for _ in 0..60 {
-        let (status, _, _) =
-            text(send(&router, "127.0.0.1:9", bearer("/api/v1/dashboard", &token)).await).await;
+        let request = Request::builder()
+            .uri("/api/v1/dashboard")
+            .header("cookie", format!("__Host-kiln_app={cookie}"))
+            .body(Body::empty())
+            .unwrap();
+        let (status, _, _) = text(send(&router, "127.0.0.1:9", request).await).await;
         assert_eq!(status, StatusCode::OK);
     }
     assert_eq!(up.hits.load(Ordering::SeqCst), 60);
-    let (status, _, _) =
-        text(send(&router, "127.0.0.1:9", bearer("/api/v1/dashboard", &token)).await).await;
+    let request = Request::builder()
+        .uri("/api/v1/dashboard")
+        .header("cookie", format!("__Host-kiln_app={cookie}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, _) = text(send(&router, "127.0.0.1:9", request).await).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(up.hits.load(Ordering::SeqCst), 60);
 }
@@ -766,4 +794,569 @@ async fn listener_accepts_on_the_loopback_port() {
     assert!(lower.contains("nosniff"), "{raw}");
     assert!(lower.contains("strict-origin"), "{raw}");
     assert!(raw.contains(HTML), "{raw}");
+}
+
+fn assert_host_cookie(cookie: &str, name: &str, max_age: u64, http_only: bool) {
+    assert!(cookie.starts_with(&format!("{name}=")), "{cookie}");
+    assert!(cookie.contains("; Secure; "), "{cookie}");
+    assert!(cookie.contains("SameSite=Lax"), "{cookie}");
+    assert!(cookie.contains("Path=/"), "{cookie}");
+    assert!(cookie.contains(&format!("Max-Age={max_age}")), "{cookie}");
+    assert!(!cookie.to_ascii_lowercase().contains("domain"), "{cookie}");
+    assert_eq!(cookie.contains("HttpOnly"), http_only, "{cookie}");
+}
+
+fn cookie_value(header: &str) -> String {
+    header
+        .split(';')
+        .next()
+        .unwrap()
+        .split_once('=')
+        .unwrap()
+        .1
+        .to_owned()
+}
+
+fn named_cookie<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
+    headers
+        .get_all("set-cookie")
+        .iter()
+        .find_map(|value| {
+            let text = value.to_str().unwrap();
+            text.starts_with(&format!("{name}=")).then_some(text)
+        })
+        .unwrap_or_else(|| panic!("missing {name}"))
+}
+
+struct Loopback {
+    port: u16,
+    token_hits: Arc<AtomicUsize>,
+    status_hits: Arc<AtomicUsize>,
+    revoke_hits: Arc<AtomicUsize>,
+    bodies: Arc<std::sync::Mutex<Vec<String>>>,
+    authorizations: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+async fn loopback(jwt: String, status_mode: u8) -> Loopback {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let token_hits = Arc::new(AtomicUsize::new(0));
+    let status_hits = Arc::new(AtomicUsize::new(0));
+    let revoke_hits = Arc::new(AtomicUsize::new(0));
+    let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let authorizations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tokens = token_hits.clone();
+    let statuses = status_hits.clone();
+    let revokes = revoke_hits.clone();
+    let seen_bodies = bodies.clone();
+    let seen_auth = authorizations.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            let jwt = jwt.clone();
+            let tokens = tokens.clone();
+            let statuses = statuses.clone();
+            let revokes = revokes.clone();
+            let seen_bodies = seen_bodies.clone();
+            let seen_auth = seen_auth.clone();
+            tokio::spawn(async move {
+                let raw = read_http(&mut socket).await;
+                let body = raw
+                    .split_once("\r\n\r\n")
+                    .map(|(_, body)| body.to_owned())
+                    .unwrap_or_default();
+                let authorization = header_value(&raw, "authorization");
+                let line = raw.lines().next().unwrap_or("");
+                if line.contains("POST /oauth/server/token ") {
+                    tokens.fetch_add(1, Ordering::SeqCst);
+                    seen_bodies.lock().unwrap().push(body);
+                    seen_auth.lock().unwrap().push(authorization);
+                    let payload = serde_json::json!({
+                        "access_token": jwt,
+                        "token_type": "Bearer",
+                        "expires_in": 300,
+                        "reader": "fixture-reader",
+                    });
+                    write_http(&mut socket, "200 OK", &payload.to_string()).await;
+                } else if line.contains("POST /oauth/server/revoke ") {
+                    revokes.fetch_add(1, Ordering::SeqCst);
+                    seen_auth.lock().unwrap().push(authorization);
+                    write_http(&mut socket, "204 No Content", "").await;
+                } else if line.contains("POST /v1/server-status ") {
+                    statuses.fetch_add(1, Ordering::SeqCst);
+                    if status_mode == 2 {
+                        return;
+                    }
+                    let account_active = status_mode != 1;
+                    let payload = serde_json::json!({
+                        "account_active": account_active,
+                        "server_active": true,
+                    });
+                    write_http(&mut socket, "200 OK", &payload.to_string()).await;
+                } else {
+                    write_http(&mut socket, "404 Not Found", "{}").await;
+                }
+            });
+        }
+    });
+    Loopback {
+        port,
+        token_hits,
+        status_hits,
+        revoke_hits,
+        bodies,
+        authorizations,
+    }
+}
+
+async fn read_http(socket: &mut tokio::net::TcpStream) -> String {
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 4096];
+    loop {
+        let read = tokio::time::timeout(Duration::from_secs(2), socket.read(&mut tmp)).await;
+        let Ok(Ok(n)) = read else { break };
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if let Some(end) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+            let headers = String::from_utf8_lossy(&buf[..end]);
+            if buf.len() >= end + 4 + content_length(&headers) {
+                break;
+            }
+        }
+        if buf.len() > 65_536 {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+fn content_length(headers: &str) -> usize {
+    headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse().ok())?
+        })
+        .unwrap_or(0)
+}
+
+fn header_value(raw: &str, name: &str) -> String {
+    raw.lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_owned())
+        })
+        .unwrap_or_default()
+}
+
+async fn write_http(socket: &mut tokio::net::TcpStream, status: &str, body: &str) {
+    let message = format!(
+        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = socket.write_all(message.as_bytes()).await;
+}
+
+fn router_for(
+    auth: Authenticator,
+    up: &Upstream,
+    root: &Path,
+    secret: &str,
+    port: u16,
+) -> axum::Router {
+    app_listener::router_with(
+        auth,
+        &format!("https://127.0.0.1:{}", up.port),
+        up.ca_pem.as_bytes(),
+        Some(root),
+        app_listener::SignIn {
+            authorize_origin: "https://dark-forge.dev".into(),
+            loopback: format!("http://127.0.0.1:{port}"),
+            login_secret: secret.into(),
+            server_id: "server-b".into(),
+        },
+    )
+    .unwrap()
+}
+
+async fn browser_login(router: &axum::Router, peer: &str) -> (String, String) {
+    let (status, headers, body) = text(send(router, peer, get("/login")).await).await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{body}");
+    let attempt = named_cookie(&headers, "__Host-kiln_app_attempt");
+    assert_host_cookie(attempt, "__Host-kiln_app_attempt", 600, true);
+    let location = reqwest::Url::parse(headers.get("location").unwrap().to_str().unwrap()).unwrap();
+    assert_eq!(location.host_str(), Some("dark-forge.dev"));
+    assert_eq!(location.path(), "/oauth/server");
+    let pairs: std::collections::HashMap<String, String> =
+        location.query_pairs().into_owned().collect();
+    assert_eq!(pairs["redirect_uri"], kiln_api::auth::APP_OAUTH_REDIRECT);
+    assert_eq!(pairs["server_id"], "server-b");
+    assert_eq!(pairs["code_challenge_method"], "S256");
+    assert_eq!(pairs["code_challenge"].len(), 43);
+    let attempt_id = cookie_value(attempt);
+    let request = Request::builder()
+        .uri(format!(
+            "/oauth/callback?code=fixture-code&state={}",
+            pairs["state"]
+        ))
+        .header("cookie", format!("__Host-kiln_app_attempt={attempt_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = text(send(router, peer, request).await).await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{body}");
+    assert_eq!(headers.get("location").unwrap(), "/boxes");
+    assert_host_cookie(
+        named_cookie(&headers, "__Host-kiln_app"),
+        "__Host-kiln_app",
+        43_200,
+        true,
+    );
+    assert_host_cookie(
+        named_cookie(&headers, "__Host-kiln_csrf"),
+        "__Host-kiln_csrf",
+        43_200,
+        false,
+    );
+    assert_host_cookie(
+        named_cookie(&headers, "__Host-kiln_app_attempt"),
+        "__Host-kiln_app_attempt",
+        0,
+        true,
+    );
+    (
+        cookie_value(named_cookie(&headers, "__Host-kiln_app")),
+        cookie_value(named_cookie(&headers, "__Host-kiln_csrf")),
+    )
+}
+
+#[test]
+fn identity_exchange_must_dial_loopback() {
+    let root = tempfile::tempdir().unwrap();
+    let (auth, _) = auth(root.path());
+    let rejected = app_listener::router_with(
+        auth,
+        "https://127.0.0.1:9",
+        pem().as_bytes(),
+        None,
+        app_listener::SignIn {
+            authorize_origin: "https://dark-forge.dev".into(),
+            loopback: "https://dark-forge.dev".into(),
+            login_secret: "fixture-login".into(),
+            server_id: "server-b".into(),
+        },
+    );
+    assert!(rejected.is_err());
+}
+
+#[tokio::test]
+async fn read_grant_is_checked_and_another_server_is_rejected() {
+    let root = tempfile::tempdir().unwrap();
+    let (auth, key) = auth(root.path());
+    assert!(matches!(
+        auth.authenticate_central(&token(&key, "owner-a", Scope::Read))
+            .await,
+        Ok(Scope::Read)
+    ));
+    assert!(
+        auth.authenticate_central(&token(&key, "someone-else", Scope::Read))
+            .await
+            .is_err()
+    );
+    let now = jsonwebtoken::get_current_timestamp();
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some("first".into());
+    let other = jsonwebtoken::encode(
+        &header,
+        &ServerClaims {
+            iss: "https://identity.example.test".into(),
+            sub: "owner-a".into(),
+            aud: "kiln:server:other".into(),
+            iat: now,
+            nbf: now,
+            exp: now + 300,
+            credential_id: "app_other".into(),
+            scope: Scope::Read,
+        },
+        &key,
+    )
+    .unwrap();
+    assert!(auth.authenticate_central(&other).await.is_err());
+}
+
+#[tokio::test]
+async fn missing_login_secret_refuses_sign_in_without_stopping_the_listener() {
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    let up = upstream_json().await;
+    let (router, _) = open(root.path(), &up);
+    for path in ["/login", "/oauth/callback?code=one&state=two"] {
+        let (status, _, body) = text(send(&router, "127.0.0.1:9", get(path)).await).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path} {body}");
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["code"], "login_unavailable");
+        assert!(!body.contains("<html"));
+    }
+    let (status, _, body) = text(send(&router, "127.0.0.1:9", get("/boxes")).await).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, HTML);
+}
+
+#[tokio::test]
+async fn browser_sign_in_sets_one_session_and_logout_clears_only_that_session() {
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    let up = upstream_json().await;
+    let (auth, key) = auth(root.path());
+    let identity = loopback(token(&key, "owner-a", Scope::Read), 0).await;
+    let router = app_listener::router_with(
+        auth,
+        &format!("https://127.0.0.1:{}", up.port),
+        up.ca_pem.as_bytes(),
+        Some(root.path()),
+        app_listener::SignIn {
+            authorize_origin: "https://dark-forge.dev".into(),
+            loopback: format!("http://127.0.0.1:{}", identity.port),
+            login_secret: "fixture-login".into(),
+            server_id: "server-b".into(),
+        },
+    )
+    .unwrap();
+    let (status, headers, _) = text(send(&router, "127.0.0.1:9", get("/login")).await).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let attempt = cookie_value(named_cookie(&headers, "__Host-kiln_app_attempt"));
+    let state = reqwest::Url::parse(headers.get("location").unwrap().to_str().unwrap())
+        .unwrap()
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .unwrap()
+        .1
+        .into_owned();
+    let mismatch = Request::builder()
+        .uri("/oauth/callback?code=fixture-code&state=not-this-browser")
+        .header("cookie", format!("__Host-kiln_app_attempt={attempt}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, body) = text(send(&router, "127.0.0.1:9", mismatch).await).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["code"], "invalid_state");
+    let retry = Request::builder()
+        .uri(format!("/oauth/callback?code=fixture-code&state={state}"))
+        .header("cookie", format!("__Host-kiln_app_attempt={attempt}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, _) = text(send(&router, "127.0.0.1:9", retry).await).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (first, first_csrf) = browser_login(&router, "127.0.0.1:9").await;
+    let (second, _) = browser_login(&router, "127.0.0.1:9").await;
+    assert_ne!(first, second);
+    assert_eq!(identity.token_hits.load(Ordering::SeqCst), 2);
+    let recorded = identity.bodies.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 2, "{recorded:?}");
+    for body in &recorded {
+        let value: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(value["redirect_uri"], kiln_api::auth::APP_OAUTH_REDIRECT);
+        assert_eq!(value["code_verifier"].as_str().unwrap().len(), 43);
+    }
+    assert!(
+        identity
+            .authorizations
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|value| value == "Bearer fixture-login")
+    );
+    let dashboard = |session: &str| {
+        Request::builder()
+            .uri("/api/v1/dashboard")
+            .header("cookie", format!("__Host-kiln_app={session}"))
+            .header("authorization", "Bearer from-the-browser")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (status, _, body) = text(send(&router, "127.0.0.1:9", dashboard(&first)).await).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["schema_version"],
+        1
+    );
+    let (status, _, body) = text(send(&router, "127.0.0.1:9", dashboard(&first)).await).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(identity.status_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(up.hits.load(Ordering::SeqCst), 2);
+
+    let get_logout = Request::builder()
+        .method("GET")
+        .uri("/logout")
+        .header("cookie", format!("__Host-kiln_app={first}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = text(send(&router, "127.0.0.1:9", get_logout).await).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, HTML);
+    assert!(headers.get("set-cookie").is_none());
+    let (status, _, _) = text(send(&router, "127.0.0.1:9", dashboard(&first)).await).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let logout = |session: &str, csrf: &str, origin: &str, posted: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/logout")
+            .header("origin", origin)
+            .header(
+                "cookie",
+                format!("__Host-kiln_app={session}; __Host-kiln_csrf={csrf}"),
+            )
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(format!("csrf={posted}")))
+            .unwrap()
+    };
+    let (status, _, body) = text(
+        send(
+            &router,
+            "127.0.0.1:9",
+            logout(&first, &first_csrf, "https://evil.example", &first_csrf),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, _, body) = text(
+        send(
+            &router,
+            "127.0.0.1:9",
+            logout(&first, &first_csrf, "https://app.dark-forge.dev", "nope"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, _, _) = text(send(&router, "127.0.0.1:9", dashboard(&first)).await).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, headers, body) = text(
+        send(
+            &router,
+            "127.0.0.1:9",
+            logout(
+                &first,
+                &first_csrf,
+                "https://app.dark-forge.dev",
+                &first_csrf,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_host_cookie(
+        named_cookie(&headers, "__Host-kiln_app"),
+        "__Host-kiln_app",
+        0,
+        true,
+    );
+    assert_host_cookie(
+        named_cookie(&headers, "__Host-kiln_csrf"),
+        "__Host-kiln_csrf",
+        0,
+        false,
+    );
+    let (status, _, _) = text(send(&router, "127.0.0.1:9", dashboard(&first)).await).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(identity.revoke_hits.load(Ordering::SeqCst), 1);
+    let (status, _, body) = text(send(&router, "127.0.0.1:9", dashboard(&second)).await).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    for index in 0..11 {
+        let (status, _, _) = text(send(&router, "192.0.2.40:9", get("/login")).await).await;
+        assert_eq!(
+            status,
+            if index < 10 {
+                StatusCode::SEE_OTHER
+            } else {
+                StatusCode::TOO_MANY_REQUESTS
+            }
+        );
+    }
+    let (status, _, _) = text(send(&router, "192.0.2.41:9", get("/login")).await).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+async fn inactive_owner_clears_the_dashboard_session() {
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    let up = upstream_json().await;
+    let (auth, key) = auth(root.path());
+    let inactive = loopback(token(&key, "owner-a", Scope::Read), 1).await;
+    let router = router_for(auth, &up, root.path(), "fixture-login", inactive.port);
+    let (session, _) = browser_login(&router, "127.0.0.1:11").await;
+    let request = Request::builder()
+        .uri("/api/v1/dashboard")
+        .header("cookie", format!("__Host-kiln_app={session}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, _) = text(send(&router, "127.0.0.1:11", request).await).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(up.hits.load(Ordering::SeqCst), 0);
+    assert_eq!(inactive.status_hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn unreachable_identity_keeps_an_unexpired_session() {
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    let up = upstream_json().await;
+    let (auth, key) = auth(root.path());
+    let down = loopback(token(&key, "owner-a", Scope::Read), 2).await;
+    let router = router_for(auth, &up, root.path(), "fixture-login", down.port);
+    let (session, _) = browser_login(&router, "127.0.0.1:12").await;
+    let request = Request::builder()
+        .uri("/api/v1/dashboard")
+        .header("cookie", format!("__Host-kiln_app={session}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, body) = text(send(&router, "127.0.0.1:12", request).await).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(up.hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn an_operate_grant_does_not_become_a_dashboard_session() {
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    let up = upstream_json().await;
+    let (auth, key) = auth(root.path());
+    let identity = loopback(token(&key, "owner-a", Scope::Operate), 0).await;
+    let router = router_for(auth, &up, root.path(), "fixture-login", identity.port);
+    let (status, headers, _) = text(send(&router, "127.0.0.1:13", get("/login")).await).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let attempt = cookie_value(named_cookie(&headers, "__Host-kiln_app_attempt"));
+    let state = reqwest::Url::parse(headers.get("location").unwrap().to_str().unwrap())
+        .unwrap()
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .unwrap()
+        .1
+        .into_owned();
+    let request = Request::builder()
+        .uri(format!("/oauth/callback?code=fixture-code&state={state}"))
+        .header("cookie", format!("__Host-kiln_app_attempt={attempt}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = text(send(&router, "127.0.0.1:13", request).await).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert!(
+        headers
+            .get_all("set-cookie")
+            .iter()
+            .all(|value| !value.to_str().unwrap().starts_with("__Host-kiln_app="))
+    );
+    assert_eq!(up.hits.load(Ordering::SeqCst), 0);
 }

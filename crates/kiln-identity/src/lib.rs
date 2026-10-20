@@ -9,6 +9,7 @@ use axum::{
     response::{Html, IntoResponse, Redirect, Response},
     routing::{delete, get, post, put},
 };
+use base64::Engine;
 pub use config::{
     Config, GITHUB_AUTHORIZE_URL, GITHUB_TOKEN_URL, GITHUB_USER_URL, PRODUCTION_IDENTITY_ORIGIN,
     unix_now,
@@ -24,6 +25,7 @@ use std::{
 };
 pub use store::Store;
 use store::{hash, secret};
+use subtle::ConstantTimeEq;
 
 #[derive(Clone)]
 struct App {
@@ -108,6 +110,9 @@ pub fn router(mut cfg: Config, store: Store) -> anyhow::Result<Router> {
         .route("/static/auth.css", get(auth_css))
         .route("/device", get(device_page))
         .route("/device/approve", post(approve))
+        .route("/oauth/server", get(oauth_server))
+        .route("/oauth/server/token", post(server_token))
+        .route("/oauth/server/revoke", post(revoke_reader))
         .route("/oauth/{provider}", get(oauth_begin))
         .route("/oauth/{provider}/callback", get(oauth_callback))
         .route("/.well-known/jwks.json", get(jwks))
@@ -119,7 +124,9 @@ pub fn router(mut cfg: Config, store: Store) -> anyhow::Result<Router> {
                 .delete(delete_server)
                 .layer(axum::extract::DefaultBodyLimit::max(70 * 1024)),
         )
+        .route("/v1/servers/{id}/app-login", post(app_login))
         .route("/v1/access", post(access))
+        .route("/v1/server-status", post(server_status))
         .route("/v1/devices", get(devices))
         .route("/v1/devices/{id}", delete(revoke_device))
         .route(
@@ -767,7 +774,7 @@ async fn oauth_begin(
     let now = (a.cfg.now)();
     let write = a.store.db.lock().map_err(|_| ()).and_then(|mut c| {
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| ())?;
-        tx.execute("INSERT INTO browser_sessions(hash,csrf_hash,requested_code,expires_at)VALUES(?1,?2,?3,?4) ON CONFLICT(hash) DO UPDATE SET csrf_hash=?2,requested_code=COALESCE(?3,requested_code),expires_at=?4",params![hash(&session),hash(&csrf),q.user_code.map(|x|x.trim().to_uppercase()),now+43200]).map_err(|_| ())?;
+        tx.execute("INSERT INTO browser_sessions(hash,csrf_hash,requested_code,expires_at)VALUES(?1,?2,?3,?4) ON CONFLICT(hash) DO UPDATE SET csrf_hash=?2,requested_code=COALESCE(?3,requested_code),expires_at=?4,account_id=CASE WHEN browser_sessions.expires_at>?5 THEN browser_sessions.account_id ELSE NULL END",params![hash(&session),hash(&csrf),q.user_code.map(|x|x.trim().to_uppercase()),now+43200,now]).map_err(|_| ())?;
         tx.execute("INSERT INTO oauth_attempts(state_hash,session_hash,provider,pkce,nonce,expires_at)VALUES(?1,?2,?3,?4,?5,?6)",params![hash(&authorization.state),hash(&session),provider.as_str(),authorization.pkce,authorization.nonce,now+600]).map_err(|_| ())?;
         tx.commit().map_err(|_| ())
     });
@@ -889,7 +896,15 @@ async fn oauth_callback(
     if updated != 1 {
         return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
     }
-    let mut response = Redirect::to("/device").into_response();
+    let pending = take_server_authorization(&a, &session);
+    let mut response = match pending {
+        Ok(Some(pending)) => match finish_server_authorization(&a, &account, &pending, now) {
+            Ok(response) => response,
+            Err(()) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        },
+        Ok(None) => Redirect::to("/device").into_response(),
+        Err(()) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
     response.headers_mut().insert(
         header::SET_COOKIE,
         format!(
@@ -1204,6 +1219,523 @@ async fn key_token(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
         return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
     }
     nostore(Json(serde_json::json!({"token":{"access_token":jwt,"token_type":"Bearer","expires_in":300},"server":{"id":sid,"name":name,"origin":origin,"ca_pem":ca,"revision":rev}})).into_response())
+}
+#[derive(Deserialize)]
+struct ServerQuery {
+    redirect_uri: String,
+    state: String,
+    code_challenge: String,
+    code_challenge_method: String,
+    server_id: String,
+}
+struct PendingServerAuth {
+    server_id: String,
+    redirect_uri: String,
+    state: String,
+    challenge: String,
+}
+fn pkce_s256(verifier: &str) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(verifier.as_bytes()))
+}
+fn pkce_ok(verifier: &str, challenge: &str) -> bool {
+    if !(43..=128).contains(&verifier.len())
+        || !verifier
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~'))
+    {
+        return false;
+    }
+    let actual = pkce_s256(verifier);
+    actual.len() == challenge.len() && bool::from(actual.as_bytes().ct_eq(challenge.as_bytes()))
+}
+fn challenge_ok(challenge: &str) -> bool {
+    challenge.len() == 43
+        && challenge
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+fn state_ok(state: &str) -> bool {
+    (1..=256).contains(&state.len())
+        && state
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~'))
+}
+fn code_location(redirect: &str, code: &str, state: &str) -> anyhow::Result<String> {
+    let mut url = url::Url::parse(redirect)?;
+    url.query_pairs_mut()
+        .clear()
+        .append_pair("code", code)
+        .append_pair("state", state);
+    Ok(url.into())
+}
+fn provider_page(redirect: &str) -> String {
+    format!(
+        "<h1>Light the way in.</h1><p>Continue to {}.</p><a class=button href=/oauth/github>Continue with GitHub</a><a class=\"button secondary\" href=/oauth/google>Continue with Google</a>",
+        esc(redirect)
+    )
+}
+fn refusal_page(redirect: &str) -> String {
+    format!(
+        "<h1>This account cannot continue.</h1><p>Sign-in to {} was refused.</p>",
+        esc(redirect)
+    )
+}
+fn oauth_limited(a: &App, peer: SocketAddr, headers: &HeaderMap) -> bool {
+    let limited = (|| -> anyhow::Result<()> {
+        let mut c = a.store.db.lock().unwrap();
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        store::rate(
+            &tx,
+            &format!("oauth:{}", client_ip(&a.cfg, peer, headers)),
+            (a.cfg.now)(),
+            10,
+            60,
+        )?;
+        tx.commit()?;
+        Ok(())
+    })();
+    limited.is_err()
+}
+fn enrolled_server(
+    tx: &rusqlite::Transaction<'_>,
+    server_id: &str,
+    redirect: &str,
+) -> anyhow::Result<Option<String>> {
+    if server_id.is_empty() || server_id.len() > 128 {
+        return Ok(None);
+    }
+    Ok(tx
+        .query_row(
+            "SELECT owner_id FROM servers WHERE id=?1 AND redirect_uri=?2 AND active=1 AND EXISTS(SELECT 1 FROM accounts WHERE id=owner_id AND revoked_at IS NULL)",
+            params![server_id, redirect],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+fn insert_server_code(
+    tx: &rusqlite::Transaction<'_>,
+    server: &str,
+    account: &str,
+    redirect: &str,
+    challenge: &str,
+    now: i64,
+) -> anyhow::Result<String> {
+    let raw = secret();
+    tx.execute(
+        "INSERT INTO server_codes(hash,server_id,account_id,redirect_uri,challenge,expires_at) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![hash(&raw), server, account, redirect, challenge, now + 60],
+    )?;
+    Ok(raw)
+}
+fn issue_read(a: &App, owner: &str, server: &str, now: i64) -> anyhow::Result<String> {
+    let credential = format!("app_{server}");
+    anyhow::ensure!(credential.len() <= 128, "invalid server id");
+    let now = u64::try_from(now)?;
+    a.signer.issue(&ServerClaims {
+        iss: a.cfg.public_origin.clone(),
+        sub: owner.to_owned(),
+        aud: format!("kiln:server:{server}"),
+        iat: now,
+        nbf: now,
+        exp: now + 300,
+        credential_id: credential,
+        scope: Scope::Read,
+    })
+}
+async fn oauth_server(
+    State(a): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    axum::extract::Query(q): axum::extract::Query<ServerQuery>,
+    h: HeaderMap,
+) -> Response {
+    if q.code_challenge_method != "S256" || !challenge_ok(&q.code_challenge) || !state_ok(&q.state)
+    {
+        return err(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if oauth_limited(&a, peer, &h) {
+        return err(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+    }
+    let now = (a.cfg.now)();
+    let mut c = a.store.db.lock().unwrap();
+    let tx = match c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
+        Ok(tx) => tx,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let owner = match enrolled_server(&tx, &q.server_id, &q.redirect_uri) {
+        Ok(row) => row,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let Some(owner) = owner else {
+        return err(StatusCode::BAD_REQUEST, "invalid_redirect");
+    };
+    let server = q.server_id.as_str();
+    let session = cookie(&h, "__Host-kiln_session");
+    let account = match session.as_deref() {
+        Some(raw) => match tx
+            .query_row(
+                "SELECT account_id FROM browser_sessions WHERE hash=?1 AND expires_at>?2",
+                params![hash(raw), now],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+        {
+            Ok(row) => row.flatten(),
+            Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        },
+        None => None,
+    };
+    if account.as_deref() == Some(owner.as_str()) {
+        let code = match insert_server_code(
+            &tx,
+            server,
+            &owner,
+            &q.redirect_uri,
+            &q.code_challenge,
+            now,
+        ) {
+            Ok(code) => code,
+            Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        };
+        if tx.commit().is_err() {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+        }
+        let location = match code_location(&q.redirect_uri, &code, &q.state) {
+            Ok(location) => location,
+            Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        };
+        return secure(nostore(Redirect::to(&location).into_response()));
+    }
+    if account.is_some() {
+        let _ = tx.commit();
+        return secure(page(&refusal_page(&q.redirect_uri)).into_response());
+    }
+    let raw = session
+        .filter(|value| {
+            value.len() == 43
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+        .unwrap_or_else(secret);
+    let csrf = secret();
+    let wrote = tx
+        .execute(
+            "INSERT INTO browser_sessions(hash,csrf_hash,expires_at) VALUES(?1,?2,?3) ON CONFLICT(hash) DO UPDATE SET csrf_hash=?2,expires_at=?3,account_id=CASE WHEN browser_sessions.expires_at>?4 THEN browser_sessions.account_id ELSE NULL END",
+            params![hash(&raw), hash(&csrf), now + 43200, now],
+        )
+        .and_then(|_| {
+            tx.execute(
+                "INSERT INTO server_authorizations(session_hash,server_id,redirect_uri,state,challenge,expires_at) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(session_hash) DO UPDATE SET server_id=?2,redirect_uri=?3,state=?4,challenge=?5,expires_at=?6",
+                params![hash(&raw), server, q.redirect_uri, q.state, q.code_challenge, now + 600],
+            )
+        });
+    if wrote.is_err() || tx.commit().is_err() {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+    }
+    let mut response = page(&provider_page(&q.redirect_uri)).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        format!("__Host-kiln_session={raw}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200")
+            .parse()
+            .expect("cookie"),
+    );
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        format!("__Host-kiln_csrf={csrf}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200")
+            .parse()
+            .expect("cookie"),
+    );
+    secure(response)
+}
+fn take_server_authorization(a: &App, session: &str) -> Result<Option<PendingServerAuth>, ()> {
+    let mut c = a.store.db.lock().map_err(|_| ())?;
+    let tx = c
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|_| ())?;
+    let row = tx
+        .query_row(
+            "SELECT server_id,redirect_uri,state,challenge FROM server_authorizations WHERE session_hash=?1 AND expires_at>?2",
+            params![hash(session), (a.cfg.now)()],
+            |r| {
+                Ok(PendingServerAuth {
+                    server_id: r.get(0)?,
+                    redirect_uri: r.get(1)?,
+                    state: r.get(2)?,
+                    challenge: r.get(3)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|_| ())?;
+    tx.execute(
+        "DELETE FROM server_authorizations WHERE session_hash=?1",
+        params![hash(session)],
+    )
+    .map_err(|_| ())?;
+    tx.commit().map_err(|_| ())?;
+    Ok(row)
+}
+fn finish_server_authorization(
+    a: &App,
+    account: &str,
+    pending: &PendingServerAuth,
+    now: i64,
+) -> Result<Response, ()> {
+    let mut c = a.store.db.lock().map_err(|_| ())?;
+    let tx = c
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|_| ())?;
+    let owns: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM servers WHERE id=?1 AND owner_id=?2 AND redirect_uri=?3 AND active=1 AND EXISTS(SELECT 1 FROM accounts WHERE id=?2 AND revoked_at IS NULL))",
+            params![pending.server_id, account, pending.redirect_uri],
+            |row| row.get(0),
+        )
+        .map_err(|_| ())?;
+    if !owns {
+        let _ = tx.commit();
+        return Ok(page(&refusal_page(&pending.redirect_uri)).into_response());
+    }
+    let code = insert_server_code(
+        &tx,
+        &pending.server_id,
+        account,
+        &pending.redirect_uri,
+        &pending.challenge,
+        now,
+    )
+    .map_err(|_| ())?;
+    tx.commit().map_err(|_| ())?;
+    let location = code_location(&pending.redirect_uri, &code, &pending.state).map_err(|_| ())?;
+    Ok(Redirect::to(&location).into_response())
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CodeExchange {
+    code: String,
+    code_verifier: String,
+    redirect_uri: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReaderExchange {
+    reader: String,
+}
+async fn server_token(State(a): State<Arc<App>>, h: HeaderMap, body: String) -> Response {
+    let value: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(value) => value,
+        Err(_) => return err(StatusCode::BAD_REQUEST, "invalid_request"),
+    };
+    if value.get("reader").is_some() {
+        let exchange: ReaderExchange = match serde_json::from_value(value) {
+            Ok(exchange) => exchange,
+            Err(_) => return err(StatusCode::BAD_REQUEST, "invalid_request"),
+        };
+        let Some(presented) = bearer(&h) else {
+            return err(StatusCode::UNAUTHORIZED, "invalid_token");
+        };
+        return reader_token(&a, &exchange.reader, presented);
+    }
+    let exchange: CodeExchange = match serde_json::from_value(value) {
+        Ok(exchange) => exchange,
+        Err(_) => return err(StatusCode::BAD_REQUEST, "invalid_request"),
+    };
+    let Some(presented) = bearer(&h) else {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
+    let now = (a.cfg.now)();
+    let mut c = a.store.db.lock().unwrap();
+    let tx = match c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
+        Ok(tx) => tx,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let row = match tx
+        .query_row(
+            "SELECT server_id,account_id,redirect_uri,challenge,expires_at FROM server_codes WHERE hash=?1",
+            params![hash(&exchange.code)],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .optional()
+    {
+        Ok(row) => row,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let Some((server, account, redirect, challenge, expires)) = row else {
+        return err(StatusCode::BAD_REQUEST, "invalid_grant");
+    };
+    let secret_ok: bool = match tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM servers s JOIN accounts a ON a.id=s.owner_id WHERE s.id=?1 AND s.owner_id=?2 AND s.login_secret_hash=?3 AND s.active=1 AND a.revoked_at IS NULL)",
+        params![server, account, hash(presented)],
+        |row| row.get(0),
+    ) {
+        Ok(value) => value,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    if !secret_ok {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    }
+    let consume = tx.execute(
+        "DELETE FROM server_codes WHERE hash=?1",
+        params![hash(&exchange.code)],
+    );
+    if consume.is_err() {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+    }
+    if now >= expires {
+        let _ = tx.commit();
+        return err(StatusCode::BAD_REQUEST, "expired_token");
+    }
+    if exchange.redirect_uri != redirect || !pkce_ok(&exchange.code_verifier, &challenge) {
+        let _ = tx.commit();
+        return err(StatusCode::BAD_REQUEST, "invalid_grant");
+    }
+    let reader = secret();
+    let jwt = match issue_read(&a, &account, &server, now) {
+        Ok(jwt) => jwt,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    if tx
+        .execute(
+            "INSERT INTO app_readers(hash,server_id,account_id,expires_at) VALUES(?1,?2,?3,?4)",
+            params![hash(&reader), server, account, now + 43200],
+        )
+        .is_err()
+        || tx.commit().is_err()
+    {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+    }
+    nostore(
+        Json(serde_json::json!({
+            "access_token": jwt,
+            "token_type": "Bearer",
+            "expires_in": 300,
+            "reader": reader,
+        }))
+        .into_response(),
+    )
+}
+fn reader_token(a: &App, reader: &str, presented: &str) -> Response {
+    let now = (a.cfg.now)();
+    let mut c = a.store.db.lock().unwrap();
+    let tx = match c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
+        Ok(tx) => tx,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let row = match tx.query_row(
+        "SELECT r.server_id,r.account_id FROM app_readers r JOIN servers s ON s.id=r.server_id JOIN accounts a ON a.id=r.account_id WHERE r.hash=?1 AND r.expires_at>?2 AND s.login_secret_hash=?3 AND s.active=1 AND a.revoked_at IS NULL AND s.owner_id=r.account_id",
+        params![hash(reader), now, hash(presented)],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    ).optional() {
+        Ok(row) => row,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let Some((server, account)) = row else {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
+    let jwt = match issue_read(a, &account, &server, now) {
+        Ok(jwt) => jwt,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    if tx.commit().is_err() {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+    }
+    nostore(
+        Json(tokens::Grant {
+            access_token: jwt,
+            token_type: "Bearer",
+            expires_in: 300,
+        })
+        .into_response(),
+    )
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StatusReq {
+    server_id: String,
+}
+#[derive(Serialize)]
+struct StatusBody {
+    account_active: bool,
+    server_active: bool,
+}
+async fn revoke_reader(
+    State(a): State<Arc<App>>,
+    h: HeaderMap,
+    Json(body): Json<ReaderExchange>,
+) -> Response {
+    let Some(presented) = bearer(&h) else {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
+    let deleted = a.store.db.lock().unwrap().execute(
+        "DELETE FROM app_readers WHERE hash=?1 AND EXISTS(SELECT 1 FROM servers s WHERE s.id=app_readers.server_id AND s.login_secret_hash=?2)",
+        params![hash(&body.reader), hash(presented)],
+    );
+    match deleted {
+        Ok(1) => nostore(StatusCode::NO_CONTENT.into_response()),
+        Ok(_) => err(StatusCode::UNAUTHORIZED, "invalid_token"),
+        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    }
+}
+async fn server_status(
+    State(a): State<Arc<App>>,
+    h: HeaderMap,
+    Json(f): Json<StatusReq>,
+) -> Response {
+    let Some(secret) = bearer(&h) else {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
+    let row = a.store.db.lock().unwrap().query_row(
+        "SELECT a.revoked_at IS NULL, s.active=1 FROM servers s JOIN accounts a ON a.id=s.owner_id WHERE s.id=?1 AND s.login_secret_hash=?2",
+        params![f.server_id, hash(secret)],
+        |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+    );
+    match row {
+        Ok((account_active, server_active)) => nostore(
+            Json(StatusBody {
+                account_active,
+                server_active,
+            })
+            .into_response(),
+        ),
+        Err(rusqlite::Error::QueryReturnedNoRows) => err(StatusCode::UNAUTHORIZED, "invalid_token"),
+        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AppLoginReq {
+    redirect_uri: String,
+}
+async fn app_login(
+    State(a): State<Arc<App>>,
+    h: HeaderMap,
+    Path(id): Path<String>,
+    Json(f): Json<AppLoginReq>,
+) -> Response {
+    if f.redirect_uri != kiln_api::auth::APP_OAUTH_REDIRECT {
+        return err(StatusCode::BAD_REQUEST, "invalid_redirect");
+    }
+    let Some(raw) = bearer(&h) else {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
+    let token = secret();
+    let n = a.store.db.lock().unwrap().execute(
+        "UPDATE servers SET redirect_uri=?1, login_secret_hash=?2 WHERE id=?3 AND directory_hash=?4 AND login_secret_hash IS NULL",
+        params![f.redirect_uri, hash(&token), id, hash(raw)],
+    ).unwrap_or(0);
+    if n == 1 {
+        return nostore(Json(serde_json::json!({"login_token": token})).into_response());
+    }
+    err(StatusCode::UNAUTHORIZED, "invalid_token")
 }
 fn err(s: StatusCode, code: &str) -> Response {
     nostore((s, Json(serde_json::json!({"error":code}))).into_response())

@@ -80,7 +80,7 @@ impl Store {
         let c = Connection::open(path)?;
         let version: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0))?;
         anyhow::ensure!(
-            version == 0 || version == 1,
+            version == 0 || version == 1 || version == 2,
             "unsupported identity schema; restore a compatible backup"
         );
         if version == 0 {
@@ -94,7 +94,19 @@ impl Store {
         c.pragma_update(None, "journal_mode", "WAL")?;
         c.pragma_update(None, "synchronous", "FULL")?;
         c.execute_batch(SCHEMA)?;
-        c.pragma_update(None, "user_version", 1)?;
+        if version == 1 {
+            let tx = c.unchecked_transaction()?;
+            add_column(&tx, "redirect_uri", "TEXT")?;
+            add_column(&tx, "login_secret_hash", "BLOB")?;
+            tx.pragma_update(None, "user_version", 2)?;
+            tx.commit()?;
+        } else if version == 2
+            && (!column_present(&c, "redirect_uri")? || !column_present(&c, "login_secret_hash")?)
+        {
+            anyhow::bail!("unsupported identity schema; restore a compatible backup");
+        } else {
+            c.pragma_update(None, "user_version", 2)?;
+        }
         Ok(Self {
             db: Arc::new(Mutex::new(c)),
         })
@@ -231,6 +243,12 @@ impl Store {
         c.execute("DELETE FROM central_tokens WHERE expires_at<?1", [now])?;
         c.execute("DELETE FROM browser_sessions WHERE expires_at<?1", [now])?;
         c.execute("DELETE FROM oauth_attempts WHERE expires_at<?1", [now])?;
+        c.execute("DELETE FROM server_codes WHERE expires_at<?1", [now])?;
+        c.execute(
+            "DELETE FROM server_authorizations WHERE expires_at<?1",
+            [now],
+        )?;
+        c.execute("DELETE FROM app_readers WHERE expires_at<?1", [now])?;
         c.execute(
             "DELETE FROM pending_registrations WHERE expires_at<?1",
             [now - 3600],
@@ -245,6 +263,25 @@ impl Store {
         )?;
         Ok(())
     }
+}
+fn column_present(c: &Connection, column: &str) -> anyhow::Result<bool> {
+    let mut stmt = c.prepare("PRAGMA table_info(servers)")?;
+    let names = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in names {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+fn add_column(c: &Connection, column: &str, kind: &str) -> anyhow::Result<()> {
+    if !column_present(c, column)? {
+        c.execute(
+            &format!("ALTER TABLE servers ADD COLUMN {column} {kind}"),
+            [],
+        )?;
+    }
+    Ok(())
 }
 pub(crate) fn rate(
     c: &Connection,
@@ -278,7 +315,10 @@ CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY,account_id TEXT NOT NULL 
 CREATE TABLE IF NOT EXISTS refresh_tokens(hash BLOB PRIMARY KEY,family_id TEXT NOT NULL,device_id TEXT NOT NULL REFERENCES devices(id),created_at INTEGER NOT NULL,last_used INTEGER NOT NULL,absolute_expiry INTEGER NOT NULL,spent_at INTEGER,family_revoked_at INTEGER);
 CREATE TABLE IF NOT EXISTS central_tokens(hash BLOB PRIMARY KEY,device_id TEXT NOT NULL REFERENCES devices(id),family_id TEXT,expires_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS pending_registrations(secret_hash BLOB PRIMARY KEY,user_code TEXT UNIQUE NOT NULL,name TEXT NOT NULL,origin TEXT NOT NULL,ca_pem TEXT NOT NULL,state TEXT NOT NULL,owner_id TEXT REFERENCES accounts(id),expires_at INTEGER NOT NULL,poll_consumed INTEGER NOT NULL DEFAULT 0,next_poll INTEGER NOT NULL,interval INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS servers(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES accounts(id),name TEXT NOT NULL,origin TEXT NOT NULL,ca_pem TEXT NOT NULL,revision INTEGER NOT NULL,active INTEGER NOT NULL,directory_hash BLOB NOT NULL,created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS servers(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES accounts(id),name TEXT NOT NULL,origin TEXT NOT NULL,ca_pem TEXT NOT NULL,revision INTEGER NOT NULL,active INTEGER NOT NULL,directory_hash BLOB NOT NULL,created_at INTEGER NOT NULL,redirect_uri TEXT,login_secret_hash BLOB);
+CREATE TABLE IF NOT EXISTS server_codes(hash BLOB PRIMARY KEY,server_id TEXT NOT NULL,account_id TEXT NOT NULL,redirect_uri TEXT NOT NULL,challenge TEXT NOT NULL,expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS server_authorizations(session_hash BLOB PRIMARY KEY,server_id TEXT NOT NULL,redirect_uri TEXT NOT NULL,state TEXT NOT NULL,challenge TEXT NOT NULL,expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS app_readers(hash BLOB PRIMARY KEY,server_id TEXT NOT NULL,account_id TEXT NOT NULL,expires_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS automation_keys(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES accounts(id),server_id TEXT NOT NULL REFERENCES servers(id),hash BLOB UNIQUE NOT NULL,scope TEXT NOT NULL,expires_at INTEGER NOT NULL,revoked_at INTEGER);
 CREATE TABLE IF NOT EXISTS rate_limits(key TEXT PRIMARY KEY,window_start INTEGER NOT NULL,count INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS audit_events(id INTEGER PRIMARY KEY,event TEXT NOT NULL,actor_id TEXT,resource_id TEXT,outcome TEXT NOT NULL,created_at INTEGER NOT NULL);

@@ -46,6 +46,9 @@ pub struct Receipt {
     /// Empty means the readiness check dials `origin`.
     #[serde(default)]
     pub local_origin: String,
+    /// Empty when identity has no app-login route. The hash stays in identity.
+    #[serde(default)]
+    pub login_token: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -128,6 +131,32 @@ fn install_file(path: &Path, bytes: &[u8], mode: u32, gid: u32) -> Result<()> {
     fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
+pub async fn login_token_from_response(response: reqwest::Response) -> Result<String> {
+    let status = response.status();
+    let mut bytes = Vec::new();
+    let mut response = response;
+    while let Some(chunk) = response.chunk().await? {
+        ensure!(
+            bytes.len() + chunk.len() <= 4096,
+            "identity response too large"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(String::new());
+    }
+    ensure!(status.is_success(), "identity did not issue a login token");
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let token = value["login_token"]
+        .as_str()
+        .context("missing login token")?
+        .to_owned();
+    ensure!(
+        !token.is_empty() && token.len() <= 128 && !token.contains(['\0', '\n', '\r']),
+        "invalid login token"
+    );
+    Ok(token)
+}
 async fn json<T: serde::de::DeserializeOwned>(mut response: reqwest::Response) -> Result<T> {
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
@@ -187,6 +216,14 @@ pub async fn complete<E: EnrollmentEffects>(
         0o600,
         owner_gid,
     )?;
+    if !receipt.login_token.is_empty() {
+        install_file(
+            &paths.etc.join("login.token"),
+            receipt.login_token.as_bytes(),
+            0o640,
+            service_gid,
+        )?;
+    }
     install_file(
         &paths.dropin.join("identity.conf"),
         STATE_UNIT,
@@ -376,6 +413,14 @@ pub async fn run(options: Options) -> Result<()> {
             ensure!(value["status"] != "denied", "enrollment denied");
             break serde_json::from_value(value)?;
         };
+        let login_token = login_token_from_response(
+            http.post(central.join(&format!("v1/servers/{}/app-login", registration.server_id))?)
+                .bearer_auth(&registration.directory_token)
+                .json(&serde_json::json!({"redirect_uri": kiln_api::auth::APP_OAUTH_REDIRECT}))
+                .send()
+                .await?,
+        )
+        .await?;
         let receipt = Receipt {
             enrollment: Enrollment {
                 version: 1,
@@ -387,6 +432,7 @@ pub async fn run(options: Options) -> Result<()> {
             ca_pem: ca,
             directory_token: registration.directory_token,
             local_origin,
+            login_token,
         };
         receipt.enrollment.validate()?;
         install_file(&receipt_path, &serde_json::to_vec(&receipt)?, 0o600, 0)?;
@@ -482,6 +528,7 @@ mod tests {
             readiness_target(&receipt.origin, &receipt.local_origin),
             "https://10.0.0.8:8443"
         );
+        assert!(receipt.login_token.is_empty());
     }
 
     #[test]

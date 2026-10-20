@@ -12,13 +12,17 @@ use axum::{
     body::Body,
     extract::{ConnectInfo, Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::any,
 };
+use base64::Engine;
 use futures_util::StreamExt;
+use kiln_api::auth::Scope;
+use sha2::Digest;
 use std::{
     collections::HashMap,
     fs,
+    io::Read,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex},
@@ -28,7 +32,11 @@ use std::{
 pub const BIND: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8093);
 
 const LIMIT: u32 = 60;
+const LOGIN_LIMIT: u32 = 10;
 const WINDOW: Duration = Duration::from_secs(60);
+const SESSION_SECONDS: u64 = 43200;
+const ATTEMPT_SECONDS: u64 = 600;
+const STATUS_INTERVAL: Duration = Duration::from_secs(300);
 const STATIC_LIMIT: u64 = 8 * 1024 * 1024;
 const UPSTREAM_READ: Duration = Duration::from_secs(10);
 const CSP: &str = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
@@ -42,12 +50,43 @@ pub struct Options {
     pub dashboard_root: Option<PathBuf>,
 }
 
+#[derive(Clone)]
+pub struct SignIn {
+    pub authorize_origin: String,
+    pub loopback: String,
+    pub login_secret: String,
+    pub server_id: String,
+}
+
+struct Attempt {
+    verifier: String,
+    state: String,
+    expires: Instant,
+}
+
+struct Session {
+    expires: Instant,
+    csrf: String,
+    reader: String,
+    jwt: String,
+    jwt_exp: u64,
+}
+
 struct App {
     auth: Authenticator,
     client: reqwest::Client,
+    identity: reqwest::Client,
     upstream: reqwest::Url,
+    loopback: reqwest::Url,
+    authorize_origin: String,
+    login_secret: String,
+    server_id: String,
     root: Option<PathBuf>,
     hits: StdMutex<HashMap<IpAddr, Hit>>,
+    login_hits: StdMutex<HashMap<IpAddr, Hit>>,
+    attempts: StdMutex<HashMap<String, Attempt>>,
+    sessions: StdMutex<HashMap<String, Session>>,
+    status_at: StdMutex<Option<Instant>>,
 }
 
 struct Hit {
@@ -58,6 +97,9 @@ struct Hit {
 enum Kind {
     Dashboard,
     MissingApi,
+    Login,
+    Callback,
+    Logout,
     Page,
     Other,
 }
@@ -84,7 +126,30 @@ pub fn router(
     ca_pem: &[u8],
     root: Option<&Path>,
 ) -> Result<Router> {
+    router_with(
+        auth,
+        upstream,
+        ca_pem,
+        root,
+        SignIn {
+            authorize_origin: "https://dark-forge.dev".into(),
+            loopback: "http://127.0.0.1:9".into(),
+            login_secret: String::new(),
+            server_id: String::new(),
+        },
+    )
+}
+
+pub fn router_with(
+    auth: Authenticator,
+    upstream: &str,
+    ca_pem: &[u8],
+    root: Option<&Path>,
+    sign_in: SignIn,
+) -> Result<Router> {
     let upstream = loopback_upstream(upstream)?;
+    // The login secret is posted here, on the host, and never to the public identity name.
+    let loopback = loopback_identity(&sign_in.loopback)?;
     let client = reqwest::Client::builder()
         .https_only(true)
         .no_proxy()
@@ -95,27 +160,115 @@ pub fn router(
         .add_root_certificate(reqwest::Certificate::from_pem(ca_pem)?)
         .tls_built_in_root_certs(false)
         .build()?;
+    let identity = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(10))
+        .build()?;
     let state = Arc::new(App {
         auth,
         client,
+        identity,
         upstream,
+        loopback,
+        authorize_origin: sign_in.authorize_origin.trim_end_matches('/').to_owned(),
+        login_secret: sign_in.login_secret,
+        server_id: sign_in.server_id,
         root: root.map(Path::to_path_buf),
         hits: StdMutex::new(HashMap::new()),
+        login_hits: StdMutex::new(HashMap::new()),
+        attempts: StdMutex::new(HashMap::new()),
+        sessions: StdMutex::new(HashMap::new()),
+        status_at: StdMutex::new(None),
     });
-    Ok(Router::new().fallback(any(handle)).with_state(state))
+    Ok(into_router(state))
+}
+
+fn into_router(state: Arc<App>) -> Router {
+    Router::new().fallback(any(handle)).with_state(state)
+}
+
+/// Insert one read session so proxy limits can be tested without a browser login.
+#[doc(hidden)]
+pub fn router_with_read_session(
+    auth: Authenticator,
+    upstream: &str,
+    ca_pem: &[u8],
+    root: Option<&Path>,
+    jwt: &str,
+) -> Result<(Router, String)> {
+    let upstream_url = loopback_upstream(upstream)?;
+    let loopback = loopback_identity("http://127.0.0.1:9")?;
+    let client = reqwest::Client::builder()
+        .https_only(true)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .connect_timeout(Duration::from_secs(3))
+        .read_timeout(UPSTREAM_READ)
+        .add_root_certificate(reqwest::Certificate::from_pem(ca_pem)?)
+        .tls_built_in_root_certs(false)
+        .build()?;
+    let identity = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(10))
+        .build()?;
+    let id = random_token();
+    let mut sessions = HashMap::new();
+    sessions.insert(
+        id.clone(),
+        Session {
+            expires: Instant::now() + Duration::from_secs(SESSION_SECONDS),
+            csrf: random_token(),
+            reader: String::new(),
+            jwt: jwt.to_owned(),
+            jwt_exp: jsonwebtoken::get_current_timestamp().saturating_add(240),
+        },
+    );
+    let state = Arc::new(App {
+        auth,
+        client,
+        identity,
+        upstream: upstream_url,
+        loopback,
+        authorize_origin: "https://dark-forge.dev".into(),
+        login_secret: String::new(),
+        server_id: String::new(),
+        root: root.map(Path::to_path_buf),
+        hits: StdMutex::new(HashMap::new()),
+        login_hits: StdMutex::new(HashMap::new()),
+        attempts: StdMutex::new(HashMap::new()),
+        sessions: StdMutex::new(sessions),
+        status_at: StdMutex::new(Some(Instant::now())),
+    });
+    Ok((into_router(state), id))
 }
 
 pub async fn run(options: Options) -> Result<()> {
     require_bind(options.listen, euid())?;
     let enrollment =
         Enrollment::load(&options.enrollment_file)?.context("server is not enrolled")?;
+    let server_id = enrollment.server_id.clone();
+    let authorize_origin = enrollment.issuer.clone();
     let auth = Authenticator::central_only(enrollment, options.jwks_cache)?;
     let ca = fs::read(&options.upstream_ca).context("upstream CA required")?;
-    let router = router(
+    let login_secret = read_login_secret(Path::new("/etc/kiln/login.token"))?;
+    let router = router_with(
         auth,
         &options.upstream,
         &ca,
         options.dashboard_root.as_deref(),
+        SignIn {
+            authorize_origin,
+            loopback: "http://127.0.0.1:8091".into(),
+            login_secret,
+            server_id,
+        },
     )?;
     listen(router, options.listen).await
 }
@@ -161,15 +314,23 @@ async fn handle(
 
 async fn dispatch(app: &App, peer: SocketAddr, request: Request) -> Response {
     let ip = client_ip(peer, request.headers());
-    if !charge(&app.hits, ip) {
+    let kind = classify(request.method(), request.uri().path());
+    let limited = match kind {
+        Kind::Login | Kind::Callback => charge(&app.login_hits, ip, LOGIN_LIMIT),
+        _ => charge(&app.hits, ip, LIMIT),
+    };
+    if !limited {
         return deny(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
             "Too many requests from this address.",
         );
     }
-    match classify(request.method(), request.uri().path()) {
+    match kind {
         Kind::Dashboard => proxy(app, request).await,
+        Kind::Login => start_login(app).await,
+        Kind::Callback => finish_login(app, request).await,
+        Kind::Logout => logout(app, request).await,
         Kind::MissingApi => api_miss(),
         Kind::Page => page(app, &request),
         Kind::Other => api_miss(),
@@ -183,6 +344,12 @@ fn classify(method: &Method, path: &str) -> Kind {
         } else {
             Kind::MissingApi
         }
+    } else if method == Method::GET && path == "/login" {
+        Kind::Login
+    } else if method == Method::GET && path == "/oauth/callback" {
+        Kind::Callback
+    } else if method == Method::POST && path == "/logout" {
+        Kind::Logout
     } else if method == Method::GET {
         Kind::Page
     } else {
@@ -204,7 +371,7 @@ fn client_ip(peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
     direct
 }
 
-fn charge(hits: &StdMutex<HashMap<IpAddr, Hit>>, ip: IpAddr) -> bool {
+fn charge(hits: &StdMutex<HashMap<IpAddr, Hit>>, ip: IpAddr, limit: u32) -> bool {
     let mut map = lock_map(hits);
     let now = Instant::now();
     if map.len() > 256 {
@@ -220,7 +387,7 @@ fn charge(hits: &StdMutex<HashMap<IpAddr, Hit>>, ip: IpAddr) -> bool {
             count: 0,
         };
     }
-    if hit.count >= LIMIT {
+    if hit.count >= limit {
         return false;
     }
     hit.count += 1;
@@ -228,15 +395,6 @@ fn charge(hits: &StdMutex<HashMap<IpAddr, Hit>>, ip: IpAddr) -> bool {
 }
 
 async fn proxy(app: &App, request: Request) -> Response {
-    let bearer = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .unwrap_or("");
-    if app.auth.authenticate_central(bearer).await.is_err() {
-        return unauthorized();
-    }
     if request.uri().query().is_some() {
         return deny(
             StatusCode::BAD_REQUEST,
@@ -244,7 +402,14 @@ async fn proxy(app: &App, request: Request) -> Response {
             "Query parameters are not accepted.",
         );
     }
-    let Some(authorization) = request.headers().get(header::AUTHORIZATION).cloned() else {
+    let Some(raw) = cookie_value(request.headers(), "__Host-kiln_app") else {
+        return unauthorized();
+    };
+    refresh_status(app).await;
+    let Some(jwt) = fresh_jwt(app, &raw).await else {
+        return unauthorized();
+    };
+    let Ok(authorization) = HeaderValue::from_str(&format!("Bearer {jwt}")) else {
         return unauthorized();
     };
     match forward(app, authorization).await {
@@ -470,4 +635,423 @@ fn upstream_error() -> Failure {
 
 fn lock_map<T>(mutex: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+fn loopback_identity(value: &str) -> Result<reqwest::Url> {
+    let url = reqwest::Url::parse(value).context("invalid identity URL")?;
+    ensure!(
+        url.scheme() == "http"
+            && url.host_str() == Some("127.0.0.1")
+            && url.port().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && matches!(url.path(), "" | "/")
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "identity exchange must dial http://127.0.0.1"
+    );
+    Ok(url)
+}
+
+fn read_login_secret(path: &Path) -> Result<String> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(err) => return Err(err.into()),
+    };
+    use std::os::unix::fs::MetadataExt;
+    ensure!(
+        meta.is_file()
+            && !meta.file_type().is_symlink()
+            && meta.uid() == 0
+            && meta.mode() & 0o007 == 0,
+        "login token must be a root-owned file that is not world-readable"
+    );
+    let mut file = fs::File::open(path)?;
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    let token = text.trim();
+    ensure!(
+        !token.is_empty() && token.len() <= 128 && !token.contains(['\0', '\n', '\r']),
+        "invalid login token"
+    );
+    Ok(token.to_owned())
+}
+
+fn random_token() -> String {
+    let mut bytes = [0u8; 32];
+    fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .expect("system random source");
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn pkce_challenge(verifier: &str) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(verifier.as_bytes()))
+}
+
+fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(header::COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .find_map(|part| {
+            part.trim()
+                .strip_prefix(&format!("{name}="))
+                .map(str::to_owned)
+        })
+}
+
+fn host_cookie(name: &str, value: &str, max_age: u64, http_only: bool) -> HeaderValue {
+    let http_only = if http_only { "HttpOnly; " } else { "" };
+    HeaderValue::from_str(&format!(
+        "{name}={value}; Secure; {http_only}SameSite=Lax; Path=/; Max-Age={max_age}"
+    ))
+    .expect("cookie")
+}
+
+fn query_value(uri: &axum::http::Uri, name: &str) -> Option<String> {
+    uri.query()?.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == name).then(|| value.to_owned())
+    })
+}
+
+fn form_value(body: &str, name: &str) -> Option<String> {
+    body.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        (key == name).then(|| value.to_owned())
+    })
+}
+
+async fn start_login(app: &App) -> Response {
+    if app.login_secret.is_empty() {
+        return deny(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "login_unavailable",
+            "Dashboard sign-in is not configured.",
+        );
+    }
+    let verifier = random_token();
+    let state = random_token();
+    let id = random_token();
+    let mut url = match reqwest::Url::parse(&format!("{}/oauth/server", app.authorize_origin)) {
+        Ok(url) => url,
+        Err(_) => {
+            return deny(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                "Sign-in could not start.",
+            );
+        }
+    };
+    url.query_pairs_mut()
+        .append_pair("redirect_uri", kiln_api::auth::APP_OAUTH_REDIRECT)
+        .append_pair("server_id", &app.server_id)
+        .append_pair("state", &state)
+        .append_pair("code_challenge", &pkce_challenge(&verifier))
+        .append_pair("code_challenge_method", "S256");
+    lock_map(&app.attempts).insert(
+        id.clone(),
+        Attempt {
+            verifier,
+            state,
+            expires: Instant::now() + Duration::from_secs(ATTEMPT_SECONDS),
+        },
+    );
+    let mut response = Redirect::to(url.as_str()).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        host_cookie("__Host-kiln_app_attempt", &id, ATTEMPT_SECONDS, true),
+    );
+    nostore(response)
+}
+
+async fn finish_login(app: &App, request: Request) -> Response {
+    if app.login_secret.is_empty() {
+        return deny(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "login_unavailable",
+            "Dashboard sign-in is not configured.",
+        );
+    }
+    let Some(attempt_id) = cookie_value(request.headers(), "__Host-kiln_app_attempt") else {
+        return deny(
+            StatusCode::BAD_REQUEST,
+            "invalid_state",
+            "Sign-in did not start in this browser.",
+        );
+    };
+    let attempt = {
+        let mut attempts = lock_map(&app.attempts);
+        let Some(attempt) = attempts.remove(&attempt_id) else {
+            return deny(
+                StatusCode::BAD_REQUEST,
+                "invalid_state",
+                "Sign-in did not start in this browser.",
+            );
+        };
+        if attempt.expires <= Instant::now() {
+            return deny(
+                StatusCode::BAD_REQUEST,
+                "invalid_state",
+                "Sign-in expired. Start again.",
+            );
+        }
+        attempt
+    };
+    let code = query_value(request.uri(), "code").unwrap_or_default();
+    let state = query_value(request.uri(), "state").unwrap_or_default();
+    if code.is_empty() || state != attempt.state {
+        return deny(
+            StatusCode::BAD_REQUEST,
+            "invalid_state",
+            "Sign-in did not match this browser.",
+        );
+    }
+    let exchanged = exchange_code(app, &code, &attempt.verifier).await;
+    let Ok((jwt, reader, expires_in)) = exchanged else {
+        return deny(
+            StatusCode::BAD_GATEWAY,
+            "upstream",
+            "Identity did not complete sign-in.",
+        );
+    };
+    if !matches!(app.auth.authenticate_central(&jwt).await, Ok(Scope::Read)) {
+        return deny(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Identity did not grant a read session.",
+        );
+    }
+    let id = random_token();
+    let csrf = random_token();
+    let jwt_exp = jsonwebtoken::get_current_timestamp().saturating_add(expires_in);
+    lock_map(&app.sessions).insert(
+        id.clone(),
+        Session {
+            expires: Instant::now() + Duration::from_secs(SESSION_SECONDS),
+            csrf: csrf.clone(),
+            reader,
+            jwt,
+            jwt_exp,
+        },
+    );
+    let mut response = Redirect::to("/boxes").into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::SET_COOKIE,
+        host_cookie("__Host-kiln_app", &id, SESSION_SECONDS, true),
+    );
+    headers.append(
+        header::SET_COOKIE,
+        host_cookie("__Host-kiln_csrf", &csrf, SESSION_SECONDS, false),
+    );
+    headers.append(
+        header::SET_COOKIE,
+        host_cookie("__Host-kiln_app_attempt", "", 0, true),
+    );
+    nostore(response)
+}
+
+async fn exchange_code(app: &App, code: &str, verifier: &str) -> Result<(String, String, u64)> {
+    let mut url = app.loopback.clone();
+    url.set_path("/oauth/server/token");
+    let response = app
+        .identity
+        .post(url)
+        .bearer_auth(&app.login_secret)
+        .json(&serde_json::json!({
+            "code": code,
+            "code_verifier": verifier,
+            "redirect_uri": kiln_api::auth::APP_OAUTH_REDIRECT,
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let body: serde_json::Value = response.json().await?;
+    let jwt = body["access_token"]
+        .as_str()
+        .context("missing access token")?
+        .to_owned();
+    let reader = body["reader"]
+        .as_str()
+        .context("missing reader")?
+        .to_owned();
+    let expires_in = body["expires_in"].as_u64().context("missing expiry")?;
+    ensure!(
+        !jwt.is_empty() && jwt.len() <= 8192 && !reader.is_empty() && reader.len() <= 128,
+        "invalid identity grant"
+    );
+    ensure!((1..=300).contains(&expires_in), "invalid identity grant");
+    Ok((jwt, reader, expires_in))
+}
+
+async fn fresh_jwt(app: &App, raw: &str) -> Option<String> {
+    let (jwt, jwt_exp, reader) = {
+        let mut sessions = lock_map(&app.sessions);
+        let session = sessions.get(raw)?;
+        if session.expires <= Instant::now() {
+            sessions.remove(raw);
+            return None;
+        }
+        (session.jwt.clone(), session.jwt_exp, session.reader.clone())
+    };
+    let now = jsonwebtoken::get_current_timestamp();
+    if jwt_exp > now.saturating_add(60) {
+        return Some(jwt);
+    }
+    if reader.is_empty() {
+        return (jwt_exp > now).then_some(jwt);
+    }
+    match refresh_reader(app, &reader).await {
+        Ok((next, expires_in)) => {
+            if let Some(session) = lock_map(&app.sessions).get_mut(raw) {
+                session.jwt = next.clone();
+                session.jwt_exp = now.saturating_add(expires_in);
+            }
+            Some(next)
+        }
+        Err(_) if jwt_exp > now => Some(jwt),
+        Err(_) => None,
+    }
+}
+
+async fn refresh_reader(app: &App, reader: &str) -> Result<(String, u64)> {
+    let mut url = app.loopback.clone();
+    url.set_path("/oauth/server/token");
+    let response = app
+        .identity
+        .post(url)
+        .bearer_auth(&app.login_secret)
+        .json(&serde_json::json!({ "reader": reader }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let body: serde_json::Value = response.json().await?;
+    let jwt = body["access_token"]
+        .as_str()
+        .context("missing access token")?
+        .to_owned();
+    let expires_in = body["expires_in"].as_u64().unwrap_or(300);
+    ensure!((1..=300).contains(&expires_in), "invalid identity grant");
+    if !matches!(app.auth.authenticate_central(&jwt).await, Ok(Scope::Read)) {
+        anyhow::bail!("refreshed token was not a read grant");
+    }
+    Ok((jwt, expires_in))
+}
+
+async fn refresh_status(app: &App) {
+    if app.login_secret.is_empty() || app.server_id.is_empty() {
+        return;
+    }
+    {
+        let mut checked = lock_map(&app.status_at);
+        if checked.is_some_and(|at| at.elapsed() < STATUS_INTERVAL) {
+            return;
+        }
+        *checked = Some(Instant::now());
+    }
+    let mut url = app.loopback.clone();
+    url.set_path("/v1/server-status");
+    let Ok(response) = app
+        .identity
+        .post(url)
+        .bearer_auth(&app.login_secret)
+        .json(&serde_json::json!({ "server_id": app.server_id }))
+        .send()
+        .await
+    else {
+        return;
+    };
+    if !response.status().is_success() {
+        return;
+    }
+    let Ok(body) = response.json::<serde_json::Value>().await else {
+        return;
+    };
+    let account_active = body["account_active"].as_bool();
+    let server_active = body["server_active"].as_bool();
+    if account_active == Some(false) || server_active == Some(false) {
+        lock_map(&app.sessions).clear();
+    }
+}
+
+async fn revoke_reader(app: &App, reader: &str) -> bool {
+    if reader.is_empty() {
+        return true;
+    }
+    let mut url = app.loopback.clone();
+    url.set_path("/oauth/server/revoke");
+    let Ok(response) = app
+        .identity
+        .post(url)
+        .bearer_auth(&app.login_secret)
+        .json(&serde_json::json!({ "reader": reader }))
+        .send()
+        .await
+    else {
+        return false;
+    };
+    response.status().is_success()
+}
+
+async fn logout(app: &App, request: Request) -> Response {
+    if request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        != Some("https://app.dark-forge.dev")
+    {
+        return deny(
+            StatusCode::FORBIDDEN,
+            "invalid_origin",
+            "Logout was refused.",
+        );
+    }
+    let Some(raw) = cookie_value(request.headers(), "__Host-kiln_app") else {
+        return unauthorized();
+    };
+    let Some(csrf_cookie) = cookie_value(request.headers(), "__Host-kiln_csrf") else {
+        return deny(StatusCode::FORBIDDEN, "invalid_csrf", "Logout was refused.");
+    };
+    let body = axum::body::to_bytes(request.into_body(), 4096)
+        .await
+        .unwrap_or_default();
+    let body = String::from_utf8_lossy(&body);
+    let posted = form_value(&body, "csrf").unwrap_or_default();
+    let reader = {
+        let sessions = lock_map(&app.sessions);
+        let Some(session) = sessions.get(&raw) else {
+            return unauthorized();
+        };
+        if session.expires <= Instant::now() || session.csrf != csrf_cookie || posted != csrf_cookie
+        {
+            return deny(StatusCode::FORBIDDEN, "invalid_csrf", "Logout was refused.");
+        }
+        session.reader.clone()
+    };
+    if !revoke_reader(app, &reader).await {
+        return deny(
+            StatusCode::BAD_GATEWAY,
+            "upstream",
+            "Identity did not complete sign-out.",
+        );
+    }
+    if lock_map(&app.sessions).remove(&raw).is_none() {
+        return unauthorized();
+    }
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::SET_COOKIE,
+        host_cookie("__Host-kiln_app", "", 0, true),
+    );
+    headers.append(
+        header::SET_COOKIE,
+        host_cookie("__Host-kiln_csrf", "", 0, false),
+    );
+    nostore(response)
 }
