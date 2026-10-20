@@ -115,10 +115,10 @@ FILES
         if grep -qx 'bin/kiln-network' "$work/names"; then
             printf 'bin/kiln-network\n' >> "$work/expected"
         fi
-        # The door proxy units and their runbook ship together. The pinned
-        # v0.4.7 archive does not have them. A later archive that has the
-        # service must have the private unit and the runbook. The public
-        # unit is accepted when an older archive still carries it.
+        # Door proxy units and their runbook ship together. An archive that
+        # has any of these files must include the private unit, the private
+        # socket, and the runbook. The public socket is optional. An older
+        # archive may still carry it.
         if grep -qx 'deploy/kiln-door-proxy.service' "$work/names" \
             || grep -qx 'deploy/kiln-door-proxy.socket' "$work/names" \
             || grep -qx 'deploy/kiln-door-proxy-public.socket' "$work/names" \
