@@ -468,7 +468,7 @@ class FreshTests(InstallerTest):
             "eth0",
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("Ready: https://127.0.0.1:8443", result.stdout)
+        self.assertIn("Host admin API: https://127.0.0.1:8443", result.stdout)
         self.assertIn("enroll --url https://127.0.0.1:8443", result.stdout)
         etc = self.root / "etc/kiln"
         cert = subprocess.check_output(
@@ -769,6 +769,8 @@ class UpgradeTests(InstallerTest):
             "Binaries are already updated. Closing public tcp/8443.",
             result.stdout,
         )
+        self.assertIn("Host admin API: https://100.64.5.6:8443", result.stdout)
+        self.assertNotIn("Ready: https://", result.stdout)
         self.plan_curl("ok", body=UPGRADE_CATALOG)
         commented = (
             "# kiln-door-proxy-public.socket stays named only in this comment\n"
