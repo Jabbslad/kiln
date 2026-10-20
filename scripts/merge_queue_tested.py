@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""Skip tests on a main push when the merge queue already passed this tree.
-
-Squash creates a new commit. Its tree matches the merge group's tree when
-the group contains one pull request. A different tree, a failed lookup, or
-any other event still runs the suite.
-"""
 
 from __future__ import annotations
 

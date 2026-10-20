@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""The merge queue skip is a tree match, and every other event still tests."""
 
 import importlib.util
 import os
@@ -167,6 +166,35 @@ class MergeQueueTestedTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(output.read_text(), "skip_tests=false\n")
+
+
+class BuildWorkflowTests(unittest.TestCase):
+    def test_queue_runs_checks_and_only_push_or_dispatch_packages(self):
+        text = (ROOT / ".github/workflows/build.yml").read_text()
+        self.assertIn("merge_group:", text)
+        self.assertIn("types: [checks_requested]", text)
+        self.assertIn("branches: [main]", text)
+        self.assertNotIn("if: github.event_name != 'pull_request'\n", text)
+        self.assertNotIn("if: github.event_name != 'pull_request' &&", text)
+        self.assertNotIn(
+            "github.event_name == 'push' || github.event_name == 'workflow_dispatch' &&",
+            text,
+        )
+        self.assertIn(
+            "(github.event_name == 'push' || github.event_name == 'workflow_dispatch') && matrix.target == 'aarch64-apple-darwin'",
+            text,
+        )
+        self.assertIn("github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')", text)
+        self.assertIn("github.event.merge_group.base_sha", text)
+        self.assertIn("github.event.merge_group.head_sha", text)
+        self.assertIn("github.event_name != 'merge_group'", text)
+        self.assertEqual(text.count("id: queue"), 3)
+        self.assertEqual(text.count("python scripts/merge_queue_tested.py"), 3)
+        self.assertIn("python scripts/test-merge-queue-tested.py", text)
+        for name in ("deploy.yml", "diagnose.yml"):
+            other = (ROOT / ".github/workflows" / name).read_text()
+            self.assertNotIn("merge_group", other, name)
+            self.assertNotIn("pull_request", other, name)
 
 
 def _main_push():
