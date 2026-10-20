@@ -145,8 +145,9 @@ def package(repo, bins, output, version, target, kind, image):
                     archive.addfile(info, io.BytesIO(data))
     with dest.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
-    with checksum.open("x") as stream:
-        stream.write(f"{digest}  {dest.name}\n")
+    # Binary mode so a Windows runner does not turn the newline into CRLF.
+    with checksum.open("xb") as stream:
+        stream.write(f"{digest}  {dest.name}\n".encode("ascii"))
     return dest
 
 
