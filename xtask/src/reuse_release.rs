@@ -189,7 +189,7 @@ pub fn attestation_gate(
     if results.is_empty() || results.iter().any(|result| !usable(result)) {
         return Err(ReuseRefused("attestation result is not usable".into()));
     }
-    if results.iter().any(|result| *result == "rejected") {
+    if results.contains(&"rejected") {
         return Err(ReuseRefused("attestation verification failed".into()));
     }
     if results.iter().all(|result| *result == "verified") {
@@ -564,13 +564,13 @@ fn next_flag(args: &[String], index: usize) -> Result<(String, String, usize), S
     let arg = args
         .get(index)
         .ok_or_else(|| "missing argument".to_string())?;
-    if let Some((key, value)) = arg.split_once('=') {
-        if key.starts_with("--") {
-            if value.is_empty() {
-                return Err(format!("missing value for {key}"));
-            }
-            return Ok((key.to_string(), value.to_string(), 1));
+    if let Some((key, value)) = arg.split_once('=')
+        && key.starts_with("--")
+    {
+        if value.is_empty() {
+            return Err(format!("missing value for {key}"));
         }
+        return Ok((key.to_string(), value.to_string(), 1));
     }
     if !arg.starts_with("--") {
         return Err(format!("unrecognized arguments: {arg}"));
@@ -1497,10 +1497,10 @@ impl PyParser<'_> {
         if !rest.starts_with(word) {
             return false;
         }
-        match rest[word.len()..].chars().next() {
-            Some(ch) if ch.is_ascii_alphanumeric() || ch == '_' => false,
-            _ => true,
-        }
+        !matches!(
+            rest[word.len()..].chars().next(),
+            Some(ch) if ch.is_ascii_alphanumeric() || ch == '_'
+        )
     }
 
     fn eat_word(&mut self, word: &str) -> bool {
@@ -1712,8 +1712,8 @@ fn write_tar_gz(path: &Path, name: &str, data: &[u8]) {
     header.set_mtime(0);
     header.set_username("").unwrap();
     header.set_groupname("").unwrap();
-    header.set_cksum();
     header.set_entry_type(tar::EntryType::Regular);
+    header.set_cksum();
     archive.append(&header, data).unwrap();
     let encoder = archive.into_inner().unwrap();
     encoder.finish().unwrap();
@@ -1955,36 +1955,42 @@ fn test_workflow_keeps_drafts_and_does_not_move_tags() {
         draft_if
             .contains("(needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse')")
     );
-    let step_only = "\
-  other:\n\
-    if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'\n\
-  draft-release:\n\
-    if: >-\n\
-      ((needs.reuse.outputs.mode == 'reuse') ||\n\
-        (needs.server-package.result == 'success'))\n\
-    steps:\n\
-      - if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'\n\
-";
+    // A trailing `\` in a string literal drops the next line's leading
+    // whitespace, so the fixture is joined from explicit lines.
+    let step_only = [
+        "  other:",
+        "    if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'",
+        "  draft-release:",
+        "    if: >-",
+        "      ((needs.reuse.outputs.mode == 'reuse') ||",
+        "        (needs.server-package.result == 'success'))",
+        "    steps:",
+        "      - if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'",
+        "",
+    ]
+    .join("\n");
     assert!(
-        !job_if_expression(step_only, "draft-release").contains("needs.reuse.result == 'success'")
+        !job_if_expression(&step_only, "draft-release").contains("needs.reuse.result == 'success'")
     );
     let reuse_guard = "needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'";
     assert!(step_if_expression(&text, "draft-release", "name: reused-dist").contains(reuse_guard));
     assert!(job_if_expression(&text, "dry-run-assets").contains(reuse_guard));
-    let sibling = "\
-  draft-release:\n\
-    steps:\n\
-      - uses: actions/download-artifact\n\
-        if: needs.reuse.outputs.mode == 'reuse'\n\
-        with:\n\
-          name: reused-dist\n\
-      - uses: actions/download-artifact\n\
-        if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'\n\
-        with:\n\
-          name: package\n\
-";
+    let sibling = [
+        "  draft-release:",
+        "    steps:",
+        "      - uses: actions/download-artifact",
+        "        if: needs.reuse.outputs.mode == 'reuse'",
+        "        with:",
+        "          name: reused-dist",
+        "      - uses: actions/download-artifact",
+        "        if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'",
+        "        with:",
+        "          name: package",
+        "",
+    ]
+    .join("\n");
     assert_eq!(
-        step_if_expression(sibling, "draft-release", "name: reused-dist"),
+        step_if_expression(&sibling, "draft-release", "name: reused-dist"),
         "needs.reuse.outputs.mode == 'reuse'"
     );
     assert_eq!(

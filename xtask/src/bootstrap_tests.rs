@@ -1477,7 +1477,7 @@ fn test_kvm_access_is_checked_by_privileged_provisioner() {
     let mut permissions = fs::metadata(fix.root.join("kvm"))
         .expect("kvm")
         .permissions();
-    permissions.set_mode(0);
+    permissions.set_mode(0o0);
     fs::set_permissions(fix.root.join("kvm"), permissions).expect("chmod kvm");
     server_detects_address_and_installs_without_tty(&fix);
 }

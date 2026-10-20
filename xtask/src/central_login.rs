@@ -164,10 +164,10 @@ fn command_json(
             arguments[0]
         ));
     }
-    if let Some(expected_stdout) = stdout {
-        if finished.stdout != expected_stdout {
-            return Err(format!("{} stdout differed", arguments[0]));
-        }
+    if let Some(expected_stdout) = stdout
+        && finished.stdout != expected_stdout
+    {
+        return Err(format!("{} stdout differed", arguments[0]));
     }
     if let Some(expected_stderr) = stderr {
         let guest: Vec<u8> = finished

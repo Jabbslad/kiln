@@ -628,10 +628,8 @@ fn rewrite_lock(lock: &str, names: &[&str], cargo: &str) -> Result<String, Strin
             None => true,
             Some(source) => source.starts_with("path+"),
         };
-        if is_path {
-            if let Some(slot) = hits.get_mut(info.name.as_str()) {
-                slot.push(index);
-            }
+        if is_path && let Some(slot) = hits.get_mut(info.name.as_str()) {
+            slot.push(index);
         }
     }
     let mut replaced = BTreeMap::new();
@@ -813,10 +811,10 @@ fn postcondition(
         if old_pkg.get("name") != new_pkg.get("name") {
             return Err("Cargo.lock package name changed".to_string());
         }
-        let name = match new_pkg.get("name").and_then(toml::Value::as_str) {
-            Some(name) => name,
-            None => "None",
-        };
+        let name = new_pkg
+            .get("name")
+            .and_then(toml::Value::as_str)
+            .unwrap_or("None");
         if old_pkg.get("dependencies") != new_pkg.get("dependencies") {
             return Err(format!("Cargo.lock dependencies changed for {name}"));
         }
@@ -964,8 +962,8 @@ fn asset_rows(lines: &[String]) -> Result<Vec<(usize, String)>, String> {
         return Err("install.sh release asset markers are missing or duplicated".to_string());
     }
     let mut rows = Vec::new();
-    for index in (begin[0] + 1)..end[0] {
-        let text = body(&lines[index]);
+    for (index, line) in lines.iter().enumerate().take(end[0]).skip(begin[0] + 1) {
+        let text = body(line);
         if text.trim_start().starts_with('#') {
             continue;
         }
@@ -1177,8 +1175,7 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        return fs::set_permissions(path, fs::Permissions::from_mode(mode))
-            .map_err(|err| err.to_string());
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|err| err.to_string())
     }
     #[cfg(not(unix))]
     {
@@ -1253,10 +1250,10 @@ fn capture(
     let stderr_pipe = child.stderr.take();
     let stdout_thread = std::thread::spawn(move || read_pipe(stdout_pipe));
     let stderr_thread = std::thread::spawn(move || read_pipe(stderr_pipe));
-    if let Some(data) = input {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(data);
-        }
+    if let Some(data) = input
+        && let Some(mut stdin) = child.stdin.take()
+    {
+        let _ = stdin.write_all(data);
     }
     let started = Instant::now();
     let status = loop {
@@ -2406,6 +2403,7 @@ fn rewrite_release_json(archive: &Path, version: &str) {
         header.set_size(data.len() as u64);
         header.set_mode(*mode);
         header.set_mtime(0);
+        header.set_entry_type(tar::EntryType::Regular);
         header.set_cksum();
         dst.append(&header, data.as_slice()).unwrap();
     }

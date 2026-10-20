@@ -1540,7 +1540,7 @@ fn test_failed_dashboard_replace_keeps_the_installed_tree() {
     assert_has(&failed.stderr, "cannot install dashboard archive");
     assert_eq!(fs::read(&index).unwrap(), b"<html>one</html>\n");
     assert_eq!(
-        dashboard_asides(&up.fx.dashboard_dir().parent().unwrap()),
+        dashboard_asides(up.fx.dashboard_dir().parent().unwrap()),
         Vec::<PathBuf>::new()
     );
     up.assert_data_preserved();
@@ -2055,6 +2055,7 @@ fn test_installer_lock_is_exclusive_and_is_not_replaced() {
     fs::create_dir_all(lock.parent().unwrap()).unwrap();
     let file = OpenOptions::new()
         .create(true)
+        .truncate(true)
         .read(true)
         .write(true)
         .mode(0o600)
@@ -2318,9 +2319,15 @@ fn replace_bytes(data: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
 
 fn append_bytes<W: io::Write>(archive: &mut tar::Builder<W>, name: &str, data: &[u8]) {
     let mut header = tar::Header::new_gnu();
-    header
-        .set_path(name)
-        .unwrap_or_else(|error| panic!("tar path {name}: {error}"));
+    if header.set_path(name).is_err() {
+        // Planted `..` members are what the installer must refuse. set_path
+        // rejects them, so write the name into the ustar field directly.
+        let raw = header.as_old_mut();
+        raw.name = [0; 100];
+        let bytes = name.as_bytes();
+        assert!(bytes.len() < raw.name.len(), "tar path {name} is too long");
+        raw.name[..bytes.len()].copy_from_slice(bytes);
+    }
     header.set_size(data.len() as u64);
     header.set_mode(0o644);
     header.set_uid(0);

@@ -884,7 +884,7 @@ fn lost_copy(base: &[String], work: &Path) {
         .args(base.iter().skip(1))
         .args(["rm", "-f", name])
         .status();
-    output(&base, &["run", "-d", "--name", name, IMAGE, "sleep", "30"]);
+    output(base, &["run", "-d", "--name", name, IMAGE, "sleep", "30"]);
     let copied = Command::new(&base[0])
         .args(base.iter().skip(1))
         .args(["cp"])
@@ -893,23 +893,23 @@ fn lost_copy(base: &[String], work: &Path) {
         .output()
         .unwrap();
     assert!(!copied.status.success());
-    output(&base, &["exec", name, "mkdir", "-p", "/etc/kiln"]);
+    output(base, &["exec", name, "mkdir", "-p", "/etc/kiln"]);
     output_arg(
         base,
         &["cp"],
         &[&source, &PathBuf::from(format!("{name}:{CA_TARGET}"))],
     );
-    let inside = output(&base, &["exec", name, "cat", CA_TARGET]);
+    let inside = output(base, &["exec", name, "cat", CA_TARGET]);
     assert_eq!(inside, "copied-ca\n");
-    output(&base, &["rm", "-f", name]);
-    output(&base, &["run", "-d", "--name", name, IMAGE, "sleep", "30"]);
+    output(base, &["rm", "-f", name]);
+    output(base, &["run", "-d", "--name", name, IMAGE, "sleep", "30"]);
     let missing = Command::new(&base[0])
         .args(base.iter().skip(1))
         .args(["exec", name, "cat", CA_TARGET])
         .output()
         .unwrap();
     assert!(!missing.status.success());
-    output(&base, &["rm", "-f", name]);
+    output(base, &["rm", "-f", name]);
 }
 
 fn output_arg(base: &[String], prefix: &[&str], paths: &[&Path]) {

@@ -538,10 +538,10 @@ fn test_dashboard_contains_only_static_assets() {
         "assets/font-ef.woff2",
         "assets/hero-gh.webp",
     ] {
-        if let Some(parent) = Path::new(name).parent() {
-            if parent != Path::new("") {
-                fs::create_dir_all(fix.bins.join(parent)).unwrap();
-            }
+        if let Some(parent) = Path::new(name).parent()
+            && parent != Path::new("")
+        {
+            fs::create_dir_all(fix.bins.join(parent)).unwrap();
         }
         fs::write(fix.bins.join(name), name).unwrap();
     }

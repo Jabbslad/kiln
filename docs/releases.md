@@ -370,7 +370,7 @@ The shell bootstrap manages sqlite3, OpenSSL, curl, CA certificates, tar, and
 Ubuntu account tools. For manual installation, supply these dependencies yourself.
 `deploy/install.sh` only checks them. Installing and deploying Kiln is shell
 scripts. The public bootstrap pins v0.4.10 and runs `install.sh`. It rejects an
-archive whose installer is `install.py`. `scripts/release.py` packages releases in
+archive whose installer is `install.py`. `cargo xtask release` packages releases in
 CI and does not run on the server.
 The installer downloads checksum-pinned Firecracker/jailer 1.17.0 from GitHub. The package
 already contains the kernel, Ubuntu filesystem and guest agent.
@@ -510,7 +510,7 @@ That file stays a pin of one published release. After you publish, copy
 that release's version and SHA-256 lines into the pin. Set the published
 bootstrap pin sentence above to the same version. The workspace version
 in `Cargo.toml` can move ahead of this pin while a release is prepared.
-`scripts/test-bootstrap.py` requires the pin and that sentence to name
+`cargo xtask test-bootstrap` requires the pin and that sentence to name
 the same version. It also requires the tag to be a stable release whose
 archive digests match the pin. A publish edits neither version. The
 publish alone does not fail the test. The tag job also attaches

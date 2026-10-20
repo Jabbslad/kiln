@@ -121,10 +121,14 @@ fn spawn_proxy(work: &Path, state: &Path, addresses: &[&str], backend_port: u16)
     }
     command.arg(PROXYD).arg(format!("127.0.0.1:{backend_port}"));
     command.stdout(Stdio::null()).stderr(Stdio::null());
-    let child = command
+    let mut child = command
         .spawn()
         .unwrap_or_else(|error| panic!("systemd-socket-activate: {error}"));
     let pid = child.id().to_string();
+    // The fixture kills this pid. Reap it here so the exited process is not a zombie.
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
     fs::write(state.join("proxy.pid"), &pid).unwrap();
     fs::write(work.join("proxy.pid"), &pid).unwrap();
 }
