@@ -69,38 +69,56 @@ cp -a /opt/paseo/Caddyfile /opt/paseo/Caddyfile.bak-app-dark-forge
 sha256sum /opt/paseo/Caddyfile /opt/paseo/Caddyfile.bak-app-dark-forge
 ```
 
-Append the `app.dark-forge.dev` site from `deploy/app.Caddyfile` when that site is not already present. If a whole line is `}app.dark-forge.dev {`, split that line before you append. A comment or an indented line stays as it is. If the live file has no trailing newline, add one before you append. A bare `cat >>` joins the previous `}` to `app.dark-forge.dev {` and Caddy rejects the file. Leave every other site as it is. Use the file's own line ending for every line you write. Run this from the extracted server archive.
+Append the `app.dark-forge.dev` site from `deploy/app.Caddyfile` when that site is not already present. If a whole line is `}app.dark-forge.dev {`, split that line before you append. A comment or an indented line stays as it is. If the live file has no trailing newline, add one before you append. A bare `cat >>` joins the previous `}` to `app.dark-forge.dev {` and Caddy rejects the file. Leave every other site as it is. Keep each existing line's ending. A split line keeps that line's ending. A line you append uses the ending at the end of the file. Run this from the extracted server archive.
 
 ```sh
 fixed=$(mktemp)
-crlf=$(awk 'BEGIN { c = 0 } index($0, "\r") { c = 1 } END { print c }' /opt/paseo/Caddyfile)
-if awk -v crlf="$crlf" '
-  BEGIN { ORS = (crlf ? "\r\n" : "\n") }
+missing=0
+if [ -s /opt/paseo/Caddyfile ] && [ -n "$(tail -c1 /opt/paseo/Caddyfile)" ]; then
+  missing=1
+fi
+if awk -v missing="$missing" '
   {
     line = $0
-    sub(/\r$/, "", line)
+    ending = "\n"
+    if (sub(/\r$/, "", line)) ending = "\r\n"
+    n++
+    text[n] = line
+    endings[n] = ending
     if (line == "}app.dark-forge.dev {") {
-      print "}"
-      print "app.dark-forge.dev {"
       found = 1
-    } else {
-      print line
-      if (line == "app.dark-forge.dev {") found = 1
-    }
+      split_at[n] = 1
+    } else if (line == "app.dark-forge.dev {") found = 1
   }
-  END { exit !found }
+  END {
+    if (missing && n > 0) {
+      if (endings[n] == "\r\n") endings[n] = "\r"
+      else endings[n] = ""
+    }
+    for (i = 1; i <= n; i++) {
+      sep = endings[i]
+      if (split_at[i]) {
+        if (sep == "") sep = "\n"
+        printf "%s%s", "}", sep
+        printf "%s%s", "app.dark-forge.dev {", endings[i]
+      } else printf "%s%s", text[i], sep
+    }
+    exit !found
+  }
 ' /opt/paseo/Caddyfile > "$fixed"; then
   cat "$fixed" > /opt/paseo/Caddyfile
 else
   cat "$fixed" > /opt/paseo/Caddyfile
+  cr=$(printf '\r')
+  last=$(tail -c2 /opt/paseo/Caddyfile; printf x)
+  use_crlf=0
+  case "$last" in
+    *"$cr"*) use_crlf=1 ;;
+  esac
   if [ -n "$(tail -c1 /opt/paseo/Caddyfile)" ]; then
-    if [ "$crlf" -eq 1 ]; then
-      printf '\r\n' >> /opt/paseo/Caddyfile
-    else
-      printf '\n' >> /opt/paseo/Caddyfile
-    fi
+    printf '\n' >> /opt/paseo/Caddyfile
   fi
-  if [ "$crlf" -eq 1 ]; then
+  if [ "$use_crlf" -eq 1 ]; then
     awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }' deploy/app.Caddyfile >> /opt/paseo/Caddyfile
   else
     cat deploy/app.Caddyfile >> /opt/paseo/Caddyfile
