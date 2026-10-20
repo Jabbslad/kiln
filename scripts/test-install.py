@@ -100,6 +100,10 @@ case "$1" in
     fi
     ;;
   enable)
+    if [ -f {state}/fail-enable-socket ] && [ "$service" = kiln-app-proxy.socket ]; then
+      printf '%s\\n' 'socket unit is masked' >&2
+      exit 1
+    fi
     if [ -f {state}/fail-enable ]; then exit 1; fi
     ;;
   disable|daemon-reload) ;;
@@ -561,6 +565,22 @@ class FreshTests(InstallerTest):
         self.assertIn("systemctl enable --now kiln-app-proxy.socket", self.lines())
         self.assertTrue((units / "kiln-api.service").is_file())
         self.assert_no_dashboard_fetch(result)
+
+    def test_socket_enable_failure_shows_systemctl_stderr(self):
+        self.fresh_ready()
+        self.stage_app_units()
+        archive = self.write_dashboard_archive({"index.html": b"<html>dashboard</html>\n"})
+        (self.state / "fail-enable-socket").write_text("1\n")
+        result = self.invoke(
+            "--address",
+            "127.0.0.1",
+            "--apply",
+            "--dashboard-archive",
+            str(archive),
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("socket unit is masked", result.stderr)
+        self.assertIn("systemctl enable --now kiln-app-proxy.socket", result.stderr)
 
     def test_apply_without_dashboard_archive_leaves_the_share_path_absent(self):
         self.fresh_ready()

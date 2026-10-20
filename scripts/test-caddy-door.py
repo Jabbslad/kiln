@@ -760,6 +760,8 @@ class AppSiteRunbook(unittest.TestCase):
         self.assertNotIn("if ! grep -qx 'app.dark-forge.dev {' /opt/paseo/Caddyfile; then", runbook)
         self.assertIn('line == "}app.dark-forge.dev {"', runbook)
         self.assertIn('line == "app.dark-forge.dev {"', runbook)
+        self.assertIn("If a whole line is `}app.dark-forge.dev {`", runbook)
+        self.assertNotIn("already contains `}app.dark-forge.dev {`", runbook)
         dns_block = self._fenced_sh("getent ahostsv4 app.dark-forge.dev")
         self.assertLess(dns_block.index("caddy validate"), dns_block.index("caddy reload"))
         self.assertIn("printf '\\n' >> /opt/paseo/Caddyfile", runbook)
@@ -836,6 +838,7 @@ class AppSiteRunbook(unittest.TestCase):
             text = live.read_text()
             self.assertEqual(text.count("app.dark-forge.dev {"), 1)
             self.assertNotIn("}app.dark-forge.dev", text)
+            self.assertNotIn(b"\r", repaired)
             checked = subprocess.run(
                 ["caddy", "validate", "--config", str(live), "--adapter", "caddyfile"],
                 capture_output=True,
@@ -861,6 +864,7 @@ class AppSiteRunbook(unittest.TestCase):
             repaired = glued_path.read_bytes()
             self._append_site(glued_path, ROOT / "deploy/app.Caddyfile")
             self.assertEqual(glued_path.read_bytes(), repaired)
+            self.assertNotIn(b"\n", repaired.replace(b"\r\n", b""))
             self.assertTrue(repaired.startswith(prefix))
             self.assertTrue(repaired.endswith(body_crlf))
             self.assertEqual(repaired.count(b"app.dark-forge.dev {"), 1)
@@ -889,6 +893,64 @@ class AppSiteRunbook(unittest.TestCase):
             indented_out = indent_path.read_bytes()
             self.assertTrue(indented_out.startswith(indented))
             self.assertIn(b"\n  }app.dark-forge.dev {\n", indented_out)
+            plain = root / "plain"
+            plain.write_bytes(b'example.test {\r\n\trespond "ok"\r\n}\r\n')
+            self._append_site(plain, ROOT / "deploy/app.Caddyfile")
+            appended = plain.read_bytes()
+            self._append_site(plain, ROOT / "deploy/app.Caddyfile")
+            self.assertEqual(plain.read_bytes(), appended)
+            self.assertTrue(appended.startswith(b'example.test {\r\n\trespond "ok"\r\n}\r\n'))
+            self.assertNotIn(b"\n", appended.replace(b"\r\n", b""))
+            self.assertEqual(appended.count(b"app.dark-forge.dev {"), 1)
+            plain_checked = subprocess.run(
+                ["caddy", "validate", "--config", str(plain), "--adapter", "caddyfile"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(plain_checked.returncode, 0, plain_checked.stderr)
+
+    def test_ci_installs_caddy_from_one_checked_archive(self):
+        workflow = (ROOT / ".github/workflows/build.yml").read_text()
+        script_path = ROOT / "scripts/install-caddy.sh"
+        self.assertTrue(script_path.is_file())
+        script = script_path.read_text()
+        self.assertEqual(workflow.count("bash scripts/install-caddy.sh"), 2)
+        self.assertNotIn("caddy_2.10.2_linux_amd64.tar.gz", workflow)
+        self.assertEqual(script.count("caddy_2.10.2_linux_amd64.tar.gz"), 1)
+        self.assertIn("sha512sum -c -", script)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bindir = root / "bin"
+            bindir.mkdir()
+            log = root / "sudo.log"
+            (bindir / "curl").write_text(
+                "#!/bin/sh\n"
+                "prev=\n"
+                "out=\n"
+                "for arg in \"$@\"; do\n"
+                "  if [ \"$prev\" = -o ]; then out=$arg; fi\n"
+                "  prev=$arg\n"
+                "done\n"
+                "printf '%s' 'not a tarball' > \"$out\"\n"
+            )
+            (bindir / "sudo").write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' \"$*\" >> {log}\n"
+            )
+            os.chmod(bindir / "curl", 0o755)
+            os.chmod(bindir / "sudo", 0o755)
+            env = os.environ.copy()
+            env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
+            completed = subprocess.run(
+                ["bash", str(script_path)],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertNotEqual(completed.returncode, 0, completed.stdout)
+            self.assertIn("FAILED", completed.stdout)
+            self.assertIn("computed checksum did NOT match", completed.stderr)
+            self.assertFalse(log.exists())
 
     def test_dns_compares_every_address(self):
         same_app = "\n".join([
