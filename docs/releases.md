@@ -6,6 +6,21 @@ terminal is needed to install. Access to a running Kiln server still requires
 browser login to an enrolled host or a direct administrator profile; public
 downloads do not disable API authentication.
 
+## v0.4.8 public door trust
+
+`kiln login` stores public-root trust for `https://cli.dark-forge.dev`. A saved
+profile keeps its private CA. An origin that still names `:8443` stays pinned
+to that CA. Door commands for the portless origin use public roots.
+
+The public socket listens on `78.46.98.73:8443`. `systemd-socket-proxyd`
+forwards those connections to `127.0.0.1:8444`. The door still has one listen
+address. `docs/runbooks/2026-10-19-door-public-cert.md` records the Caddy
+reload and the ACME checks.
+
+Publishing this release does not deploy a server or restart a live service.
+The public bootstrap still pins the published v0.4.7 assets and runs
+`install.sh`.
+
 ## v0.4.7 website and dashboard design
 
 The static dashboard archive now includes a public landing page at `/` and the
