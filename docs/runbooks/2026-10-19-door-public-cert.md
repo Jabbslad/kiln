@@ -14,7 +14,7 @@ The yes covers every touch below.
 
 ## Install the released client first
 
-Install the first release cut from a tree that contains this commit. `Cargo.toml` field `workspace.package.version` is `v0.4.9`. This commit does not change that field. No release tag contains the commit yet. Kiln 0.4.6 pins the private CA and fails the public certificate. Do not use 0.4.6 for the laptop check. Do not use an unreleased build for that check.
+The door change shipped in the published v0.4.9 release, tag v0.4.9 on ca31d16, and that commit contains the #27 commit 5e9e7da. Kiln 0.4.6 pins the private CA and fails the public certificate. Do not use 0.4.6 for the laptop check. Do not use an unreleased build for that check.
 
 Jamie's saved profile origin is `https://cli.dark-forge.dev:8443`. That file keeps its pinned CA. Door commands do not relax the pin on any port, including 443. `kiln list`, `kiln create`, `kiln exec`, and `kiln delete` fail the public certificate until a fresh `kiln login`.
 
