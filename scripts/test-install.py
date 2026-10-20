@@ -765,6 +765,22 @@ class UpgradeTests(InstallerTest):
         self.assertFalse(
             any("enable" in line and "kiln-door-proxy-public" in line for line in self.lines())
         )
+        self.assertIn(
+            "Binaries are already updated. Closing public tcp/8443.",
+            result.stdout,
+        )
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        commented = (
+            "# kiln-door-proxy-public.socket stays named only in this comment\n"
+            "[Service]\nSockets=kiln-door-proxy.socket\n"
+        )
+        unit.write_text(commented)
+        self.log.write_text("")
+        again = self.invoke("--apply")
+        self.assertEqual(again.returncode, 0, again.stderr + again.stdout)
+        self.assertEqual(unit.read_text(), commented)
+        self.assertFalse(self.lines("systemctl daemon-reload"))
+        self.assertFalse(self.lines("systemctl restart"))
 
     def test_dark_forge_layout_upgrades_and_rolls_back_without_release_json(self):
         self.write_release("0.4.5")

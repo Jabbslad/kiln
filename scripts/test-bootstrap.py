@@ -175,9 +175,13 @@ import json, os, pathlib, subprocess, sys
 root = pathlib.Path(os.environ['FIXTURE'])
 assert sys.argv[1] == '-n', 'sudo must never prompt'
 args = sys.argv[2:]
+stdin = sys.stdin.read()
+if args[:2] == ['sh', '-s']:
+    args = [*args, stdin]
+else:
+    assert stdin == '', 'privileged commands must not consume script stdin'
 with (root / 'privileged').open('a') as f:
     f.write(json.dumps(args) + '\\n')
-assert sys.stdin.read() == '', 'privileged commands must not consume script stdin'
 if args[0] == 'true':
     sys.exit(int(os.environ.get('SUDO_FAILURE', '0')))
 if args[0] == 'bash':

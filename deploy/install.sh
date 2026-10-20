@@ -902,7 +902,7 @@ upgrade_restore() {
 close_public_door() {
   local unit state changed=0 before
   unit=$UNITS/kiln-door-proxy.service
-  if [ -f "$unit" ] && grep -q 'kiln-door-proxy-public.socket' "$unit"; then
+  if [ -f "$unit" ] && grep -q '^Sockets=.*kiln-door-proxy-public.socket' "$unit"; then
     sed -i 's/^Sockets=.*/Sockets=kiln-door-proxy.socket/' "$unit"
     systemctl daemon-reload
     changed=1
@@ -1090,6 +1090,7 @@ upgrade() {
   fi
   rm -f -- "$pending"
   sync "$OPT"
+  printf 'Binaries are already updated. Closing public tcp/8443. A failure here leaves those binaries in place.\n'
   close_public_door
   printf 'Updated to Kiln %s. Ready: https://%s:8443\nPrevious binaries: %s\n' "$target" "$installed_address" "$backup"
   connection_instructions "$installed_address"

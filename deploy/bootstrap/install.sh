@@ -255,11 +255,11 @@ run_installer() {
 }
 
 retire_public_door() {
-    as_root sh -c '
+    as_root sh -s <<'EOF'
 unit=/etc/systemd/system/kiln-door-proxy.service
 changed=0
-if [ -f "$unit" ] && grep -q kiln-door-proxy-public.socket "$unit"; then
-  sed -i "s/^Sockets=.*/Sockets=kiln-door-proxy.socket/" "$unit"
+if [ -f "$unit" ] && grep -q '^Sockets=.*kiln-door-proxy-public.socket' "$unit"; then
+  sed -i 's/^Sockets=.*/Sockets=kiln-door-proxy.socket/' "$unit"
   systemctl daemon-reload
   changed=1
 fi
@@ -275,7 +275,7 @@ esac
 if [ "$changed" = 1 ] && systemctl is-active --quiet kiln-door-proxy.service; then
   systemctl restart kiln-door-proxy.service
 fi
-'
+EOF
 }
 
 install_server() {
