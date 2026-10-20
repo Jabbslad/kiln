@@ -381,7 +381,9 @@ fn identity_origin(explicit: Option<&str>) -> String {
 }
 fn open_browser(url: &str) -> Result<()> {
     // Windows resolves `rundll32` to System32 even when PATH is replaced, so a
-    // `.cmd` stand-in never runs. Tests set this to keep that launch from starting.
+    // `.cmd` stand-in never runs. Debug builds read KILN_BROWSER=0 and skip
+    // the launch. The release binary does not.
+    #[cfg(debug_assertions)]
     if std::env::var_os("KILN_BROWSER").is_some_and(|value| value == "0") {
         bail!("browser launch failed");
     }
