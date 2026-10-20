@@ -21,6 +21,9 @@ Publishing this release does not deploy a server or restart a live service.
 The public bootstrap still pins the published v0.4.7 assets and runs
 `install.sh`.
 
+v0.4.8 was tagged but never released. The Windows stamp failed and #31 fixed
+it. v0.4.9 is the release that carries these changes.
+
 ## v0.4.7 website and dashboard design
 
 The static dashboard archive now includes a public landing page at `/` and the
@@ -253,7 +256,7 @@ is supplied (explicit uplink). See the [bootstrap guide](../deploy/bootstrap/REA
 
 **v0.2.0 guest-access additions:** packages include interactive SSH,
 SFTP, editor SSH configuration, and optional isolated guest IPv4 egress. The
-public installer pins v0.4.7. These features require the new client, server,
+public installer pins v0.4.9. These features require the new client, server,
 and updated Ubuntu guest agent. Existing templates/boxes are not
 upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
 management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
@@ -353,7 +356,7 @@ temporary space for the downloaded archive and extracted image (about 3 GiB).
 The shell bootstrap manages sqlite3, OpenSSL, curl, CA certificates, tar, and
 Ubuntu account tools. For manual installation, supply these dependencies yourself.
 `deploy/install.sh` only checks them. Installing and deploying Kiln is shell
-scripts. The public bootstrap pins v0.4.7 and runs `install.sh`. It rejects an
+scripts. The public bootstrap pins v0.4.9 and runs `install.sh`. It rejects an
 archive whose installer is `install.py`. `scripts/release.py` packages releases in
 CI and does not run on the server.
 The installer downloads checksum-pinned Firecracker/jailer 1.17.0 from GitHub. The package

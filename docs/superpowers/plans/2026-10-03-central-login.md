@@ -1,6 +1,6 @@
 # Central Login and Server Discovery Implementation Plan
 
-> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). Steps below that name `install.py` are historical. The public bootstrap pins v0.4.7 and runs `install.sh` only. Deploying tag v0.4.4 still overlays this tree's `install.sh`, because that archive contains `install.py` and rejects Debian 13.
+> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). Steps below that name `install.py` are historical. The public bootstrap pins v0.4.9 and runs `install.sh` only. Deploying tag v0.4.4 still overlays this tree's `install.sh`, because that archive contains `install.py` and rejects Debian 13.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Prefer inline execution in the checkout containing the work; tool/developer delegation restrictions take precedence over a skill's recommendation to delegate.
 
