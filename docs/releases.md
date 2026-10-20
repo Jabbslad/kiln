@@ -469,9 +469,10 @@ must not contain credentials or runtime data. Fork PRs use hosted runners and
 read-only permissions. Only the tag release job has contents-write permission.
 The attest job signs the package archives a tag publishes. A main push
 signs the archives a later tag reuses. A tag whose package jobs rebuild
-signs that rebuild. A manual run signs the archives it builds. A pull
+signs that rebuild. A manual run on main signs the archives it builds. A pull
 request does not run the job. The job has `id-token` and attestations
 write, and it does not have contents write.
+A reused archive was signed on main, so verify with `gh attestation verify ARCHIVE --repo Jabbslad/kiln --cert-identity-regex '^https://github\.com/Jabbslad/kiln/\.github/workflows/build\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$'`, which accepts `refs/heads/main` or `refs/tags/vX.Y.Z` and rejects any other branch.
 
 For an approved release, push an annotated `vMAJOR.MINOR.PATCH` tag of the green
 main commit (`git tag -a vX.Y.Z -m "..."`). The workflow finds that commit's

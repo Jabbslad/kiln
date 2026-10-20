@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -130,6 +131,20 @@ def _unfold_if(lines, index, continued):
             continue
         break
     return " ".join(parts)
+
+
+def _attest_runs(expr, event, ref, cancelled=False, result="success"):
+    text = expr.replace("!cancelled()", "False" if cancelled else "True")
+    text = text.replace(
+        "startsWith(github.ref, 'refs/tags/v')",
+        "True" if ref.startswith("refs/tags/v") else "False",
+    )
+    text = text.replace("github.event_name", repr(event))
+    text = text.replace("github.ref", repr(ref))
+    for job in ("server-package", "client", "dashboard"):
+        text = text.replace(f"needs.{job}.result", repr(result))
+    text = text.replace("&&", " and ").replace("||", " or ")
+    return eval(text, {"__builtins__": {}}, {})
 
 
 def job_if_expression(text, name):
@@ -355,7 +370,26 @@ class ReuseDecisionTests(unittest.TestCase):
             self.assertIn(result, expr)
         self.assertIn("github.ref == 'refs/heads/main'", expr)
         self.assertIn("startsWith(github.ref, 'refs/tags/v')", expr)
-        self.assertIn("github.event_name == 'workflow_dispatch'", expr)
+        self.assertTrue(_attest_runs(expr, "push", "refs/heads/main"))
+        self.assertTrue(_attest_runs(expr, "push", "refs/tags/v0.4.11"))
+        self.assertTrue(_attest_runs(expr, "workflow_dispatch", "refs/heads/main"))
+        self.assertFalse(
+            _attest_runs(expr, "workflow_dispatch", "refs/heads/feature"),
+            "a non-main dispatch must not attest",
+        )
+        self.assertFalse(_attest_runs(expr, "push", "refs/heads/feature"))
+        docs = (REPO / "docs/releases.md").read_text(encoding="utf-8")
+        documented = re.search(r"--cert-identity-regex '([^']+)'", docs)
+        self.assertIsNotNone(documented)
+        identity = re.compile(documented.group(1))
+
+        def subject(ref):
+            return f"https://github.com/Jabbslad/kiln/.github/workflows/build.yml@{ref}"
+
+        self.assertIsNotNone(identity.fullmatch(subject("refs/heads/main")))
+        self.assertIsNotNone(identity.fullmatch(subject("refs/tags/v0.4.11")))
+        self.assertIsNone(identity.fullmatch(subject("refs/heads/feature")))
+        self.assertIsNone(identity.fullmatch(subject("refs/heads/main-backup")))
 
     def test_workflow_keeps_drafts_and_does_not_move_tags(self):
         text = (REPO / ".github/workflows/build.yml").read_text(encoding="utf-8")
