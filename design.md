@@ -603,7 +603,7 @@ this section defines the deliberate adaptations for Kiln's public page and conso
 - `/` is a public, API-independent landing page for developers operating their own
   Linux host. Its job is to explain the product and lead to client installation and
   server enrollment. `/boxes` remains the console; preview stays explicit at
-  `/boxes?preview=1`. Do not claim browser login or live VM controls are implemented.
+  `/boxes?preview=1`. Dashboard sign-in shipped. Live VM controls are not implemented.
 - Use Kiln's real CLI commands and existing setup documentation. Do not copy Prime
   Intellect's logos, customers, testimonials, benchmark numbers, or product claims.
 - Retain console information density and mobile navigation. Use white active
