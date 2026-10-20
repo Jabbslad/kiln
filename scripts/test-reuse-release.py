@@ -105,8 +105,7 @@ EXPECTED_JOBS = (
 )
 
 
-def job_if_expression(text, name):
-    """Return one job's if, unfolded, without a later step's if."""
+def _job_body(text, name):
     lines = text.splitlines()
     try:
         start = lines.index(f"  {name}:")
@@ -117,20 +116,59 @@ def job_if_expression(text, name):
         if len(line) > 2 and line.startswith("  ") and line[2] != " ":
             break
         body.append(line)
-    for index, line in enumerate(body):
-        if not line.startswith("    if:"):
-            continue
-        folded = line.removeprefix("    if:").strip()
-        if folded in {">-", ">", "|-", "|"}:
-            parts = []
-            for nxt in body[index + 1 :]:
-                if nxt.startswith("      "):
-                    parts.append(nxt.strip())
-                    continue
-                break
-            return " ".join(parts)
+    return body
+
+
+def _unfold_if(lines, index, continued):
+    folded = lines[index].split("if:", 1)[1].strip()
+    if folded not in {">-", ">", "|-", "|"}:
         return folded
+    parts = []
+    for nxt in lines[index + 1 :]:
+        if nxt.startswith(continued):
+            parts.append(nxt.strip())
+            continue
+        break
+    return " ".join(parts)
+
+
+def job_if_expression(text, name):
+    """Return one job's if, unfolded, without a later step's if."""
+    body = _job_body(text, name)
+    for index, line in enumerate(body):
+        if line.startswith("    if:"):
+            return _unfold_if(body, index, "      ")
     raise AssertionError(f"{name} has no job if")
+
+
+def step_if_expression(text, job, marker):
+    """Return the if of the one step in job whose block contains marker."""
+    body = _job_body(text, job)
+    steps = []
+    current = None
+    for line in body:
+        if line.startswith("      - "):
+            if current is not None:
+                steps.append(current)
+            current = [line]
+            continue
+        if current is None:
+            continue
+        if line.startswith("        ") or line.strip() == "":
+            current.append(line)
+            continue
+        steps.append(current)
+        current = None
+    if current is not None:
+        steps.append(current)
+    matches = [step for step in steps if any(marker in line for line in step)]
+    if len(matches) != 1:
+        raise AssertionError(f"{job} has {len(matches)} steps matching {marker}")
+    step = matches[0]
+    for index, line in enumerate(step):
+        if line.strip().startswith("if:"):
+            return _unfold_if(step, index, "          ")
+    raise AssertionError(f"{job} step {marker} has no if")
 
 
 def _run(sha=SHA, **overrides):
@@ -331,6 +369,25 @@ class ReuseDecisionTests(unittest.TestCase):
         self.assertNotIn(
             "needs.reuse.result == 'success'",
             job_if_expression(step_only, "draft-release"),
+        )
+        reuse_guard = "needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'"
+        self.assertIn(reuse_guard, step_if_expression(text, "draft-release", "name: reused-dist"))
+        self.assertIn(reuse_guard, job_if_expression(text, "dry-run-assets"))
+        sibling = (
+            "  draft-release:\n"
+            "    steps:\n"
+            "      - uses: actions/download-artifact\n"
+            "        if: needs.reuse.outputs.mode == 'reuse'\n"
+            "        with:\n"
+            "          name: reused-dist\n"
+            "      - uses: actions/download-artifact\n"
+            "        if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'\n"
+            "        with:\n"
+            "          name: package\n"
+        )
+        self.assertEqual(
+            step_if_expression(sibling, "draft-release", "name: reused-dist"),
+            "needs.reuse.outputs.mode == 'reuse'",
         )
         self.assertEqual(
             text.count("!(needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse')"),
