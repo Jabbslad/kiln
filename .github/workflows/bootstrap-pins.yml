@@ -1,0 +1,30 @@
+name: Bootstrap pins
+
+on:
+  pull_request:
+    paths:
+      - deploy/bootstrap/install.sh
+      - docs/releases.md
+      - scripts/check-bootstrap-pins.sh
+      - scripts/test-bootstrap-pins.sh
+      - .github/workflows/bootstrap-pins.yml
+
+  schedule:
+    - cron: '17 6 * * *'
+
+permissions:
+  contents: read
+  attestations: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check published bootstrap pins
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh scripts/check-bootstrap-pins.sh
