@@ -909,6 +909,52 @@ class AppSiteRunbook(unittest.TestCase):
             )
             self.assertEqual(plain_checked.returncode, 0, plain_checked.stderr)
 
+    def test_append_keeps_each_lines_ending(self):
+        site = (ROOT / "deploy/app.Caddyfile").read_bytes()
+        header, _, body = site.partition(b"\n")
+        self.assertEqual(header, b"app.dark-forge.dev {")
+        self.assertNotIn(b"\r", site)
+        crlf_prefix = b'example.test {\r\n\trespond "ok"\r\n}\r\n'
+        lf_note = b"# keep this line\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            present = root / "present"
+            present.write_bytes(lf_note + crlf_prefix + header + b"\n" + body)
+            original = present.read_bytes()
+            self.assertIn(b"\n", original.replace(b"\r\n", b""))
+            self.assertIn(b"\r\n", original)
+            self._append_site(present, ROOT / "deploy/app.Caddyfile")
+            self._append_site(present, ROOT / "deploy/app.Caddyfile")
+            self.assertEqual(present.read_bytes(), original)
+
+            glued = root / "glued"
+            glued.write_bytes(crlf_prefix + b"}" + header + b"\n" + body)
+            self._append_site(glued, ROOT / "deploy/app.Caddyfile")
+            repaired = glued.read_bytes()
+            self._append_site(glued, ROOT / "deploy/app.Caddyfile")
+            self.assertEqual(glued.read_bytes(), repaired)
+            self.assertTrue(repaired.startswith(crlf_prefix + b"}\n" + header + b"\n"))
+            self.assertTrue(repaired.endswith(body))
+            self.assertIn(b"\n", repaired.replace(b"\r\n", b""))
+            self.assertEqual(repaired.count(b"app.dark-forge.dev {"), 1)
+            checked = subprocess.run(
+                ["caddy", "validate", "--config", str(glued), "--adapter", "caddyfile"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+
+            appended = root / "appended"
+            appended.write_bytes(lf_note + crlf_prefix)
+            self._append_site(appended, ROOT / "deploy/app.Caddyfile")
+            added = appended.read_bytes()
+            self._append_site(appended, ROOT / "deploy/app.Caddyfile")
+            self.assertEqual(appended.read_bytes(), added)
+            self.assertTrue(added.startswith(lf_note + crlf_prefix))
+            self.assertIn(b"\n# keep this line\n", added)
+            self.assertIn(b"\r\n}\r\napp.dark-forge.dev {\r\n", added)
+            self.assertNotIn(b"# keep this line\r\n", added)
+
     def test_ci_installs_caddy_from_one_checked_archive(self):
         workflow = (ROOT / ".github/workflows/build.yml").read_text()
         script_path = ROOT / "scripts/install-caddy.sh"
