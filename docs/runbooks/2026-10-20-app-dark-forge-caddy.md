@@ -69,11 +69,13 @@ cp -a /opt/paseo/Caddyfile /opt/paseo/Caddyfile.bak-app-dark-forge
 sha256sum /opt/paseo/Caddyfile /opt/paseo/Caddyfile.bak-app-dark-forge
 ```
 
-Append the `app.dark-forge.dev` site from `deploy/app.Caddyfile` when that site is not already present. If the file already contains `}app.dark-forge.dev {`, split that join before you append. If the live file has no trailing newline, add one before you append. A bare `cat >>` joins the previous `}` to `app.dark-forge.dev {` and Caddy rejects the file. Leave every other site as it is. Run this from the extracted server archive.
+Append the `app.dark-forge.dev` site from `deploy/app.Caddyfile` when that site is not already present. If a whole line is `}app.dark-forge.dev {`, split that line before you append. A comment or an indented line stays as it is. If the live file has no trailing newline, add one before you append. A bare `cat >>` joins the previous `}` to `app.dark-forge.dev {` and Caddy rejects the file. Leave every other site as it is. Use the file's own line ending for every line you write. Run this from the extracted server archive.
 
 ```sh
 fixed=$(mktemp)
-if awk '
+crlf=$(awk 'BEGIN { c = 0 } index($0, "\r") { c = 1 } END { print c }' /opt/paseo/Caddyfile)
+if awk -v crlf="$crlf" '
+  BEGIN { ORS = (crlf ? "\r\n" : "\n") }
   {
     line = $0
     sub(/\r$/, "", line)
@@ -82,7 +84,7 @@ if awk '
       print "app.dark-forge.dev {"
       found = 1
     } else {
-      print
+      print line
       if (line == "app.dark-forge.dev {") found = 1
     }
   }
@@ -92,9 +94,17 @@ if awk '
 else
   cat "$fixed" > /opt/paseo/Caddyfile
   if [ -n "$(tail -c1 /opt/paseo/Caddyfile)" ]; then
-    printf '\n' >> /opt/paseo/Caddyfile
+    if [ "$crlf" -eq 1 ]; then
+      printf '\r\n' >> /opt/paseo/Caddyfile
+    else
+      printf '\n' >> /opt/paseo/Caddyfile
+    fi
   fi
-  cat deploy/app.Caddyfile >> /opt/paseo/Caddyfile
+  if [ "$crlf" -eq 1 ]; then
+    awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }' deploy/app.Caddyfile >> /opt/paseo/Caddyfile
+  else
+    cat deploy/app.Caddyfile >> /opt/paseo/Caddyfile
+  fi
 fi
 rm -f "$fixed"
 ```
