@@ -53,6 +53,22 @@ enum Command {
         #[arg(long, default_value = "/var/lib/kiln-api/dashboard-session")]
         session_dir: PathBuf,
     },
+    /// Serve the dashboard archive and the read API on 127.0.0.1:8093.
+    App {
+        #[arg(long, default_value = "127.0.0.1:8093")]
+        listen: SocketAddr,
+        #[arg(long, default_value = "https://127.0.0.1:8443")]
+        upstream: String,
+        #[arg(long)]
+        upstream_ca: PathBuf,
+        #[arg(long, default_value = "/etc/kiln/identity.json")]
+        enrollment_file: PathBuf,
+        #[arg(long, default_value = "/var/lib/kiln-api/jwks.json")]
+        jwks_cache: PathBuf,
+        /// Directory of the unpacked dashboard archive. Missing directories serve no HTML.
+        #[arg(long)]
+        dashboard_root: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -91,6 +107,24 @@ async fn main() -> Result<()> {
                         identity_ca: None,
                     },
                 )
+                .await
+            }
+            Command::App {
+                listen,
+                upstream,
+                upstream_ca,
+                enrollment_file,
+                jwks_cache,
+                dashboard_root,
+            } => {
+                kiln_server::app_listener::run(kiln_server::app_listener::Options {
+                    listen,
+                    upstream,
+                    upstream_ca,
+                    enrollment_file,
+                    jwks_cache,
+                    dashboard_root,
+                })
                 .await
             }
         };

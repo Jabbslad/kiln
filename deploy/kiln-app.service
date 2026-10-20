@@ -1,0 +1,24 @@
+[Unit]
+Description=Kiln dashboard listener
+After=network-online.target kiln-api.service
+Wants=kiln-api.service
+ConditionPathExists=/etc/kiln/identity.json
+ConditionPathExists=/etc/kiln/ca.crt
+
+[Service]
+Type=simple
+User=kiln-api
+Group=kiln-api
+ExecStart=/usr/local/libexec/kiln-api app --listen 127.0.0.1:8093 --upstream https://127.0.0.1:8443 --upstream-ca /etc/kiln/ca.crt --enrollment-file /etc/kiln/identity.json --jwks-cache /var/lib/kiln-api/jwks.json --dashboard-root /usr/local/share/kiln/dashboard
+UMask=0077
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+RestrictAddressFamilies=AF_INET AF_INET6
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

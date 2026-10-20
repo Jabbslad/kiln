@@ -35,8 +35,9 @@ or connected to a host automatically.
 
 Extract it into a static web root served at `/`, with SPA fallback to
 `index.html`. `/` is the public landing page. Open `/boxes?preview=1` for the labelled design preview. On `/boxes` without
-preview mode, the missing dashboard API produces a disconnected screen; the
-existing CLI API does not implement this aggregate endpoint or browser sessions.
+preview mode, a request that gets no session sees the disconnected screen.
+`GET /api/v1/dashboard` is implemented on the CLI API. This archive does not
+add a browser session.
 Do not embed administrator tokens or bypass authentication to connect it.
 
 ## Read-only API contract

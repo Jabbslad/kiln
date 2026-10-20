@@ -29,19 +29,19 @@ Three names, three credentials, one machine.
 
 `https://dark-forge.dev` is the identity service. It already is. The CLI default is `DEFAULT_IDENTITY_ORIGIN` in `crates/kiln-api/src/auth.rs` lines 5-8. The process binds loopback `127.0.0.1:8091` and refuses any other address (`crates/kiln-identity/src/main.rs` line 8 and lines 36-38). HTTPS terminates at the reverse proxy described in `docs/identity-service.md` lines 39-45. That proxy's certificate and private key stay the identity service's. No other name uses that key file.
 
-`https://app.dark-forge.dev` is the dashboard and the read API, on port 443. The operator obtains a Let's Encrypt certificate whose only name is `app.dark-forge.dev`, in its own key file. The kiln process does not speak ACME. The identity guide already says the app does not manage public certificates. The same rule applies here. A browser check on the real host must show a different certificate fingerprint for `app.dark-forge.dev` than for `dark-forge.dev`. One proxy process can serve both names when SNI selects a separate key. The identity key file stays unique to `dark-forge.dev`.
+`https://app.dark-forge.dev` is the dashboard and the read API, on port 443. `app.dark-forge.dev` is a DNS-only A record to `78.46.98.73`. TLS is the existing Caddy ACME certificate. Caddy stores that certificate under its data volume, separate from `dark-forge.dev` and `cli.dark-forge.dev`. There is no operator-managed key file and no DNS-01 certificate. The kiln process does not speak ACME. This change does not request a certificate. The identity signing key stays `signing.pem` and is not a TLS key.
 
-`https://cli.dark-forge.dev:8443` is the CLI listener. `kiln-api` terminates that TLS itself, with the PEM pair it loads today (`crates/kiln-server/src/bin/kiln-api.rs` lines 54-57, `deploy/kiln-api.service` line 12). The identity reverse proxy must not sit in front of this listener. A proxy certificate would fail the pinned CA.
+The public door is `https://cli.dark-forge.dev` on port 443. Caddy presents the existing ACME certificate and proxies to the door on `127.0.0.1:8444`. `kiln-api` stays on `127.0.0.1:8443` and terminates TLS with its own leaf (`deploy/kiln-api.service`). Public tcp/8443 is closed. The identity reverse proxy does not sit in front of `kiln-api`. A proxy certificate on that API would fail the pinned CA.
 
 The leaf has to include `DNS:cli.dark-forge.dev`. The installer writes `subjectAltName=IP:{address}` and no DNS name (`deploy/install.py` line 333). Renewal text still says to keep that IP SAN (`docs/releases.md` lines 353-355). On this host the operator issues a new leaf from the retained private CA. The SAN includes `DNS:cli.dark-forge.dev` and any `IP:` name a current profile still dials. The operator replaces `/etc/kiln/tls.crt` and `/etc/kiln/tls.key` with that leaf and key. The certificate stays a leaf, `CA:FALSE` (`docs/remote-client.md` lines 166-169). The key stays owner-only and readable by `kiln-api` (`docs/remote-client.md` lines 169-170). The CA public file registered at enrollment stays `ca.crt`. `ca.key` stays mode 0600 (`deploy/install.py` lines 356-357).
 
-This host enrolls with `--url https://cli.dark-forge.dev:8443`. Identity stores that URL as the server origin (`crates/kiln-server/src/enrollment.rs` lines 24-25 and line 305).
+This host enrolls with `--url https://cli.dark-forge.dev`. Identity stores that URL as the server origin (`crates/kiln-server/src/enrollment.rs` lines 24-25 and line 305).
 
 Cookies do not cross these names. Identity sets `__Host-kiln_session` with `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, and no `Domain` attribute (`crates/kiln-identity/src/lib.rs` line 748). The `__Host-` prefix is host-only. A cookie set for `dark-forge.dev` is not sent to `app.dark-forge.dev`, and a cookie set for `app.dark-forge.dev` is not sent to `cli.dark-forge.dev`. The dashboard session uses a different cookie name, `__Host-kiln_app`, so a mistaken `Domain` attribute still cannot collide with the identity session.
 
-`kiln-api` today listens on `127.0.0.1:8443` by default (`crates/kiln-server/src/bin/kiln-api.rs` line 14). That default stays. A public bind is an explicit unit setting on this host. Other installations remain loopback until an operator changes them.
+`kiln-api` listens on `127.0.0.1:8443` (`crates/kiln-server/src/bin/kiln-api.rs`). That bind stays. There is no public `kiln-api` bind.
 
-The dashboard listener is a second socket, loopback only, behind the Let's Encrypt proxy. It trusts `X-Forwarded-For` only from that loopback peer, the same rule identity uses for `--trusted-proxy-loopback`. The CLI listener ignores forwarded headers. The dashboard listener sets `Secure` cookies even though its own socket is HTTP, which is what identity already does on loopback.
+The dashboard listener is `127.0.0.1:8093` and speaks HTTP. It does not load a TLS certificate. Caddy cannot dial host loopback, so a socket proxy listens on `172.18.0.1:8093`, allows only `172.18.0.3/32`, and forwards to `127.0.0.1:8093`. The dashboard listener trusts `X-Forwarded-For` only when the TCP peer is loopback, the same rule identity uses for `--trusted-proxy-loopback`. The CLI listener ignores forwarded headers. The dashboard listener sets `Secure` cookies even though its own socket is HTTP, which is what identity already does on loopback.
 
 ## CLI trust
 
@@ -53,7 +53,7 @@ Saving a central profile for the same server id refuses a CA change with `server
 
 The other candidate was one public listener, and a planned move of CLI profiles onto public roots. That candidate loses for this server. A leaf pin breaks when Let's Encrypt renews the certificate. Trusting public roots would drop the pin the approved spec requires. The client has no confirm-and-replace flow. It has a refusal. Building that flow, and then deleting the private listener, is a later change to an approved rule. This design does not start it.
 
-A direct administrator profile is never replaced (`crates/kiln-client/src/profile.rs` lines 178-181). It keeps dialing the URL it was given, so that host stays on the leaf. A central profile for a different server id stays as saved. A central profile for this server id refuses a CA change (`crates/kiln-client/src/profile.rs` lines 186-190). `kiln login --server` copies the server descriptor identity returns, including its origin (`crates/kiln-client/src/main.rs` lines 464-471), when the CA bytes are unchanged (`crates/kiln-client/src/profile.rs` lines 186-190). Until that command the profile keeps the saved origin. A saved IP origin still matches a leaf that keeps the IP SAN. After `--server`, the profile dials `https://cli.dark-forge.dev:8443`. The DNS name on the leaf is what makes that handshake succeed. Identity login builds its client with no custom CA (`crates/kiln-client/src/auth.rs` lines 264-275), so it uses public roots. That client is how the laptop reaches `https://dark-forge.dev`.
+A direct administrator profile is never replaced (`crates/kiln-client/src/profile.rs` lines 178-181). It keeps dialing the URL it was given, so that host stays on the leaf. A central profile for a different server id stays as saved. A central profile for this server id refuses a CA change (`crates/kiln-client/src/profile.rs` lines 186-190). `kiln login --server` copies the server descriptor identity returns, including its origin (`crates/kiln-client/src/main.rs` lines 464-471), when the CA bytes are unchanged (`crates/kiln-client/src/profile.rs` lines 186-190). Until that command the profile keeps the saved origin. A saved IP origin still matches a leaf that keeps the IP SAN. After `--server`, the profile dials `https://cli.dark-forge.dev`. The DNS name on the leaf is what makes that handshake succeed. Identity login builds its client with no custom CA (`crates/kiln-client/src/auth.rs` lines 264-275), so it uses public roots. That client is how the laptop reaches `https://dark-forge.dev`.
 
 Enrollment writes two facts. `servers.origin` and `servers.ca_pem` (`crates/kiln-identity/src/store.rs` line 281) remain the CLI origin and the private CA. A new column stores the dashboard redirect URI, exactly `https://app.dark-forge.dev/oauth/callback`. The approval page shows the endpoint, the certificate fingerprint, and that redirect URI. The owner sees where authorization codes will be sent.
 
@@ -164,7 +164,7 @@ A sign-out-everywhere action is out of scope. It would be one control that revok
 
 ## Internet exposure
 
-The CLI listener and the dashboard listener are both reachable from the internet on this host. The default loopback bind stays for every other install.
+Browsers and laptops reach this host on port 443. The CLI listener and the dashboard listener bind loopback. Public tcp/8443 is closed. The default loopback bind stays for every other install.
 
 The gateway limits how many requests run at once. It holds 32 request permits and 32 SSH session permits (`crates/kiln-server/src/gateway.rs` lines 38-39) and returns 429 when the request permits are gone (lines 139-145). The host service holds 8 request permits (`crates/kiln-server/src/host.rs` line 130). One client can take the whole gateway budget. Both public listeners add a limit of 60 requests per minute per client IP, counted before the semaphore. Login start and the OAuth callback use a tighter limit of 10 per minute per IP, matching identity's OAuth budget (`crates/kiln-identity/src/lib.rs` lines 692-697). Identity's own limits stay. They do not cover the kiln gateway.
 
@@ -196,7 +196,7 @@ A reviewer on a cloud VM can prove all of the following without a provider accou
 - Response headers include the content security policy, `nosniff`, and `strict-origin`. `index.html` is `no-store`.
 - The installer extracts a fixture archive when given a path, and a host with no archive still serves `/v1/templates`.
 
-Jamie checks the Let's Encrypt certificate only after PR C, on the real name. PR A does not request one.
+Jamie checks the live name after the Caddy runbook, not in this change. This change does not request a certificate. The identity edit is app-signin.
 
 ### B. Identity-service web sign-in
 
@@ -224,7 +224,7 @@ A reviewer on a cloud VM can prove all of the following against a fixture identi
 - Deactivating the server, or removing local enrollment, ends dashboard sessions. A fixture that sets `revoked_at` ends them on the next status check. An identity process that refuses connections leaves an unexpired session usable.
 - A burst past 60 requests per minute from one address is limited. The 32-permit ceiling still returns 429 under concurrency.
 
-Jamie checks the live names. `app.dark-forge.dev` presents its own Let's Encrypt certificate. `dark-forge.dev` presents the identity certificate. `cli.dark-forge.dev:8443` presents a leaf whose SAN includes `DNS:cli.dark-forge.dev`, and a profile whose saved host is on that leaf still completes `kiln templates`. `kiln-runtime doctor` reports `development_ready: true`, which requires x86_64, `/dev/kvm` read-write, cgroup v2, Firecracker exactly 1.17.0, and a matching jailer (`crates/kiln-runtime/src/host.rs` lines 22-40). The cloud VM cannot produce the live certificates or that doctor report.
+Jamie checks the live names. `app.dark-forge.dev` presents the Caddy ACME certificate for that name. `dark-forge.dev` presents the identity certificate. `https://cli.dark-forge.dev` on port 443 presents the Caddy certificate. Public tcp/8443 stays closed. A profile enrolled at `https://cli.dark-forge.dev` still completes `kiln templates`. `kiln-runtime doctor` reports `development_ready: true`, which requires x86_64, `/dev/kvm` read-write, cgroup v2, Firecracker exactly 1.17.0, and a matching jailer (`crates/kiln-runtime/src/host.rs` lines 22-40). The cloud VM cannot produce the live certificates or that doctor report.
 
 ## Open questions
 
@@ -236,4 +236,4 @@ Checkpoints are empty until a snapshot record has a capture time. Say if PR A sh
 
 No operator command sets `accounts.revoked_at`. Server deactivation and local un-enrollment are the actions that end every session in these PRs. Say if an account-removal command belongs in one of them.
 
-Port 8443 on `cli.dark-forge.dev` has to be open on the host firewall. The unit opts into that bind. The binary default stays loopback.
+Public tcp/8443 is closed. `kiln-api` stays on `127.0.0.1:8443`. The binary default stays loopback.
