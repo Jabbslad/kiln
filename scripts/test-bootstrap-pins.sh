@@ -20,7 +20,10 @@ parsed=$(pin_parse_install "$install")
 PIN_VERSION=$(printf '%s\n' "$parsed" | awk 'NR == 1 { print $2 }')
 count=$(printf '%s\n' "$parsed" | awk 'NR > 1' | grep -c .)
 [ "$count" -eq 4 ] || fail "expected 4 archives, got $count"
-grep -q "The published bootstrap pin is v${PIN_VERSION}." "$docs" || fail 'pin sentence'
+if grep -q '^The published bootstrap pin is v' "$docs"; then
+    fail 'docs still describe a committed pin'
+fi
+grep -q '^The installer version is the release tag\.$' "$docs" || fail 'release tag sentence'
 
 base='https://github.com/Jabbslad/kiln/.github/workflows/build.yml@'
 accept() {

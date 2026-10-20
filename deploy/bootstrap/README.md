@@ -91,8 +91,8 @@ remains Ubuntu 24.04 on every supported host.
 **Running `server` authorizes installation or updating without further confirmation.** Use
 a root shell or an account with passwordless sudo; the script uses `sudo -n` and
 fails instead of asking for a password. Installing and deploying Kiln is shell
-scripts, `deploy/install.sh` in the source tree. The bootstrap pins v0.4.10 and
-runs that archive's `install.sh` with bash. It does not run Python. When
+scripts, `deploy/install.sh` in the source tree. The bootstrap takes its version
+from the release tag and runs that archive's `install.sh` with bash. It does not run Python. When
 `sqlite3` is missing from `PATH`, it runs `apt-get update` and then
 `DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y --no-install-recommends --no-upgrade sqlite3`.
 When `sqlite3` is already on `PATH`, that pair of apt commands does not run.
@@ -223,7 +223,7 @@ It remains compatible with the 0.2.1 guest image.
 
 ## Trust and maintenance
 
-The bootstrap pins v0.4.10 release URLs and SHA-256 digests, validates archive contents,
+The bootstrap takes its version from the release tag, checks the published SHA-256 sidecar, validates archive contents,
 and downloads without authentication. Redirects are HTTPS-only and user curl
 configuration is disabled. Temporary files are removed on normal exit and handled
 signals. A checksum protects integrity under trust in this bootstrap publisher;

@@ -234,6 +234,9 @@ On a macOS or supported Linux laptop:
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh
 ```
 
+The script sets its version from the latest stable release tag and checks the
+SHA-256 sidecar published with that archive.
+
 On a dedicated **Ubuntu 24.04, Ubuntu 26.04, or Debian 13 x86-64/KVM** server:
 
 ```sh
@@ -503,23 +506,19 @@ packager includes only named binaries, installer files and pristine image files.
 Changing repository visibility later is a separate decision; this workflow never
 makes that change.
 
-The published bootstrap pin is v0.4.12.
+The installer version is the release tag.
 
-The public install command fetches `deploy/bootstrap/install.sh` from main.
-That file stays a pin of one published release. After you publish, copy
-that release's version and SHA-256 lines into the pin. Set the published
-bootstrap pin sentence above to the same version. The workspace version
-in `Cargo.toml` can move ahead of this pin while a release is prepared.
-`scripts/test-bootstrap.py` requires the pin and that sentence to name
-the same version. It also requires the tag to be a stable release whose
-archive digests match the pin. A publish edits neither version. The
-publish alone does not fail the test. The tag job also attaches
-`install.sh` and `install.sh.sha256` to the release, and the checksum check
-includes that sidecar. The attached script
-verifies each archive checksum and installs only that version. Leave the
-public command on the raw main URL until Jamie publishes a release that
-contains `install.sh`. `releases/latest/download/install.sh` returns 404 for
-v0.4.7. A later change can switch the command after that publish.
+`deploy/bootstrap/install.sh` reads the latest stable release tag and the
+SHA-256 sidecar for each archive. It downloads that tag and refuses the
+archive when the checksum differs. The lines in the asset block are the
+publish template. A normal run does not install from those lines.
+The tag job renders `install.sh` from the archive checksums. When a reused
+build's version differs from the tag, the job renames the archives and sets
+`version=` to the tag. It publishes only after `sha256sum -c` and
+`gh attestation verify` succeed for every archive. The same job attaches
+`install.sh` and `install.sh.sha256`. Publishing a release leaves main
+unchanged. The workspace version in `Cargo.toml` can move ahead of the
+latest published tag while a release is prepared.
 Never publish server state or credentials.
 The ordinary build workflow has no cross-repository publishing credentials.
 

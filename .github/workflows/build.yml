@@ -104,7 +104,7 @@ jobs:
           bash scripts/test-listener-restart.sh
           sh scripts/test-caddy-endings.sh
           sh scripts/test-bootstrap-pins.sh
-          sh scripts/test-repin-installer.sh
+          sh scripts/test-installer-release.sh
 
   server-check:
     needs: changes
@@ -184,14 +184,14 @@ jobs:
           bash scripts/test-listener-restart.sh
           sh scripts/test-caddy-endings.sh
           sh scripts/test-bootstrap-pins.sh
-          sh scripts/test-repin-installer.sh
+          sh scripts/test-installer-release.sh
           shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-bootstrap-pins.sh scripts/test-bootstrap-pins.sh scripts/test-caddy-endings.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/enroll-dark-forge.sh \
             deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
             deploy/github/install-remote.sh deploy/github/smoke.sh \
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
             scripts/test-listener-restart.sh \
-            scripts/repin-installer.sh scripts/test-repin-installer.sh
+            scripts/test-installer-release.sh
 
   # A v* tag publishes main's packages for that commit when the run verifies.
   # A miss falls through to the cache-free package jobs.
@@ -605,16 +605,7 @@ jobs:
                 esac
                 mv "$path" "dist/$new"
               done
-              awk -v release="$release" '
-                {
-                  gsub("kiln-v\\$version-", "kiln-v" release "-")
-                  gsub("kiln-server-v\\$version-", "kiln-server-v" release "-")
-                  gsub("releases/download/v\\$version/", "releases/download/v" release "/")
-                  print
-                }
-              ' dist/install.sh >dist/install.sh.new
-              chmod 755 dist/install.sh.new
-              mv dist/install.sh.new dist/install.sh
+              sh deploy/bootstrap/install.sh --align-release dist/install.sh "$release"
               digest=$(sha256sum dist/install.sh | awk '{ print $1 }')
               printf '%s  install.sh\n' "$digest" >dist/install.sh.sha256
             fi
@@ -651,28 +642,6 @@ jobs:
     uses: ./.github/workflows/deploy.yml
     with:
       tag: ${{ github.ref_name }}
-
-  # After deploy, open a pull request that moves the public installer pin to this tag.
-  # main is protected, so the branch is repin/<tag>. REPIN_TOKEN is a repository secret.
-  repin:
-    needs: [deploy]
-    if: >-
-      !cancelled() &&
-      github.event_name == 'push' &&
-      startsWith(github.ref, 'refs/tags/v') &&
-      needs.deploy.result == 'success'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - name: Open the installer pin pull request
-        env:
-          REPIN_TOKEN: ${{ secrets.REPIN_TOKEN }}
-          TAG: ${{ github.ref_name }}
-          GH_REPO: ${{ github.repository }}
-        run: sh scripts/repin-installer.sh
 
   dry-run-assets:
     needs: [reuse]

@@ -15,8 +15,113 @@ cleanup() {
     if [ -n "$lock" ]; then rmdir "$lock" || :; fi
 }
 
+fixture_pin() {
+    [ -n "${FIXTURE:-}" ] && [ -f "${FIXTURE}/archive.tar.gz" ]
+}
+
+stable_version() {
+    printf '%s\n' "$1" | awk -F. 'NF == 3 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ { ok = 1 } END { exit !ok }'
+}
+
+release_tag() {
+    if [ -n "${KILN_RELEASE:-}" ]; then
+        tag=${KILN_RELEASE#v}
+    else
+        # The public latest redirect names the tag. No API token and no curl config.
+        meta=$(curl -q --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --connect-timeout 30 --max-time 60 --output /dev/null --write-out '%{http_code} %{url_effective}' \
+            https://github.com/Jabbslad/kiln/releases/latest) || fail 'Cannot resolve the latest release.'
+        status=${meta%% *}
+        effective=${meta#* }
+        [ "$status" = 200 ] || fail "Latest release returned HTTP $status."
+        case $effective in
+            https://github.com/Jabbslad/kiln/releases/tag/v*) ;;
+            *) fail 'Latest release URL is not this repository.' ;;
+        esac
+        tag=${effective##*/}
+        tag=${tag#v}
+    fi
+    stable_version "$tag" || fail 'Release tag is not a stable version.'
+    version=$tag
+}
+
+release_package() {
+    case $mode in
+        client) prefix=kiln ;;
+        server) prefix=kiln-server ;;
+        *) fail 'Unknown installer mode.' ;;
+    esac
+    package="${prefix}-v${version}-${target}.tar.gz"
+}
+
+release_digest() {
+    release_package
+    sidecar=$(mktemp "${TMPDIR:-/tmp}/kiln-sum.XXXXXXXX")
+    status=$(curl -q --silent --show-error --location --proto '=https' --proto-redir '=https' \
+        --connect-timeout 30 --max-time 60 --output "$sidecar" --write-out '%{http_code}' \
+        "https://github.com/Jabbslad/kiln/releases/download/v${version}/${package}.sha256") || {
+        rm -f "$sidecar"
+        fail 'Checksum download failed.'
+    }
+    if [ "$status" != 200 ]; then
+        rm -f "$sidecar"
+        fail "Checksum download returned HTTP $status."
+    fi
+    digest=$(awk 'NR == 1 { print $1 }' "$sidecar")
+    named=$(awk 'NR == 1 { print $2 }' "$sidecar")
+    rm -f "$sidecar"
+    case $digest in
+        ''|*[!0-9a-f]*) fail 'Invalid release digest.' ;;
+    esac
+    [ "${#digest}" -eq 64 ] || fail 'Invalid release digest.'
+    [ "$named" = "$package" ] || fail 'Checksum name does not match the archive.'
+}
+
+print_release() {
+    release_tag
+    for spec in \
+        client:x86_64-unknown-linux-gnu \
+        client:x86_64-apple-darwin \
+        client:aarch64-apple-darwin \
+        server:x86_64-unknown-linux-gnu
+    do
+        mode=${spec%%:*}
+        target=${spec#*:}
+        release_digest
+        printf '%s %s %s\n' "$version" "$spec" "$digest"
+    done
+}
+
+align_release() {
+    file=$1
+    requested=${2:-}
+    requested=${requested#v}
+    found=$(sed -n 's#.*releases/download/v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)/.*#\1#p' "$file" | awk 'NR == 1 { print; exit }')
+    if [ -n "$requested" ] && [ -n "$found" ] && [ "$requested" != "$found" ]; then
+        fail "Release tag ${requested} does not match download URL v${found}."
+    fi
+    tag=$requested
+    if [ -z "$tag" ]; then
+        tag=$found
+    fi
+    [ -n "$tag" ] || fail 'Release tag is not a stable version.'
+    stable_version "$tag" || fail 'Release tag is not a stable version.'
+    tmp=$(mktemp "${TMPDIR:-/tmp}/kiln-align.XXXXXXXX")
+    awk -v tag="$tag" '
+        /^    version=[0-9]+\.[0-9]+\.[0-9]+$/ { print "    version=" tag; next }
+        { print }
+    ' "$file" >"$tmp"
+    grep -q "^    version=${tag}$" "$tmp" || {
+        rm -f "$tmp"
+        fail 'version was not set from the release tag'
+    }
+    cat "$tmp" >"$file"
+    rm -f "$tmp"
+    chmod 755 "$file"
+}
+
 assets() {
-    # Updated only after reviewing the release and its checksums.
+    # Fixture and publish template. A normal run uses the release tag and its checksum sidecars.
     cat <<'ASSETS'
 # BEGIN RELEASE ASSETS
 client:x86_64-unknown-linux-gnu 6df1a338b162111e47e4d006f67f3909694d905fc6d8110a43220f66644798b8
@@ -62,12 +167,11 @@ platform() {
 
 download() {
     printf 'Downloading kiln %s (%s)…\n' "$version" "$mode"
-    package="kiln-v$version-$target.tar.gz"
-    if [ "$mode" = server ]; then package="kiln-server-v$version-$target.tar.gz"; fi
+    release_package
     # No API lookup, credentials or curl user configuration. Redirects stay HTTPS.
     status=$(curl -q --silent --show-error --location --proto '=https' --proto-redir '=https' \
         --connect-timeout 30 --max-time 900 --output "$work/package.tar.gz" --write-out '%{http_code}' \
-        "https://github.com/Jabbslad/kiln/releases/download/v$version/$package") || fail 'Package download failed.'
+        "https://github.com/Jabbslad/kiln/releases/download/v${version}/${package}") || fail 'Package download failed.'
     [ "$status" = 200 ] || fail "Package download returned HTTP $status; check release availability."
     if command -v sha256sum >/dev/null 2>&1; then
         actual=$(sha256sum "$work/package.tar.gz")
@@ -369,6 +473,9 @@ main() {
         command -v "$tool" >/dev/null 2>&1 || fail "Missing standard system tool: $tool"
     done
     command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || fail 'Missing system SHA-256 tool.'
+    if ! fixture_pin; then
+        release_tag
+    fi
     if [ "$mode" = client ]; then
         [ -n "${HOME:-}" ] || fail 'HOME must be set.'
         destination="$HOME/.local/bin/kiln"
@@ -395,13 +502,29 @@ main() {
             sudo -n true < /dev/null || fail 'Server setup needs passwordless sudo or a root shell; no password prompts are used.'
         fi
     fi
-    digest=$(assets | awk -v key="$mode:$target" '$1==key {print $2}')
-    case "$digest" in ''|*[!a-f0-9]*) fail 'Invalid pinned release digest.' ;; esac
-    [ "${#digest}" = 64 ] || fail 'Invalid pinned release digest.'
+    if fixture_pin; then
+        digest=$(assets | awk -v key="$mode:$target" '$1==key {print $2}')
+        case "$digest" in ''|*[!a-f0-9]*) fail 'Invalid pinned release digest.' ;; esac
+        [ "${#digest}" = 64 ] || fail 'Invalid pinned release digest.'
+    else
+        release_digest
+    fi
     work=$(mktemp -d "${TMPDIR:-/tmp}/kiln-install.XXXXXXXX")
     download
     extract
     if [ "$mode" = client ]; then install_client; else install_server; fi
 }
 
+if [ "${1:-}" = --align-release ]; then
+    [ "$#" -eq 2 ] || [ "$#" -eq 3 ] || fail 'Usage: sh install.sh --align-release FILE [TAG]'
+    align_release "$2" "${3:-}"
+    exit 0
+fi
+if [ "${KILN_RESOLVE_ONLY:-}" = 1 ]; then
+    command -v curl >/dev/null 2>&1 || fail 'Missing standard system tool: curl'
+    command -v awk >/dev/null 2>&1 || fail 'Missing standard system tool: awk'
+    command -v mktemp >/dev/null 2>&1 || fail 'Missing standard system tool: mktemp'
+    print_release
+    exit 0
+fi
 main "$@"
