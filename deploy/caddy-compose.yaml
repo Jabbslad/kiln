@@ -1,0 +1,38 @@
+services:
+  caddy:
+    image: ${KILN_CADDY_IMAGE:-caddy:2.10.2}
+    networks:
+      edge:
+        ipv4_address: 172.18.0.3
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - type: bind
+        source: ${KILN_CADDYFILE:-/opt/paseo/Caddyfile}
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${KILN_CA_CERT:-/etc/kiln/ca.crt}
+        target: /etc/kiln/ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+networks:
+  edge:
+    name: kiln-edge
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
+          gateway: 172.18.0.1
+
+volumes:
+  caddy-data:
+  caddy-config:

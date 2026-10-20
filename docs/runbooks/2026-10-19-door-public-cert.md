@@ -8,7 +8,7 @@ Stop until Jamie says yes at deploy time. This step touches the login service. D
 
 The yes covers every touch below.
 
-- Editing `/opt/paseo/Caddyfile` and reloading Caddy. That process fronts `https://dark-forge.dev` sign-in.
+- Editing `/opt/paseo/Caddyfile` and recreating the Caddy container from `deploy/caddy-compose.yaml`. That process fronts `https://dark-forge.dev` sign-in.
 - Reading `/var/lib/kiln-identity/identity.db` for the server name and the `ca_pem` bytes.
 - `PUT https://dark-forge.dev/v1/servers/SERVER_ID` to set `origin` to `https://cli.dark-forge.dev`, with the same `name` and the same `ca_pem`. The call reads `/etc/kiln/directory.token` into a mode 0600 header file. Do not print the token.
 
@@ -51,13 +51,13 @@ systemctl daemon-reload
 
 ## Check DNS and ports 80 and 443
 
-Do this before the reload. `cli.dark-forge.dev` must be DNS-only and must point at this host. Its A record is the host's public address, the same address `dark-forge.dev` uses. It must not be a Cloudflare proxy address. Leave the record DNS-only. Do not put a Cloudflare token on the host.
+Do this before the recreate. `cli.dark-forge.dev` must be DNS-only and must point at this host. Its A record is the host's public address, the same address `dark-forge.dev` uses. It must not be a Cloudflare proxy address. Leave the record DNS-only. Do not put a Cloudflare token on the host.
 
 Confirm ports 80 and 443 reach the Caddy container. From outside the host, `http://cli.dark-forge.dev/` and `https://dark-forge.dev/login` are answered by that container. Stop if either port does not reach Caddy. Automatic ACME uses those ports.
 
-## Reload Caddy
+## Recreate Caddy
 
-Caddy requests the certificate for `cli.dark-forge.dev` on this reload. There is no `tls` certificate line in the new site. Do not add one.
+Caddy requests the certificate for `cli.dark-forge.dev` when the container comes back. There is no `tls` certificate line in the new site. Do not add one.
 
 Copy the live file and record both hashes.
 
@@ -66,35 +66,53 @@ cp -a /opt/paseo/Caddyfile /opt/paseo/Caddyfile.bak-door-443
 sha256sum /opt/paseo/Caddyfile /opt/paseo/Caddyfile.bak-door-443
 ```
 
-Add this site block. Leave the `dark-forge.dev` site as it is.
+Add the site in `deploy/door.Caddyfile`. Leave the `dark-forge.dev` site as it is.
 
 ```
 cli.dark-forge.dev {
 	reverse_proxy https://172.18.0.1:8444 {
 		transport http {
 			tls_server_name cli.dark-forge.dev
-			tls_trusted_ca_certs /etc/kiln/ca.crt
+			tls_trust_pool file {
+				pem_file /etc/kiln/ca.crt
+			}
 		}
 	}
 }
 ```
 
-`/etc/kiln/ca.crt` is the path Caddy uses inside the container. The container has to see the host file `/etc/kiln/ca.crt` at that path. Mount that one file read-only if it is not already visible. Do not mount `/etc/kiln/ca.key`, `/etc/kiln/door.key`, or `/etc/kiln/directory.token`.
+`/etc/kiln/ca.crt` is the path inside the container. `deploy/caddy-compose.yaml` bind-mounts the host file there with `read_only: true` when Docker creates the container. `docker update` cannot add a mount. A copy placed in the running container disappears on the next recreate.
 
-Find the container whose mounts include `/opt/paseo/Caddyfile`. Read the config path from that container's command or from the mount destination. Validate, and stop if validate fails. Do not reload a file that fails validate.
+The bind sets `create_host_path: false`. Create fails when `/etc/kiln/ca.crt` is missing. A short `-v` of a missing path creates a directory, and Caddy then has no certificate file to read.
+
+Do not mount `/etc/kiln`, `/etc/kiln/ca.key`, `/etc/kiln/door.key`, or `/etc/kiln/directory.token`. The certificate is mode 0644. Leave the private keys mode 0600.
+
+The door socket allows only `172.18.0.3/32`. The compose file pins that address on subnet `172.18.0.0/16` with gateway `172.18.0.1`. That gateway is the socket `ListenStream`. A recreate that assigns another address no longer matches the allow list, and port 443 stops reaching the door.
+
+This host already has a bridge on `172.18.0.0/16` with gateway `172.18.0.1`. Do not create a second network on that subnet. Inspect the network that owns `172.18.0.1`. Set the compose network to `external: true` and that network's name. Keep `ipv4_address: 172.18.0.3`.
+
+The image default is `caddy:2.10.2`. On that version, `caddy adapt` accepts `tls_trust_pool file` and warns on `tls_trusted_ca_certs`. If the running container uses another tag, set `KILN_CADDY_IMAGE` to that tag and adapt the edited Caddyfile with that image before you recreate.
+
+`caddy-data` and `caddy-config` keep ACME storage across recreate. If the running container already mounts a volume at `/data`, use that volume. A new empty volume makes Caddy request the public certificate again.
+
+Validate, and stop if validate fails.
 
 ```
-docker exec CONTAINER caddy validate --config CONFIG
+docker run --rm \
+  --mount type=bind,source=/opt/paseo/Caddyfile,target=/etc/caddy/Caddyfile,readonly \
+  --mount type=bind,source=/etc/kiln/ca.crt,target=/etc/kiln/ca.crt,readonly \
+  "${KILN_CADDY_IMAGE:-caddy:2.10.2}" \
+  caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 ```
 
-Reload. Do not restart the container. Do not restart `kiln-identity`.
+If a container already publishes ports 80 and 443, stop that container after validate succeeds. Recreate from this compose file. Do not copy the certificate into the container. Do not restart `kiln-identity`. If the new container does not stay up, start the previous container again.
 
 ```
-docker exec CONTAINER caddy reload --config CONFIG
+docker compose -p kiln-door-caddy -f deploy/caddy-compose.yaml up -d --force-recreate
 systemctl show kiln-identity.service -p MainPID -p NRestarts -p ActiveEnterTimestamp
 ```
 
-The identity MainPID and ActiveEnterTimestamp match the values recorded at the start.
+The new container address is `172.18.0.3`. `/etc/kiln/ca.crt` is mounted read-only. The identity MainPID and ActiveEnterTimestamp match the values recorded at the start.
 
 Prove the existing sign-in, not only the new name. From outside the host, the body of `https://dark-forge.dev/login` contains `Light the way in.` A non-error status is not enough. On the laptop, with the released client and without `KILN_IDENTITY_CA`, run a login that does not replace the saved default profile.
 
@@ -108,8 +126,7 @@ If the page is not the sign-in page, or that login does not finish, restore the 
 
 ```
 cp -a /opt/paseo/Caddyfile.bak-door-443 /opt/paseo/Caddyfile
-docker exec CONTAINER caddy validate --config CONFIG
-docker exec CONTAINER caddy reload --config CONFIG
+docker compose -p kiln-door-caddy -f deploy/caddy-compose.yaml up -d --force-recreate
 ```
 
 Stop. Do not rebind the door.
@@ -224,4 +241,4 @@ From outside the host, a connection to port 8443 fails. `https://cli.dark-forge.
 
 ## Roll back
 
-Restore `/opt/paseo/Caddyfile` from `/opt/paseo/Caddyfile.bak-door-443`, validate, and reload. To put the door itself back on the public address, disable `kiln-door-proxy-public.socket` first so `78.46.98.73:8443` is free, write that address back into `/etc/kiln/door.env`, and restart `kiln-door` only. Stop and disable `kiln-door-proxy.socket` as well when the bridge is no longer needed. If the directory origin changed, PUT `https://cli.dark-forge.dev:8443` with the same `name` and the same `ca_pem`. Leave the drop rule out if you have not closed 8443 yet. `kiln-identity` stays up. While the public socket is still forwarding, a 0.4.6 client can keep using `:8443` without this rollback. A profile that already stored public-root trust dials port 443 only, so that laptop stays down until this Caddy site is restored.
+Restore `/opt/paseo/Caddyfile` from `/opt/paseo/Caddyfile.bak-door-443`, validate, and recreate with `docker compose -p kiln-door-caddy -f deploy/caddy-compose.yaml up -d --force-recreate`. The pinned address and the read-only CA mount stay. To put the door itself back on the public address, disable `kiln-door-proxy-public.socket` first so `78.46.98.73:8443` is free, write that address back into `/etc/kiln/door.env`, and restart `kiln-door` only. Stop and disable `kiln-door-proxy.socket` as well when the bridge is no longer needed. If the directory origin changed, PUT `https://cli.dark-forge.dev:8443` with the same `name` and the same `ca_pem`. Leave the drop rule out if you have not closed 8443 yet. `kiln-identity` stays up. While the public socket is still forwarding, a 0.4.6 client can keep using `:8443` without this rollback. A profile that already stored public-root trust dials port 443 only, so that laptop stays down until this Caddy site is restored.

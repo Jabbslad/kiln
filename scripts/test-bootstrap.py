@@ -724,6 +724,8 @@ if args[0] == 'env' and 'apt-get' in args:
             "deploy/kiln-door-proxy.socket",
             "deploy/kiln-door-proxy-public.socket",
             "docs/runbooks/2026-10-19-door-public-cert.md",
+            "deploy/caddy-compose.yaml",
+            "deploy/door.Caddyfile",
         ]
         members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network", *door_proxy], b"fixture\n")
         code, out = self.run_bootstrap(self.package(members), args=("server",))

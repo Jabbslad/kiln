@@ -87,6 +87,8 @@ def package(repo, bins, output, version, target, kind, image):
                     "kiln-door-proxy.service",
                     "kiln-door-proxy.socket",
                     "kiln-door-proxy-public.socket",
+                    "caddy-compose.yaml",
+                    "door.Caddyfile",
                     "enroll-dark-forge.sh",
                     "host.example.json",
                 )
