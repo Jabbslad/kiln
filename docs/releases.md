@@ -467,8 +467,11 @@ confuse those with a reviewed release. The build workflow uses no credentials
 beyond the scoped GitHub Actions token and does not deploy a server. Public workflows/logs/artifacts
 must not contain credentials or runtime data. Fork PRs use hosted runners and
 read-only permissions. Only the tag release job has contents-write permission.
-The main build attests the package archives. That job has `id-token` and
-attestations write, and it does not have contents write.
+The attest job signs the package archives a tag publishes. A main push
+signs the archives a later tag reuses. A tag whose package jobs rebuild
+signs that rebuild. A manual run signs the archives it builds. A pull
+request does not run the job. The job has `id-token` and attestations
+write, and it does not have contents write.
 
 For an approved release, push an annotated `vMAJOR.MINOR.PATCH` tag of the green
 main commit (`git tag -a vX.Y.Z -m "..."`). The workflow finds that commit's
