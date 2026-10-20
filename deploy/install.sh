@@ -15,6 +15,7 @@ if [ -n "${KILN_INSTALL_FIXTURE:-}" ]; then
   STATE=$root/var/lib/kiln
   OPT=$root/opt/kiln
   LIBEXEC=$root/usr/local/libexec
+  SHARE=$root/usr/local/share/kiln
   UNITS=$root/etc/systemd/system
   CGROUP=$root/sys/fs/cgroup/kiln
   LOCK=$root/run/lock/kiln-install.lock
@@ -34,6 +35,7 @@ else
   STATE=/var/lib/kiln
   OPT=/opt/kiln
   LIBEXEC=/usr/local/libexec
+  SHARE=/usr/local/share/kiln
   UNITS=/etc/systemd/system
   CGROUP=/sys/fs/cgroup/kiln
   LOCK=/run/lock/kiln-install.lock
@@ -58,6 +60,8 @@ DOCTOR_PATH=/opt/kiln/bin:/usr/sbin:/usr/bin:/sbin:/bin
 atomic_tmp=
 HEALTH_ERROR=
 host_stopped=0
+dashboard_archive=
+DASHBOARD=$SHARE/dashboard
 
 cleanup() {
   status=$?
@@ -740,6 +744,7 @@ EOF
     fi
     die "$HEALTH_ERROR"
   fi
+  install_dashboard
   printf 'Host admin API: https://%s:8443\nKeep /etc/kiln/laptop.tar.gz private for direct administrator recovery.\nTLS renewal is due within one year.\n' "$address"
   connection_instructions "$address"
 }
@@ -1051,8 +1056,13 @@ upgrade() {
   if [ "$same" = 1 ]; then
     if [ "$apply" = 1 ]; then
       close_public_door
+      install_dashboard
     fi
-    printf 'Kiln %s is already current; nothing changed.\n' "$target"
+    if [ -n "$dashboard_archive" ]; then
+      printf 'Kiln %s binaries are already current.\n' "$target"
+    else
+      printf 'Kiln %s is already current; nothing changed.\n' "$target"
+    fi
     connection_instructions "$installed_address"
     return 0
   fi
@@ -1092,8 +1102,176 @@ upgrade() {
   sync "$OPT"
   printf 'Binaries are already updated. Closing public tcp/8443. A failure here leaves those binaries in place.\n'
   close_public_door
+  install_dashboard
   printf 'Updated to Kiln %s. Host admin API: https://%s:8443\nPrevious binaries: %s\n' "$target" "$installed_address" "$backup"
   connection_instructions "$installed_address"
+}
+
+app_unit_names() {
+  printf '%s\n' kiln-app.service kiln-app-proxy.service kiln-app-proxy.socket
+}
+
+dashboard_member_ok() {
+  local name=$1
+  case $name in
+    ""|.*|/*|*/|*//*|*' '*|*\\*) return 1 ;;
+  esac
+  case $name in
+    ..|../*|*/..|*/../*) return 1 ;;
+  esac
+  printf '%s\n' "$name" | grep -Eq '^[A-Za-z0-9._/-]+$'
+}
+
+validate_dashboard_archive() {
+  local archive=$dashboard_archive work name unit
+  if [ -L "$archive" ] || [ ! -f "$archive" ]; then
+    die "dashboard archive must be a regular file"
+  fi
+  work=$(mktemp -d)
+  if ! tar -tzf "$archive" >"$work/names" 2>/dev/null; then
+    rm -rf -- "$work"
+    die "dashboard archive is not a readable tar.gz"
+  fi
+  if [ ! -s "$work/names" ]; then
+    rm -rf -- "$work"
+    die "dashboard archive is empty"
+  fi
+  while IFS= read -r name; do
+    if ! dashboard_member_ok "$name"; then
+      rm -rf -- "$work"
+      die "dashboard archive member is not a safe relative path: $name"
+    fi
+  done <"$work/names"
+  if sort "$work/names" | uniq -d | grep -q .; then
+    rm -rf -- "$work"
+    die "dashboard archive repeats a member"
+  fi
+  if ! tar -tvzf "$archive" >"$work/types" 2>/dev/null; then
+    rm -rf -- "$work"
+    die "dashboard archive is not a readable tar.gz"
+  fi
+  if ! awk 'substr($0, 1, 1) != "-" { bad = 1 } END { exit bad }' "$work/types"; then
+    rm -rf -- "$work"
+    die "dashboard archive contains a symlink or other non-regular member"
+  fi
+  rm -rf -- "$work"
+  while IFS= read -r unit; do
+    if [ -L "$bundle/deploy/$unit" ] || [ ! -f "$bundle/deploy/$unit" ]; then
+      die "missing regular release input: deploy/$unit"
+    fi
+  done < <(app_unit_names)
+}
+
+prepare_dashboard_tree() {
+  local tree=$1
+  find "$tree" -type d -exec chmod 750 {} + || return 1
+  find "$tree" -type f -exec chmod 644 {} + || return 1
+  if [ "$(id -u)" -eq 0 ]; then
+    chown -R root:kiln-api "$tree" || return 1
+  fi
+}
+
+dashboard_file_list() {
+  local tree=$1
+  (cd "$tree" && find . -type f -printf '%P\n' | sort)
+}
+
+extract_matches_archive() {
+  local tree=$1 names extracted matched
+  names=$(mktemp)
+  extracted=$(mktemp)
+  tar -tzf "$dashboard_archive" | sort >"$names"
+  dashboard_file_list "$tree" >"$extracted"
+  if find "$tree" -type l | grep -q .; then
+    rm -f -- "$names" "$extracted"
+    return 1
+  fi
+  if cmp -s "$names" "$extracted"; then
+    matched=0
+  else
+    matched=1
+  fi
+  rm -f -- "$names" "$extracted"
+  return "$matched"
+}
+
+dashboard_bytes_match() {
+  local stage=$1 name stage_list installed_list mismatched
+  [ -d "$DASHBOARD" ] && [ ! -L "$DASHBOARD" ] || return 1
+  stage_list=$(mktemp)
+  installed_list=$(mktemp)
+  dashboard_file_list "$stage" >"$stage_list"
+  dashboard_file_list "$DASHBOARD" >"$installed_list"
+  if ! cmp -s "$stage_list" "$installed_list"; then
+    rm -f -- "$stage_list" "$installed_list"
+    return 1
+  fi
+  mismatched=0
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if ! cmp -s "$stage/$name" "$DASHBOARD/$name"; then
+      mismatched=1
+      break
+    fi
+  done <"$stage_list"
+  rm -f -- "$stage_list" "$installed_list"
+  return "$mismatched"
+}
+
+install_app_units() {
+  local unit source dest
+  while IFS= read -r unit; do
+    source=$bundle/deploy/$unit
+    dest=$UNITS/$unit
+    if [ -L "$dest" ]; then
+      die "refusing symlink unit destination: $unit"
+    fi
+    if [ -f "$dest" ] && cmp -s "$source" "$dest"; then
+      continue
+    fi
+    place_file "$source" "$dest" 0644
+  done < <(app_unit_names)
+  systemd-analyze verify \
+    "$UNITS/kiln-app.service" \
+    "$UNITS/kiln-app-proxy.service" \
+    "$UNITS/kiln-app-proxy.socket" >/dev/null 2>&1 \
+    || die "app unit verification failed"
+  systemctl daemon-reload
+  if ! systemctl enable kiln-app.service >/dev/null 2>&1; then
+    die "command failed: systemctl enable kiln-app.service"
+  fi
+}
+
+install_dashboard() {
+  local stage parent
+  [ -n "$dashboard_archive" ] || return 0
+  if [ -L "$DASHBOARD" ]; then
+    die "refusing symlink dashboard destination"
+  fi
+  parent=$(dirname "$SHARE")
+  trusted_ancestors "$SHARE"
+  mkdir -p -- "$SHARE"
+  chmod 755 "$parent" "$SHARE"
+  stage=$(mktemp -d "$SHARE/.dashboard.XXXXXX")
+  if ! tar --no-same-owner --no-same-permissions -xzf "$dashboard_archive" -C "$stage"; then
+    rm -rf -- "$stage"
+    die "cannot extract dashboard archive"
+  fi
+  if ! extract_matches_archive "$stage"; then
+    rm -rf -- "$stage"
+    die "dashboard extract does not match the archive"
+  fi
+  if ! prepare_dashboard_tree "$stage"; then
+    rm -rf -- "$stage"
+    die "cannot assign the dashboard to kiln-api"
+  fi
+  if dashboard_bytes_match "$stage"; then
+    rm -rf -- "$stage"
+  else
+    rm -rf -- "$DASHBOARD"
+    mv -- "$stage" "$DASHBOARD" || die "cannot install dashboard archive"
+  fi
+  install_app_units
 }
 
 fresh_plan() {
@@ -1117,6 +1295,9 @@ fresh_plan() {
 provision() {
   local address=${1:-} apply=${2:-0} uplink=${3:-} network=${4:-0}
   bundle=$(dirname "$(realpath "$0")")
+  if [ -n "$dashboard_archive" ]; then
+    validate_dashboard_archive
+  fi
   if [ -e "$ETC" ] || [ -L "$ETC" ] || [ -e "$OPT" ] || [ -L "$OPT" ] || [ -e "$STATE" ] || [ -L "$STATE" ]; then
     upgrade "$bundle" "$address" "$uplink" "$network" "$apply"
     return 0
@@ -1150,12 +1331,18 @@ main() {
       --apply) apply=1; shift ;;
       --network) network=1; shift ;;
       --address)
-        [ "$#" -ge 2 ] || die "usage: install.sh [--address IP] [--apply] [--network] [--network-uplink INTERFACE]"
+        [ "$#" -ge 2 ] || die "usage: install.sh [--address IP] [--apply] [--network] [--network-uplink INTERFACE] [--dashboard-archive PATH]"
         address=$2
         shift 2
         ;;
+      --dashboard-archive)
+        [ "$#" -ge 2 ] || die "usage: install.sh [--address IP] [--apply] [--network] [--network-uplink INTERFACE] [--dashboard-archive PATH]"
+        [ -n "$2" ] || die "usage: install.sh [--address IP] [--apply] [--network] [--network-uplink INTERFACE] [--dashboard-archive PATH]"
+        dashboard_archive=$2
+        shift 2
+        ;;
       --network-uplink)
-        [ "$#" -ge 2 ] || die "usage: install.sh [--address IP] [--apply] [--network] [--network-uplink INTERFACE]"
+        [ "$#" -ge 2 ] || die "usage: install.sh [--address IP] [--apply] [--network] [--network-uplink INTERFACE] [--dashboard-archive PATH]"
         uplink=$2
         shift 2
         ;;
@@ -1164,7 +1351,7 @@ main() {
         health_address=$2
         shift 2
         ;;
-      *) die "usage: install.sh [--address IP] [--apply] [--network] [--network-uplink INTERFACE]" ;;
+      *) die "usage: install.sh [--address IP] [--apply] [--network] [--network-uplink INTERFACE] [--dashboard-archive PATH]" ;;
     esac
   done
   if [ -n "$health_address" ]; then

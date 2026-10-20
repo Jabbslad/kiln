@@ -2,6 +2,7 @@
 """Drive deploy/install.sh against a fixture root. Never provision this host."""
 
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -17,6 +18,11 @@ ROOT = Path(__file__).resolve().parent.parent
 INSTALL = ROOT / "deploy/install.sh"
 HOST_UNIT = ROOT / "deploy/kiln-host.service"
 API_UNIT = ROOT / "deploy/kiln-api.service"
+APP_UNITS = (
+    "kiln-app.service",
+    "kiln-app-proxy.service",
+    "kiln-app-proxy.socket",
+)
 FRESH_CATALOG = '[{"name":"ubuntu-4g","memory_mib":4096,"vcpus":1}]'
 UPGRADE_CATALOG = '[{"name":"custom","memory_mib":3072,"vcpus":2}]'
 TEMPLATE_ID = "d" * 32
@@ -313,6 +319,59 @@ exit 0
         libexec.chmod(0o750)
         self.plan_curl("ok", body=FRESH_CATALOG)
 
+    def stage_app_units(self):
+        deploy = self.package / "deploy"
+        deploy.mkdir(exist_ok=True)
+        for name in APP_UNITS:
+            shutil.copy(ROOT / "deploy" / name, deploy / name)
+
+    def write_dashboard_archive(self, members, path=None):
+        path = path or (self.root / "dashboard.tar.gz")
+        with tarfile.open(path, "w:gz") as archive:
+            for name, payload in members.items():
+                if isinstance(payload, tuple):
+                    info = tarfile.TarInfo(name)
+                    info.type = tarfile.SYMTYPE
+                    info.linkname = payload[0]
+                    archive.addfile(info)
+                    continue
+                data = payload if isinstance(payload, bytes) else payload.encode()
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                info.mode = 0o644
+                archive.addfile(info, io.BytesIO(data))
+        return path
+
+    def dashboard_dir(self):
+        return self.root / "usr/local/share/kiln/dashboard"
+
+    def assert_mode_hides_other_writes(self, path):
+        mode = path.stat().st_mode & 0o777
+        self.assertEqual(mode & stat.S_IWOTH, 0, oct(mode))
+
+    def assert_extract_matches_archive(self, archive, dest):
+        with tarfile.open(archive) as packed:
+            members = sorted(member.name for member in packed.getmembers() if member.isfile())
+        files = sorted(
+            path.relative_to(dest).as_posix()
+            for path in dest.rglob("*")
+            if path.is_file()
+        )
+        self.assertEqual(files, members)
+        self.assertEqual(
+            len(files),
+            len(members),
+            f"extracted {len(files)} files from {len(members)} archive members",
+        )
+
+    def assert_no_dashboard_fetch(self, result):
+        for line in self.lines("curl "):
+            self.assertNotIn("dashboard", line)
+            self.assertNotIn("kiln-dashboard", line)
+        blob = result.stdout + result.stderr
+        self.assertNotIn("wget", blob)
+        self.assertNotRegex(INSTALL.read_text(), r"https?://\S*dashboard")
+
 
 class FreshTests(InstallerTest):
     def test_installer_names_binaries_and_keeps_the_production_lock_path(self):
@@ -457,6 +516,107 @@ class FreshTests(InstallerTest):
         self.assertFalse((self.root / "etc/kiln").exists())
         self.assertFalse((self.root / "opt/kiln").exists())
         self.assertEqual((self.root / "usr/local/libexec").stat().st_mode & 0o777, 0o750)
+
+    def test_dashboard_archive_extracts_and_enables_the_loopback_unit(self):
+        self.fresh_ready()
+        self.stage_app_units()
+        archive = self.write_dashboard_archive(
+            {
+                "index.html": b"<html>dashboard</html>\n",
+                "assets/app.js": b"console.log(1)\n",
+                "release.json": b'{"version":"v0.1.0"}\n',
+            }
+        )
+        result = self.invoke(
+            "--address",
+            "127.0.0.1",
+            "--apply",
+            "--dashboard-archive",
+            str(archive),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        dest = self.dashboard_dir()
+        self.assertEqual((dest / "index.html").read_bytes(), b"<html>dashboard</html>\n")
+        self.assert_mode_hides_other_writes(dest)
+        self.assert_mode_hides_other_writes(dest / "index.html")
+        self.assert_extract_matches_archive(archive, dest)
+        units = self.root / "etc/systemd/system"
+        for name in APP_UNITS:
+            self.assertEqual((units / name).read_bytes(), (ROOT / "deploy" / name).read_bytes())
+        self.assertIn("systemctl enable kiln-app.service", self.lines())
+        self.assertFalse(
+            any("enable" in line and "kiln-app-proxy" in line for line in self.lines())
+        )
+        self.assertTrue((units / "kiln-api.service").is_file())
+        self.assert_no_dashboard_fetch(result)
+
+    def test_apply_without_dashboard_archive_leaves_the_share_path_absent(self):
+        self.fresh_ready()
+        result = self.invoke("--address", "127.0.0.1", "--apply")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertFalse(self.dashboard_dir().exists())
+        self.assertFalse((self.root / "usr/local/share/kiln").exists())
+        units = self.root / "etc/systemd/system"
+        self.assertTrue((units / "kiln-api.service").is_file())
+        for name in APP_UNITS:
+            self.assertFalse((units / name).exists())
+        self.assertFalse(any("kiln-app" in line for line in self.lines()))
+        self.assert_no_dashboard_fetch(result)
+
+    def test_dashboard_archive_without_apply_writes_nothing(self):
+        self.fresh_ready()
+        self.stage_app_units()
+        archive = self.write_dashboard_archive({"index.html": b"<html>dashboard</html>\n"})
+        result = self.invoke("--address", "127.0.0.1", "--dashboard-archive", str(archive))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Check only", result.stdout)
+        self.assertFalse(self.dashboard_dir().exists())
+        self.assertFalse((self.root / "etc/kiln").exists())
+        units = self.root / "etc/systemd/system"
+        for name in APP_UNITS:
+            self.assertFalse((units / name).exists())
+        self.assertFalse(any("kiln-app" in line for line in self.lines()))
+        self.assert_no_dashboard_fetch(result)
+
+    def test_symlink_dashboard_member_exits_before_the_unit_is_enabled(self):
+        self.fresh_ready()
+        self.stage_app_units()
+        archive = self.write_dashboard_archive(
+            {
+                "index.html": b"<html>dashboard</html>\n",
+                "assets/link.js": ("index.html",),
+            }
+        )
+        result = self.invoke(
+            "--address",
+            "127.0.0.1",
+            "--apply",
+            "--dashboard-archive",
+            str(archive),
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("symlink", result.stderr)
+        self.assertFalse(self.dashboard_dir().exists())
+        self.assertFalse(any("kiln-app" in line and "enable" in line for line in self.lines()))
+        linked = self.root / "linked.tar.gz"
+        linked.symlink_to(archive)
+        again = self.invoke(
+            "--address",
+            "127.0.0.1",
+            "--apply",
+            "--dashboard-archive",
+            str(linked),
+        )
+        self.assertNotEqual(again.returncode, 0, again.stdout)
+        self.assertIn("regular file", again.stderr)
+        self.assertFalse((self.root / "etc/systemd/system/kiln-app.service").exists())
+
+    def test_packaged_door_unit_has_no_dashboard_root_and_installer_skips_caddy(self):
+        door = (ROOT / "deploy/kiln-door.service").read_text()
+        installer = INSTALL.read_text()
+        self.assertNotIn("dashboard-root", door)
+        self.assertNotIn("/opt/paseo/Caddyfile", installer)
+        self.assertNotIn("redirect_uri", installer)
 
     def test_apply_installs_certificates_units_and_network_without_prompt(self):
         self.fresh_ready()
@@ -881,6 +1041,45 @@ class UpgradeTests(InstallerTest):
         self.assertEqual(changed.returncode, 0, changed.stderr + changed.stdout)
         self.assertIn("# rebuilt", self.destinations["kiln"].read_text())
         self.assert_untouched_neighbors()
+
+    def test_dashboard_extract_replaces_only_different_bytes(self):
+        self.write_release("0.4.4", min_upgrade_from="0.3.0")
+        self.write_versions("0.4.4", "0.4.4")
+        self.stage_app_units()
+        archive = self.write_dashboard_archive(
+            {
+                "index.html": b"<html>one</html>\n",
+                "assets/app.js": b"console.log(1)\n",
+            }
+        )
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        first = self.invoke("--apply", "--dashboard-archive", str(archive))
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        index = self.dashboard_dir() / "index.html"
+        stamp = (index.stat().st_ino, index.stat().st_mtime_ns)
+        self.assertEqual(index.read_bytes(), b"<html>one</html>\n")
+        self.assert_extract_matches_archive(archive, self.dashboard_dir())
+        self.assert_data_preserved()
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        second = self.invoke("--apply", "--dashboard-archive", str(archive))
+        self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
+        self.assertEqual((index.stat().st_ino, index.stat().st_mtime_ns), stamp)
+        self.assertEqual(index.read_bytes(), b"<html>one</html>\n")
+        self.assert_data_preserved()
+        changed = self.write_dashboard_archive(
+            {
+                "index.html": b"<html>two</html>\n",
+                "assets/app.js": b"console.log(1)\n",
+            }
+        )
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        third = self.invoke("--apply", "--dashboard-archive", str(changed))
+        self.assertEqual(third.returncode, 0, third.stderr + third.stdout)
+        self.assertEqual(index.read_bytes(), b"<html>two</html>\n")
+        self.assertNotEqual((index.stat().st_ino, index.stat().st_mtime_ns), stamp)
+        self.assert_extract_matches_archive(changed, self.dashboard_dir())
+        self.assert_data_preserved()
+        self.assert_no_dashboard_fetch(third)
 
     def test_check_only_does_not_mutate_or_stop_services(self):
         result = self.invoke()

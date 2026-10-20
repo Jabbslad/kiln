@@ -142,6 +142,17 @@ FILES
                 deploy/paseo-caddy.override.yaml \
                 deploy/door.Caddyfile >> "$work/expected"
         fi
+        # The app listener units ship together. An older archive has none.
+        # An archive that has any of them must have all three.
+        if grep -qx 'deploy/kiln-app.service' "$work/names" \
+            || grep -qx 'deploy/kiln-app-proxy.service' "$work/names" \
+            || grep -qx 'deploy/kiln-app-proxy.socket' "$work/names"
+        then
+            printf '%s\n' \
+                deploy/kiln-app.service \
+                deploy/kiln-app-proxy.service \
+                deploy/kiln-app-proxy.socket >> "$work/expected"
+        fi
     fi
     sort "$work/expected" > "$work/expected.sorted"
     sort "$work/names" > "$work/names.sorted"
