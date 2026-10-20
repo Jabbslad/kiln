@@ -501,7 +501,7 @@ packager includes only named binaries, installer files and pristine image files.
 Changing repository visibility later is a separate decision; this workflow never
 makes that change.
 
-The published bootstrap pin is v0.4.11.
+The published bootstrap pin is v0.4.12.
 
 The public install command fetches `deploy/bootstrap/install.sh` from main.
 That file stays a pin of one published release. After you publish, copy
