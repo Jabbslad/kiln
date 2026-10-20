@@ -1,0 +1,11 @@
+name: Bad attest gate
+
+on:
+  pull_request:
+
+jobs:
+  attest:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo attest
