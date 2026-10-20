@@ -53,6 +53,7 @@ fn setup() -> (tempfile::TempDir, Receipt) {
         ca_pem: String::new(),
         directory_token: "one-time-directory-token".into(),
         local_origin: String::new(),
+        login_token: String::new(),
     };
     let bytes = serde_json::to_vec(&receipt).unwrap();
     fs::write(root.path().join("etc/enrollment.pending.json"), bytes).unwrap();
@@ -155,6 +156,63 @@ async fn resume_is_idempotent_and_activates_saved_credential() {
         b"[Service]\nStateDirectory=kiln-api\nStateDirectoryMode=0700\n"
     );
     assert!(!String::from_utf8(dropin).unwrap().contains("ExecStart"));
+    assert!(!root.path().join("etc/login.token").exists());
+}
+
+#[tokio::test]
+async fn login_token_is_group_readable_and_directory_token_stays_private() {
+    let (root, mut receipt) = setup();
+    receipt.login_token = "fixture-login".into();
+    let mut fixture = Fixture::default();
+    finish(&root, &receipt, &mut fixture).await.unwrap();
+    let login = root.path().join("etc/login.token");
+    let directory = root.path().join("etc/directory.token");
+    assert_eq!(fs::read(&login).unwrap(), b"fixture-login");
+    assert_eq!(
+        fs::metadata(&login).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    assert_eq!(
+        fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[tokio::test]
+async fn a_missing_app_login_route_yields_an_empty_token() {
+    let missing = reqwest::Response::from(
+        axum::http::Response::builder()
+            .status(404)
+            .body(reqwest::Body::from("missing"))
+            .unwrap(),
+    );
+    let token = kiln_server::enrollment::login_token_from_response(missing)
+        .await
+        .unwrap();
+    assert!(token.is_empty());
+    let issued = reqwest::Response::from(
+        axum::http::Response::builder()
+            .status(200)
+            .body(reqwest::Body::from(r#"{"login_token":"fixture-login"}"#))
+            .unwrap(),
+    );
+    assert_eq!(
+        kiln_server::enrollment::login_token_from_response(issued)
+            .await
+            .unwrap(),
+        "fixture-login"
+    );
+    let refused = reqwest::Response::from(
+        axum::http::Response::builder()
+            .status(401)
+            .body(reqwest::Body::from("{}"))
+            .unwrap(),
+    );
+    assert!(
+        kiln_server::enrollment::login_token_from_response(refused)
+            .await
+            .is_err()
+    );
 }
 
 #[test]

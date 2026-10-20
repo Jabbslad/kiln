@@ -21,10 +21,12 @@ it('keeps the public page independent of the host and makes preview an explicit 
   open('/')
   expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Your machine.')
   expect(screen.getByRole('link', { name: 'Open console' })).toHaveAttribute('href', '/boxes')
+  expect(screen.queryByRole('link', { name: 'Sign in' })).not.toBeInTheDocument()
   expect(request).not.toHaveBeenCalled()
   await userEvent.setup().click(screen.getByRole('link', { name: 'Explore design preview' }))
   expect(await screen.findByRole('heading', { name: 'Boxes' })).toBeVisible()
   expect(screen.getByText('EXAMPLE DATA · NO VM OPERATIONS')).toBeVisible()
+  expect(screen.queryByRole('link', { name: 'Sign in' })).not.toBeInTheDocument()
   expect(request).not.toHaveBeenCalled()
 })
 
@@ -50,6 +52,7 @@ it('never substitutes examples when the service is down', async () => {
   open('/boxes')
   expect(await screen.findByRole('heading', { name: 'Connect your control plane' })).toBeVisible()
   expect(screen.queryByRole('link', { name: 'api-dev' })).not.toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login')
   expect(screen.getByText(/HTTP 503/)).toBeVisible()
 })
 
