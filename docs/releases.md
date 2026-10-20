@@ -490,12 +490,19 @@ packager includes only named binaries, installer files and pristine image files.
 Changing repository visibility later is a separate decision; this workflow never
 makes that change.
 
+The published bootstrap pin is v0.4.10.
+
 The public install command fetches `deploy/bootstrap/install.sh` from main.
-That file stays a runnable pin of the current published release. After you
-publish, re-pin its version and SHA-256 lines from the published archives.
-`scripts/test-bootstrap.py` fails if that pin is not the latest published
-release. The tag job also attaches `install.sh` and `install.sh.sha256` to
-the draft, and the checksum check includes that sidecar. The attached script
+That file stays a pin of one published release. After you publish, copy
+that release's version and SHA-256 lines into the pin. Set the published
+bootstrap pin sentence above to the same version. The workspace version
+in `Cargo.toml` can move ahead of this pin while a release is prepared.
+`scripts/test-bootstrap.py` requires the pin and that sentence to name
+the same version. It also requires the tag to be a stable release whose
+archive digests match the pin. A publish edits neither version. The
+publish alone does not fail the test. The tag job also attaches
+`install.sh` and `install.sh.sha256` to the draft, and the checksum check
+includes that sidecar. The attached script
 verifies each archive checksum and installs only that version. Leave the
 public command on the raw main URL until Jamie publishes a release that
 contains `install.sh`. `releases/latest/download/install.sh` returns 404 for
