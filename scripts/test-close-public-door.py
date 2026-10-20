@@ -121,6 +121,7 @@ class ClosePublicDoor(unittest.TestCase):
         proc = subprocess.Popen(
             ["python3", str(path)],
             stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True,
         )
         (work / "backend.pid").write_text(str(proc.pid))
@@ -163,15 +164,23 @@ class ClosePublicDoor(unittest.TestCase):
                     fi
                     ;;
                   is-active)
+                    quiet=0
                     marker={state}/proxy-active
+                    for arg in "$@"; do
+                      case "$arg" in
+                        --quiet) quiet=1 ;;
+                        --*) ;;
+                        *) unit=$arg ;;
+                      esac
+                    done
                     if [ "$unit" = kiln-door-proxy-public.socket ]; then
                       marker={state}/public-active
                     fi
                     if [ -f "$marker" ]; then
-                      printf '%s\\n' active
+                      [ "$quiet" = 1 ] || printf '%s\\n' active
                       exit 0
                     fi
-                    printf '%s\\n' inactive
+                    [ "$quiet" = 1 ] || printf '%s\\n' inactive
                     exit 3
                     ;;
                   disable)
@@ -180,18 +189,22 @@ class ClosePublicDoor(unittest.TestCase):
                   daemon-reload) ;;
                   restart)
                     if [ -f {state}/proxy.pid ]; then
-                      kill "$(cat {state}/proxy.pid)" 2>/dev/null || true
-                      wait "$(cat {state}/proxy.pid)" 2>/dev/null || true
+                      old=$(cat {state}/proxy.pid)
+                      kill "$old" 2>/dev/null || true
+                      for _ in 1 2 3 4 5 6 7 8 9 10; do
+                        kill -0 "$old" 2>/dev/null || break
+                        sleep 0.05
+                      done
                     fi
                     args=(systemd-socket-activate)
                     if grep -q kiln-door-proxy-public.socket {units}/kiln-door-proxy.service; then
                       args+=(-l {PUBLIC})
                     fi
                     args+=(-l {BRIDGE} {PROXYD} 127.0.0.1:{backend_port})
-                    "${{args[@]}}" >/dev/null 2>&1 &
+                    setsid "${{args[@]}}" >/dev/null 2>&1 < /dev/null &
                     echo $! > {state}/proxy.pid
                     echo $! > {work}/proxy.pid
-                    sleep 0.2
+                    sleep 0.3
                     ;;
                   *) exit 1 ;;
                 esac

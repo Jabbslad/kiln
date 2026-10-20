@@ -135,7 +135,6 @@ class ReleaseTests(unittest.TestCase):
             "deploy/kiln-door.service",
             "deploy/kiln-door-proxy.service",
             "deploy/kiln-door-proxy.socket",
-            "deploy/kiln-door-proxy-public.socket",
             "deploy/paseo-caddy.override.yaml",
             "deploy/door.Caddyfile",
             "deploy/enroll-dark-forge.sh",
@@ -175,7 +174,6 @@ class ReleaseTests(unittest.TestCase):
                     "deploy/kiln-door.service",
                     "deploy/kiln-door-proxy.service",
                     "deploy/kiln-door-proxy.socket",
-                    "deploy/kiln-door-proxy-public.socket",
                     "deploy/paseo-caddy.override.yaml",
                     "deploy/door.Caddyfile",
                     "deploy/enroll-dark-forge.sh",
@@ -213,16 +211,22 @@ def bootstrap_accepts(archive_names):
     expected = set(text[start : text.index("\nFILES\n", start)].splitlines())
     if "bin/kiln-network" in archive_names:
         expected.add("bin/kiln-network")
-    door_proxy = {
+    door_core = {
         "deploy/kiln-door-proxy.service",
         "deploy/kiln-door-proxy.socket",
-        "deploy/kiln-door-proxy-public.socket",
         "docs/runbooks/2026-10-19-door-public-cert.md",
+    }
+    public = "deploy/kiln-door-proxy-public.socket"
+    caddy = {
         "deploy/paseo-caddy.override.yaml",
         "deploy/door.Caddyfile",
     }
-    if archive_names & door_proxy:
-        expected.update(door_proxy)
+    if archive_names & (door_core | {public}):
+        expected.update(door_core)
+    if public in archive_names:
+        expected.add(public)
+    if archive_names & caddy:
+        expected.update(caddy)
     return expected
 
 

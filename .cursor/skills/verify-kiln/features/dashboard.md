@@ -93,7 +93,7 @@ Public door, read-scope owner JWT. Use the server CA. Do not send the administra
 curl --silent --show-error --cacert "$CA" \
   -H "Authorization: Bearer $OWNER_JWT" \
   -D - \
-  https://cli.dark-forge.dev:8443/api/v1/dashboard
+  https://cli.dark-forge.dev/api/v1/dashboard
 ```
 
 A pass is HTTP 200 and `workspace` equal to that server's id. The same URL with no header, with `Authorization: Bearer $BOGUS`, or with `Authorization: Bearer $ADMIN_TOKEN`, is HTTP 401.

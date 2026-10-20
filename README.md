@@ -62,7 +62,7 @@ administrator profiles remain available for recovery.
 `kiln login` opens your browser at the built-in `https://dark-forge.dev` service.
 Sign in with GitHub or Google, approve the device, and return to the terminal.
 The laptop then dials the enrolled server. On dark-forge that name is
-`https://cli.dark-forge.dev:8443`. A door on that name checks the identity token
+`https://cli.dark-forge.dev`. A door on that name checks the identity token
 before it dials loopback `kiln-api`. A request without that token does not reach
 the API. The administrator token stays on loopback. No server address, token, or
 CA file is needed on the laptop. Use `kiln --profile personal login` to keep an

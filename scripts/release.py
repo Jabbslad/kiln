@@ -86,7 +86,6 @@ def package(repo, bins, output, version, target, kind, image):
                     "kiln-door.service",
                     "kiln-door-proxy.service",
                     "kiln-door-proxy.socket",
-                    "kiln-door-proxy-public.socket",
                     "paseo-caddy.override.yaml",
                     "door.Caddyfile",
                     "enroll-dark-forge.sh",

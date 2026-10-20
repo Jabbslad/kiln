@@ -369,7 +369,6 @@ printf 'Enrolled owner_id %s is GitHub subject %s display name %s.\n' \
 printf 'Stored server URL is %s.\n' "$expected_origin"
 printf 'Unauthenticated https://%s:8443/v1/templates returned 401.\n' "$public_host"
 printf 'kiln-identity.service was not edited.\n'
-printf 'If tcp/8443 is filtered, allow it. This script does not change the firewall.\n'
-printf 'An nft example is: nft add rule inet filter input tcp dport 8443 accept\n'
+printf 'This script does not change the firewall.\n'
 printf 'On the laptop, install the client, then run kiln login, kiln list, kiln create, kiln exec, and kiln delete.\n'
 printf 'Do not set KILN_IDENTITY_CA. SSH is not served by the public door.\n'

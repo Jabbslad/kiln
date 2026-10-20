@@ -1,6 +1,6 @@
 # Public door on dark-forge
 
-Laptops reach this host at `https://cli.dark-forge.dev:8443`. The door checks an identity JWT, then dials loopback `kiln-api`. A request without that JWT does not open that dial. The administrator token stays on loopback. `https://dark-forge.dev` stays the identity service.
+Laptops reach this host at `https://cli.dark-forge.dev` on port 443. tcp/8443 is closed. Do not run the enrollment command below to put the door back on that port. The door checks an identity JWT, then dials loopback `kiln-api`. A request without that JWT does not open that dial. The administrator token stays on loopback. `https://dark-forge.dev` stays the identity service.
 
 `kiln-identity.service` is not edited and is not restarted. The identity crate did change. Release builds of `kiln-identity` accept only the production GitHub endpoints (`https://github.com/login/oauth/authorize`, `https://github.com/login/oauth/access_token`, and `https://api.github.com/user`) and no extra provider CA. The non-default Cargo feature `lab-provider` puts `--github-authorize-url`, `--github-token-url`, `--github-user-url`, and `--provider-ca-file` back for a lab issuer. Release archives do not enable that feature. `https://dark-forge.dev` refuses a substitute provider even when the feature is on.
 
@@ -44,7 +44,7 @@ On a match it issues a leaf from `/etc/kiln/ca.crt` with SAN `DNS:cli.dark-forge
 
 On a mismatch of an enrollment this run just created, it deactivates that server at the identity service. The directory token is passed to `curl` in a mode 0600 header file (`-H @file`), not on the command line. It then removes only `identity.json`, `directory.token`, `enrollment.pending.json`, and the API identity drop-in created by this run, and restarts `kiln-api` only. It does not delete guest state and it does not enable the door. Sign in as `Jabbslad` and run the script again. A failed `enroll` command leaves its pending receipt so `--resume` still works.
 
-The script does not change the firewall. If tcp/8443 is filtered, allow it. An nft example, only where nft is already the filter, is `nft add rule inet filter input tcp dport 8443 accept`.
+The script does not change the firewall. Do not add an accept rule for tcp port 8443.
 
 ## Laptop
 

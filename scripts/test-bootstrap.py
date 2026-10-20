@@ -540,8 +540,10 @@ if args[0] == 'env' and 'apt-get' in args:
             for line in (self.root / "privileged").read_text().splitlines()
         ]
         self.assertEqual(commands[0], ["true"])
-        self.assertEqual(commands[1][0], "bash")
-        self.assertEqual(len(commands), 2)
+        self.assertEqual(commands[1][0], "sh")
+        self.assertIn("disable --now", " ".join(commands[1]))
+        self.assertEqual(commands[2][0], "bash")
+        self.assertEqual(len(commands), 3)
 
     def test_server_unsupported_host_never_requests_privileges(self):
         for distro, version in [
@@ -750,15 +752,24 @@ if args[0] == 'env' and 'apt-get' in args:
         door_proxy = [
             "deploy/kiln-door-proxy.service",
             "deploy/kiln-door-proxy.socket",
-            "deploy/kiln-door-proxy-public.socket",
             "docs/runbooks/2026-10-19-door-public-cert.md",
         ]
+        public = "deploy/kiln-door-proxy-public.socket"
         members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network", *door_proxy], b"fixture\n")
         code, out = self.run_bootstrap(self.package(members), args=("server",))
         self.assertNotEqual(code, 0, out)
         self.assertNotIn("Unexpected archive contents.", out)
+        legacy = dict(members)
+        legacy[public] = b"fixture\n"
+        code, out = self.run_bootstrap(self.package(legacy), args=("server",))
+        self.assertNotEqual(code, 0, out)
+        self.assertNotIn("Unexpected archive contents.", out)
         partial = dict.fromkeys([*SERVER_FILES, "bin/kiln-network", door_proxy[0]], b"fixture\n")
         code, out = self.run_bootstrap(self.package(partial), args=("server",))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("Unexpected archive contents.", out)
+        only_public = dict.fromkeys([*SERVER_FILES, "bin/kiln-network", public], b"fixture\n")
+        code, out = self.run_bootstrap(self.package(only_public), args=("server",))
         self.assertNotEqual(code, 0, out)
         self.assertIn("Unexpected archive contents.", out)
 
@@ -818,6 +829,7 @@ printf '%s\\n' 'provisioner completed'
         self.assertNotIn("sqlite3", commands[3])
         self.assertNotIn("python3", commands[3])
         self.assertEqual(commands[4][0], "bash")
+        self.assertNotIn("disable --now", self.privileged())
 
     def test_existing_shell_archive_skips_apt(self):
         (self.root / "etc-kiln").mkdir()
@@ -829,8 +841,11 @@ printf '%s\\n' 'provisioner completed'
         self.assertIn("updated", out)
         commands = [json.loads(line) for line in (self.root / "privileged").read_text().splitlines()]
         self.assertEqual(commands[0], ["true"])
-        self.assertEqual(commands[1][0], "bash")
-        self.assertEqual(len(commands), 2)
+        self.assertEqual(commands[1][0], "sh")
+        self.assertIn("disable --now", " ".join(commands[1]))
+        self.assertNotIn("enable --now", " ".join(commands[1]))
+        self.assertEqual(commands[2][0], "bash")
+        self.assertEqual(len(commands), 3)
         self.assertNotIn("sqlite3", self.privileged())
 
     def path_without(self, name):
@@ -919,12 +934,14 @@ printf '%s\\n' 'provisioner completed'
         code, out = self.run_bootstrap(self.package(members), args=("server",))
         self.assertEqual(code, 0, out)
         existing = [json.loads(line) for line in (self.root / "privileged").read_text().splitlines()]
-        self.assertEqual(len(existing), 4, existing)
+        self.assertEqual(len(existing), 5, existing)
         self.assertEqual(existing[0], ["true"])
         self.assertEqual(existing[1], update)
         self.assertEqual(existing[2], install)
-        self.assertEqual(existing[3][0], "bash")
-        self.assertEqual(existing[3][-1], "--apply")
+        self.assertEqual(existing[3][0], "sh")
+        self.assertIn("disable --now", " ".join(existing[3]))
+        self.assertEqual(existing[4][0], "bash")
+        self.assertEqual(existing[4][-1], "--apply")
         self.assertNotIn("upgrade", self.apt_subcommands(existing))
         self.assertNotIn("dist-upgrade", self.apt_subcommands(existing))
 

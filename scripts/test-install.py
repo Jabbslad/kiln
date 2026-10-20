@@ -746,6 +746,26 @@ class UpgradeTests(InstallerTest):
         self.assertEqual(list((self.opt / "upgrades").glob("*/kiln-api")), backups)
         self.assert_untouched_neighbors()
 
+    def test_upgrade_disables_the_public_door_socket(self):
+        unit = self.root / "etc/systemd/system/kiln-door-proxy.service"
+        unit.write_text(
+            "[Service]\nSockets=kiln-door-proxy.socket kiln-door-proxy-public.socket\n"
+        )
+        (self.state / "load-state").write_text("loaded\n")
+        result = self.invoke("--apply")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(
+            unit.read_text(),
+            "[Service]\nSockets=kiln-door-proxy.socket\n",
+        )
+        self.assertIn(
+            "systemctl disable --now kiln-door-proxy-public.socket",
+            self.lines(),
+        )
+        self.assertFalse(
+            any("enable" in line and "kiln-door-proxy-public" in line for line in self.lines())
+        )
+
     def test_dark_forge_layout_upgrades_and_rolls_back_without_release_json(self):
         self.write_release("0.4.5")
         self.write_versions("0.4.4", "0.4.5")

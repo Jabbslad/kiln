@@ -116,8 +116,9 @@ FILES
             printf 'bin/kiln-network\n' >> "$work/expected"
         fi
         # The door proxy units and their runbook ship together. The pinned
-        # v0.4.7 archive does not have them. A later archive that has one must
-        # have all four, and no other extra names.
+        # v0.4.7 archive does not have them. A later archive that has the
+        # service must have the private unit and the runbook. The public
+        # unit is accepted when an older archive still carries it.
         if grep -qx 'deploy/kiln-door-proxy.service' "$work/names" \
             || grep -qx 'deploy/kiln-door-proxy.socket' "$work/names" \
             || grep -qx 'deploy/kiln-door-proxy-public.socket' "$work/names" \
@@ -126,8 +127,10 @@ FILES
             printf '%s\n' \
                 deploy/kiln-door-proxy.service \
                 deploy/kiln-door-proxy.socket \
-                deploy/kiln-door-proxy-public.socket \
                 docs/runbooks/2026-10-19-door-public-cert.md >> "$work/expected"
+        fi
+        if grep -qx 'deploy/kiln-door-proxy-public.socket' "$work/names"; then
+            printf '%s\n' deploy/kiln-door-proxy-public.socket >> "$work/expected"
         fi
         # The paseo Caddy override and the door site are their own pair.
         # v0.4.9 has the four door files and neither of these. An archive
@@ -251,9 +254,34 @@ run_installer() {
     as_root bash "$work/package/install.sh" "$@" < /dev/null
 }
 
+retire_public_door() {
+    as_root sh -c '
+unit=/etc/systemd/system/kiln-door-proxy.service
+changed=0
+if [ -f "$unit" ] && grep -q kiln-door-proxy-public.socket "$unit"; then
+  sed -i "s/^Sockets=.*/Sockets=kiln-door-proxy.socket/" "$unit"
+  systemctl daemon-reload
+  changed=1
+fi
+state=$(systemctl show --property=LoadState --value kiln-door-proxy-public.socket 2>/dev/null || true)
+case $state in
+  ""|not-found) ;;
+  *)
+    before=$(systemctl is-active kiln-door-proxy-public.socket 2>/dev/null || true)
+    systemctl disable --now kiln-door-proxy-public.socket
+    if [ "$before" = active ]; then changed=1; fi
+    ;;
+esac
+if [ "$changed" = 1 ] && systemctl is-active --quiet kiln-door-proxy.service; then
+  systemctl restart kiln-door-proxy.service
+fi
+'
+}
+
 install_server() {
     if [ "$existing_server" = true ]; then
         install_sqlite3_if_missing
+        retire_public_door
         set -- --apply
         if [ -n "$address" ]; then set -- "$@" --address "$address"; fi
         if [ -n "$uplink" ]; then set -- "$@" --network-uplink "$uplink"; fi

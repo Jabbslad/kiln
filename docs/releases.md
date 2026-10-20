@@ -12,10 +12,11 @@ downloads do not disable API authentication.
 profile keeps its private CA. An origin that still names `:8443` stays pinned
 to that CA. Door commands for the portless origin use public roots.
 
-The public socket listens on `78.46.98.73:8443`. `systemd-socket-proxyd`
-forwards those connections to `127.0.0.1:8444`. The door still has one listen
-address. `docs/runbooks/2026-10-19-door-public-cert.md` records the Caddy
-reload and the ACME checks.
+The public socket listened on `78.46.98.73:8443` for 0.4.6 clients. That
+listener is closed. `kiln-door-proxy.service` names only
+`kiln-door-proxy.socket`, the bridge at `172.18.0.1:8444`.
+`docs/runbooks/2026-10-19-door-public-cert.md` records the Caddy reload and
+the ACME checks.
 
 Publishing this release does not deploy a server or restart a live service.
 The public bootstrap still pins the published v0.4.7 assets and runs
