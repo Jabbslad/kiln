@@ -14,7 +14,7 @@ const CREATE_JSON: &str = concat!(
 );
 
 fn test_workflows_have_no_pull_request_trigger() {
-    for name in ["deploy.yml", "diagnose.yml", "deploy-release.yml"] {
+    for name in ["deploy.yml", "diagnose.yml"] {
         let text = workflow(name);
         assert!(!text.contains("pull_request"), "{name}");
         assert!(!text.contains("accept-new"), "{name}");
@@ -26,7 +26,7 @@ fn test_workflows_have_no_pull_request_trigger() {
         assert!(text.contains("secrets.DARK_FORGE_SSH_KEY"), "{name}");
         assert!(text.contains("secrets.DARK_FORGE_KNOWN_HOSTS"), "{name}");
     }
-    let caller = workflow("deploy-release.yml");
+    let caller = workflow("build.yml");
     assert!(!caller.contains("secrets.DARK_FORGE_SSH_KEY"));
     assert!(!caller.contains("secrets.DARK_FORGE_KNOWN_HOSTS"));
     assert!(!caller.contains("environment:"));
@@ -44,9 +44,9 @@ fn test_deploy_is_manual_from_main() {
     assert!(text.contains("default: latest"));
     assert_eq!(count(&text, "secrets.DARK_FORGE_SSH_KEY"), 1);
     assert!(text.contains("name: Install the release\n"));
-    let caller = workflow("deploy-release.yml");
-    assert!(caller.contains("types: [published]"));
-    assert!(caller.contains("tag: ${{ github.event.release.tag_name }}"));
+    let caller = workflow("build.yml");
+    assert!(!caller.contains("types: [published]"));
+    assert!(caller.contains("tag: ${{ github.ref_name }}"));
     let docs = read_repo("docs/releases.md");
     assert!(docs.contains("Publishing a release runs"));
     assert!(!docs.contains("Publishing a release does not start it."));

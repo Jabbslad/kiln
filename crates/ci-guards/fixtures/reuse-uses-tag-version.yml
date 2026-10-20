@@ -1,0 +1,14 @@
+jobs:
+  reuse:
+    steps:
+      - id: decide
+        env:
+          REUSE_VERSION: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          REUSE_SHA_INPUT: ${{ inputs.reuse_sha }}
+        run: python3 scripts/reuse_release.py fetch --dist dist
+  draft-release:
+    steps:
+      - name: Verify packages and publish the release
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 scripts/reuse_release.py finish --version "$TAG" --dist dist

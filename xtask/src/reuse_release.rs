@@ -1,9 +1,9 @@
 use crate::register_cases;
 use crate::release_version::{
-    attach_bootstrap, check_archives, committed_version, parse_release_tag, ReleaseVersion,
+    ReleaseVersion, attach_bootstrap, check_archives, committed_version, parse_release_tag,
 };
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use regex::Regex;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -134,7 +134,8 @@ pub fn select_run(runs: &[WorkflowRun], sha: &str) -> Result<WorkflowRun, ReuseR
             && run.path == WORKFLOW_PATH
             && run.conclusion == "success"
             && run.status == "completed";
-        if matches && chosen.is_none_or(|best| run.run_id > best.run_id) {
+        let newer = chosen.as_ref().is_none_or(|best| run.run_id > best.run_id);
+        if matches && newer {
             chosen = Some(run);
         }
     }
@@ -167,16 +168,17 @@ pub fn require_artifacts(
             panic!("can't compare offset-naive and offset-aware datetimes");
         }
         if artifact.expired || artifact.expires_at.micros <= now.micros {
-            return Err(ReuseRefused(format!("{} is expired", artifact.name)));
+            let name = &artifact.name;
+            return Err(ReuseRefused(format!("{name} is expired")));
         }
     }
     Ok(())
 }
 
 pub fn workflow_attests(workflow_text: &str) -> bool {
-    workflow_text.lines().any(|line| {
-        line.trim_start().starts_with("uses:") && line.contains(ATTEST_ACTION)
-    })
+    workflow_text
+        .lines()
+        .any(|line| line.trim_start().starts_with("uses:") && line.contains(ATTEST_ACTION))
 }
 
 pub fn attestation_gate(
@@ -196,7 +198,8 @@ pub fn attestation_gate(
     if results.iter().all(|result| *result == "absent") {
         if workflow_attests(workflow_text) {
             return Err(ReuseRefused(
-                "this commit's workflow attests builds, but the archives have no attestation".into(),
+                "this commit's workflow attests builds, but the archives have no attestation"
+                    .into(),
             ));
         }
         return Ok("not-produced");
@@ -258,31 +261,26 @@ pub fn verify_and_refresh_sidecars(
     if names != expected {
         return Err(refused("downloaded files are not the expected archives"));
     }
-    let mut by_name = HashMap::new();
+    let mut by_name: HashMap<String, &Path> = HashMap::new();
     for path in &paths {
-        by_name.insert(entry_name(path), path);
+        by_name.insert(entry_name(path), path.as_path());
     }
-    let mut ordered: Vec<&String> = archives.iter().collect();
-    ordered.sort();
-    for name in ordered {
-        let archive = by_name[name];
-        let sidecar = by_name[&format!("{name}.sha256")];
+    for name in &archives {
+        let archive = by_name[name.as_str()];
+        let sidecar_name = format!("{name}.sha256");
+        let sidecar = by_name[sidecar_name.as_str()];
         let digest = sha256_file(archive)?;
         let expected_bytes = format!("{digest}  {name}\n").into_bytes();
         let actual = fs::read(sidecar)?;
         if actual != expected_bytes && actual != crlf_bytes(&expected_bytes) {
             return Err(refused(format!("checksum does not match {name}")));
         }
-        fs::write(sidecar, &expected_bytes)?;
+        fs::write(sidecar, expected_bytes)?;
     }
     Ok(())
 }
 
-pub fn finish_dist(
-    repo: &Path,
-    dist: &Path,
-    version: &ReleaseVersion,
-) -> Result<(), ReleaseError> {
+pub fn finish_dist(repo: &Path, dist: &Path, version: &ReleaseVersion) -> Result<(), ReleaseError> {
     check_archives(version, dist)?;
     attach_bootstrap(repo, dist, version)?;
     let paths = regular_files(dist)?;
@@ -351,7 +349,7 @@ pub fn parse_artifacts(
             _ => {
                 return Err(ReuseRefused(
                     "artifact expired flag is not a boolean".into(),
-                ))
+                ));
             }
         };
         parsed.push(PackageArtifact {
@@ -451,7 +449,9 @@ pub fn cli(args: &[String]) -> i32 {
 }
 
 enum Request {
-    Fetch { dist: PathBuf },
+    Fetch {
+        dist: PathBuf,
+    },
     Finish {
         version: String,
         dist: PathBuf,
@@ -470,11 +470,7 @@ fn fetch_command(dist: &Path, env: &HashMap<String, String>) -> Result<String, R
     let (sha, mut version_text) = match event.as_str() {
         "workflow_dispatch" => (env_var(env, "REUSE_SHA_INPUT"), String::new()),
         "push" => (env_var(env, "REUSE_SHA"), env_var(env, "REUSE_VERSION")),
-        _ => {
-            return Err(refused(
-                "reuse runs only for a tag push or a dry run",
-            ))
-        }
+        _ => return Err(refused("reuse runs only for a tag push or a dry run")),
     };
     if version_text.is_empty() {
         version_text = committed_tag(&repo, &sha, env)?;
@@ -565,7 +561,9 @@ fn parse_finish(args: &[String]) -> Result<Request, String> {
 }
 
 fn next_flag(args: &[String], index: usize) -> Result<(String, String, usize), String> {
-    let arg = args.get(index).ok_or_else(|| "missing argument".to_string())?;
+    let arg = args
+        .get(index)
+        .ok_or_else(|| "missing argument".to_string())?;
     if let Some((key, value)) = arg.split_once('=') {
         if key.starts_with("--") {
             if value.is_empty() {
@@ -738,12 +736,9 @@ fn verify_attestation(
     Ok((completed.code, completed.stderr))
 }
 
-fn gh(
-    args: &[String],
-    env: &HashMap<String, String>,
-    refuse: &str,
-) -> Result<(), ReleaseError> {
-    gh_text(args, env, refuse).map(|_| ())
+fn gh(args: &[String], env: &HashMap<String, String>, refuse: &str) -> Result<(), ReleaseError> {
+    gh_text(args, env, refuse)?;
+    Ok(())
 }
 
 fn gh_text(
@@ -756,10 +751,8 @@ fn gh_text(
     full.extend(args.iter().cloned());
     let completed = run_process(&full, env)?;
     if completed.code != 0 {
-        return Err(refused(format!(
-            "{refuse}: {}",
-            public_error(&completed.stderr)
-        )));
+        let detail = public_error(&completed.stderr);
+        return Err(refused(format!("{refuse}: {detail}")));
     }
     Ok(completed.stdout)
 }
@@ -770,10 +763,7 @@ struct Completed {
     stderr: String,
 }
 
-fn run_process(
-    args: &[String],
-    env: &HashMap<String, String>,
-) -> Result<Completed, ReuseRefused> {
+fn run_process(args: &[String], env: &HashMap<String, String>) -> Result<Completed, ReuseRefused> {
     let Some((program, rest)) = args.split_first() else {
         return Err(ReuseRefused("gh could not be run".into()));
     };
@@ -836,11 +826,11 @@ fn wait_child(child: &mut Child, timeout: Duration) -> Result<ExitStatus, ReuseR
 }
 
 fn prepare_dist(dist: &Path) -> Result<(), ReleaseError> {
-    if dist.symlink_metadata().is_ok() {
+    if dist.exists() {
         if !dist.is_dir() {
+            let display = dist.display();
             return Err(ReleaseError::Invalid(format!(
-                "{} exists and is not a directory",
-                dist.display()
+                "{display} exists and is not a directory"
             )));
         }
         let mut entries = fs::read_dir(dist)?;
@@ -979,9 +969,9 @@ fn repo_ok(value: &str) -> bool {
 
 fn ident_ok(value: &str) -> bool {
     !value.is_empty()
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-')
-        })
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
 }
 
 fn json_i64(value: &Value) -> Option<i64> {
@@ -992,10 +982,7 @@ fn json_i64(value: &Value) -> Option<i64> {
     number.as_i64()
 }
 
-fn json_i64_field(
-    item: &serde_json::Map<String, Value>,
-    key: &str,
-) -> Result<i64, ReuseRefused> {
+fn json_i64_field(item: &serde_json::Map<String, Value>, key: &str) -> Result<i64, ReuseRefused> {
     item.get(key)
         .and_then(json_i64)
         .ok_or_else(|| ReuseRefused(format!("{key} is not an integer")))
@@ -1050,9 +1037,7 @@ fn parse_expiry(raw: &str) -> Result<DateTime, ReuseRefused> {
     let text = raw.replace('Z', "+00:00");
     match parse_iso(&text) {
         Ok(stamp) if stamp.aware => Ok(stamp),
-        Ok(_) => Err(ReuseRefused(
-            "artifact expiry is not timezone-aware".into(),
-        )),
+        Ok(_) => Err(ReuseRefused("artifact expiry is not timezone-aware".into())),
         Err(()) => Err(ReuseRefused("artifact expiry is not a timestamp".into())),
     }
 }
@@ -1207,10 +1192,8 @@ fn civil_micros(
     micros: i128,
 ) -> i128 {
     let days = days_from_civil(year, month, day);
-    let seconds = days * 86_400
-        + i64::from(hour) * 3_600
-        + i64::from(minute) * 60
-        + i64::from(second);
+    let seconds =
+        days * 86_400 + i64::from(hour) * 3_600 + i64::from(minute) * 60 + i64::from(second);
     i128::from(seconds) * 1_000_000 + micros
 }
 
@@ -1263,9 +1246,25 @@ fn draft_place(
 fn job_graph() -> Vec<Job> {
     let rows = [
         ("tag reuse", "push", true, "success", "reuse", false, true),
-        ("tag no match", "push", true, "success", "fallback", false, true),
+        (
+            "tag no match",
+            "push",
+            true,
+            "success",
+            "fallback",
+            false,
+            true,
+        ),
         ("tag error", "push", true, "failure", "", false, true),
-        ("tag upload error", "push", true, "failure", "reuse", false, true),
+        (
+            "tag upload error",
+            "push",
+            true,
+            "failure",
+            "reuse",
+            false,
+            true,
+        ),
         ("tag timeout", "push", true, "timed_out", "", false, true),
         ("main", "push", false, "skipped", "", false, true),
         ("code pr", "pull_request", false, "skipped", "", false, true),
@@ -1309,19 +1308,11 @@ fn job_graph() -> Vec<Job> {
         ("cancelled tag", "push", true, "cancelled", "", false, false),
     ];
     rows.into_iter()
-        .map(
-            |(name, event, tag, result, mode, docs_only, packages_ok)| {
-                let (server, clients) = package_jobs(event, result, mode, docs_only);
-                let place = draft_place(
-                    event,
-                    tag,
-                    result,
-                    mode,
-                    packages_ok && server && clients,
-                );
-                (name, server, clients, place)
-            },
-        )
+        .map(|(name, event, tag, result, mode, docs_only, packages_ok)| {
+            let (server, clients) = package_jobs(event, result, mode, docs_only);
+            let place = draft_place(event, tag, result, mode, packages_ok && server && clients);
+            (name, server, clients, place)
+        })
         .collect()
 }
 
@@ -1489,7 +1480,7 @@ struct PyParser<'a> {
     index: usize,
 }
 
-impl<'a> PyParser<'a> {
+impl PyParser<'_> {
     fn skip(&mut self) {
         while let Some(ch) = self.text[self.index..].chars().next() {
             if ch.is_whitespace() {
@@ -1579,7 +1570,8 @@ impl<'a> PyParser<'a> {
         if self.eat("(") {
             let value = self.parse_or();
             if !self.eat(")") {
-                panic!("missing ) in {}", self.text);
+                let expression = self.text;
+                panic!("missing ) in {expression}");
             }
             return value;
         }
@@ -1590,14 +1582,13 @@ impl<'a> PyParser<'a> {
             return PyVal::Bool(false);
         }
         self.skip();
-        match self.text[self.index..].chars().next() {
-            Some(quote @ ('\'' | '"')) => PyVal::Str(self.parse_string(quote)),
-            _ => panic!(
-                "bad atom at {:?} in {}",
-                &self.text[self.index..],
-                self.text
-            ),
+        let quote = self.text[self.index..].chars().next();
+        if let Some(quote @ ('\'' | '"')) = quote {
+            return PyVal::Str(self.parse_string(quote));
         }
+        let expression = self.text;
+        let tail = &expression[self.index..];
+        panic!("bad atom at {tail:?} in {expression}");
     }
 
     fn parse_string(&mut self, quote: char) -> String {
@@ -1619,7 +1610,8 @@ impl<'a> PyParser<'a> {
             }
             out.push(ch);
         }
-        panic!("unterminated string in {}", self.text);
+        let expression = self.text;
+        panic!("unterminated string in {expression}");
     }
 }
 
@@ -1802,7 +1794,10 @@ fn test_absent_attestation_is_allowed_only_before_the_workflow_attests() {
         attestation_gate(old, &["absent"; 7]).unwrap(),
         "not-produced"
     );
-    assert_eq!(attestation_gate(&new, &["verified"; 7]).unwrap(), "verified");
+    assert_eq!(
+        attestation_gate(&new, &["verified"; 7]).unwrap(),
+        "verified"
+    );
     assert!(attestation_gate(&new, &["absent"; 7]).is_err());
     assert!(attestation_gate(old, &["verified", "absent"]).is_err());
     assert!(attestation_gate(&new, &["rejected"]).is_err());
@@ -1838,11 +1833,7 @@ fn test_checksum_mismatch_refuses_and_a_match_keeps_the_bytes() {
     assert!(!refreshed.ends_with(b"\r\n"));
     let sidecar = dist.join(format!("kiln-dashboard-{tag}.tar.gz.sha256"));
     let zeros = "0".repeat(64);
-    fs::write(
-        &sidecar,
-        format!("{zeros}  kiln-dashboard-{tag}.tar.gz\n"),
-    )
-    .unwrap();
+    fs::write(&sidecar, format!("{zeros}  kiln-dashboard-{tag}.tar.gz\n")).unwrap();
     match verify_and_refresh_sidecars(dist, &version) {
         Err(ReleaseError::Refused(_)) => {}
         other => panic!("expected ReuseRefused, got {other:?}"),
@@ -1954,15 +1945,16 @@ fn test_workflow_keeps_drafts_and_does_not_move_tags() {
         .collect();
     assert_eq!(granted, Vec::<&str>::new());
     assert_eq!(text.matches("retention-days: 30").count(), 4);
-    assert!(text.contains(
-        "actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be"
-    ));
+    assert!(
+        text.contains("actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be")
+    );
     assert!(text.contains("dry_run:"));
     assert!(text.contains("needs.reuse.outputs.mode == 'fallback'"));
     let draft_if = job_if_expression(&text, "draft-release");
-    assert!(draft_if.contains(
-        "(needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse')"
-    ));
+    assert!(
+        draft_if
+            .contains("(needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse')")
+    );
     let step_only = "\
   other:\n\
     if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'\n\
@@ -1973,7 +1965,9 @@ fn test_workflow_keeps_drafts_and_does_not_move_tags() {
     steps:\n\
       - if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'\n\
 ";
-    assert!(!job_if_expression(step_only, "draft-release").contains("needs.reuse.result == 'success'"));
+    assert!(
+        !job_if_expression(step_only, "draft-release").contains("needs.reuse.result == 'success'")
+    );
     let reuse_guard = "needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'";
     assert!(step_if_expression(&text, "draft-release", "name: reused-dist").contains(reuse_guard));
     assert!(job_if_expression(&text, "dry-run-assets").contains(reuse_guard));
@@ -1998,10 +1992,14 @@ fn test_workflow_keeps_drafts_and_does_not_move_tags() {
             .count(),
         3
     );
-    assert!(text.contains(
-        "needs.reuse.result != 'success' || needs.reuse.outputs.mode != 'reuse'"
-    ));
-    assert_eq!(text.matches("!startsWith(github.ref, 'refs/tags/v')").count(), 6);
+    assert!(
+        text.contains("needs.reuse.result != 'success' || needs.reuse.outputs.mode != 'reuse'")
+    );
+    assert_eq!(
+        text.matches("!startsWith(github.ref, 'refs/tags/v')")
+            .count(),
+        6
+    );
     assert!(!text.contains("--auto"));
     assert_eq!(job_graph(), expected_jobs());
 }
@@ -2014,10 +2012,7 @@ fn test_fetch_refusal_sets_fallback_without_publishing() {
     env.insert("REUSE_SHA_INPUT".to_string(), "not-a-sha".to_string());
     env.insert("REUSE_VERSION".to_string(), String::new());
     env.insert("GH_REPO".to_string(), "Jabbslad/kiln".to_string());
-    env.insert(
-        "GITHUB_OUTPUT".to_string(),
-        output.display().to_string(),
-    );
+    env.insert("GITHUB_OUTPUT".to_string(), output.display().to_string());
     let args = vec![
         "fetch".to_string(),
         "--dist".to_string(),

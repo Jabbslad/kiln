@@ -112,3 +112,128 @@ fn downloaded_tools_are_checksummed_before_use() {
         "{violations:?}"
     );
 }
+
+#[test]
+fn reuse_looks_up_main_archives_by_the_committed_version() {
+    let workflow = read(&repo_root().join(".github/workflows/build.yml"));
+    let violations = ci_guards::reuse_lookup_violations(&workflow);
+    assert!(violations.is_empty(), "{violations:?}");
+
+    let violations = ci_guards::reuse_lookup_violations(&fixture("reuse-uses-tag-version.yml"));
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("git tag")),
+        "{violations:?}"
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("empty reuse_sha")),
+        "{violations:?}"
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("draft-release finish")),
+        "{violations:?}"
+    );
+}
+
+#[test]
+fn tag_push_deploys_from_build_without_a_release_event_or_a_main_push() {
+    let root = repo_root();
+    let build = read(&root.join(".github/workflows/build.yml"));
+    let caller = ci_guards::deploy_caller_violations(&build);
+    assert!(caller.is_empty(), "{caller:?}");
+    // A reusable workflow sees the caller event. A tag push is `push`, not
+    // `workflow_call`, so the deploy gate has to allow that event on a stable tag.
+    let guard = read(&root.join("deploy/github/guard.sh"));
+    assert!(
+        guard.contains("deploy:release|deploy:workflow_call|deploy:push"),
+        "{guard}"
+    );
+
+    for path in workflows(&root) {
+        let text = read(&path);
+        let release = ci_guards::release_event_violations(&text);
+        assert!(release.is_empty(), "{} {release:?}", path.display());
+        let pushes = ci_guards::main_push_violations(&text);
+        assert!(pushes.is_empty(), "{} {pushes:?}", path.display());
+    }
+
+    let caller = ci_guards::deploy_caller_violations(&fixture("deploy-without-needs.yml"));
+    assert!(
+        caller
+            .iter()
+            .any(|violation| violation.contains("without needing draft-release")),
+        "{caller:?}"
+    );
+
+    let release = ci_guards::release_event_violations(&fixture("release-published.yml"));
+    assert!(
+        release
+            .iter()
+            .any(|violation| violation.contains("release")),
+        "{release:?}"
+    );
+
+    let pushes = ci_guards::main_push_violations(&fixture("push-to-main.yml"));
+    assert!(
+        pushes
+            .iter()
+            .filter(|violation| violation.contains("pushes to main"))
+            .count()
+            >= 2,
+        "{pushes:?}"
+    );
+    assert!(
+        pushes
+            .iter()
+            .any(|violation| violation.contains("HEAD:main")),
+        "{pushes:?}"
+    );
+    assert!(
+        pushes
+            .iter()
+            .any(|violation| violation.contains("contents API")),
+        "{pushes:?}"
+    );
+
+    let plain_main = "\
+jobs:
+  pin:
+    steps:
+      - run: git push origin main
+";
+    let plain_hits = ci_guards::main_push_violations(plain_main);
+    assert!(
+        plain_hits
+            .iter()
+            .any(|violation| violation.contains("pushes to main")),
+        "{plain_hits:?}"
+    );
+
+    let other_branch = "\
+jobs:
+  pin:
+    steps:
+      - run: git push origin feature:next
+      - run: gh api --method PUT /repos/Jabbslad/kiln/contents/file -f branch=feature
+";
+    let other_hits = ci_guards::main_push_violations(other_branch);
+    assert!(other_hits.is_empty(), "{other_hits:?}");
+
+    let wired = "\
+jobs:
+  deploy:
+    needs: [draft-release]
+    if: needs.draft-release.result == 'success'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/deploy.yml
+    with:
+      tag: ${{ github.ref_name }}
+";
+    assert!(ci_guards::deploy_caller_violations(wired).is_empty());
+}

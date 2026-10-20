@@ -492,7 +492,7 @@ not stable `vMAJOR.MINOR.PATCH` fails before compile. Branch and pull-request
 builds keep the committed workspace version. A local stamp still rewrites
 `Cargo.toml` and `Cargo.lock` when they differ. Do not commit that rewrite.
 When the jobs pass, the workflow publishes the release, including that filled
-`install.sh`. Publishing starts `.github/workflows/deploy-release.yml`.
+`install.sh`. That tag run then calls `.github/workflows/deploy.yml`.
 Reruns do not overwrite
 existing releases. Real KVM tests remain separate; ordinary CI tests do not prove
 host isolation, reboot persistence or installer success on a real server.
@@ -526,7 +526,7 @@ The ordinary build workflow has no cross-repository publishing credentials.
 ## Deploy from GitHub Actions
 
 GitHub-hosted runners install a published server release on `root@dark-forge.dev`.
-Publishing a release runs `.github/workflows/deploy-release.yml`, which calls
+Publishing a release runs the `deploy` job in `.github/workflows/build.yml`, which calls
 `.github/workflows/deploy.yml`. The Actions tab on `main` can still run that
 same workflow. `.github/workflows/diagnose.yml` is
 manual and only reads the host. None of these workflows run for a pull request or

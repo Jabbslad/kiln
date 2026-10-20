@@ -1,0 +1,11 @@
+name: Release event
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo published

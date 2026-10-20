@@ -14,7 +14,7 @@ guard_github_event() {
     deploy:workflow_dispatch|diagnose:workflow_dispatch)
       [ "${GITHUB_REF:-}" = "refs/heads/main" ] || fail 'manual runs only from main'
       ;;
-    deploy:release|deploy:workflow_call)
+    deploy:release|deploy:workflow_call|deploy:push)
       printf '%s\n' "${GITHUB_REF:-}" | grep -Eq '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
         || fail 'release runs only from a stable tag'
       ;;
