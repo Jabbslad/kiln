@@ -311,7 +311,9 @@ ip -o -4 addr show | awk '{print $4}' | awk -F/ '{print $1}' | grep -qx "$ip" \
   || die "$ip is not assigned on this host"
 resolved=$(getent ahostsv4 "$public_host" | awk '{print $1; exit}')
 [ "$resolved" = "$ip" ] || die "$public_host resolved to ${resolved:-nothing}, expected $ip"
-[ -f "$etc/ca.crt" ] && [ -f "$etc/ca.key" ] || die "missing $etc/ca.crt or $etc/ca.key"
+if [ ! -f "$etc/ca.crt" ] || [ ! -f "$etc/ca.key" ]; then
+  die "missing $etc/ca.crt or $etc/ca.key"
+fi
 [ -x "$libexec" ] || die "missing $libexec"
 "$libexec" door --help >/dev/null || die "this kiln-api has no door command; install the release that contains it"
 command -v sqlite3 >/dev/null || die "sqlite3 is required"
@@ -323,7 +325,6 @@ case $argv in
 esac
 [ -f "$unit_src" ] || die "missing $unit_src"
 
-created_this_run=0
 assess_enrollment
 action=$(plan_action "$enrollment_state" 0)
 if [ "$action" = enroll ]; then
@@ -336,7 +337,6 @@ if [ "$action" = enroll ]; then
     --local-url "https://127.0.0.1:8443" \
     --ca-file "$etc/ca.crt" \
     --name dark-forge
-  created_this_run=1
   assess_enrollment
   action=$(plan_action "$enrollment_state" 1)
 fi

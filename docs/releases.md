@@ -6,24 +6,36 @@ terminal is needed to install. Access to a running Kiln server still requires
 browser login to an enrolled host or a direct administrator profile; public
 downloads do not disable API authentication.
 
-## v0.4.8 public door trust
+## v0.4.10 login resume and closed public door
+
+`kiln login` saves the approved session before the server picker. If that
+prompt gets no input, login exits and prints a `kiln login --server <id>`
+command for each server. The next login uses the saved session, so resume
+does not request a new device code.
+
+The public 8443 door is removed. `Sockets=` names only
+`kiln-door-proxy.socket`, the internal socket on port 8444. Both installers
+disable `kiln-door-proxy-public.socket` on upgrade. After an upgrade, remove
+any leftover nftables `tcp dport 8443 accept` rule.
+
+Publishing this release does not deploy a server or restart a live service.
+The public bootstrap still pins the published v0.4.9 assets and runs
+`install.sh`.
+
+## v0.4.9 public door trust
 
 `kiln login` stores public-root trust for `https://cli.dark-forge.dev`. A saved
 profile keeps its private CA. An origin that still names `:8443` stays pinned
 to that CA. Door commands for the portless origin use public roots.
 
-The public socket listened on `78.46.98.73:8443` for 0.4.6 clients. That
-listener is closed. `kiln-door-proxy.service` names only
-`kiln-door-proxy.socket`, the bridge at `172.18.0.1:8444`.
+The public socket stayed on `78.46.98.73:8443` for 0.4.6 clients.
+`systemd-socket-proxyd` forwarded those connections to `127.0.0.1:8444`.
 `docs/runbooks/2026-10-19-door-public-cert.md` records the Caddy reload and
 the ACME checks.
 
-Publishing this release does not deploy a server or restart a live service.
-The public bootstrap still pins the published v0.4.7 assets and runs
-`install.sh`.
-
 v0.4.8 was tagged but never released. The Windows stamp failed and #31 fixed
-it. v0.4.9 is the release that carries these changes.
+it. v0.4.9 is the release that carries these changes. The public bootstrap
+pins the published v0.4.9 assets and runs `install.sh`.
 
 ## v0.4.7 website and dashboard design
 

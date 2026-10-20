@@ -740,7 +740,7 @@ EOF
     fi
     die "$HEALTH_ERROR"
   fi
-  printf 'Ready: https://%s:8443\nKeep /etc/kiln/laptop.tar.gz private for direct administrator recovery.\nTLS renewal is due within one year.\n' "$address"
+  printf 'Host admin API: https://%s:8443\nKeep /etc/kiln/laptop.tar.gz private for direct administrator recovery.\nTLS renewal is due within one year.\n' "$address"
   connection_instructions "$address"
 }
 
@@ -1092,7 +1092,7 @@ upgrade() {
   sync "$OPT"
   printf 'Binaries are already updated. Closing public tcp/8443. A failure here leaves those binaries in place.\n'
   close_public_door
-  printf 'Updated to Kiln %s. Ready: https://%s:8443\nPrevious binaries: %s\n' "$target" "$installed_address" "$backup"
+  printf 'Updated to Kiln %s. Host admin API: https://%s:8443\nPrevious binaries: %s\n' "$target" "$installed_address" "$backup"
   connection_instructions "$installed_address"
 }
 
