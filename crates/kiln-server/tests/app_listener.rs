@@ -278,7 +278,9 @@ fn shipped_units_bind_loopback_and_the_bridge() {
     assert!(app.contains("127.0.0.1:8093"));
     assert!(app.contains("NoNewPrivileges=yes"));
     assert!(app.contains("ProtectSystem=strict"));
-    assert!(app.contains("ReadWritePaths=/var/lib/kiln-api"));
+    assert!(app.contains("StateDirectory=kiln-api\n"));
+    assert!(app.contains("StateDirectoryMode=0700\n"));
+    assert!(!app.contains("ReadWritePaths="));
     assert!(!app.contains("0.0.0.0"));
     assert!(!app.contains("172.18.0.1"));
     assert!(!app.contains("--tls-cert"));

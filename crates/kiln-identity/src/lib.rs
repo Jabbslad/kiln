@@ -774,7 +774,7 @@ async fn oauth_begin(
     let now = (a.cfg.now)();
     let write = a.store.db.lock().map_err(|_| ()).and_then(|mut c| {
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|_| ())?;
-        tx.execute("INSERT INTO browser_sessions(hash,csrf_hash,requested_code,expires_at)VALUES(?1,?2,?3,?4) ON CONFLICT(hash) DO UPDATE SET csrf_hash=?2,requested_code=COALESCE(?3,requested_code),expires_at=?4",params![hash(&session),hash(&csrf),q.user_code.map(|x|x.trim().to_uppercase()),now+43200]).map_err(|_| ())?;
+        tx.execute("INSERT INTO browser_sessions(hash,csrf_hash,requested_code,expires_at)VALUES(?1,?2,?3,?4) ON CONFLICT(hash) DO UPDATE SET csrf_hash=?2,requested_code=COALESCE(?3,requested_code),expires_at=?4,account_id=CASE WHEN browser_sessions.expires_at>?5 THEN browser_sessions.account_id ELSE NULL END",params![hash(&session),hash(&csrf),q.user_code.map(|x|x.trim().to_uppercase()),now+43200,now]).map_err(|_| ())?;
         tx.execute("INSERT INTO oauth_attempts(state_hash,session_hash,provider,pkce,nonce,expires_at)VALUES(?1,?2,?3,?4,?5,?6)",params![hash(&authorization.state),hash(&session),provider.as_str(),authorization.pkce,authorization.nonce,now+600]).map_err(|_| ())?;
         tx.commit().map_err(|_| ())
     });
