@@ -781,11 +781,27 @@ if args[0] == 'env' and 'apt-get' in args:
         # The allowlist names the systemd unit. The script still does not bind.
         text = text.replace("kiln-door-proxy-public.socket", "")
         text = text.replace("kiln-door-proxy.socket", "")
+        text = text.replace("kiln-app-proxy.socket", "")
         self.assertNotIn("socket", text)
         self.env["BIND_FAIL"] = "1"
         code, out = self.run_bootstrap(self.package(server=True), args=("server",))
         self.assertEqual(code, 0, out)
         self.assertIn("provisioner completed", out)
+
+    def test_app_units_are_required_together(self):
+        app_units = [
+            "deploy/kiln-app.service",
+            "deploy/kiln-app-proxy.service",
+            "deploy/kiln-app-proxy.socket",
+        ]
+        members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network", *app_units], b"fixture\n")
+        code, out = self.run_bootstrap(self.package(members), args=("server",))
+        self.assertNotEqual(code, 0, out)
+        self.assertNotIn("Unexpected archive contents.", out)
+        partial = dict.fromkeys([*SERVER_FILES, "bin/kiln-network", app_units[0]], b"fixture\n")
+        code, out = self.run_bootstrap(self.package(partial), args=("server",))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("Unexpected archive contents.", out)
 
     def test_door_proxy_files_match_the_packager_or_are_absent_together(self):
         door_proxy = [

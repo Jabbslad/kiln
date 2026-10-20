@@ -133,6 +133,9 @@ class ReleaseTests(unittest.TestCase):
             "deploy/kiln-host.service",
             "deploy/kiln-api.service",
             "deploy/kiln-door.service",
+            "deploy/kiln-app.service",
+            "deploy/kiln-app-proxy.service",
+            "deploy/kiln-app-proxy.socket",
             "deploy/kiln-door-proxy.service",
             "deploy/kiln-door-proxy.socket",
             "deploy/paseo-caddy.override.yaml",
@@ -172,6 +175,9 @@ class ReleaseTests(unittest.TestCase):
                     "deploy/kiln-host.service",
                     "deploy/kiln-api.service",
                     "deploy/kiln-door.service",
+                    "deploy/kiln-app.service",
+                    "deploy/kiln-app-proxy.service",
+                    "deploy/kiln-app-proxy.socket",
                     "deploy/kiln-door-proxy.service",
                     "deploy/kiln-door-proxy.socket",
                     "deploy/paseo-caddy.override.yaml",
@@ -199,6 +205,20 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(release["min_upgrade_from"], "0.3.0")
             self.assertEqual(archive.getmember("install.sh").mode, 0o755)
             self.assertEqual(names, bootstrap_accepts(names))
+            app_units = {
+                "deploy/kiln-app.service",
+                "deploy/kiln-app-proxy.service",
+                "deploy/kiln-app-proxy.socket",
+            }
+            self.assertTrue(app_units <= names)
+            partial = set(names)
+            partial.remove("deploy/kiln-app-proxy.socket")
+            self.assertEqual(bootstrap_accepts(partial), names)
+            self.assertNotEqual(partial, bootstrap_accepts(partial))
+            self.assertEqual(bootstrap_accepts(names - app_units), names - app_units)
+            door = Path(__file__).resolve().parent.parent / "deploy/kiln-door.service"
+            self.assertNotIn("dashboard-root", door.read_text())
+            self.assertFalse(any(name.startswith("kiln-dashboard-") for name in names))
 
 
 def bootstrap_accepts(archive_names):
@@ -227,6 +247,13 @@ def bootstrap_accepts(archive_names):
         expected.add(public)
     if archive_names & caddy:
         expected.update(caddy)
+    app_units = {
+        "deploy/kiln-app.service",
+        "deploy/kiln-app-proxy.service",
+        "deploy/kiln-app-proxy.socket",
+    }
+    if archive_names & app_units:
+        expected.update(app_units)
     return expected
 
 
