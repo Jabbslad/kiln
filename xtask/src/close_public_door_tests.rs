@@ -63,7 +63,10 @@ fn test_upgrade_closes_8443_and_keeps_8444() {
     assert!(commands.contains("systemctl disable --now kiln-door-proxy-public.socket"));
     assert!(!commands.contains("systemctl enable"));
     let fresh = listeners();
-    let after_header = fresh.split_once("State").map(|(_, rest)| rest).unwrap_or(&fresh);
+    let after_header = fresh
+        .split_once("State")
+        .map(|(_, rest)| rest)
+        .unwrap_or(&fresh);
     assert!(!after_header.contains(":8443"), "{fresh}");
     assert!(fresh.contains(":8444"), "{fresh}");
     assert!(after.contains("port 8443 failed"), "{after}");

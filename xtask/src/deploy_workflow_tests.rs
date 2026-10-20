@@ -1,9 +1,9 @@
-use flate2::write::GzEncoder;
+use crate::register_cases;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::{symlink, PermissionsExt};
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
@@ -86,7 +86,11 @@ fn test_guard_refuses_pull_requests_forks_and_branch_dispatch() {
         ],
     );
     assert!(!refused.status.success(), "{}", refused.stderr);
-    assert!(refused.stderr.contains("refusing event"), "{}", refused.stderr);
+    assert!(
+        refused.stderr.contains("refusing event"),
+        "{}",
+        refused.stderr
+    );
     let target = run_guard(
         "deploy",
         &[
@@ -115,7 +119,11 @@ fn test_guard_refuses_pull_requests_forks_and_branch_dispatch() {
         ],
     );
     assert!(!branch.status.success(), "{}", branch.stderr);
-    assert!(branch.stderr.contains("only from main"), "{}", branch.stderr);
+    assert!(
+        branch.stderr.contains("only from main"),
+        "{}",
+        branch.stderr
+    );
 }
 
 fn test_guard_allows_main_dispatch_and_a_tag_release() {
@@ -164,7 +172,11 @@ fn test_guard_allows_main_dispatch_and_a_tag_release() {
             ("GITHUB_REF", "refs/tags/v0.4.4"),
         ],
     );
-    assert!(!diagnose_release.status.success(), "{}", diagnose_release.stderr);
+    assert!(
+        !diagnose_release.status.success(),
+        "{}",
+        diagnose_release.stderr
+    );
     assert!(
         diagnose_release.stderr.contains("refusing event release"),
         "{}",
@@ -179,11 +191,13 @@ fn test_secrets_are_read_only_by_the_dark_forge_environment() {
         let text = workflow(name);
         assert_eq!(count(&text, "environment: dark-forge"), 1, "{name}");
         assert!(
-            index_of(&text, "environment: dark-forge") < index_of(&text, "secrets.DARK_FORGE_SSH_KEY"),
+            index_of(&text, "environment: dark-forge")
+                < index_of(&text, "secrets.DARK_FORGE_SSH_KEY"),
             "{name}"
         );
         assert!(
-            index_of(&text, "environment: dark-forge") < index_of(&text, "secrets.DARK_FORGE_KNOWN_HOSTS"),
+            index_of(&text, "environment: dark-forge")
+                < index_of(&text, "secrets.DARK_FORGE_KNOWN_HOSTS"),
             "{name}"
         );
         assert_eq!(count(&text, "jobs:"), 1, "{name}");
@@ -200,14 +214,21 @@ fn test_secrets_are_read_only_by_the_dark_forge_environment() {
 fn test_older_tags_and_prereleases_are_refused_before_ssh() {
     for tag in ["v0.4.3", "v0.4.4-rc.1", "v0.5.0-rc.1"] {
         let result = run_deploy(tag, "[]", None, false);
-        assert!(!result.captured.status.success(), "{}", result.captured.stderr);
+        assert!(
+            !result.captured.status.success(),
+            "{}",
+            result.captured.stderr
+        );
         assert!(
             result.captured.stderr.contains(&format!("refusing {tag}")),
             "{}",
             result.captured.stderr
         );
         assert!(
-            result.captured.stderr.contains("v0.4.4 and newer stable releases"),
+            result
+                .captured
+                .stderr
+                .contains("v0.4.4 and newer stable releases"),
             "{}",
             result.captured.stderr
         );
@@ -220,15 +241,29 @@ fn test_older_tags_and_prereleases_are_refused_before_ssh() {
         None,
         false,
     );
-    assert!(!latest.captured.status.success(), "{}", latest.captured.stderr);
-    assert!(latest.captured.stderr.contains("refusing v0.4.3"), "{}", latest.captured.stderr);
     assert!(
-        latest.calls.iter().any(|call| call.contains("api.github.com")),
+        !latest.captured.status.success(),
+        "{}",
+        latest.captured.stderr
+    );
+    assert!(
+        latest.captured.stderr.contains("refusing v0.4.3"),
+        "{}",
+        latest.captured.stderr
+    );
+    assert!(
+        latest
+            .calls
+            .iter()
+            .any(|call| call.contains("api.github.com")),
         "{:?}",
         latest.calls
     );
     assert!(
-        !latest.calls.iter().any(|call| call.contains("releases/download")),
+        !latest
+            .calls
+            .iter()
+            .any(|call| call.contains("releases/download")),
         "{:?}",
         latest.calls
     );
@@ -238,7 +273,11 @@ fn test_older_tags_and_prereleases_are_refused_before_ssh() {
 fn test_v044_uses_this_tree_and_later_tags_use_the_archive() {
     let tree = repo().join("deploy/install.sh").display().to_string();
     let current = run_deploy("v0.4.4", "[]", Some("printf 'archive\\n'\n"), false);
-    assert!(current.captured.status.success(), "{}", current.captured.stderr);
+    assert!(
+        current.captured.status.success(),
+        "{}",
+        current.captured.stderr
+    );
     assert!(current.captured.stdout.contains("deployed v0.4.4"));
     assert!(
         current.ssh_calls.iter().any(|call| call.contains(&tree)),
@@ -254,7 +293,10 @@ fn test_v044_uses_this_tree_and_later_tags_use_the_archive() {
         current.ssh_calls
     );
     assert!(
-        current.calls.iter().any(|call| call.contains("kiln-server-v0.4.4-")),
+        current
+            .calls
+            .iter()
+            .any(|call| call.contains("kiln-server-v0.4.4-")),
         "{:?}",
         current.calls
     );
@@ -264,21 +306,33 @@ fn test_v044_uses_this_tree_and_later_tags_use_the_archive() {
     assert!(later.captured.stdout.contains("deployed v0.4.5"));
     assert!(
         !later.ssh_calls.iter().any(|call| {
-            call.contains("install.py") || call.contains("installer.py") || call.contains("installer.sh")
+            call.contains("install.py")
+                || call.contains("installer.py")
+                || call.contains("installer.sh")
         }),
         "{:?}",
         later.ssh_calls
     );
     assert!(
-        later.ssh_calls.iter().any(|call| call.contains("kiln-server-v0.4.5-") && call.starts_with("scp ")),
+        later
+            .ssh_calls
+            .iter()
+            .any(|call| call.contains("kiln-server-v0.4.5-") && call.starts_with("scp ")),
         "{:?}",
         later.ssh_calls
     );
 
     let numeric = run_deploy("v0.4.10", "[]", Some("printf 'archive-v0410\\n'\n"), false);
-    assert!(numeric.captured.status.success(), "{}", numeric.captured.stderr);
     assert!(
-        !numeric.ssh_calls.iter().any(|call| call.contains("installer.sh")),
+        numeric.captured.status.success(),
+        "{}",
+        numeric.captured.stderr
+    );
+    assert!(
+        !numeric
+            .ssh_calls
+            .iter()
+            .any(|call| call.contains("installer.sh")),
         "{:?}",
         numeric.ssh_calls
     );
@@ -291,18 +345,50 @@ fn test_v044_uses_this_tree_and_later_tags_use_the_archive() {
             failed.captured.stdout,
             failed.captured.stderr
         );
-        assert!(failed.captured.stderr.contains("NOT match"), "{}", failed.captured.stderr);
+        assert!(
+            failed.captured.stderr.contains("NOT match"),
+            "{}",
+            failed.captured.stderr
+        );
         assert!(failed.ssh_calls.is_empty(), "{}", failed.captured.stderr);
     }
 
-    let tree_run = run_remote("printf 'installer=archive\\n'\n", Some("printf 'installer=tree\\n'\n"), false);
-    assert!(tree_run.stdout.contains("installer=tree"), "{}", tree_run.stdout);
-    assert!(!tree_run.stdout.contains("installer=archive"), "{}", tree_run.stdout);
+    let tree_run = run_remote(
+        "printf 'installer=archive\\n'\n",
+        Some("printf 'installer=tree\\n'\n"),
+        false,
+    );
+    assert!(
+        tree_run.stdout.contains("installer=tree"),
+        "{}",
+        tree_run.stdout
+    );
+    assert!(
+        !tree_run.stdout.contains("installer=archive"),
+        "{}",
+        tree_run.stdout
+    );
     let archive_run = run_remote("printf 'installer=archive\\n'\n", None, false);
-    assert!(archive_run.stdout.contains("installer=archive"), "{}", archive_run.stdout);
-    assert!(!archive_run.stdout.contains("installer=tree"), "{}", archive_run.stdout);
-    let mismatch = run_remote("printf 'installer=archive\\n'\n", Some("printf 'installer=tree\\n'\n"), true);
-    assert!(!mismatch.stdout.contains("installer="), "{}", mismatch.stdout);
+    assert!(
+        archive_run.stdout.contains("installer=archive"),
+        "{}",
+        archive_run.stdout
+    );
+    assert!(
+        !archive_run.stdout.contains("installer=tree"),
+        "{}",
+        archive_run.stdout
+    );
+    let mismatch = run_remote(
+        "printf 'installer=archive\\n'\n",
+        Some("printf 'installer=tree\\n'\n"),
+        true,
+    );
+    assert!(
+        !mismatch.stdout.contains("installer="),
+        "{}",
+        mismatch.stdout
+    );
     assert!(mismatch.stderr.contains("NOT match"), "{}", mismatch.stderr);
 }
 
@@ -332,7 +418,13 @@ fn test_apt_installs_missing_packages_without_upgrading() {
         .output()
         .unwrap_or_else(|error| panic!("apt-get: {error}"));
     let held = Command::new("apt-get")
-        .args(["install", "-s", "--no-install-recommends", "--no-upgrade", &name])
+        .args([
+            "install",
+            "-s",
+            "--no-install-recommends",
+            "--no-upgrade",
+            &name,
+        ])
         .output()
         .unwrap_or_else(|error| panic!("apt-get: {error}"));
     let held_out = String::from_utf8_lossy(&held.stdout);
@@ -371,7 +463,11 @@ fn test_sqlite3_install_is_exact_and_skipped_when_present() {
     assert!(existing_present.is_empty(), "{present_err}");
     assert!(present_out.contains("installer-ran"), "{present_out}");
     let (existing_missing, missing_out, missing_err) = apt_lines(true, true, "");
-    assert_eq!(existing_missing, vec![update.to_string(), exact.to_string()], "{missing_out}{missing_err}");
+    assert_eq!(
+        existing_missing,
+        vec![update.to_string(), exact.to_string()],
+        "{missing_out}{missing_err}"
+    );
     assert!(missing_out.contains("installer-ran"), "{missing_out}");
     assert!(!upgrade_lines(&existing_missing));
     let (failed, failed_out, failed_err) = apt_lines(true, true, "update");
@@ -387,11 +483,22 @@ fn test_smoke_deletes_the_box_when_exec_or_output_fails() {
     assert!(deploy.contains("\"$script_dir/smoke.sh\""));
 
     let ok = run_smoke(&[]);
-    assert!(ok.captured.status.success(), "{}{}", ok.captured.stderr, ok.captured.stdout);
+    assert!(
+        ok.captured.status.success(),
+        "{}{}",
+        ok.captured.stderr,
+        ok.captured.stdout
+    );
     assert_eq!(command_names(&ok.log), ["add", "create", "exec", "delete"]);
     let flat = ok.log.join("\n").replace('\0', " ");
-    assert!(flat.contains("--template ubuntu-4g --name kiln-smoke"), "{flat}");
-    assert!(flat.contains("--token-file /etc/kiln/admin.token"), "{flat}");
+    assert!(
+        flat.contains("--template ubuntu-4g --name kiln-smoke"),
+        "{flat}"
+    );
+    assert!(
+        flat.contains("--token-file /etc/kiln/admin.token"),
+        "{flat}"
+    );
     assert!(flat.contains("--ca-file /etc/kiln/ca.crt"), "{flat}");
     assert!(flat.contains("https://127.0.0.1:8443"), "{flat}");
     assert!(
@@ -400,27 +507,58 @@ fn test_smoke_deletes_the_box_when_exec_or_output_fails() {
     );
 
     let exec_failed = run_smoke(&[("KILN_EXEC_RC", "1")]);
-    assert!(!exec_failed.captured.status.success(), "{}", exec_failed.captured.stderr);
+    assert!(
+        !exec_failed.captured.status.success(),
+        "{}",
+        exec_failed.captured.stderr
+    );
     assert!(exec_failed.captured.stderr.contains("box exec failed"));
     assert!(!exec_failed.captured.stderr.contains("box delete failed"));
-    assert_eq!(command_names(&exec_failed.log), ["add", "create", "exec", "delete"]);
+    assert_eq!(
+        command_names(&exec_failed.log),
+        ["add", "create", "exec", "delete"]
+    );
 
     let mismatch = run_smoke(&[("KILN_EXEC_OUT", "nope")]);
-    assert!(!mismatch.captured.status.success(), "{}", mismatch.captured.stderr);
-    assert!(mismatch.captured.stderr.contains("box exec output mismatch"));
-    assert_eq!(command_names(&mismatch.log), ["add", "create", "exec", "delete"]);
+    assert!(
+        !mismatch.captured.status.success(),
+        "{}",
+        mismatch.captured.stderr
+    );
+    assert!(
+        mismatch
+            .captured
+            .stderr
+            .contains("box exec output mismatch")
+    );
+    assert_eq!(
+        command_names(&mismatch.log),
+        ["add", "create", "exec", "delete"]
+    );
 
     let deleted = run_smoke(&[("KILN_DELETE_RC", "1")]);
-    assert!(!deleted.captured.status.success(), "{}", deleted.captured.stderr);
+    assert!(
+        !deleted.captured.status.success(),
+        "{}",
+        deleted.captured.stderr
+    );
     assert!(deleted.captured.stderr.contains("box delete failed"));
 
     let created = run_smoke(&[("KILN_CREATE_RC", "1"), ("KILN_CREATE_BODY", "")]);
-    assert!(!created.captured.status.success(), "{}", created.captured.stderr);
+    assert!(
+        !created.captured.status.success(),
+        "{}",
+        created.captured.stderr
+    );
     assert!(created.captured.stderr.contains("box create failed"));
     assert!(!command_names(&created.log).contains(&"delete"));
 
     let leaked = run_smoke(&[("KILN_CREATE_RC", "1"), ("KILN_CREATE_BODY", "box")]);
-    assert!(!leaked.captured.status.success(), "{}", leaked.captured.stderr);
+    assert!(
+        !leaked.captured.status.success(),
+        "{}",
+        leaked.captured.stderr
+    );
     assert!(leaked.captured.stderr.contains("box create failed"));
     assert!(command_names(&leaked.log).contains(&"delete"));
 }
@@ -455,7 +593,8 @@ fn repo() -> PathBuf {
 }
 
 fn read_repo(relative: &str) -> String {
-    fs::read_to_string(repo().join(relative)).unwrap_or_else(|error| panic!("read {relative}: {error}"))
+    fs::read_to_string(repo().join(relative))
+        .unwrap_or_else(|error| panic!("read {relative}: {error}"))
 }
 
 fn workflow(name: &str) -> String {
@@ -467,15 +606,20 @@ fn count(haystack: &str, needle: &str) -> usize {
 }
 
 fn count_eq(lines: &[String], needle: &str) -> usize {
-    lines.iter().filter(|line| line == needle).count()
+    lines.iter().filter(|line| line.as_str() == needle).count()
 }
 
 fn index_of(haystack: &str, needle: &str) -> usize {
-    haystack.find(needle).unwrap_or_else(|| panic!("missing {needle}"))
+    haystack
+        .find(needle)
+        .unwrap_or_else(|| panic!("missing {needle}"))
 }
 
 fn position(lines: &[String], needle: &str) -> usize {
-    lines.iter().position(|line| line == needle).unwrap_or_else(|| panic!("missing {needle}"))
+    lines
+        .iter()
+        .position(|line| line == needle)
+        .unwrap_or_else(|| panic!("missing {needle}"))
 }
 
 fn run_guard(mode: &str, env: &[(&str, &str)]) -> Captured {
@@ -494,7 +638,12 @@ fn run_guard(mode: &str, env: &[(&str, &str)]) -> Captured {
     capture(&mut command)
 }
 
-fn run_deploy(tag: &str, releases: &str, archive_installer: Option<&str>, bad_checksum: bool) -> DeployRun {
+fn run_deploy(
+    tag: &str,
+    releases: &str,
+    archive_installer: Option<&str>,
+    bad_checksum: bool,
+) -> DeployRun {
     let tmp = tempfile::tempdir().unwrap_or_else(|error| panic!("tempdir: {error}"));
     let log = tmp.path().join("curl.log");
     let ssh_log = tmp.path().join("ssh.log");
@@ -504,7 +653,11 @@ fn run_deploy(tag: &str, releases: &str, archive_installer: Option<&str>, bad_ch
     if let Some(installer) = archive_installer {
         let blob = tar_bytes(&[("install.sh", installer)]);
         fs::write(&archive_path, &blob).unwrap();
-        let digest = if bad_checksum { "0".repeat(64) } else { sha256_hex(&blob) };
+        let digest = if bad_checksum {
+            "0".repeat(64)
+        } else {
+            sha256_hex(&blob)
+        };
         checksum_text = format!("{digest}  {asset_name}\n");
         write_executable(&tmp.path().join("ssh.sh"), &ssh_stub(&ssh_log));
     }
@@ -628,8 +781,16 @@ fn run_remote(archive_body: &str, overlay: Option<&str>, bad_checksum: bool) -> 
     let name = "kiln-server-v0.4.4-x86_64-unknown-linux-gnu.tar.gz";
     let blob = tar_bytes(&[("install.sh", archive_body)]);
     fs::write(remote.join(name), &blob).unwrap();
-    let digest = if bad_checksum { "0".repeat(64) } else { sha256_hex(&blob) };
-    fs::write(remote.join(format!("{name}.sha256")), format!("{digest}  {name}\n")).unwrap();
+    let digest = if bad_checksum {
+        "0".repeat(64)
+    } else {
+        sha256_hex(&blob)
+    };
+    fs::write(
+        remote.join(format!("{name}.sha256")),
+        format!("{digest}  {name}\n"),
+    )
+    .unwrap();
     if let Some(text) = overlay {
         fs::write(remote.join("installer.sh"), text).unwrap();
     }
@@ -651,7 +812,11 @@ fn apt_lines(hide_sqlite3: bool, existing: bool, apt_fail: &str) -> (Vec<String>
     let blob = tar_bytes(&[("install.sh", "#!/bin/bash\nprintf 'installer-ran\\n'\n")]);
     fs::write(remote.join(name), &blob).unwrap();
     let digest = sha256_hex(&blob);
-    fs::write(remote.join(format!("{name}.sha256")), format!("{digest}  {name}\n")).unwrap();
+    fs::write(
+        remote.join(format!("{name}.sha256")),
+        format!("{digest}  {name}\n"),
+    )
+    .unwrap();
     let log = fake.path().join("apt.log");
     let apt_body = r#"#!/bin/bash
 umask 022
@@ -677,7 +842,10 @@ exit 0
     }
     let inner = [
         "bash".to_string(),
-        repo().join("deploy/github/install-remote.sh").display().to_string(),
+        repo()
+            .join("deploy/github/install-remote.sh")
+            .display()
+            .to_string(),
         remote.display().to_string(),
         "127.0.0.1".to_string(),
     ];
@@ -689,7 +857,11 @@ exit 0
         set_mode(dir.path(), 0o755);
         dir
     });
-    let joined = inner.iter().map(|part| sh_quote(part)).collect::<Vec<_>>().join(" ");
+    let joined = inner
+        .iter()
+        .map(|part| sh_quote(part))
+        .collect::<Vec<_>>()
+        .join(" ");
     let program = format!(
         "mkdir -p \"$OV/upper\" \"$OV/work\" \"$OV/merged\" && mount -t overlay overlay -o lowerdir=/etc,upperdir=\"$OV/upper\",workdir=\"$OV/work\" \"$OV/merged\" && mount --bind \"$OV/merged\" /etc && mkdir -p /etc/kiln && exec {joined}"
     );
@@ -739,7 +911,10 @@ fn path_without(name: &str, root: &Path, front: &[&Path]) -> String {
             }
         }
     }
-    let mut parts: Vec<String> = front.iter().map(|path| path.display().to_string()).collect();
+    let mut parts: Vec<String> = front
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
     parts.push(hidden.display().to_string());
     parts.join(":")
 }
@@ -842,7 +1017,9 @@ fn tar_bytes(members: &[(&str, &str)]) -> Vec<u8> {
     for (name, text) in members {
         let data = text.as_bytes();
         let mut header = tar::Header::new_gnu();
-        header.set_path(name).unwrap_or_else(|error| panic!("{error}"));
+        header
+            .set_path(name)
+            .unwrap_or_else(|error| panic!("{error}"));
         header.set_size(data.len() as u64);
         header.set_mode(0o644);
         header.set_uid(0);
@@ -852,7 +1029,9 @@ fn tar_bytes(members: &[(&str, &str)]) -> Vec<u8> {
         header.set_groupname("").unwrap();
         header.set_entry_type(tar::EntryType::Regular);
         header.set_cksum();
-        archive.append(&header, data).unwrap_or_else(|error| panic!("tar {name}: {error}"));
+        archive
+            .append(&header, data)
+            .unwrap_or_else(|error| panic!("tar {name}: {error}"));
     }
     let encoder = archive.into_inner().unwrap();
     encoder.finish().unwrap()
@@ -895,7 +1074,9 @@ fn read_lines(path: &Path) -> Vec<String> {
 }
 
 fn capture(command: &mut Command) -> Captured {
-    let output = command.output().unwrap_or_else(|error| panic!("spawn: {error}"));
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("spawn: {error}"));
     Captured {
         status: output.status,
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -914,6 +1095,10 @@ fn mktemp_deploy() -> PathBuf {
         String::from_utf8_lossy(&output.stderr)
     );
     PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+}
+
+pub fn cli(_args: &[String]) -> i32 {
+    crate::run_cases(&cases())
 }
 
 register_cases! {
