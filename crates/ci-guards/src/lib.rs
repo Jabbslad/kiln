@@ -592,11 +592,52 @@ pub fn reuse_lookup_violations(workflow: &str) -> Vec<String> {
             "draft-release finish checks the git tag against main's archive names".to_string(),
         );
     }
-    if !draft.contains("${TAG#v}") {
-        violations.push(
-            "publish keeps the workspace version in the asset name, so deploy cannot download kiln-server-${tag}"
-                .to_string(),
-        );
+    violations
+}
+
+/// A v* publish must refuse a tag that is not the Cargo.toml version, and it
+/// must check the reused Linux binary before draft-release runs.
+pub fn version_guard_violations(workflow: &str) -> Vec<String> {
+    let jobs = job_blocks(workflow);
+    let mut violations = Vec::new();
+    match jobs.iter().find(|(name, _)| name == "version-guard") {
+        None => violations.push("version-guard job is missing".to_string()),
+        Some((_, guard)) => {
+            let guard_if = job_if(workflow, "version-guard").unwrap_or_default();
+            if !guard_if.contains("github.event_name == 'push'")
+                || !guard_if.contains("startsWith(github.ref, 'refs/tags/v')")
+            {
+                violations.push("version-guard does not run on v* tag pushes".to_string());
+            }
+            if !guard.contains("scripts/check-tag-version.sh") || !guard.contains("Cargo.toml") {
+                violations.push(
+                    "version-guard does not compare the tag to the Cargo.toml version".to_string(),
+                );
+            }
+            if !guard.contains("check-binary")
+                || !guard.contains("x86_64-unknown-linux-gnu")
+                || !guard.contains("reused-dist")
+            {
+                violations.push(
+                    "version-guard does not run check-binary on the reused Linux archive"
+                        .to_string(),
+                );
+            }
+        }
+    }
+    let Some((_, draft)) = jobs.iter().find(|(name, _)| name == "draft-release") else {
+        violations.push("draft-release job is missing".to_string());
+        return violations;
+    };
+    if !needs_job(draft, "version-guard") {
+        violations.push("publish does not depend on version-guard".to_string());
+    }
+    let draft_if = job_if(workflow, "draft-release").unwrap_or_default();
+    if !draft_if.contains("needs.version-guard.result == 'success'") {
+        violations.push("publish does not require version-guard to succeed".to_string());
+    }
+    if draft.contains("${TAG#v}") {
+        violations.push("publish renames archives from the Cargo version to the tag".to_string());
     }
     violations
 }
