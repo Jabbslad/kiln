@@ -167,7 +167,7 @@ The issuer is a public CA. The SAN includes `DNS:cli.dark-forge.dev`. No Cloudfl
 
 ## Advertise the portless origin
 
-`GET /v1/servers` returns the `origin` column. The enrolled row is `https://cli.dark-forge.dev:8443`. Change that origin and leave `name` and `ca_pem` byte for byte. A different CA makes `profile::set` return `server CA changed; explicit re-enrollment is required` and keep the old PEM.
+`GET /v1/servers` returns the `origin` column. Store `https://cli.dark-forge.dev`. If the row still names port 8443, change that origin and leave `name` and `ca_pem` byte for byte. A different CA makes `profile::set` return `server CA changed; explicit re-enrollment is required` and keep the old PEM.
 
 Read the row and hash `ca_pem` first. This is the identity database read from the yes above.
 
@@ -186,7 +186,7 @@ curl --fail --silent --show-error --max-time 20 \
   "https://dark-forge.dev/v1/servers/SERVER_ID"
 ```
 
-Read the row again. `origin` is `https://cli.dark-forge.dev`. The `ca_pem` hash is unchanged. Delete the header file. Do not run `deploy/enroll-dark-forge.sh`. Its enable path writes `KILN_DOOR_LISTEN` back to the public address.
+Read the row again. `origin` is `https://cli.dark-forge.dev`. The `ca_pem` hash is unchanged. Delete the header file. Do not run `deploy/enroll-dark-forge.sh` in place of this PUT. The script does not change the directory origin.
 
 ## Rebind the door
 

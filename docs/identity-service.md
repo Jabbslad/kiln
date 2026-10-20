@@ -56,11 +56,12 @@ sudo /usr/local/libexec/kiln-api enroll \
 
 The default issuer is `https://dark-forge.dev`; use `--issuer` only for another
 identity service. The server installer prints the command with its actual address.
-For dark-forge, `deploy/enroll-dark-forge.sh` still passes
-`--url https://cli.dark-forge.dev:8443` and `--local-url https://127.0.0.1:8443`,
+For dark-forge, `deploy/enroll-dark-forge.sh` passes
+`--url https://cli.dark-forge.dev` and `--local-url https://127.0.0.1:8443`,
 then checks that the stored URL is that same origin and that the approving
-GitHub account is login `Jabbslad` and numeric id `3084`. Do not run it to put
-the door back on tcp/8443. An enrollment that already exists is left in place.
+GitHub account is login `Jabbslad` and numeric id `3084`. It leaves the door
+on `127.0.0.1:8444` and probes `https://cli.dark-forge.dev/v1/templates` for
+HTTP 401. An enrollment that already exists is left in place.
 The release `kiln-identity` binary has no
 `--github-authorize-url`, `--github-token-url`, `--github-user-url`, or
 `--provider-ca-file` flags. Those flags exist only behind the non-default
