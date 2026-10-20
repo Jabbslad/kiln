@@ -81,7 +81,8 @@ No private server address or CA transfer is needed for this flow. The laptop
 still needs network access to the selected server.
 
 Interactive first-use commands can start the same flow without a URL flag.
-JSON, nonterminal and SSH proxy invocations never launch login.
+JSON and SSH proxy invocations never launch login. A non-terminal `kiln login`
+requests a device code and polls until it is approved or expires.
 Renewal occurs before requests, without retrying VM mutations. `kiln auth status`,
 device revocation, server-scoped automation keys and logout are documented in the
 [identity operator guide](identity-service.md). Repeating login reuses an existing

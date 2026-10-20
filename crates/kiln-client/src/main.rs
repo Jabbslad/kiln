@@ -310,18 +310,27 @@ fn resume_commands(servers: &[kiln_api::auth::ServerDescriptor]) -> String {
 }
 
 fn read_server_selection(servers: &[kiln_api::auth::ServerDescriptor]) -> Result<usize> {
-    for (n, server) in servers.iter().enumerate() {
-        eprintln!("{}: {} ({})", n + 1, server.name, server.id);
+    loop {
+        for (n, server) in servers.iter().enumerate() {
+            eprintln!("{}: {} ({})", n + 1, server.name, server.id);
+        }
+        eprint!("Select a server number: ");
+        std::io::stderr().flush()?;
+        let mut input = String::new();
+        let read = std::io::stdin().read_line(&mut input)?;
+        if read == 0 {
+            bail!("no selection");
+        }
+        let Ok(choice) = input.trim().parse::<usize>() else {
+            eprintln!("invalid selection");
+            continue;
+        };
+        let Some(index) = choice.checked_sub(1).filter(|index| *index < servers.len()) else {
+            eprintln!("invalid selection");
+            continue;
+        };
+        return Ok(index);
     }
-    eprint!("Select a server number: ");
-    std::io::stderr().flush()?;
-    let mut input = String::new();
-    let read = std::io::stdin().read_line(&mut input)?;
-    anyhow::ensure!(read > 0, "no selection");
-    let choice: usize = input.trim().parse().context("invalid selection")?;
-    let index = choice.checked_sub(1).context("invalid selection")?;
-    anyhow::ensure!(index < servers.len(), "invalid selection");
-    Ok(index)
 }
 
 fn select_server(
@@ -330,10 +339,13 @@ fn select_server(
     interactive: bool,
 ) -> Result<kiln_api::auth::ServerDescriptor> {
     if let Some(id) = explicit {
-        return servers
-            .into_iter()
-            .find(|server| server.id == id)
-            .context("server ID not found");
+        if let Some(selected) = servers.iter().find(|server| server.id == id).cloned() {
+            return Ok(selected);
+        }
+        if servers.is_empty() {
+            bail!("server ID not found");
+        }
+        bail!("server ID not found\n{}", resume_commands(&servers));
     }
     if servers.len() == 1 {
         return Ok(servers.into_iter().next().unwrap());
@@ -596,7 +608,10 @@ async fn run(cli: Cli) -> Result<i32> {
         let servers = identity.servers(&tokens.access_token).await?;
         let credential_file = std::path::absolute(credential_path(&path, &profile_name))?;
         let credentials = credential_from_login(&issuer, tokens);
-        let keep_approval = server.is_none() && servers.len() > 1;
+        let explicit_known =
+            server.is_some_and(|id| servers.iter().any(|candidate| &candidate.id == id));
+        let keep_approval =
+            !explicit_known && !servers.is_empty() && (server.is_some() || servers.len() > 1);
         if keep_approval {
             profile::save_login(
                 &path,
@@ -673,6 +688,9 @@ async fn run(cli: Cli) -> Result<i32> {
                     for (name, entry) in profiles.profiles {
                         let origin = match entry {
                             profile::Profile::Direct(p) => p.url,
+                            profile::Profile::Central(p) if !p.server_chosen => {
+                                "(server not chosen)".to_string()
+                            }
                             profile::Profile::Central(p) => p.server.origin,
                         };
                         println!("{name}\t{origin}");

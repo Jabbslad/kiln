@@ -459,9 +459,7 @@ async fn login_has_a_default_issuer_and_preserves_explicit_overrides() {
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_kiln"));
         command
             .env_remove("KILN_IDENTITY_URL")
-            .stdin(std::process::Stdio::from(
-                std::fs::File::open("/dev/null").unwrap(),
-            ))
+            .stdin(std::process::Stdio::null())
             .args(["--config", config.to_str().unwrap()])
             .args(&args);
         if let Some(value) = environment {
@@ -532,13 +530,20 @@ async fn identity_fixture(servers: &[(&str, &str)]) -> IdentityFixture {
     let root = tempfile::tempdir().unwrap();
     let bin_dir = root.path().join("bin");
     fs::create_dir(&bin_dir).unwrap();
-    let opener = bin_dir.join("xdg-open");
-    fs::write(&opener, "#!/bin/sh\nexit 1\n").unwrap();
+    // open_browser runs `xdg-open` on Linux, `open` on macOS, and `rundll32` on
+    // Windows. PATH is only this directory, and Windows still searches System32,
+    // so the stub has to be the name that search finds first.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&opener, fs::Permissions::from_mode(0o755)).unwrap();
+        for name in ["xdg-open", "open"] {
+            let opener = bin_dir.join(name);
+            fs::write(&opener, "#!/bin/sh\nexit 1\n").unwrap();
+            fs::set_permissions(&opener, fs::Permissions::from_mode(0o755)).unwrap();
+        }
     }
+    #[cfg(windows)]
+    fs::write(bin_dir.join("rundll32.cmd"), "@echo off\r\nexit /b 1\r\n").unwrap();
     let listed = servers
         .iter()
         .map(|(id, name)| {
@@ -658,7 +663,7 @@ async fn identity_fixture(servers: &[(&str, &str)]) -> IdentityFixture {
 }
 
 fn null_stdin() -> std::process::Stdio {
-    std::process::Stdio::from(std::fs::File::open("/dev/null").unwrap())
+    std::process::Stdio::null()
 }
 
 fn chosen(profile: &serde_json::Value) -> bool {
@@ -673,6 +678,7 @@ async fn login_without_a_terminal_refuses_multiple_servers() {
     let output = fixture.login(&[], null_stdin()).await;
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{error}");
+    assert!(error.contains("Browser could not be opened"), "{error}");
     assert!(error.contains("kiln login --server srv_ser7"), "{error}");
     assert!(
         error.contains("kiln login --server srv_dark_forge"),
@@ -917,7 +923,7 @@ async fn login_on_a_pty_accepts_a_server_number() {
             Err(_) => break,
         }
         if String::from_utf8_lossy(&captured).contains("Select a server number") {
-            master.write_all(b"2\n").unwrap();
+            master.write_all(b"nope\n2\n").unwrap();
             break;
         }
         if child.0.as_mut().unwrap().try_wait().unwrap().is_some() {
@@ -926,6 +932,13 @@ async fn login_on_a_pty_accepts_a_server_number() {
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
     let status = loop {
+        let mut buf = [0u8; 1024];
+        match master.read(&mut buf) {
+            Ok(n) if n > 0 => captured.extend_from_slice(&buf[..n]),
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+            Err(_) => {}
+        }
         if let Some(status) = child.0.as_mut().unwrap().try_wait().unwrap() {
             break status;
         }
@@ -937,6 +950,7 @@ async fn login_on_a_pty_accepts_a_server_number() {
     child.0.take();
     let text = String::from_utf8_lossy(&captured);
     assert!(status.success(), "{text}");
+    assert!(text.contains("invalid selection"), "{text}");
     assert_eq!(fixture.route_count("POST /oauth/device/code"), 1);
     let profile = fixture.profile().unwrap();
     assert_eq!(
@@ -952,6 +966,7 @@ async fn login_without_a_terminal_selects_the_only_server() {
     let output = fixture.login(&[], null_stdin()).await;
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "{error}");
+    assert!(error.contains("Browser could not be opened"), "{error}");
     assert!(!error.contains("Select a server number"), "{error}");
     assert!(output.stdout.is_empty());
     let profile = fixture.profile().expect("one server is saved");
@@ -959,6 +974,81 @@ async fn login_without_a_terminal_selects_the_only_server() {
     assert_eq!(profile["profiles"]["default"]["server"]["id"], "srv_ser7");
     assert!(chosen(&profile), "{profile}");
     assert_eq!(fixture.route_count("GET /v1/servers"), 1);
+}
+
+#[tokio::test]
+async fn login_with_an_unknown_server_keeps_the_approval() {
+    let fixture = identity_fixture(&[("srv_ser7", "ser7"), ("srv_dark_forge", "dark-forge")]).await;
+    let output = fixture
+        .login(&["--server", "srv_missing"], null_stdin())
+        .await;
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{error}");
+    assert!(error.contains("server ID not found"), "{error}");
+    assert!(error.contains("kiln login --server srv_ser7"), "{error}");
+    let profile = fixture.profile().expect("approval kept");
+    assert!(!chosen(&profile), "{profile}");
+    assert_eq!(fixture.route_count("POST /oauth/device/code"), 1);
+    let resume = fixture
+        .login(&["--server", "srv_dark_forge"], null_stdin())
+        .await;
+    let resume_error = String::from_utf8_lossy(&resume.stderr);
+    assert!(resume.status.success(), "{resume_error}");
+    assert_eq!(fixture.route_count("POST /oauth/device/code"), 1);
+    let profile = fixture.profile().unwrap();
+    assert_eq!(
+        profile["profiles"]["default"]["server"]["id"],
+        "srv_dark_forge"
+    );
+    assert!(chosen(&profile), "{profile}");
+}
+
+#[tokio::test]
+async fn profile_list_marks_an_unchosen_server() {
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("profiles.json");
+    let credential = root.path().join("credential.json");
+    let body = serde_json::json!({
+        "profiles": {
+            "pending": {
+                "issuer": "https://identity.example",
+                "server": {
+                    "id": "srv_ser7",
+                    "name": "ser7",
+                    "origin": "https://ser7.example",
+                    "ca_pem": "pem",
+                    "revision": 1
+                },
+                "credential_file": credential,
+                "door_trust": "pin",
+                "server_chosen": false
+            },
+            "ready": {
+                "issuer": "https://identity.example",
+                "server": {
+                    "id": "srv_dark_forge",
+                    "name": "dark-forge",
+                    "origin": "https://dark-forge.example",
+                    "ca_pem": "pem",
+                    "revision": 1
+                },
+                "credential_file": credential,
+                "door_trust": "pin"
+            }
+        }
+    });
+    fs::write(&config, serde_json::to_vec(&body).unwrap()).unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_kiln"))
+        .args(["--config", config.to_str().unwrap(), "profile", "list"])
+        .output()
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&output.stdout);
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{error}");
+    assert!(text.contains("pending\t(server not chosen)"), "{text}");
+    assert!(!text.contains("ser7.example"), "{text}");
+    assert!(text.contains("ready\thttps://dark-forge.example"), "{text}");
 }
 
 #[tokio::test]

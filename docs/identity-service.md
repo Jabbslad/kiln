@@ -93,7 +93,14 @@ start login; scripts, JSON mode, SSH proxy processes
 and explicit missing profiles never open browsers automatically.
 
 The browser URL and public code are printed to stderr if browser launch fails.
-One server is selected automatically. Several servers prompt on a terminal. Login saves the approved session before that prompt. If the prompt gets no answer, it exits and prints `kiln login --server` with each server id. The next `kiln login --server` uses the saved session. When that list is already known, login chooses or exits before it requests another device code.
+One server is selected automatically. Several servers prompt on a terminal.
+Login saves the approved session before that prompt. If the prompt gets no
+answer, it exits and prints `kiln login --server` with each server id. The next
+`kiln login --server` uses the saved session. When that list is already known,
+login chooses or exits before it requests another device code. Without a
+terminal, `kiln login` requests a device code and polls until the code is
+approved or expires. `kiln profile list` prints `(server not chosen)` until one
+is selected.
 `kiln login --server SERVER_ID` selects explicitly. Use a separate `--profile`
 for an existing direct administrator profile. A changed issuer or CA is rejected,
 not accepted silently. Keep the admin recovery profile and `laptop.tar.gz` private.
