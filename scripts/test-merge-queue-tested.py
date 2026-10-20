@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -10,6 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "merge_queue_tested.py"
+GATE = ROOT / "scripts" / "required_gate.py"
+NEEDED = ("changes", "docs-check", "server-check", "client", "dashboard")
 SHA_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 SHA_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 TREE_OTHER = "cccccccccccccccccccccccccccccccccccccccc"
@@ -18,6 +21,14 @@ TREE_OTHER = "cccccccccccccccccccccccccccccccccccccccc"
 def load():
     spec = importlib.util.spec_from_file_location("merge_queue_tested", SCRIPT)
     module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_gate():
+    spec = importlib.util.spec_from_file_location("required_gate", GATE)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["required_gate"] = module
     spec.loader.exec_module(module)
     return module
 
@@ -195,6 +206,139 @@ class BuildWorkflowTests(unittest.TestCase):
             other = (ROOT / ".github/workflows" / name).read_text()
             self.assertNotIn("merge_group", other, name)
             self.assertNotIn("pull_request", other, name)
+
+    def test_required_is_the_only_stable_check(self):
+        text = (ROOT / ".github/workflows/build.yml").read_text()
+        block = text.split("  required:\n", 1)[1].split("\n  draft-release:", 1)[0]
+        needs = "needs: [" + ", ".join(NEEDED) + "]"
+        self.assertIn(needs, block)
+        self.assertIn("if: always()", block)
+        self.assertIn("NEEDS_JSON: ${{ toJSON(needs) }}", block)
+        self.assertIn("python scripts/required_gate.py", block)
+        self.assertNotRegex(block, r"(?m)^    name:")
+        self.assertNotIn("server-package", block)
+        self.assertIn(
+            "needs: [server-check, server-package, client, dashboard]",
+            text.split("  draft-release:\n", 1)[1],
+        )
+
+
+class RequiredGateTests(unittest.TestCase):
+    def setUp(self):
+        self.gate = load_gate()
+
+    def test_docs_only_and_heavy_success_pass(self):
+        docs = self._needs(
+            changes="success",
+            docs_check="success",
+            server_check="skipped",
+            client="skipped",
+            dashboard="skipped",
+            heavy="false",
+        )
+        heavy = self._needs(
+            changes="success",
+            docs_check="skipped",
+            server_check="success",
+            client="success",
+            dashboard="success",
+            heavy="true",
+        )
+        self.assertTrue(self.gate.evaluate(docs).ok)
+        self.assertEqual(self.gate.evaluate(docs).blockers, ())
+        self.assertTrue(self.gate.evaluate(heavy).ok)
+
+    def test_failure_and_cancelled_block_each_job(self):
+        for job_id in NEEDED:
+            for result in ("failure", "cancelled"):
+                payload = self._needs(
+                    changes="success",
+                    docs_check="skipped",
+                    server_check="success",
+                    client="success",
+                    dashboard="success",
+                    heavy="true",
+                )
+                payload[job_id]["result"] = result
+                decision = self.gate.evaluate(payload)
+                self.assertFalse(decision.ok)
+                self.assertEqual(
+                    [(item.job_id, item.result) for item in decision.blockers],
+                    [(job_id, result)],
+                )
+
+    def test_unknown_result_blocks_and_outputs_are_ignored(self):
+        payload = self._needs(
+            changes="success",
+            docs_check="skipped",
+            server_check="success",
+            client="success",
+            dashboard="success",
+            heavy="true",
+        )
+        payload["server-check"]["outputs"] = {"note": "failure"}
+        self.assertTrue(self.gate.evaluate(payload).ok)
+        payload["client"]["result"] = "SUCCESS"
+        decision = self.gate.evaluate(payload)
+        self.assertEqual(
+            [(item.job_id, item.result) for item in decision.blockers],
+            [("client", "SUCCESS")],
+        )
+
+    def test_malformed_needs_block(self):
+        self.assertEqual(self.gate.evaluate([]).blockers[0].result, "malformed")
+        self.assertEqual(self.gate.evaluate({}).blockers[0].result, "empty")
+        self.assertEqual(
+            self.gate.evaluate({"client": "failure"}).blockers,
+            (self.gate.Blocker("client", "malformed"),),
+        )
+
+    def test_process_exits_with_the_blocker(self):
+        payload = self._needs(
+            changes="success",
+            docs_check="skipped",
+            server_check="success",
+            client="failure",
+            dashboard="cancelled",
+            heavy="true",
+        )
+        env = os.environ.copy()
+        env["NEEDS_JSON"] = json.dumps(payload)
+        result = subprocess.run(
+            [sys.executable, str(GATE)],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "client failure\ndashboard cancelled\n")
+        missing = os.environ.copy()
+        missing.pop("NEEDS_JSON", None)
+        result = subprocess.run(
+            [sys.executable, str(GATE)],
+            cwd=ROOT,
+            env=missing,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "needs malformed\n")
+
+    def _needs(self, *, changes, docs_check, server_check, client, dashboard, heavy):
+        results = {
+            "changes": changes,
+            "docs-check": docs_check,
+            "server-check": server_check,
+            "client": client,
+            "dashboard": dashboard,
+        }
+        return {
+            job_id: {"result": result, "outputs": {"heavy": heavy} if job_id == "changes" else {}}
+            for job_id, result in results.items()
+        }
 
 
 def _main_push():

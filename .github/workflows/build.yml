@@ -404,6 +404,23 @@ jobs:
           retention-days: 7
           compression-level: 0
 
+  # A client matrix leg and a skipped client job are different check names.
+  # always() still runs when a dependency fails or is skipped. Without it,
+  # GitHub skips this job and the check never reports.
+  required:
+    needs: [changes, docs-check, server-check, client, dashboard]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Required check
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python scripts/required_gate.py
+
   draft-release:
     needs: [server-check, server-package, client, dashboard]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
