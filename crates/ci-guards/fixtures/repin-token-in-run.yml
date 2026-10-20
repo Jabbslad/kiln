@@ -1,0 +1,23 @@
+name: Re-pin token in the run script
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo deploy
+
+  repin:
+    needs: [deploy]
+    if: >-
+      !cancelled() &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.deploy.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Open the pull request
+        run: echo ${{ secrets.REPIN_TOKEN }}
