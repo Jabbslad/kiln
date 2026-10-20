@@ -750,6 +750,7 @@ struct Loopback {
     port: u16,
     token_hits: Arc<AtomicUsize>,
     status_hits: Arc<AtomicUsize>,
+    revoke_hits: Arc<AtomicUsize>,
     bodies: Arc<std::sync::Mutex<Vec<String>>>,
     authorizations: Arc<std::sync::Mutex<Vec<String>>>,
 }
@@ -759,10 +760,12 @@ async fn loopback(jwt: String, status_mode: u8) -> Loopback {
     let port = listener.local_addr().unwrap().port();
     let token_hits = Arc::new(AtomicUsize::new(0));
     let status_hits = Arc::new(AtomicUsize::new(0));
+    let revoke_hits = Arc::new(AtomicUsize::new(0));
     let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
     let authorizations = Arc::new(std::sync::Mutex::new(Vec::new()));
     let tokens = token_hits.clone();
     let statuses = status_hits.clone();
+    let revokes = revoke_hits.clone();
     let seen_bodies = bodies.clone();
     let seen_auth = authorizations.clone();
     tokio::spawn(async move {
@@ -773,6 +776,7 @@ async fn loopback(jwt: String, status_mode: u8) -> Loopback {
             let jwt = jwt.clone();
             let tokens = tokens.clone();
             let statuses = statuses.clone();
+            let revokes = revokes.clone();
             let seen_bodies = seen_bodies.clone();
             let seen_auth = seen_auth.clone();
             tokio::spawn(async move {
@@ -794,6 +798,10 @@ async fn loopback(jwt: String, status_mode: u8) -> Loopback {
                         "reader": "fixture-reader",
                     });
                     write_http(&mut socket, "200 OK", &payload.to_string()).await;
+                } else if line.contains("POST /oauth/server/revoke ") {
+                    revokes.fetch_add(1, Ordering::SeqCst);
+                    seen_auth.lock().unwrap().push(authorization);
+                    write_http(&mut socket, "204 No Content", "").await;
                 } else if line.contains("POST /v1/server-status ") {
                     statuses.fetch_add(1, Ordering::SeqCst);
                     if status_mode == 2 {
@@ -815,6 +823,7 @@ async fn loopback(jwt: String, status_mode: u8) -> Loopback {
         port,
         token_hits,
         status_hits,
+        revoke_hits,
         bodies,
         authorizations,
     }
@@ -905,6 +914,7 @@ async fn browser_login(router: &axum::Router, peer: &str) -> (String, String) {
     let pairs: std::collections::HashMap<String, String> =
         location.query_pairs().into_owned().collect();
     assert_eq!(pairs["redirect_uri"], kiln_api::auth::APP_OAUTH_REDIRECT);
+    assert_eq!(pairs["server_id"], "server-b");
     assert_eq!(pairs["code_challenge_method"], "S256");
     assert_eq!(pairs["code_challenge"].len(), 43);
     let attempt_id = cookie_value(attempt);
@@ -1177,6 +1187,7 @@ async fn browser_sign_in_sets_one_session_and_logout_clears_only_that_session() 
     );
     let (status, _, _) = text(send(&router, "127.0.0.1:9", dashboard(&first)).await).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(identity.revoke_hits.load(Ordering::SeqCst), 1);
     let (status, _, body) = text(send(&router, "127.0.0.1:9", dashboard(&second)).await).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 

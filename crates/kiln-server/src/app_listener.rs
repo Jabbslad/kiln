@@ -749,6 +749,7 @@ async fn start_login(app: &App) -> Response {
     };
     url.query_pairs_mut()
         .append_pair("redirect_uri", kiln_api::auth::APP_OAUTH_REDIRECT)
+        .append_pair("server_id", &app.server_id)
         .append_pair("state", &state)
         .append_pair("code_challenge", &pkce_challenge(&verifier))
         .append_pair("code_challenge_method", "S256");
@@ -924,6 +925,7 @@ async fn refresh_reader(app: &App, reader: &str) -> Result<(String, u64)> {
     let response = app
         .identity
         .post(url)
+        .bearer_auth(&app.login_secret)
         .json(&serde_json::json!({ "reader": reader }))
         .send()
         .await?
@@ -977,6 +979,25 @@ async fn refresh_status(app: &App) {
     }
 }
 
+async fn revoke_reader(app: &App, reader: &str) -> bool {
+    if reader.is_empty() {
+        return true;
+    }
+    let mut url = app.loopback.clone();
+    url.set_path("/oauth/server/revoke");
+    let Ok(response) = app
+        .identity
+        .post(url)
+        .bearer_auth(&app.login_secret)
+        .json(&serde_json::json!({ "reader": reader }))
+        .send()
+        .await
+    else {
+        return false;
+    };
+    response.status().is_success()
+}
+
 async fn logout(app: &App, request: Request) -> Response {
     if request
         .headers()
@@ -1001,8 +1022,8 @@ async fn logout(app: &App, request: Request) -> Response {
         .unwrap_or_default();
     let body = String::from_utf8_lossy(&body);
     let posted = form_value(&body, "csrf").unwrap_or_default();
-    let removed = {
-        let mut sessions = lock_map(&app.sessions);
+    let reader = {
+        let sessions = lock_map(&app.sessions);
         let Some(session) = sessions.get(&raw) else {
             return unauthorized();
         };
@@ -1010,9 +1031,16 @@ async fn logout(app: &App, request: Request) -> Response {
         {
             return deny(StatusCode::FORBIDDEN, "invalid_csrf", "Logout was refused.");
         }
-        sessions.remove(&raw).is_some()
+        session.reader.clone()
     };
-    if !removed {
+    if !revoke_reader(app, &reader).await {
+        return deny(
+            StatusCode::BAD_GATEWAY,
+            "upstream",
+            "Identity did not complete sign-out.",
+        );
+    }
+    if lock_map(&app.sessions).remove(&raw).is_none() {
         return unauthorized();
     }
     let mut response = StatusCode::NO_CONTENT.into_response();
