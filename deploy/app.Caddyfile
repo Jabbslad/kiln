@@ -1,0 +1,16 @@
+app.dark-forge.dev {
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Robots-Tag "noindex, nofollow"
+	}
+	request_body {
+		max_size 80KB
+	}
+	reverse_proxy 172.18.0.1:8093 {
+		header_up X-Forwarded-For {http.request.remote.host}
+		transport http {
+			dial_timeout 3s
+			response_header_timeout 75s
+		}
+	}
+}

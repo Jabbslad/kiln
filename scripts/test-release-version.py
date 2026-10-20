@@ -388,6 +388,7 @@ dependencies = [
             "deploy/kiln-door-proxy.socket",
             "deploy/paseo-caddy.override.yaml",
             "deploy/door.Caddyfile",
+            "deploy/app.Caddyfile",
             "deploy/enroll-dark-forge.sh",
             "deploy/host.example.json",
             "scripts/fetch-firecracker.sh",
@@ -398,6 +399,7 @@ dependencies = [
             "docs/runtime.md",
             "docs/runbooks/2026-10-19-public-door.md",
             "docs/runbooks/2026-10-19-door-public-cert.md",
+            "docs/runbooks/2026-10-20-app-dark-forge-caddy.md",
         ):
             path = repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -602,6 +604,7 @@ dependencies = [
             "deploy/kiln-door-proxy.socket",
             "deploy/paseo-caddy.override.yaml",
             "deploy/door.Caddyfile",
+            "deploy/app.Caddyfile",
             "deploy/enroll-dark-forge.sh",
             "deploy/host.example.json",
             "scripts/fetch-firecracker.sh",
@@ -612,6 +615,7 @@ dependencies = [
             "docs/runtime.md",
             "docs/runbooks/2026-10-19-public-door.md",
             "docs/runbooks/2026-10-19-door-public-cert.md",
+            "docs/runbooks/2026-10-20-app-dark-forge-caddy.md",
         ):
             path = repo / name
             path.parent.mkdir(parents=True, exist_ok=True)

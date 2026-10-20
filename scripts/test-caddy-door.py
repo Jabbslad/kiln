@@ -649,5 +649,179 @@ class StandIn:
             self.httpd.server_close()
 
 
+APP_SITE = """\
+app.dark-forge.dev {
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Robots-Tag "noindex, nofollow"
+	}
+	request_body {
+		max_size 80KB
+	}
+	reverse_proxy 172.18.0.1:8093 {
+		header_up X-Forwarded-For {http.request.remote.host}
+		transport http {
+			dial_timeout 3s
+			response_header_timeout 75s
+		}
+	}
+}
+"""
+
+
+class AppSiteRunbook(unittest.TestCase):
+    def test_site_is_cleartext_and_the_runbook_can_restore_identity(self):
+        site = (ROOT / "deploy/app.Caddyfile").read_text()
+        runbook = (ROOT / "docs/runbooks/2026-10-20-app-dark-forge-caddy.md").read_text()
+        unit = (ROOT / "deploy/kiln-identity.service").read_text()
+        binary = "/usr/local/libexec/kiln-identity"
+        database = "/var/lib/kiln-identity/identity.db"
+        self.assertEqual(site, APP_SITE)
+        self.assertEqual(site.count("reverse_proxy "), 1)
+        self.assertNotIn("tls_trust_pool", site)
+        self.assertNotIn("8443", site)
+        self.assertNotIn("dns-01", site)
+        self.assertIn(f"ExecStart={binary} ", unit)
+        self.assertIn(f"--database {database} ", unit)
+        self.assertIn("--signing-key-file ", unit)
+        self.assertNotIn("signing.pem", runbook)
+        self.assertNotIn("dns-01", runbook)
+        self.assertNotIn(".pem", runbook)
+        self.assertNotIn(".key", runbook)
+        self.assertIn(binary, runbook)
+        self.assertIn(database, runbook)
+        self.assertIn("identity.db-wal", runbook)
+        self.assertIn("identity.db-shm", runbook)
+        yes = "Restart `kiln-identity` only after Jamie says yes."
+        self.assertIn(yes, runbook)
+        self.assertLess(runbook.index(yes), runbook.index("systemctl start kiln-identity"))
+        self.assertLess(
+            runbook.index(f"sha256sum {database}"),
+            runbook.index("systemctl start kiln-identity"),
+        )
+        self.assertIn("systemctl stop kiln-identity", runbook)
+        self.assertIn("sha256sum -c /var/backups/kiln-identity-app/checksums", runbook)
+        self.assertIn(
+            "install -m 755 /var/backups/kiln-identity-app/kiln-identity "
+            + binary,
+            runbook,
+        )
+        self.assertLess(
+            runbook.index("cp -a /opt/paseo/Caddyfile /opt/paseo/Caddyfile.bak-app-dark-forge"),
+            runbook.index("cat deploy/app.Caddyfile >> /opt/paseo/Caddyfile"),
+        )
+        self.assertIn("caddy validate", runbook)
+        self.assertIn("caddy reload", runbook)
+        self.assertIn("https://dark-forge.dev/login", runbook)
+        self.assertIn("Light the way in.", runbook)
+        self.assertIn("https://cli.dark-forge.dev/v1/templates", runbook)
+        self.assertIn("HTTP 401", runbook)
+        self.assertIn("tcp/8443 stays closed.", runbook)
+        self.assertIn("Do not add an accept rule.", runbook)
+        self.assertNotIn("dport 8443 accept", runbook)
+        self.assertIn("127.0.0.1:8093", runbook)
+        self.assertIn("172.18.0.1:8093", runbook)
+        self.assertIn("The browser check is for Kiln Ops after the release.", runbook)
+        self.assertIn("This pull request does not run it.", runbook)
+        self.assertNotIn("This procedure does not start `kiln-app.service`.", runbook)
+        self.assertNotIn("Stop if that output shows `127.0.0.1:8093`", runbook)
+        self.assertIn("cannot install dashboard archive", runbook)
+        self.assertIn(
+            "cp -a /usr/local/share/kiln/dashboard /var/backups/kiln-dashboard-app/dashboard",
+            runbook,
+        )
+        self.assertLess(
+            runbook.index("cp -a /usr/local/share/kiln/dashboard"),
+            runbook.index("bash install.sh --apply --dashboard-archive /var/tmp/kiln-dashboard.tar.gz"),
+        )
+        self.assertLess(
+            runbook.index("bash install.sh --apply --dashboard-archive /var/tmp/kiln-dashboard.tar.gz"),
+            runbook.index("systemctl restart kiln-app"),
+        )
+        self.assertLess(
+            runbook.index("systemctl restart kiln-app"),
+            runbook.index("systemctl enable --now kiln-app-proxy.socket"),
+        )
+        self.assertLess(
+            runbook.index("systemctl is-active kiln-app"),
+            runbook.index("systemctl enable --now kiln-app-proxy.socket"),
+        )
+        self.assertIn("http://127.0.0.1:8093/v1/x", runbook)
+        self.assertLess(
+            runbook.index("systemctl enable --now kiln-app-proxy.socket"),
+            runbook.index("getent ahostsv4 app.dark-forge.dev"),
+        )
+        self.assertIn("if ! grep -qx 'app.dark-forge.dev {' /opt/paseo/Caddyfile; then", runbook)
+        self.assertIn("printf '\\n' >> /opt/paseo/Caddyfile", runbook)
+        self.assertLess(
+            runbook.index("getent ahostsv4 app.dark-forge.dev"),
+            runbook.index("docker exec caddy caddy reload"),
+        )
+        self.assertIn("78.46.98.73", runbook)
+        self.assertIn("https://app.dark-forge.dev/", runbook)
+        self.assertIn("https://app.dark-forge.dev/v1/x", runbook)
+        self.assertIn('"code":"not_found"', runbook)
+        self.assertIn("text/html", runbook)
+        self.assertLess(
+            runbook.index("https://app.dark-forge.dev/"),
+            runbook.index('if [ "$rollback" -eq 1 ]; then'),
+        )
+        self.assertLess(
+            runbook.index('if [ "$rollback" -eq 1 ]; then'),
+            runbook.rindex("cp -a /opt/paseo/Caddyfile.bak-app-dark-forge /opt/paseo/Caddyfile"),
+        )
+
+    def test_append_repairs_a_missing_newline_and_does_not_repeat(self):
+        site = ROOT / "deploy/app.Caddyfile"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            live = root / "Caddyfile"
+            live.write_bytes(b'example.test {\n\trespond "ok"\n}')
+            broken = root / "broken.Caddyfile"
+            broken.write_bytes(live.read_bytes() + site.read_bytes())
+            self.assertIn(b"}app.dark-forge.dev {", broken.read_bytes())
+            rejected = subprocess.run(
+                ["caddy", "adapt", "--config", str(broken), "--adapter", "caddyfile"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(rejected.returncode, 0, rejected.stderr)
+            self.assertIn("unrecognized directive", rejected.stderr)
+            self._append_site(live, site)
+            self._append_site(live, site)
+            text = live.read_text()
+            self.assertEqual(text.count("app.dark-forge.dev {"), 1)
+            self.assertNotIn("}app.dark-forge.dev", text)
+            self.assertTrue(text.endswith("\n"))
+            adapted = subprocess.run(
+                ["caddy", "adapt", "--config", str(live), "--adapter", "caddyfile"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(adapted.returncode, 0, adapted.stderr)
+
+    def _append_site(self, live, site):
+        subprocess.run(
+            [
+                "bash",
+                "-c",
+                """
+                caddyfile=$1
+                site=$2
+                if ! grep -qx 'app.dark-forge.dev {' "$caddyfile"; then
+                  if [ -n "$(tail -c1 "$caddyfile")" ]; then
+                    printf '\\n' >> "$caddyfile"
+                  fi
+                  cat "$site" >> "$caddyfile"
+                fi
+                """,
+                "append-site",
+                str(live),
+                str(site),
+            ],
+            check=True,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -153,6 +153,15 @@ FILES
                 deploy/kiln-app-proxy.service \
                 deploy/kiln-app-proxy.socket >> "$work/expected"
         fi
+        # The app site and its runbook ship together. An older archive has
+        # neither. An archive that has one of them must have both.
+        if grep -qx 'deploy/app.Caddyfile' "$work/names" \
+            || grep -qx 'docs/runbooks/2026-10-20-app-dark-forge-caddy.md' "$work/names"
+        then
+            printf '%s\n' \
+                deploy/app.Caddyfile \
+                docs/runbooks/2026-10-20-app-dark-forge-caddy.md >> "$work/expected"
+        fi
     fi
     sort "$work/expected" > "$work/expected.sorted"
     sort "$work/names" > "$work/names.sorted"

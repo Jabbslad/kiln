@@ -803,6 +803,21 @@ if args[0] == 'env' and 'apt-get' in args:
         self.assertNotEqual(code, 0, out)
         self.assertIn("Unexpected archive contents.", out)
 
+    def test_app_site_and_runbook_ship_as_a_pair(self):
+        pair = [
+            "deploy/app.Caddyfile",
+            "docs/runbooks/2026-10-20-app-dark-forge-caddy.md",
+        ]
+        members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network", *pair], b"fixture\n")
+        code, out = self.run_bootstrap(self.package(members), args=("server",))
+        self.assertNotEqual(code, 0, out)
+        self.assertNotIn("Unexpected archive contents.", out)
+        for name in pair:
+            half = dict.fromkeys([*SERVER_FILES, "bin/kiln-network", name], b"fixture\n")
+            code, out = self.run_bootstrap(self.package(half), args=("server",))
+            self.assertNotEqual(code, 0, out)
+            self.assertIn("Unexpected archive contents.", out)
+
     def test_door_proxy_files_match_the_packager_or_are_absent_together(self):
         door_proxy = [
             "deploy/kiln-door-proxy.service",
