@@ -339,6 +339,24 @@ class ReuseDecisionTests(unittest.TestCase):
         with self.assertRaises(reuse.ReuseRefused):
             reuse.parse_artifacts(page, NOW)
 
+    def test_attest_signs_the_archives_a_tag_publishes(self):
+        text = (REPO / ".github/workflows/build.yml").read_text(encoding="utf-8")
+        expr = job_if_expression(text, "attest")
+        self.assertIn(
+            "!cancelled()",
+            expr,
+            "a skipped reuse ancestor makes implicit success() false",
+        )
+        for result in (
+            "needs.server-package.result == 'success'",
+            "needs.client.result == 'success'",
+            "needs.dashboard.result == 'success'",
+        ):
+            self.assertIn(result, expr)
+        self.assertIn("github.ref == 'refs/heads/main'", expr)
+        self.assertIn("startsWith(github.ref, 'refs/tags/v')", expr)
+        self.assertIn("github.event_name == 'workflow_dispatch'", expr)
+
     def test_workflow_keeps_drafts_and_does_not_move_tags(self):
         text = (REPO / ".github/workflows/build.yml").read_text(encoding="utf-8")
         self.assertEqual(text.count("gh release create"), 1)
