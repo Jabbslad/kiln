@@ -8,7 +8,7 @@ Restart `kiln-identity` only after Jamie says yes. This pull request does not ru
 
 ## Copy the dashboard before the installer
 
-`deploy/install.sh` removes `/usr/local/share/kiln/dashboard` and then moves the new tree into that path. If the move fails, the installer stops with `cannot install dashboard archive` and the live directory is gone. Copy the live directory before you run the installer. This pull request does not run the installer, and it does not change that swap.
+`deploy/install.sh` renames `/usr/local/share/kiln/dashboard` aside and then moves the new tree into that path. If that move fails, the installer puts the old tree back and then stops with `cannot install dashboard archive`. The live directory is already back. If putting the old tree back fails, the installer stops with `cannot restore the dashboard`. The old tree stays in the aside, and a later successful install deletes that aside. Copy the live directory before you run the installer. This pull request does not run the installer.
 
 ```sh
 install -d -m 700 /var/backups/kiln-dashboard-app
@@ -24,7 +24,9 @@ Copy the release `kiln-dashboard` archive to `/var/tmp/kiln-dashboard.tar.gz`. F
 bash install.sh --apply --dashboard-archive /var/tmp/kiln-dashboard.tar.gz
 ```
 
-If that command stops with `cannot install dashboard archive`, put the copy back and stop.
+If that command stops with `cannot install dashboard archive`, the live tree is already in place. Stop. Leave the backup where it is.
+
+If the installer stops with `cannot restore the dashboard`, put the copy back before you run the installer again. A later successful install deletes the aside.
 
 ```sh
 rm -rf /usr/local/share/kiln/dashboard
@@ -48,7 +50,7 @@ Stop unless `systemctl is-active kiln-app` prints `active`, `ss` shows `127.0.0.
 
 ## Start the bridge socket
 
-`deploy/app.Caddyfile` dials `172.18.0.1:8093`. That address is `kiln-app-proxy.socket`. The installer does not enable the socket. Without it, Caddy has no listener and the site returns 502.
+`deploy/app.Caddyfile` dials `172.18.0.1:8093`. That address is `kiln-app-proxy.socket`. The installer enables and starts `kiln-app-proxy.socket`. Run these commands to confirm the socket is active. Running the commands again does not stop an active socket. Without the socket, Caddy has no listener and the site returns 502.
 
 ```sh
 systemctl enable --now kiln-app-proxy.socket
@@ -70,26 +72,31 @@ sha256sum /opt/paseo/Caddyfile /opt/paseo/Caddyfile.bak-app-dark-forge
 Append the `app.dark-forge.dev` site from `deploy/app.Caddyfile` when that site is not already present. If the file already contains `}app.dark-forge.dev {`, split that join before you append. If the live file has no trailing newline, add one before you append. A bare `cat >>` joins the previous `}` to `app.dark-forge.dev {` and Caddy rejects the file. Leave every other site as it is. Run this from the extracted server archive.
 
 ```sh
-if grep -q '}app.dark-forge.dev {' /opt/paseo/Caddyfile; then
-  fixed=$(mktemp)
-  awk '
-    BEGIN { needle = "}app.dark-forge.dev {"; repl = "}\napp.dark-forge.dev {" }
-    {
-      while (i = index($0, needle)) {
-        $0 = substr($0, 1, i - 1) repl substr($0, i + length(needle))
-      }
+fixed=$(mktemp)
+if awk '
+  {
+    line = $0
+    sub(/\r$/, "", line)
+    if (line == "}app.dark-forge.dev {") {
+      print "}"
+      print "app.dark-forge.dev {"
+      found = 1
+    } else {
       print
+      if (line == "app.dark-forge.dev {") found = 1
     }
-  ' /opt/paseo/Caddyfile > "$fixed"
+  }
+  END { exit !found }
+' /opt/paseo/Caddyfile > "$fixed"; then
   cat "$fixed" > /opt/paseo/Caddyfile
-  rm -f "$fixed"
-fi
-if ! grep -qx 'app.dark-forge.dev {' /opt/paseo/Caddyfile; then
+else
+  cat "$fixed" > /opt/paseo/Caddyfile
   if [ -n "$(tail -c1 /opt/paseo/Caddyfile)" ]; then
     printf '\n' >> /opt/paseo/Caddyfile
   fi
   cat deploy/app.Caddyfile >> /opt/paseo/Caddyfile
 fi
+rm -f "$fixed"
 ```
 
 Running the block again does not append a second site, and it leaves a repaired file unchanged.
@@ -104,7 +111,7 @@ docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfi
 
 ## Check DNS before the reload
 
-Reload only after validate exits 0 and `app.dark-forge.dev` and `dark-forge.dev` resolve to the same set of addresses. On 2026-10-20 both names resolve to `78.46.98.73`. The check compares every address from `getent ahostsv4`. It does not pin that number. If the sets differ, or either name has no address, copy the backup back and do not reload.
+Reload only after validate exits 0 and `app.dark-forge.dev` and `dark-forge.dev` resolve to the same set of addresses. On 2026-10-20 both names resolve to `78.46.98.73`. The check compares every address from `getent ahostsv4`. It does not pin that number. If the sets differ, either name has no address, or validate exits non-zero, copy the backup back and do not reload.
 
 ```sh
 app=$(getent ahostsv4 app.dark-forge.dev | awk '{ print $1 }' | sort -u)
@@ -113,6 +120,9 @@ printf '%s\n' "$app" "$apex"
 if [ "$app" != "$apex" ] || [ -z "$app" ] || [ -z "$apex" ]; then
   cp -a /opt/paseo/Caddyfile.bak-app-dark-forge /opt/paseo/Caddyfile
   printf '%s\n' 'DNS does not match. Restored the Caddyfile. Did not reload.'
+elif ! docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
+  cp -a /opt/paseo/Caddyfile.bak-app-dark-forge /opt/paseo/Caddyfile
+  printf '%s\n' 'Caddyfile failed validation. Restored the Caddyfile. Did not reload.'
 else
   docker exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 fi
