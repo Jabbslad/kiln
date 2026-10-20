@@ -129,6 +129,16 @@ FILES
                 deploy/kiln-door-proxy-public.socket \
                 docs/runbooks/2026-10-19-door-public-cert.md >> "$work/expected"
         fi
+        # The paseo Caddy override and the door site are their own pair.
+        # v0.4.9 has the four door files and neither of these. An archive
+        # that has one of them must have both, with or without the door files.
+        if grep -qx 'deploy/paseo-caddy.override.yaml' "$work/names" \
+            || grep -qx 'deploy/door.Caddyfile' "$work/names"
+        then
+            printf '%s\n' \
+                deploy/paseo-caddy.override.yaml \
+                deploy/door.Caddyfile >> "$work/expected"
+        fi
     fi
     sort "$work/expected" > "$work/expected.sorted"
     sort "$work/names" > "$work/names.sorted"

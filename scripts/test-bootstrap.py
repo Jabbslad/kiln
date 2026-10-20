@@ -27,6 +27,34 @@ def pinned_version():
 
 
 PINNED = pinned_version()
+CADDY_PAIR = [
+    "deploy/paseo-caddy.override.yaml",
+    "deploy/door.Caddyfile",
+]
+
+
+def published_server_names():
+    text = (ROOT / "deploy/bootstrap/install.sh").read_text()
+    match = re.search(
+        r"(?m)^server:x86_64-unknown-linux-gnu ([0-9a-f]{64})$", text
+    )
+    if match is None:
+        raise AssertionError("install.sh does not pin the server archive")
+    digest = match.group(1)
+    name = f"kiln-server-v{PINNED}-x86_64-unknown-linux-gnu.tar.gz"
+    cache = Path("/tmp") / name
+    if not cache.is_file() or hashlib.sha256(cache.read_bytes()).hexdigest() != digest:
+        urllib.request.urlretrieve(
+            f"https://github.com/Jabbslad/kiln/releases/download/v{PINNED}/{name}",
+            cache,
+        )
+    actual = hashlib.sha256(cache.read_bytes()).hexdigest()
+    if actual != digest:
+        raise AssertionError(f"published server archive checksum is {actual}")
+    with tarfile.open(cache, "r:gz") as archive:
+        return archive.getnames()
+
+
 SERVER_FILES = [
     "bin/kiln-runtime",
     "bin/kiln",
@@ -733,6 +761,33 @@ if args[0] == 'env' and 'apt-get' in args:
         code, out = self.run_bootstrap(self.package(partial), args=("server",))
         self.assertNotEqual(code, 0, out)
         self.assertIn("Unexpected archive contents.", out)
+
+    def test_v049_names_pass_and_the_caddy_pair_is_independent(self):
+        names = published_server_names()
+        self.assertIn("deploy/kiln-door-proxy.service", names)
+        self.assertTrue(set(CADDY_PAIR).isdisjoint(names))
+        members = dict.fromkeys(names, b"fixture\n")
+        code, out = self.run_bootstrap(self.package(members), args=("server",))
+        self.assertNotEqual(code, 0, out)
+        self.assertNotIn("Unexpected archive contents.", out)
+        with_caddy = dict(members)
+        for name in CADDY_PAIR:
+            with_caddy[name] = b"fixture\n"
+        code, out = self.run_bootstrap(self.package(with_caddy), args=("server",))
+        self.assertNotEqual(code, 0, out)
+        self.assertNotIn("Unexpected archive contents.", out)
+        without_door = dict.fromkeys(
+            [*SERVER_FILES, "bin/kiln-network", *CADDY_PAIR], b"fixture\n"
+        )
+        code, out = self.run_bootstrap(self.package(without_door), args=("server",))
+        self.assertNotEqual(code, 0, out)
+        self.assertNotIn("Unexpected archive contents.", out)
+        for name in CADDY_PAIR:
+            half = dict(members)
+            half[name] = b"fixture\n"
+            code, out = self.run_bootstrap(self.package(half), args=("server",))
+            self.assertNotEqual(code, 0, out)
+            self.assertIn("Unexpected archive contents.", out)
 
     def test_python_archive_is_rejected_before_apt(self):
         members = dict.fromkeys([*SERVER_FILES, "bin/kiln-network"], b"fixture\n")
