@@ -1,0 +1,687 @@
+use std::{
+    path::Path,
+    process::Command,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+
+use axum::{
+    body::{Body, Bytes, to_bytes},
+    extract::ConnectInfo,
+    http::{HeaderMap, Request, StatusCode},
+    response::Response,
+};
+use futures_util::stream;
+use jsonwebtoken::{Algorithm, EncodingKey, Header};
+use kiln_api::auth::{Scope, ServerClaims};
+use kiln_server::{
+    app_listener::{self, BIND},
+    auth::{Authenticator, Enrollment},
+    door,
+};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tower::ServiceExt;
+
+const CSP: &str = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+const HTML: &str = "<!doctype html><html><body>kiln</body></html>";
+
+struct Upstream {
+    port: u16,
+    hits: Arc<AtomicUsize>,
+    ca_pem: String,
+}
+
+fn archive(root: &Path) {
+    std::fs::create_dir_all(root.join("assets")).unwrap();
+    std::fs::write(root.join("index.html"), HTML).unwrap();
+    std::fs::write(root.join("assets/app.js"), b"console.log(1)").unwrap();
+}
+
+fn pem() -> String {
+    rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()])
+        .unwrap()
+        .cert
+        .pem()
+}
+
+fn auth(dir: &Path) -> (Authenticator, EncodingKey) {
+    use base64::Engine;
+    use p256::{elliptic_curve::sec1::ToEncodedPoint, pkcs8::EncodePrivateKey};
+    let key = p256::SecretKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+    let encoded = key.to_pkcs8_pem(Default::default()).unwrap();
+    let point = key.public_key().to_encoded_point(false);
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let jwks = serde_json::json!({"keys":[{
+        "kty":"EC","crv":"P-256","use":"sig","alg":"ES256","kid":"first",
+        "x":b64.encode(point.x().unwrap()),"y":b64.encode(point.y().unwrap())
+    }]});
+    let enrollment = Enrollment {
+        version: 1,
+        issuer: "https://identity.example.test".into(),
+        owner_id: "owner-a".into(),
+        server_id: "server-b".into(),
+    };
+    let cache = dir.join("jwks.json");
+    std::fs::write(
+        &cache,
+        serde_json::to_vec(&serde_json::json!({"issuer": enrollment.issuer, "jwks": jwks}))
+            .unwrap(),
+    )
+    .unwrap();
+    (
+        Authenticator::central_only(enrollment, cache).unwrap(),
+        EncodingKey::from_ec_pem(encoded.as_bytes()).unwrap(),
+    )
+}
+
+fn token(key: &EncodingKey, sub: &str, scope: Scope) -> String {
+    let now = jsonwebtoken::get_current_timestamp();
+    let claims = ServerClaims {
+        iss: "https://identity.example.test".into(),
+        sub: sub.into(),
+        aud: "kiln:server:server-b".into(),
+        iat: now,
+        nbf: now,
+        exp: now + 300,
+        credential_id: "device-1".into(),
+        scope,
+    };
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some("first".into());
+    jsonwebtoken::encode(&header, &claims, key).unwrap()
+}
+
+async fn listen_tls(app: axum::Router) -> (u16, String) {
+    let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+    let ca_pem = cert.cert.pem();
+    let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
+        ca_pem.clone().into_bytes(),
+        cert.signing_key.serialize_pem().into_bytes(),
+    )
+    .await
+    .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        axum_server::from_tcp_rustls(listener, tls)
+            .unwrap()
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
+    });
+    (port, ca_pem)
+}
+
+async fn upstream_json() -> Upstream {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let seen_dashboard = hits.clone();
+    let seen_other = hits.clone();
+    let app = axum::Router::new()
+        .route(
+            "/api/v1/dashboard",
+            axum::routing::get(move || {
+                let seen_dashboard = seen_dashboard.clone();
+                async move {
+                    seen_dashboard.fetch_add(1, Ordering::SeqCst);
+                    axum::Json(serde_json::json!({"schema_version": 1}))
+                }
+            }),
+        )
+        .fallback(axum::routing::any(move || {
+            let seen_other = seen_other.clone();
+            async move {
+                seen_other.fetch_add(1, Ordering::SeqCst);
+                StatusCode::OK
+            }
+        }));
+    let (port, ca_pem) = listen_tls(app).await;
+    Upstream { port, hits, ca_pem }
+}
+
+async fn upstream_huge() -> Upstream {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let seen = hits.clone();
+    let app = axum::Router::new().route(
+        "/api/v1/dashboard",
+        axum::routing::get(move || {
+            let seen = seen.clone();
+            async move {
+                seen.fetch_add(1, Ordering::SeqCst);
+                let chunks = vec![
+                    Ok::<Bytes, std::io::Error>(Bytes::from(vec![b'y'; 1024])),
+                    Ok(Bytes::from(vec![b'y'; kiln_api::MAX_RESPONSE_BYTES])),
+                ];
+                Body::from_stream(stream::iter(chunks))
+            }
+        }),
+    );
+    let (port, ca_pem) = listen_tls(app).await;
+    Upstream { port, hits, ca_pem }
+}
+
+fn open(root: &Path, up: &Upstream) -> (axum::Router, EncodingKey) {
+    let (auth, key) = auth(root);
+    let router = app_listener::router(
+        auth,
+        &format!("https://127.0.0.1:{}", up.port),
+        up.ca_pem.as_bytes(),
+        Some(root),
+    )
+    .unwrap();
+    (router, key)
+}
+
+async fn send(router: &axum::Router, peer: &str, request: Request<Body>) -> Response {
+    let (mut parts, body) = request.into_parts();
+    parts
+        .extensions
+        .insert(ConnectInfo(peer.parse::<std::net::SocketAddr>().unwrap()));
+    router
+        .clone()
+        .oneshot(Request::from_parts(parts, body))
+        .await
+        .unwrap()
+}
+
+fn get(uri: &str) -> Request<Body> {
+    Request::builder().uri(uri).body(Body::empty()).unwrap()
+}
+
+fn bearer(uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+async fn text(response: Response) -> (StatusCode, HeaderMap, String) {
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), 16 * 1024 * 1024)
+        .await
+        .unwrap();
+    (
+        status,
+        headers,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+fn assert_security(headers: &HeaderMap) {
+    assert_eq!(headers.get("content-security-policy").unwrap(), CSP);
+    assert_eq!(headers.get("referrer-policy").unwrap(), "strict-origin");
+    assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+}
+
+#[test]
+fn bind_refuses_other_addresses() {
+    let root = require_bind_message(BIND, 0);
+    assert!(root.contains("unprivileged"), "{root}");
+    for listen in [
+        "0.0.0.0:8093",
+        "172.18.0.1:8093",
+        "127.0.0.1:8094",
+        "[::1]:8093",
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_kiln-api"))
+            .args([
+                "app",
+                "--listen",
+                listen,
+                "--upstream-ca",
+                "/no/such/ca.crt",
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{listen}");
+        let err = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            err.contains("app listener must bind 127.0.0.1:8093"),
+            "{listen}: {err}"
+        );
+        assert!(!err.to_lowercase().contains("listening"), "{listen}: {err}");
+    }
+}
+
+fn require_bind_message(listen: std::net::SocketAddr, euid: u32) -> String {
+    app_listener::require_bind(listen, euid)
+        .unwrap_err()
+        .to_string()
+}
+
+#[test]
+fn upstream_must_stay_on_loopback_https() {
+    let root = tempfile::tempdir().unwrap();
+    let ca = pem();
+    for upstream in [
+        "http://127.0.0.1:8443",
+        "https://172.18.0.1:8443",
+        "https://0.0.0.0:8443",
+        "https://127.0.0.1:8443/v1",
+        "https://example.com:8443",
+    ] {
+        let (auth, _) = auth(root.path());
+        let result = app_listener::router(auth, upstream, ca.as_bytes(), None);
+        assert!(result.is_err(), "{upstream}");
+    }
+}
+
+#[test]
+fn shipped_units_bind_loopback_and_the_bridge() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let app = std::fs::read_to_string(root.join("deploy/kiln-app.service")).unwrap();
+    assert!(app.contains("127.0.0.1:8093"));
+    assert!(!app.contains("0.0.0.0"));
+    assert!(!app.contains("172.18.0.1"));
+    assert!(!app.contains("--tls-cert"));
+    let socket = std::fs::read_to_string(root.join("deploy/kiln-app-proxy.socket")).unwrap();
+    assert!(socket.contains("ListenStream=172.18.0.1:8093"));
+    assert!(socket.contains("FreeBind=yes"));
+    assert!(socket.contains("IPAddressAllow=172.18.0.3/32"));
+    assert!(!socket.contains("0.0.0.0"));
+    let proxy = std::fs::read_to_string(root.join("deploy/kiln-app-proxy.service")).unwrap();
+    assert!(proxy.contains("127.0.0.1:8093"));
+    assert!(proxy.contains("IPAddressAllow=localhost"));
+    let door_unit = std::fs::read_to_string(root.join("deploy/kiln-door.service")).unwrap();
+    assert!(!door_unit.contains("dashboard-root"), "{door_unit}");
+    assert!(!door_unit.contains("session-dir"), "{door_unit}");
+}
+
+#[tokio::test]
+async fn missing_archive_serves_no_html() {
+    let root = tempfile::tempdir().unwrap();
+    let up = upstream_json().await;
+    let (auth, _) = auth(root.path());
+    let missing = root.path().join("absent");
+    let router = app_listener::router(
+        auth,
+        &format!("https://127.0.0.1:{}", up.port),
+        up.ca_pem.as_bytes(),
+        Some(&missing),
+    )
+    .unwrap();
+    let (status, _, body) = text(send(&router, "127.0.0.1:9", get("/boxes")).await).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body.contains("\"code\":\"not_found\"") || body.contains("\"code\": \"not_found\""));
+    assert!(!body.contains("<html"));
+    let (status, _, body) =
+        text(send(&router, "127.0.0.1:9", get("/api/v1/dashboard")).await).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["code"], "unauthorized");
+    assert_eq!(up.hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn deep_link_returns_index_html() {
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    std::os::unix::fs::symlink(
+        root.path().join("index.html"),
+        root.path().join("link.html"),
+    )
+    .unwrap();
+    let up = upstream_json().await;
+    let (router, _) = open(root.path(), &up);
+    let (status, headers, body) = text(send(&router, "127.0.0.1:9", get("/boxes")).await).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    assert_eq!(body, HTML);
+    let (status, _, body) = text(send(&router, "127.0.0.1:9", get("/link.html")).await).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(!body.contains("kiln"));
+    let (status, _, body) = text(send(&router, "127.0.0.1:9", get("/missing.js")).await).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(!body.contains("<html"));
+}
+
+#[tokio::test]
+async fn missing_api_path_is_json() {
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    let up = upstream_json().await;
+    let (router, _) = open(root.path(), &up);
+    let (status, _, body) = text(send(&router, "127.0.0.1:9", get("/api/v1/missing")).await).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["code"], "not_found");
+    assert!(!body.contains("<html"));
+    assert_eq!(up.hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn read_scope_is_proxied_and_other_account_is_rejected() {
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    let up = upstream_json().await;
+    let (router, key) = open(root.path(), &up);
+    let (status, _, body) = text(
+        send(
+            &router,
+            "127.0.0.1:9",
+            bearer("/api/v1/dashboard", &token(&key, "owner-b", Scope::Read)),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["code"], "unauthorized");
+    assert_eq!(up.hits.load(Ordering::SeqCst), 0);
+    for scope in [Scope::Read, Scope::Operate] {
+        let (status, headers, body) = text(
+            send(
+                &router,
+                "127.0.0.1:9",
+                bearer("/api/v1/dashboard", &token(&key, "owner-a", scope)),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed["schema_version"], 1);
+    }
+    assert_eq!(up.hits.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn administrator_token_is_not_forwarded() {
+    let root = tempfile::tempdir().unwrap();
+    let up = upstream_json().await;
+    let (router, _) = open(root.path(), &up);
+    let (status, _, body) = text(
+        send(
+            &router,
+            "127.0.0.1:9",
+            bearer("/api/v1/dashboard", &"ab".repeat(32)),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["code"], "unauthorized");
+    assert_eq!(up.hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn response_headers_and_cache() {
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    let up = upstream_json().await;
+    let (router, key) = open(root.path(), &up);
+    let (status, headers, _) = text(send(&router, "127.0.0.1:9", get("/")).await).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    assert_security(&headers);
+    let (status, headers, body) =
+        text(send(&router, "127.0.0.1:9", get("/assets/app.js")).await).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "console.log(1)");
+    let cache = headers.get("cache-control").unwrap().to_str().unwrap();
+    assert!(cache.contains("immutable"), "{cache}");
+    assert!(!cache.contains("no-store"), "{cache}");
+    assert_security(&headers);
+    let (_, headers, _) = text(
+        send(
+            &router,
+            "127.0.0.1:9",
+            bearer("/api/v1/dashboard", &token(&key, "owner-a", Scope::Read)),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    assert_security(&headers);
+    let (_, headers, _) = text(send(&router, "127.0.0.1:9", get("/api/v1/missing")).await).await;
+    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+    assert_security(&headers);
+}
+
+#[tokio::test]
+async fn preview_query_is_limited_to_one() {
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    let up = upstream_json().await;
+    let (router, key) = open(root.path(), &up);
+    let (status, headers, body) =
+        text(send(&router, "127.0.0.1:9", get("/boxes?preview=1")).await).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    assert_eq!(body, HTML);
+    for uri in ["/boxes?preview=2", "/boxes?x=1", "/boxes?preview=1&x=1"] {
+        let (status, _, _) = text(send(&router, "127.0.0.1:9", get(uri)).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
+    }
+    let (status, _, _) = text(
+        send(
+            &router,
+            "127.0.0.1:9",
+            bearer(
+                "/api/v1/dashboard?preview=1",
+                &token(&key, "owner-a", Scope::Read),
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(up.hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn mutations_are_not_forwarded() {
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    let up = upstream_json().await;
+    let (router, key) = open(root.path(), &up);
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/operations")
+        .header(
+            "authorization",
+            format!("Bearer {}", token(&key, "owner-a", Scope::Operate)),
+        )
+        .body(Body::from("{\"name\":\"box\"}"))
+        .unwrap();
+    let (status, _, body) = text(send(&router, "127.0.0.1:9", request).await).await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(!body.contains("<html"));
+    assert_eq!(up.hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn door_still_rejects_an_unauthenticated_templates_read() {
+    let root = tempfile::tempdir().unwrap();
+    let (auth, _) = auth(root.path());
+    let router = door::router(auth, "https://127.0.0.1:1", pem().as_bytes()).unwrap();
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/v1/templates")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn static_file_over_eight_mib_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    let limit = 8 * 1024 * 1024;
+    std::fs::write(root.path().join("assets/exact.bin"), vec![b'z'; limit]).unwrap();
+    std::fs::write(root.path().join("assets/over.bin"), vec![b'z'; limit + 1]).unwrap();
+    let up = upstream_json().await;
+    let (router, _) = open(root.path(), &up);
+    let (status, _, body) =
+        text(send(&router, "127.0.0.1:9", get("/assets/exact.bin")).await).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.len(), limit);
+    let (status, _, body) = text(send(&router, "127.0.0.1:9", get("/assets/over.bin")).await).await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(body.len() < 1024, "{}", body.len());
+}
+
+#[tokio::test]
+async fn dashboard_body_over_one_mib_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let up = upstream_huge().await;
+    let (router, key) = open(root.path(), &up);
+    let (status, _, body) = text(
+        send(
+            &router,
+            "127.0.0.1:9",
+            bearer("/api/v1/dashboard", &token(&key, "owner-a", Scope::Read)),
+        )
+        .await,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(!body.contains(&"y".repeat(64)));
+    assert!(body.len() < 1024, "{}", body.len());
+}
+
+#[tokio::test]
+async fn rate_limit_is_checked_before_the_upstream_dial() {
+    let root = tempfile::tempdir().unwrap();
+    let up = upstream_json().await;
+    let (router, key) = open(root.path(), &up);
+    let token = token(&key, "owner-a", Scope::Read);
+    for _ in 0..60 {
+        let (status, _, _) =
+            text(send(&router, "127.0.0.1:9", bearer("/api/v1/dashboard", &token)).await).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    assert_eq!(up.hits.load(Ordering::SeqCst), 60);
+    let (status, _, _) =
+        text(send(&router, "127.0.0.1:9", bearer("/api/v1/dashboard", &token)).await).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(up.hits.load(Ordering::SeqCst), 60);
+}
+
+#[tokio::test]
+async fn forwarded_for_is_trusted_only_from_loopback() {
+    let root = tempfile::tempdir().unwrap();
+    let up = upstream_json().await;
+    let (router, _) = open(root.path(), &up);
+    for _ in 0..60 {
+        let request = Request::builder()
+            .uri("/api/v1/dashboard")
+            .header("x-forwarded-for", "203.0.113.8")
+            .body(Body::empty())
+            .unwrap();
+        let (status, _, _) = text(send(&router, "10.1.2.3:9", request).await).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let request = Request::builder()
+        .uri("/api/v1/dashboard")
+        .header("x-forwarded-for", "198.51.100.9")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, _) = text(send(&router, "10.1.2.3:9", request).await).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    for _ in 0..60 {
+        let request = Request::builder()
+            .uri("/api/v1/dashboard")
+            .header("x-forwarded-for", "203.0.113.8, 10.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        let (status, _, _) = text(send(&router, "127.0.0.1:9", request).await).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let request = Request::builder()
+        .uri("/api/v1/dashboard")
+        .header("x-forwarded-for", "203.0.113.8")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, _) = text(send(&router, "127.0.0.1:9", request).await).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let request = Request::builder()
+        .uri("/api/v1/dashboard")
+        .header("x-forwarded-for", "198.51.100.4")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, _) = text(send(&router, "127.0.0.1:9", request).await).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(up.hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn listener_accepts_on_the_loopback_port() {
+    assert_eq!(
+        app_listener::listen_line(BIND),
+        "app listener listening on 127.0.0.1:8093"
+    );
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    let ca = pem();
+    let (auth, _) = auth(root.path());
+    let router = app_listener::router(
+        auth,
+        "https://127.0.0.1:1",
+        ca.as_bytes(),
+        Some(root.path()),
+    )
+    .unwrap();
+    let server = tokio::spawn(async move {
+        app_listener::listen(router, BIND).await.unwrap();
+    });
+    let mut stream = None;
+    let mut last = String::new();
+    for _ in 0..50 {
+        match tokio::net::TcpStream::connect("127.0.0.1:8093").await {
+            Ok(connected) => {
+                stream = Some(connected);
+                break;
+            }
+            Err(err) => last = err.to_string(),
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let Some(mut stream) = stream else {
+        server.abort();
+        panic!("127.0.0.1:8093 did not accept: {last}");
+    };
+    stream
+        .write_all(b"GET /boxes HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+        .await
+        .unwrap();
+    stream.flush().await.unwrap();
+    let mut raw_bytes = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut raw_bytes)).await;
+    server.abort();
+    let raw = String::from_utf8_lossy(&raw_bytes);
+    let lower = raw.to_ascii_lowercase();
+    assert!(
+        lower.contains("http/1.0 200") || lower.contains("http/1.1 200"),
+        "{raw}"
+    );
+    assert!(lower.contains("text/html"), "{raw}");
+    assert!(lower.contains("nosniff"), "{raw}");
+    assert!(lower.contains("strict-origin"), "{raw}");
+    assert!(raw.contains(HTML), "{raw}");
+}

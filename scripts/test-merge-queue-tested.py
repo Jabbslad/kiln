@@ -218,7 +218,7 @@ class BuildWorkflowTests(unittest.TestCase):
         self.assertNotRegex(block, r"(?m)^    name:")
         self.assertNotIn("server-package", block)
         self.assertIn(
-            "needs: [server-check, server-package, client, dashboard]",
+            "needs: [server-check, reuse, server-package, client, dashboard]",
             text.split("  draft-release:\n", 1)[1],
         )
 
