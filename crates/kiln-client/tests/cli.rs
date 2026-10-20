@@ -512,6 +512,7 @@ impl IdentityFixture {
         tokio::process::Command::new(env!("CARGO_BIN_EXE_kiln"))
             .env_remove("KILN_IDENTITY_URL")
             .env("KILN_IDENTITY_CA", &self.ca)
+            .env("KILN_BROWSER", "0")
             .env("PATH", &self.bin_dir)
             .stdin(stdin)
             .arg("--config")
@@ -530,9 +531,9 @@ async fn identity_fixture(servers: &[(&str, &str)]) -> IdentityFixture {
     let root = tempfile::tempdir().unwrap();
     let bin_dir = root.path().join("bin");
     fs::create_dir(&bin_dir).unwrap();
-    // open_browser runs `xdg-open` on Linux, `open` on macOS, and `rundll32` on
-    // Windows. PATH is only this directory, and Windows still searches System32,
-    // so the stub has to be the name that search finds first.
+    // PATH is only this directory. Linux launches `xdg-open` and macOS launches
+    // `open`. Windows still finds System32 `rundll32.exe`, so login() also sets
+    // KILN_BROWSER=0 and open_browser does not spawn.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -542,8 +543,6 @@ async fn identity_fixture(servers: &[(&str, &str)]) -> IdentityFixture {
             fs::set_permissions(&opener, fs::Permissions::from_mode(0o755)).unwrap();
         }
     }
-    #[cfg(windows)]
-    fs::write(bin_dir.join("rundll32.cmd"), "@echo off\r\nexit /b 1\r\n").unwrap();
     let listed = servers
         .iter()
         .map(|(id, name)| {
