@@ -297,6 +297,17 @@ class ReleaseVersionTests(unittest.TestCase):
         self.assertEqual((self.repo / "Cargo.lock").stat().st_mtime_ns, stamped)
         self.assertEqual(env_path.read_text(), "VERSION=v9.9.9\n")
 
+    def test_tag_resolve_stamps_crlf_manifest_and_lock(self):
+        def crlf(text):
+            return text.replace("\n", "\r\n").encode()
+
+        _write_repo(self.repo)
+        (self.repo / "Cargo.toml").write_bytes(crlf(MANIFEST))
+        (self.repo / "Cargo.lock").write_bytes(crlf(LOCK))
+        rv.resolve(self.repo, "tag", "v9.9.9")
+        self.assertEqual((self.repo / "Cargo.toml").read_bytes(), crlf(EXPECTED_MANIFEST))
+        self.assertEqual((self.repo / "Cargo.lock").read_bytes(), crlf(EXPECTED_LOCK))
+
     def test_missing_path_package_and_non_inherited_member_write_nothing(self):
         missing = LOCK.replace(
             """\
