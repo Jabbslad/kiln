@@ -459,25 +459,31 @@ requests, backups, token rotation, quotas and the operation-journal capacity.
 
 ## Maintainer workflow
 
-Pushes and pull requests run Linux workspace checks, build the server/guest image,
-and run native client TLS/CLI tests on Linux, macOS ARM/Intel and Windows. Archives
-and individual SHA-256 files are available as run artifacts for seven
-days. Use `gh run download RUN_ID --repo OWNER/NAME` for branch builds; do not
+Pushes to main run the package jobs and keep the archives as run artifacts for
+30 days. A pull request that changes code runs the checks and the client tests
+and does not upload packages. A documentation pull request runs the Python
+checks only. Use `gh run download RUN_ID --repo OWNER/NAME` for branch builds; do not
 confuse those with a reviewed release. The build workflow uses no credentials
 beyond the scoped GitHub Actions token and does not deploy a server. Public workflows/logs/artifacts
 must not contain credentials or runtime data. Fork PRs use hosted runners and
-read-only permissions; only the tag release job has contents-write permission.
+read-only permissions. Only the tag release job has contents-write permission.
+The main build attests the package archives. That job has `id-token` and
+attestations write, and it does not have contents write.
 
 For an approved release, push an annotated `vMAJOR.MINOR.PATCH` tag of the green
-main commit (`git tag -a vX.Y.Z -m "..."`). Do not commit a version bump. The tag
-build stamps that name into the workspace version and the lockfile versions of
-the workspace crates, then compiles. The binaries, archive names, and
-`release.json` use the tag. A tag that is not stable `vMAJOR.MINOR.PATCH` fails
-before compile. Branch and pull-request builds keep the committed workspace
-version. Checking out the tag and building without the stamp produces the
-committed workspace version. Restore `Cargo.toml` and `Cargo.lock` after a local
-stamp so the stamp is not committed. When all jobs pass, the workflow
-creates a **draft release**. The draft includes that filled `install.sh`.
+main commit (`git tag -a vX.Y.Z -m "..."`). The workflow finds that commit's
+successful push of this workflow on main. It checks the run, the archive
+checksums, and build provenance when that commit's workflow emitted provenance.
+It then opens a draft from those archives. `install.sh` is rendered in the tag
+job from the archive checksums. The draft is not published automatically.
+If that run is missing, expired, or fails those checks, the tag builds
+from scratch with the Rust, npm, and Playwright caches disabled. That fallback
+stamps the tag into the workspace version before it compiles. A tag that is
+not stable `vMAJOR.MINOR.PATCH` fails before compile. Branch and pull-request
+builds keep the committed workspace version. A local stamp still rewrites
+`Cargo.toml` and `Cargo.lock` when they differ. Do not commit that rewrite.
+When the jobs pass, the workflow creates a **draft release**. The draft
+includes that filled `install.sh`.
 Review/download the draft,
 verify packages, and record real-host validation and any outstanding limitations
 before publishing it publicly. Reruns do not overwrite
