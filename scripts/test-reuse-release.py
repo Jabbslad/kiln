@@ -43,16 +43,11 @@ def _package_jobs(event, reuse_result, mode, docs_only):
     """Which package jobs start. A cancelled reuse starts none."""
     if reuse_result == "cancelled":
         return False, False
-    server = event != "pull_request" and (
-        reuse_result == "skipped"
-        or (mode == "fallback" and event == "push")
-        or (reuse_result == "failure" and event == "push")
-    )
+    verified = reuse_result == "success" and mode == "reuse"
+    build = reuse_result == "skipped" or (event == "push" and not verified)
+    server = event != "pull_request" and build
     clients = (event != "pull_request" or not docs_only) and (
-        event == "pull_request"
-        or reuse_result == "skipped"
-        or (mode == "fallback" and event == "push")
-        or (reuse_result == "failure" and event == "push")
+        event == "pull_request" or build
     )
     return server, clients
 
@@ -75,6 +70,7 @@ def job_graph():
         ("tag no match", "push", True, "success", "fallback", False, True),
         ("tag error", "push", True, "failure", "", False, True),
         ("tag upload error", "push", True, "failure", "reuse", False, True),
+        ("tag timeout", "push", True, "timed_out", "", False, True),
         ("main", "push", False, "skipped", "", False, True),
         ("code pr", "pull_request", False, "skipped", "", False, True),
         ("docs pr", "pull_request", False, "skipped", "", True, True),
@@ -97,6 +93,7 @@ EXPECTED_JOBS = (
     ("tag no match", True, True, "packages"),
     ("tag error", True, True, "packages"),
     ("tag upload error", True, True, "packages"),
+    ("tag timeout", True, True, "packages"),
     ("main", True, True, ""),
     ("code pr", False, True, ""),
     ("docs pr", False, False, ""),
@@ -289,7 +286,10 @@ class ReuseDecisionTests(unittest.TestCase):
         self.assertIn("dry_run:", text)
         self.assertIn("needs.reuse.outputs.mode == 'fallback'", text)
         self.assertIn("needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'", text)
-        self.assertEqual(text.count("needs.reuse.result == 'failure' && github.event_name == 'push'"), 3)
+        self.assertEqual(
+            text.count("!(needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse')"),
+            3,
+        )
         self.assertIn("needs.reuse.result != 'success' || needs.reuse.outputs.mode != 'reuse'", text)
         self.assertEqual(text.count("!startsWith(github.ref, 'refs/tags/v')"), 6)
         self.assertNotIn("--auto", text)
