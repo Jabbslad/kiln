@@ -17,7 +17,7 @@ const ASSET_BEGIN: &str = "# BEGIN RELEASE ASSETS";
 const ASSET_END: &str = "# END RELEASE ASSETS";
 const LOCK_PACKAGE: &str = "[[package]]";
 
-pub const CLAP_COMMANDS: &[(&str, &str)] = &[
+const CLAP_COMMANDS: &[(&str, &str)] = &[
     ("kiln", "kiln"),
     ("kiln-runtime", "kiln-runtime"),
     ("kiln-host", "kiln-server"),
@@ -175,7 +175,7 @@ pub fn check_binary(version: &ReleaseVersion, binaries: &[PathBuf]) -> Result<()
         return Err("no binaries to check".to_string());
     }
     for binary in binaries {
-        if binary.is_symlink() || !binary.is_file() {
+        if not_regular_file(binary) {
             return Err(format!("refusing non-regular binary {}", binary.display()));
         }
         let expected = format!("{}\n", clap_line(binary, version)?);
@@ -215,7 +215,7 @@ pub fn check_archives(version: &ReleaseVersion, dist: &Path) -> Result<(), Strin
         let entry = entry.map_err(|err| err.to_string())?;
         let path = entry.path();
         let name = file_name(&path);
-        if path.is_symlink() || !path.is_file() || !pattern.is_match(&name) {
+        if not_regular_file(&path) || !pattern.is_match(&name) {
             return Err(format!("unexpected dist file {name}"));
         }
         names.push(name);
@@ -264,7 +264,7 @@ pub fn check_archives(version: &ReleaseVersion, dist: &Path) -> Result<(), Strin
 pub fn render_bootstrap(
     source: &str,
     version: &ReleaseVersion,
-    digests: &BTreeMap<String, String>,
+    digests: &HashMap<String, String>,
 ) -> Result<String, String> {
     validate_digests(digests)?;
     let mut lines: Vec<String> = split_lines_keep(source)
@@ -299,7 +299,9 @@ pub fn render_bootstrap(
             prefix.to_string()
         };
         let line_ending = ending(&lines[*index]).to_string();
-        let digest = &digests[key];
+        let Some(digest) = digests.get(key) else {
+            return Err(format!("release digest for {key:?} must be 64 lowercase hex"));
+        };
         lines[*index] = format!("{prefix} {digest}{line_ending}");
     }
     Ok(lines.concat())
@@ -317,7 +319,7 @@ pub fn attach_bootstrap(
         .map(str::to_string)
         .collect();
     let rows = asset_rows(&lines)?;
-    let mut digests = BTreeMap::new();
+    let mut digests = HashMap::new();
     for (_, key) in &rows {
         let archive = archive_name(key, version)?;
         let digest = sidecar_digest(&dist.join(format!("{archive}.sha256")))?;
@@ -350,6 +352,11 @@ pub fn committed_version(manifest: &str) -> Result<ReleaseVersion, String> {
 }
 
 pub fn dispatch(args: &[String], env: &HashMap<String, String>) -> Result<String, String> {
+    let args = if args.first().is_some_and(|arg| arg == "--") {
+        &args[1..]
+    } else {
+        args
+    };
     let Some(command) = args.first() else {
         return Err("a command is required".to_string());
     };
@@ -617,10 +624,10 @@ fn rewrite_lock(lock: &str, names: &[&str], cargo: &str) -> Result<String, Strin
             None => true,
             Some(source) => source.starts_with("path+"),
         };
-        if is_path && hits.contains_key(info.name.as_str()) {
-            hits.get_mut(info.name.as_str())
-                .expect("member name")
-                .push(index);
+        if is_path {
+            if let Some(slot) = hits.get_mut(info.name.as_str()) {
+                slot.push(index);
+            }
         }
     }
     let mut replaced = BTreeMap::new();
@@ -925,7 +932,7 @@ fn zip_release_json(
     Ok(None)
 }
 
-fn validate_digests(digests: &BTreeMap<String, String>) -> Result<(), String> {
+fn validate_digests(digests: &HashMap<String, String>) -> Result<(), String> {
     for (key, digest) in digests {
         if !HEX64_RE.is_match(digest) {
             return Err(format!(
@@ -986,7 +993,7 @@ fn archive_name(key: &str, version: &ReleaseVersion) -> Result<String, String> {
 }
 
 fn sidecar_digest(path: &Path) -> Result<String, String> {
-    if path.is_symlink() || !path.is_file() {
+    if not_regular_file(path) {
         return Err(format!("missing checksum sidecar {}", file_name(path)));
     }
     let text = read_text(path)?;
@@ -1028,7 +1035,7 @@ fn atomic_write(path: &Path, data: &[u8], mode: Option<u32>) -> Result<(), Strin
     if let Some(mode) = mode {
         set_mode(tmp.path(), mode)?;
     }
-    tmp.persist(path).map_err(|err| err.error.to_string())?;
+    tmp.persist(path).map(|_| ()).map_err(|err| err.to_string())?;
     Ok(())
 }
 
@@ -1142,6 +1149,16 @@ fn file_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+fn not_regular_file(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => {
+            let kind = meta.file_type();
+            kind.is_symlink() || !kind.is_file()
+        }
+        Err(_) => true,
+    }
 }
 
 fn sha256_hex(data: &[u8]) -> String {
@@ -1813,7 +1830,7 @@ fn test_render_bootstrap_changes_only_the_version_and_digests() {
             let byte = format!("{:02x}", index + 1);
             ((*key).to_string(), byte.repeat(32))
         })
-        .collect::<BTreeMap<_, _>>();
+        .collect::<HashMap<_, _>>();
     let rendered = render_bootstrap(&source, &version, &digests).unwrap();
     assert_eq!(fs::read(&path).unwrap(), before);
     let version_lines: Vec<_> = rendered
@@ -1866,7 +1883,7 @@ fn test_render_bootstrap_rejects_a_missing_or_duplicate_version_line() {
     let digests = ASSET_KEYS
         .iter()
         .map(|key| ((*key).to_string(), "ab".repeat(32)))
-        .collect::<BTreeMap<_, _>>();
+        .collect::<HashMap<_, _>>();
     let pin_re = Regex::new(r"(?m)^(    version=[0-9]+\.[0-9]+\.[0-9]+\n)").unwrap();
     let pin_line = pin_re.captures(&source).unwrap().get(1).unwrap().as_str();
     let missing = source.replacen(pin_line, "", 1);
@@ -1883,7 +1900,7 @@ fn test_render_bootstrap_rejects_a_bad_digest_or_key_set() {
     let digests = ASSET_KEYS
         .iter()
         .map(|key| ((*key).to_string(), "ab".repeat(32)))
-        .collect::<BTreeMap<_, _>>();
+        .collect::<HashMap<_, _>>();
     let mut bad_digest = digests.clone();
     bad_digest.insert(ASSET_KEYS[0].to_string(), "A".repeat(64));
     let mut short = digests.clone();
@@ -2200,11 +2217,11 @@ fn split_ending(line: &str) -> (&str, &str) {
     }
 }
 
-fn asset_digests(text: &str) -> BTreeMap<String, String> {
+fn asset_digests(text: &str) -> HashMap<String, String> {
     let lines = split_lines(text);
     let begin = lines.iter().position(|line| *line == ASSET_BEGIN).unwrap();
     let end = lines.iter().position(|line| *line == ASSET_END).unwrap();
-    let mut digests = BTreeMap::new();
+    let mut digests = HashMap::new();
     for line in &lines[begin + 1..end] {
         if line.trim_start().starts_with('#') {
             continue;
