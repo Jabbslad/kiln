@@ -948,6 +948,48 @@ async fn a_provider_start_does_not_revive_an_expired_session() {
     assert_eq!(code_count(&f), 0);
 }
 
+#[tokio::test]
+async fn a_provider_start_keeps_a_live_session_signed_in() {
+    fn now() -> i64 {
+        6_000
+    }
+    let f = Fixture::new(now);
+    let owner = f
+        .store
+        .seed_account("github", "601", "owner", now())
+        .unwrap();
+    let (server, directory) = f
+        .store
+        .create_server(&owner, "one", "https://192.0.2.61", "ca", now())
+        .unwrap();
+    install_login(&f, &server, &directory, "192.0.2.62:9").await;
+    let session = "e".repeat(43);
+    remember(&f, &owner, &session);
+    let header = format!("__Host-kiln_session={session}");
+    let cookie = Some(header.as_str());
+    let (status, _, body) = f
+        .raw("GET", "/oauth/github", "192.0.2.63:9", None, cookie, None)
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{body}");
+    let path = server_path(&server, APP_OAUTH_REDIRECT, VERIFIER, "state-live");
+    let (status, headers, body) = f
+        .raw("GET", &path, "192.0.2.64:9", None, cookie, None)
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{body}");
+    let code = query(
+        &url::Url::parse(headers.get("location").unwrap().to_str().unwrap()).unwrap(),
+        "code",
+    );
+    assert!(!code.is_empty());
+    let account: Option<String> = f
+        .db()
+        .query_row("SELECT account_id FROM browser_sessions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(account.as_deref(), Some(owner.as_str()));
+}
+
 async fn owner_code(f: &Fixture, path: &str) -> String {
     let (status, headers, body) = f
         .raw(
