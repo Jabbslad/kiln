@@ -751,8 +751,16 @@ class AppSiteRunbook(unittest.TestCase):
             runbook.index("systemctl enable --now kiln-app-proxy.socket"),
             runbook.index("getent ahostsv4 app.dark-forge.dev"),
         )
+        self.assertIn("}app.dark-forge.dev {", runbook)
         self.assertIn("if ! grep -qx 'app.dark-forge.dev {' /opt/paseo/Caddyfile; then", runbook)
         self.assertIn("printf '\\n' >> /opt/paseo/Caddyfile", runbook)
+        self.assertIn("awk '{ print $1 }' | sort -u", runbook)
+        self.assertIn('[ -z "$apex" ]', runbook)
+        self.assertIn("Restored Caddyfile failed validation. Did not reload.", runbook)
+        self.assertLess(
+            runbook.index("caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then"),
+            runbook.rindex("caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile"),
+        )
         self.assertLess(
             runbook.index("getent ahostsv4 app.dark-forge.dev"),
             runbook.index("docker exec caddy caddy reload"),
@@ -800,26 +808,276 @@ class AppSiteRunbook(unittest.TestCase):
             )
             self.assertEqual(adapted.returncode, 0, adapted.stderr)
 
+    def test_append_repairs_a_glued_site(self):
+        site = ROOT / "deploy/app.Caddyfile"
+        with tempfile.TemporaryDirectory() as tmp:
+            live = Path(tmp) / "Caddyfile"
+            live.write_bytes(b'example.test {\n\trespond "ok"\n}' + site.read_bytes())
+            self.assertIn(b"}app.dark-forge.dev {", live.read_bytes())
+            rejected = subprocess.run(
+                ["caddy", "validate", "--config", str(live), "--adapter", "caddyfile"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(rejected.returncode, 0, rejected.stderr)
+            self._append_site(live, site)
+            repaired = live.read_bytes()
+            self._append_site(live, site)
+            self.assertEqual(live.read_bytes(), repaired)
+            text = live.read_text()
+            self.assertEqual(text.count("app.dark-forge.dev {"), 1)
+            self.assertNotIn("}app.dark-forge.dev", text)
+            checked = subprocess.run(
+                ["caddy", "validate", "--config", str(live), "--adapter", "caddyfile"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    def test_dns_compares_every_address(self):
+        same_app = "\n".join([
+            "10.0.0.2 STREAM app.dark-forge.dev",
+            "10.0.0.2 DGRAM",
+            "10.0.0.2 RAW",
+            "10.0.0.1 STREAM app.dark-forge.dev",
+            "10.0.0.1 DGRAM",
+            "10.0.0.1 RAW",
+            "",
+        ])
+        same_apex = "\n".join([
+            "10.0.0.1 STREAM dark-forge.dev",
+            "10.0.0.1 DGRAM",
+            "10.0.0.1 RAW",
+            "10.0.0.2 STREAM dark-forge.dev",
+            "10.0.0.2 DGRAM",
+            "10.0.0.2 RAW",
+            "",
+        ])
+        extra_app = "\n".join([
+            "10.0.0.1 STREAM app.dark-forge.dev",
+            "10.0.0.1 DGRAM",
+            "10.0.0.1 RAW",
+            "10.0.0.2 STREAM app.dark-forge.dev",
+            "10.0.0.2 DGRAM",
+            "10.0.0.2 RAW",
+            "",
+        ])
+        one_apex = "\n".join([
+            "10.0.0.1 STREAM dark-forge.dev",
+            "10.0.0.1 DGRAM",
+            "10.0.0.1 RAW",
+            "",
+        ])
+        cases = (
+            ("same set in a different order", same_app, same_apex, False),
+            ("first row matches and a later address does not", extra_app, one_apex, True),
+            ("app.dark-forge.dev has no address", "", one_apex, True),
+            ("dark-forge.dev has no address", same_app, "", True),
+        )
+        for name, app_rows, apex_rows, restore in cases:
+            with self.subTest(name=name):
+                restored, reloaded = self._dns_check(app_rows, apex_rows)
+                self.assertEqual(restored, restore, name)
+                self.assertEqual(reloaded, not restore, name)
+
+    def test_rollback_reload_follows_validate(self):
+        real = shutil.which("caddy")
+        self.assertIsNotNone(real, "caddy is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            admin_port, http_port = self._two_ports()
+            admin = f"127.0.0.1:{admin_port}"
+            live = root / "Caddyfile"
+            backup = root / "Caddyfile.bak"
+            live.write_text(
+                "{\n"
+                f"\tadmin {admin}\n"
+                "\tauto_https off\n"
+                "}\n"
+                f"http://127.0.0.1:{http_port} {{\n"
+                "\tbind 127.0.0.1\n"
+                '\trespond "live"\n'
+                "}\n"
+            )
+            home = root / "home"
+            data = root / "xdg"
+            config = root / "xdg-config"
+            for path in (home, data, config):
+                path.mkdir()
+            env = os.environ.copy()
+            env.update({
+                "HOME": str(home),
+                "XDG_DATA_HOME": str(data),
+                "XDG_CONFIG_HOME": str(config),
+            })
+            server_log = root / "caddy-server.log"
+            with server_log.open("w") as handle:
+                subprocess.check_call(
+                    [real, "start", "--config", str(live), "--adapter", "caddyfile"],
+                    env=env,
+                    stdout=handle,
+                    stderr=handle,
+                )
+            try:
+                self._wait_http(f"http://127.0.0.1:{http_port}/", "live")
+                backup.write_text(
+                    f"http://127.0.0.1:{http_port} {{\n"
+                    "\tnot_a_directive\n"
+                    "}\n"
+                )
+                failed_out, failed_log = self._rollback(root, live, backup, admin, real, env)
+                self.assertIn("Restored Caddyfile failed validation. Did not reload.", failed_out)
+                self.assertNotIn("reload", failed_log)
+                self.assertEqual(self._curl(f"http://127.0.0.1:{http_port}/"), "live")
+                backup.write_text(
+                    "{\n"
+                    f"\tadmin {admin}\n"
+                    "\tauto_https off\n"
+                    "}\n"
+                    f"http://127.0.0.1:{http_port} {{\n"
+                    "\tbind 127.0.0.1\n"
+                    '\trespond "restored"\n'
+                    "}\n"
+                )
+                reloaded_out, reloaded_log = self._rollback(root, live, backup, admin, real, env)
+                self.assertNotIn("Did not reload.", reloaded_out)
+                self.assertIn("reload", reloaded_log)
+                self.assertEqual(self._curl(f"http://127.0.0.1:{http_port}/"), "restored")
+            finally:
+                subprocess.call(
+                    [real, "stop", "--address", admin],
+                    env=env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+    def _fenced_sh(self, marker):
+        runbook = (ROOT / "docs/runbooks/2026-10-20-app-dark-forge-caddy.md").read_text()
+        cursor = 0
+        while True:
+            start = runbook.index("```sh\n", cursor)
+            end = runbook.index("\n```", start)
+            block = runbook[start + len("```sh\n"):end]
+            if marker in block:
+                return block
+            cursor = end + 4
+
+    def _host_paths(self, block):
+        block = block.replace("/opt/paseo/Caddyfile.bak-app-dark-forge", '"$backup"')
+        return block.replace("/opt/paseo/Caddyfile", '"$caddyfile"')
+
     def _append_site(self, live, site):
-        subprocess.run(
-            [
-                "bash",
-                "-c",
-                """
-                caddyfile=$1
-                site=$2
-                if ! grep -qx 'app.dark-forge.dev {' "$caddyfile"; then
-                  if [ -n "$(tail -c1 "$caddyfile")" ]; then
-                    printf '\\n' >> "$caddyfile"
-                  fi
-                  cat "$site" >> "$caddyfile"
-                fi
-                """,
-                "append-site",
-                str(live),
-                str(site),
-            ],
-            check=True,
+        block = self._host_paths(self._fenced_sh("grep -qx 'app.dark-forge.dev {'"))
+        block = block.replace("deploy/app.Caddyfile", '"$site"')
+        completed = subprocess.run(
+            ["bash", "-c", "caddyfile=$1\nsite=$2\n" + block, "append-site", str(live), str(site)],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def _dns_check(self, app_rows, apex_rows):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            answers = root / "answers"
+            answers.mkdir()
+            (answers / "app.dark-forge.dev").write_text(app_rows)
+            (answers / "dark-forge.dev").write_text(apex_rows)
+            bindir = root / "bin"
+            bindir.mkdir()
+            log = root / "docker.log"
+            (bindir / "getent").write_text("#!/bin/sh\ncat \"$GETENT_DIR/$2\"\n")
+            (bindir / "docker").write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\n")
+            os.chmod(bindir / "getent", 0o755)
+            os.chmod(bindir / "docker", 0o755)
+            live = root / "Caddyfile"
+            backup = root / "Caddyfile.bak"
+            live.write_text("edited\n")
+            backup.write_text("backup\n")
+            block = self._host_paths(self._fenced_sh("getent ahostsv4 app.dark-forge.dev"))
+            env = os.environ.copy()
+            env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
+            env["GETENT_DIR"] = str(answers)
+            env["DOCKER_LOG"] = str(log)
+            completed = subprocess.run(
+                ["bash", "-c", "caddyfile=$1\nbackup=$2\n" + block, "dns", str(live), str(backup)],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            restored = live.read_text() == "backup\n"
+            reloaded = "reload" in log.read_text() if log.exists() else False
+            return restored, reloaded
+
+    def _rollback(self, root, live, backup, admin, real, env):
+        bindir = root / "bin"
+        bindir.mkdir(exist_ok=True)
+        log = root / "docker.log"
+        log.write_text("")
+        shim = bindir / "docker"
+        shim.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\n"
+            "action=$4\n"
+            "if [ \"$action\" = validate ]; then\n"
+            f"  exec {real} validate --config \"$CADDYFILE\" --adapter caddyfile\n"
+            "fi\n"
+            "if [ \"$action\" = reload ]; then\n"
+            f"  exec {real} reload --config \"$CADDYFILE\" --adapter caddyfile --address \"$CADDY_ADMIN\"\n"
+            "fi\n"
+            "printf 'unexpected docker %s\\n' \"$*\" >&2\n"
+            "exit 99\n"
+        )
+        os.chmod(shim, 0o755)
+        block = self._host_paths(self._fenced_sh('if [ "$rollback" -eq 1 ]; then'))
+        block = block[block.index('if [ "$rollback" -eq 1 ]; then'):]
+        run_env = env.copy()
+        run_env["PATH"] = str(bindir) + os.pathsep + run_env.get("PATH", "")
+        run_env["DOCKER_LOG"] = str(log)
+        run_env["CADDYFILE"] = str(live)
+        run_env["CADDY_ADMIN"] = admin
+        completed = subprocess.run(
+            ["bash", "-c", "rollback=1\ncaddyfile=$1\nbackup=$2\n" + block, "rollback", str(live), str(backup)],
+            capture_output=True,
+            text=True,
+            env=run_env,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return completed.stdout, log.read_text()
+
+    def _two_ports(self):
+        admin = socket.socket()
+        http = socket.socket()
+        try:
+            admin.bind(("127.0.0.1", 0))
+            http.bind(("127.0.0.1", 0))
+            return admin.getsockname()[1], http.getsockname()[1]
+        finally:
+            admin.close()
+            http.close()
+
+    def _wait_http(self, url, body):
+        deadline = time.monotonic() + 5
+        last = ""
+        while time.monotonic() < deadline:
+            completed = self._curl_result(url)
+            if completed.returncode == 0 and completed.stdout == body:
+                return
+            last = completed.stderr or completed.stdout
+            time.sleep(0.05)
+        self.fail(last)
+
+    def _curl(self, url):
+        completed = self._curl_result(url)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return completed.stdout
+
+    def _curl_result(self, url):
+        return subprocess.run(
+            ["curl", "-fsS", "--max-time", "2", url],
+            capture_output=True,
+            text=True,
         )
 
 
