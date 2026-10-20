@@ -13,6 +13,18 @@ on:
         required: false
         default: ""
         type: string
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to install
+        required: false
+        default: latest
+        type: string
+      address:
+        description: Private or VPN IPv4 for the API. Empty detects one private source address.
+        required: false
+        default: ""
+        type: string
 
 # Runners install a published release. Pull requests and forks never reach this job.
 permissions:

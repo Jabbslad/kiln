@@ -101,6 +101,7 @@ jobs:
           python scripts/test-reuse-release.py
           python scripts/test-merge-queue-tested.py
           python scripts/test-proof-status.py
+          bash scripts/test-listener-restart.sh
 
   server-check:
     needs: changes
@@ -177,11 +178,13 @@ jobs:
           python scripts/test-reuse-release.py
           python scripts/test-merge-queue-tested.py
           python scripts/test-proof-status.py
+          bash scripts/test-listener-restart.sh
           shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/enroll-dark-forge.sh \
             deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
             deploy/github/install-remote.sh deploy/github/smoke.sh \
-            deploy/github/diagnose.sh deploy/github/diagnose-run.sh
+            deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
+            scripts/test-listener-restart.sh
 
   # A v* tag publishes main's packages for that commit when the run verifies.
   # A miss falls through to the cache-free package jobs.
@@ -532,7 +535,7 @@ jobs:
         run: python scripts/required_gate.py
 
   draft-release:
-    needs: [server-check, reuse, server-package, client, dashboard]
+    needs: [server-check, reuse, server-package, client, dashboard, attest]
     if: >-
       !cancelled() &&
       github.event_name == 'push' &&
@@ -541,7 +544,8 @@ jobs:
       ((needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse') ||
         (needs.server-package.result == 'success' &&
           needs.client.result == 'success' &&
-          needs.dashboard.result == 'success'))
+          needs.dashboard.result == 'success' &&
+          needs.attest.result == 'success'))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -561,16 +565,36 @@ jobs:
           pattern: package-*
           path: dist
           merge-multiple: true
-      - name: Verify packages and create release draft
+      - name: Verify packages and publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
+          REUSE_MODE: ${{ needs.reuse.outputs.mode }}
         run: |
+          started=$(date +%s)
           python3 scripts/reuse_release.py finish --version "$TAG" --dist dist
           (cd dist && sha256sum -c ./*.sha256)
-          gh release create "$TAG" dist/* --verify-tag --draft --title "$TAG" \
-            --notes 'Trusted-workload pilot. Native client tests and Linux build checks passed. The unattended installer requires Ubuntu 24.04 or 26.04 x86-64/KVM for servers. No deployment was performed. Review the release and real-host validation before publishing. Binaries are not signed or notarized.'
+          if [ "$REUSE_MODE" = reuse ]; then
+            source_ref=refs/heads/main
+          else
+            source_ref="refs/tags/${TAG}"
+          fi
+          regex='^https://github\.com/Jabbslad/kiln/\.github/workflows/build\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$'
+          found=0
+          for archive in dist/*.tar.gz dist/*.zip; do
+            [ -f "$archive" ] || continue
+            found=1
+            gh attestation verify "$archive" --repo Jabbslad/kiln \
+              --cert-identity-regex "$regex" --source-ref "$source_ref"
+          done
+          [ "$found" = 1 ]
+          gh release create "$TAG" dist/* --verify-tag --title "$TAG" \
+            --notes 'Trusted-workload pilot. Native client tests and Linux build checks passed. The unattended installer requires Ubuntu 24.04 or 26.04 x86-64/KVM for servers. Checksums and attestations were verified in this job before publish. Binaries are not signed or notarized.'
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            seconds=$(( $(date +%s) - started ))
+            printf '| Stage | Seconds |\n| --- | ---: |\n| publish | %s |\n' "$seconds" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   dry-run-assets:
     needs: [reuse]

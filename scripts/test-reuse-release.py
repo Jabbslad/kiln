@@ -394,7 +394,11 @@ class ReuseDecisionTests(unittest.TestCase):
     def test_workflow_keeps_drafts_and_does_not_move_tags(self):
         text = (REPO / ".github/workflows/build.yml").read_text(encoding="utf-8")
         self.assertEqual(text.count("gh release create"), 1)
-        self.assertIn("--draft", text)
+        self.assertNotIn("--draft", text)
+        self.assertIn("gh attestation verify", text)
+        self.assertIn("--cert-identity-regex", text)
+        self.assertIn("--source-ref", text)
+        self.assertIn("needs.attest.result == 'success'", text)
         self.assertNotIn("git push", text)
         self.assertNotIn("git tag", text)
         granted = [line for line in text.splitlines() if line.strip() == "actions: write"]
