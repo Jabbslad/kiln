@@ -17,12 +17,25 @@ pub struct DirectProfile {
     pub ca_file: Option<PathBuf>,
 }
 
+/// How door commands check the server certificate.
+/// Old profiles omit the field and keep the pinned CA.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DoorTrust {
+    #[default]
+    Pin,
+    PublicRoots,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CentralProfile {
     pub issuer: String,
     pub server: ServerDescriptor,
     pub credential_file: PathBuf,
+    /// Set by `kiln login`. Missing on a profile written before that login.
+    #[serde(default)]
+    pub door_trust: DoorTrust,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -71,6 +84,38 @@ impl Profile {
             .transpose()
             .context("could not read CA file")?;
         Client::new(&this.url, &token, ca.as_deref())
+    }
+}
+
+/// `https://cli.dark-forge.dev` with no other port. `:8443` stays pinned.
+fn trust_for_origin(origin: &str) -> DoorTrust {
+    let Ok(url) = reqwest::Url::parse(origin) else {
+        return DoorTrust::Pin;
+    };
+    if url.scheme() == "https"
+        && url
+            .host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case("cli.dark-forge.dev"))
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && (url.path().is_empty() || url.path() == "/")
+        && url.query().is_none()
+        && url.fragment().is_none()
+    {
+        DoorTrust::PublicRoots
+    } else {
+        DoorTrust::Pin
+    }
+}
+
+fn assign_door_trust(profile: Profile) -> Profile {
+    match profile {
+        Profile::Central(mut central) => {
+            central.door_trust = trust_for_origin(&central.server.origin);
+            Profile::Central(central)
+        }
+        other => other,
     }
 }
 
@@ -155,6 +200,7 @@ pub fn add(path: &Path, name: &str, profile: Profile) -> Result<()> {
 pub fn set(path: &Path, name: &str, profile: Profile) -> Result<()> {
     ensure!(kiln_api::valid_alias(name), "invalid profile name");
     profile.validate()?;
+    let profile = assign_door_trust(profile);
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())

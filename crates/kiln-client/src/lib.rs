@@ -38,7 +38,7 @@ impl Client {
     pub fn with_session(profile: &profile::CentralProfile, session: auth::Session) -> Result<Self> {
         Self::build(
             &profile.server.origin,
-            Some(profile.server.ca_pem.as_bytes()),
+            pinned_ca(profile),
             None,
             Some(session),
         )
@@ -205,6 +205,13 @@ impl Client {
     }
 }
 
+fn pinned_ca(profile: &profile::CentralProfile) -> Option<&[u8]> {
+    match profile.door_trust {
+        profile::DoorTrust::PublicRoots => None,
+        profile::DoorTrust::Pin => Some(profile.server.ca_pem.as_bytes()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,6 +275,93 @@ mod tests {
         assert!(err.to_ascii_lowercase().contains("certificate"), "{err}");
         handle.shutdown();
         task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn old_profile_fails_closed_and_login_adopts_public_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("profiles.json");
+        let credential = root.path().join("credential.json");
+        assert!(credential.is_absolute());
+        let ca = rcgen::generate_simple_self_signed(vec!["cli.dark-forge.dev".into()]).unwrap();
+        let pem = ca.cert.pem();
+        let stored = serde_json::json!({
+            "profiles": {
+                "default": {
+                    "issuer": "https://dark-forge.dev",
+                    "server": {
+                        "id": "srv_dark_forge",
+                        "name": "dark-forge",
+                        "origin": "https://cli.dark-forge.dev:8443",
+                        "ca_pem": pem,
+                        "revision": 1
+                    },
+                    "credential_file": credential
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_vec_pretty(&stored).unwrap()).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let loaded = crate::profile::load(&path).unwrap();
+        let crate::profile::Profile::Central(profile) =
+            loaded.profiles.get("default").expect("central profile")
+        else {
+            panic!("stored profile is central");
+        };
+        assert_eq!(profile.door_trust, crate::profile::DoorTrust::Pin);
+        assert_eq!(profile.server.ca_pem, pem);
+        let token = "ab".repeat(32);
+        let stayed = Client::new(&profile.server.origin, &token, pinned_ca(profile)).unwrap();
+        assert_eq!(stayed.base.host_str(), Some("cli.dark-forge.dev"));
+        assert_eq!(stayed.base.port(), Some(8443));
+        let pinned = Client::new("https://example.com/", &token, pinned_ca(profile)).unwrap();
+        let err = error_text(&pinned.templates().await.unwrap_err());
+        assert!(
+            err.to_ascii_lowercase().contains("certificate"),
+            "saved pin should fail closed, got {err}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let credentials = crate::credentials::Credentials {
+            issuer: "https://dark-forge.dev".into(),
+            access_token: String::new(),
+            access_expires_at: 0,
+            refresh_token: "refresh".into(),
+            automation_key_file: None,
+            server_tokens: Default::default(),
+        };
+        crate::profile::save_login(
+            &path,
+            "default",
+            crate::profile::CentralProfile {
+                issuer: "https://dark-forge.dev".into(),
+                server: kiln_api::auth::ServerDescriptor {
+                    id: "srv_dark_forge".into(),
+                    name: "dark-forge".into(),
+                    origin: "https://cli.dark-forge.dev".into(),
+                    ca_pem: pem.clone(),
+                    revision: 2,
+                },
+                credential_file: root.path().join("private/credential.json"),
+                door_trust: crate::profile::DoorTrust::Pin,
+            },
+            &credentials,
+        )
+        .unwrap();
+        let adopted = crate::profile::load(&path).unwrap();
+        let crate::profile::Profile::Central(adopted) =
+            adopted.profiles.get("default").expect("central profile")
+        else {
+            panic!("stored profile is central");
+        };
+        assert_eq!(adopted.server.ca_pem, pem);
+        assert_eq!(adopted.door_trust, crate::profile::DoorTrust::PublicRoots);
+        assert!(pinned_ca(adopted).is_none());
+        let public = Client::new("https://example.com/", &token, pinned_ca(adopted)).unwrap();
+        let err = public.templates().await.unwrap_err().to_string();
+        assert!(
+            err.contains("HTTP"),
+            "login should dial with public roots, got {err}"
+        );
     }
 
     #[tokio::test]

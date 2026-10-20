@@ -466,6 +466,7 @@ async fn run(cli: Cli) -> Result<i32> {
                         &profile_name,
                         profile::Profile::Central(profile::CentralProfile {
                             server: selected,
+                            door_trust: profile::DoorTrust::Pin,
                             ..existing.clone()
                         }),
                     )?;
@@ -504,6 +505,7 @@ async fn run(cli: Cli) -> Result<i32> {
                     issuer,
                     server: key.server,
                     credential_file,
+                    door_trust: profile::DoorTrust::Pin,
                 },
                 &credentials,
             )?;
@@ -576,6 +578,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 issuer,
                 server: selected,
                 credential_file,
+                door_trust: profile::DoorTrust::Pin,
             },
             &credentials,
         )?;

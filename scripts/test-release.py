@@ -133,7 +133,11 @@ class ReleaseTests(unittest.TestCase):
             "deploy/kiln-host.service",
             "deploy/kiln-api.service",
             "deploy/kiln-door.service",
+            "deploy/kiln-door-proxy.service",
+            "deploy/kiln-door-proxy.socket",
+            "deploy/kiln-door-proxy-public.socket",
             "deploy/enroll-dark-forge.sh",
+            "docs/runbooks/2026-10-19-door-public-cert.md",
             "deploy/host.example.json",
             "scripts/fetch-firecracker.sh",
             "README.md",
@@ -167,6 +171,9 @@ class ReleaseTests(unittest.TestCase):
                     "deploy/kiln-host.service",
                     "deploy/kiln-api.service",
                     "deploy/kiln-door.service",
+                    "deploy/kiln-door-proxy.service",
+                    "deploy/kiln-door-proxy.socket",
+                    "deploy/kiln-door-proxy-public.socket",
                     "deploy/enroll-dark-forge.sh",
                     "deploy/host.example.json",
                     "fetch-firecracker.sh",
@@ -176,6 +183,7 @@ class ReleaseTests(unittest.TestCase):
                     "docs/identity-service.md",
                     "docs/runtime.md",
                     "docs/runbooks/2026-10-19-public-door.md",
+                    "docs/runbooks/2026-10-19-door-public-cert.md",
                     "image/image.json",
                     "image/inputs.json",
                     "image/rootfs.ext4",
@@ -188,6 +196,28 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(release["target"], "x86_64-unknown-linux-gnu")
             self.assertEqual(release["min_upgrade_from"], "0.3.0")
             self.assertEqual(archive.getmember("install.sh").mode, 0o755)
+            self.assertEqual(names, bootstrap_accepts(names))
+
+
+def bootstrap_accepts(archive_names):
+    """Names deploy/bootstrap/install.sh accepts for this archive."""
+    text = (
+        Path(__file__).resolve().parent.parent / "deploy/bootstrap/install.sh"
+    ).read_text()
+    marker = 'cat > "$work/expected" <<FILES\n'
+    start = text.index(marker) + len(marker)
+    expected = set(text[start : text.index("\nFILES\n", start)].splitlines())
+    if "bin/kiln-network" in archive_names:
+        expected.add("bin/kiln-network")
+    door_proxy = {
+        "deploy/kiln-door-proxy.service",
+        "deploy/kiln-door-proxy.socket",
+        "deploy/kiln-door-proxy-public.socket",
+        "docs/runbooks/2026-10-19-door-public-cert.md",
+    }
+    if archive_names & door_proxy:
+        expected.update(door_proxy)
+    return expected
 
 
 if __name__ == "__main__":

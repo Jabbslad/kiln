@@ -506,6 +506,7 @@ mod tests {
                 ca_pem: "unused".into(),
                 revision: 1,
             },
+            door_trust: crate::profile::DoorTrust::Pin,
         };
         let session = Session {
             inner: Arc::new(Inner {

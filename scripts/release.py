@@ -73,6 +73,8 @@ def package(repo, bins, output, version, target, kind, image):
                 "docs/runtime.md": repo / "docs/runtime.md",
                 "docs/runbooks/2026-10-19-public-door.md": repo
                 / "docs/runbooks/2026-10-19-public-door.md",
+                "docs/runbooks/2026-10-19-door-public-cert.md": repo
+                / "docs/runbooks/2026-10-19-door-public-cert.md",
             }
         )
         files.update(
@@ -82,6 +84,9 @@ def package(repo, bins, output, version, target, kind, image):
                     "kiln-host.service",
                     "kiln-api.service",
                     "kiln-door.service",
+                    "kiln-door-proxy.service",
+                    "kiln-door-proxy.socket",
+                    "kiln-door-proxy-public.socket",
                     "enroll-dark-forge.sh",
                     "host.example.json",
                 )
