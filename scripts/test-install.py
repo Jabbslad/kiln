@@ -194,11 +194,17 @@ if [ -n "${{KILN_MV_FAIL:-}}" ] && [ ! -f {self.mv_marker} ]; then
     exit 1
   fi
 fi
-if [ -n "${{KILN_MV_FAIL_DASHBOARD:-}}" ] && [ ! -f {self.mv_marker} ]; then
+if [ -n "${{KILN_MV_FAIL_DASHBOARD:-}}" ]; then
   case "${{!#}}" in
     */share/kiln/dashboard)
-      touch {self.mv_marker}
-      exit 1
+      count=0
+      if [ -f {self.mv_marker} ]; then
+        count=$(cat {self.mv_marker})
+      fi
+      if [ "$count" -lt "$KILN_MV_FAIL_DASHBOARD" ]; then
+        printf '%s\\n' "$((count + 1))" > {self.mv_marker}
+        exit 1
+      fi
       ;;
   esac
 fi
@@ -638,9 +644,9 @@ class FreshTests(InstallerTest):
             "--dashboard-archive",
             str(archive),
         )
+        self.assertFalse((self.root / "etc/kiln").exists())
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn(f"not a safe relative path: {name}", result.stderr)
-        self.assertFalse((self.root / "etc/kiln").exists())
         self.assertFalse(self.dashboard_dir().exists())
 
     def test_symlink_dashboard_destination_is_refused_before_writes(self):
@@ -1196,6 +1202,103 @@ class UpgradeTests(InstallerTest):
         self.assertIn("cannot install dashboard archive", failed.stderr)
         self.assertEqual(index.read_bytes(), b"<html>one</html>\n")
         self.assertEqual(list(self.dashboard_dir().parent.glob(".dashboard.*")), [])
+        self.assert_data_preserved()
+
+    def test_rerun_after_killed_dashboard_swap_clears_asides(self):
+        self.write_release("0.4.4", min_upgrade_from="0.3.0")
+        self.write_versions("0.4.4", "0.4.4")
+        self.stage_app_units()
+        archive = self.write_dashboard_archive(
+            {
+                "index.html": b"<html>one</html>\n",
+                "assets/app.js": b"console.log(1)\n",
+            }
+        )
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        first = self.invoke("--apply", "--dashboard-archive", str(archive))
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        share = self.dashboard_dir().parent
+        (share / "keep").write_text("keep\n")
+        old = share / ".dashboard.oldtree"
+        killed = share / ".dashboard.killed"
+        self.dashboard_dir().rename(old)
+        killed.mkdir()
+        (killed / "index.html").write_bytes(b"<html>killed</html>\n")
+        changed = self.write_dashboard_archive(
+            {
+                "index.html": b"<html>two</html>\n",
+                "assets/app.js": b"console.log(2)\n",
+            }
+        )
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        blocked = self.invoke(
+            "--apply",
+            "--dashboard-archive",
+            str(changed),
+            KILN_MV_FAIL_DASHBOARD="1",
+        )
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout)
+        self.assertFalse(self.dashboard_dir().exists())
+        self.assertTrue(old.is_dir())
+        self.assertEqual((old / "index.html").read_bytes(), b"<html>one</html>\n")
+        self.assertTrue(killed.is_dir())
+        self.assertEqual((killed / "index.html").read_bytes(), b"<html>killed</html>\n")
+        self.assertFalse(
+            any(path.read_bytes() == b"<html>two</html>\n" for path in share.rglob("index.html"))
+        )
+        self.assertEqual((share / "keep").read_text(), "keep\n")
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        again = self.invoke("--apply", "--dashboard-archive", str(changed))
+        self.assertEqual(again.returncode, 0, again.stderr + again.stdout)
+        self.assert_extract_matches_archive(changed, self.dashboard_dir())
+        self.assertEqual(list(share.glob(".dashboard.*")), [])
+        self.assertEqual((share / "keep").read_text(), "keep\n")
+        self.assert_data_preserved()
+
+    def test_failed_dashboard_restore_removes_the_staged_extract(self):
+        self.write_release("0.4.4", min_upgrade_from="0.3.0")
+        self.write_versions("0.4.4", "0.4.4")
+        self.stage_app_units()
+        archive = self.write_dashboard_archive(
+            {
+                "index.html": b"<html>one</html>\n",
+                "assets/app.js": b"console.log(1)\n",
+            }
+        )
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        first = self.invoke("--apply", "--dashboard-archive", str(archive))
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        changed = self.write_dashboard_archive(
+            {
+                "index.html": b"<html>two</html>\n",
+                "assets/app.js": b"console.log(2)\n",
+            }
+        )
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        failed = self.invoke(
+            "--apply",
+            "--dashboard-archive",
+            str(changed),
+            KILN_MV_FAIL_DASHBOARD="2",
+        )
+        self.assertNotEqual(failed.returncode, 0, failed.stdout)
+        share = self.dashboard_dir().parent
+        asides = list(share.glob(".dashboard.*"))
+        self.assertEqual(len(asides), 1)
+        self.assertIn(
+            f"from {asides[0]} onto {self.dashboard_dir()}",
+            failed.stderr,
+        )
+        marker = "staged extract at "
+        self.assertIn(marker, failed.stderr)
+        stage = Path(failed.stderr.split(marker, 1)[1].split()[0])
+        self.assertFalse(stage.exists())
+        self.assertNotEqual(stage, asides[0])
+        self.assertFalse(self.dashboard_dir().exists())
+        self.assertEqual((asides[0] / "index.html").read_bytes(), b"<html>one</html>\n")
+        self.assertFalse(
+            any(path.read_bytes() == b"<html>two</html>\n" for path in share.rglob("index.html"))
+        )
         self.assert_data_preserved()
 
     def test_check_only_does_not_mutate_or_stop_services(self):

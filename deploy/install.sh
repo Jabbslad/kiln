@@ -1241,11 +1241,25 @@ install_staged_dashboard() {
     die "cannot install dashboard archive"
   fi
   if ! mv -- "$stage" "$DASHBOARD"; then
-    mv -- "$previous" "$DASHBOARD" || die "cannot restore the dashboard"
+    if ! mv -- "$previous" "$DASHBOARD"; then
+      if ! rm -rf -- "$stage"; then
+        die "cannot restore the dashboard from $previous onto $DASHBOARD. The staged extract remains at $stage"
+      fi
+      die "cannot restore the dashboard from $previous onto $DASHBOARD after removing the staged extract at $stage"
+    fi
     rm -rf -- "$stage"
     die "cannot install dashboard archive"
   fi
   rm -rf -- "$previous"
+}
+
+remove_dashboard_asides() {
+  local aside
+  for aside in "$SHARE"/.dashboard.*; do
+    if [ -e "$aside" ] || [ -L "$aside" ]; then
+      rm -rf -- "$aside"
+    fi
+  done
 }
 
 install_app_units() {
@@ -1297,6 +1311,8 @@ install_dashboard() {
   else
     install_staged_dashboard "$stage"
   fi
+  # A kill between the two renames leaves these behind. Delete them only once the live tree is in place.
+  remove_dashboard_asides
   install_app_units
 }
 
