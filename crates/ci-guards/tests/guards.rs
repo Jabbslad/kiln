@@ -114,6 +114,33 @@ fn downloaded_tools_are_checksummed_before_use() {
 }
 
 #[test]
+fn reuse_looks_up_main_archives_by_the_committed_version() {
+    let workflow = read(&repo_root().join(".github/workflows/build.yml"));
+    let violations = ci_guards::reuse_lookup_violations(&workflow);
+    assert!(violations.is_empty(), "{violations:?}");
+
+    let violations = ci_guards::reuse_lookup_violations(&fixture("reuse-uses-tag-version.yml"));
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("git tag")),
+        "{violations:?}"
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("empty reuse_sha")),
+        "{violations:?}"
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|violation| violation.contains("draft-release finish")),
+        "{violations:?}"
+    );
+}
+
+#[test]
 fn tag_push_deploys_from_build_without_a_release_event_or_a_main_push() {
     let root = repo_root();
     let build = read(&root.join(".github/workflows/build.yml"));
