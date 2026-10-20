@@ -22,7 +22,62 @@ env:
   PYTHONDONTWRITEBYTECODE: '1'
 
 jobs:
+  # A documentation pull request skips the compile jobs below.
+  # The job if reports the skip. A workflow path filter would leave a required check pending.
+  # Push, tag, and workflow_dispatch do not consult the diff.
+  # This job still runs on those events and records heavy=true. Skipping it would
+  # skip draft-release, because a skipped needs job travels to the release job.
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      heavy: ${{ steps.filter.outputs.heavy }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "heavy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # --no-renames lists both sides. A rename out of Rust still builds.
+          git diff --name-only --no-renames "$BASE_SHA" HEAD | python scripts/ci_docs_only.py >> "$GITHUB_OUTPUT"
+
+  docs-check:
+    needs: changes
+    if: ${{ github.event_name == 'pull_request' && needs.changes.result == 'success' && needs.changes.outputs.heavy == 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Python checks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/test-ci-docs-only.py
+          python scripts/test-release-version.py
+          python scripts/test-release.py
+          python scripts/test-install.py
+          python scripts/test-bootstrap.py
+          python scripts/test-close-public-door.py
+          python scripts/test-caddy-door.py
+          python scripts/test-deploy-workflow.py
+
   server-check:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.heavy != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -82,6 +137,7 @@ jobs:
           python scripts/test-close-public-door.py
           python scripts/test-caddy-door.py
           python scripts/test-deploy-workflow.py
+          python scripts/test-ci-docs-only.py
           shellcheck scripts/fetch-firecracker.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/enroll-dark-forge.sh \
             deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
@@ -157,6 +213,8 @@ jobs:
           compression-level: 0
 
   client:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.heavy != 'false') }}
     strategy:
       fail-fast: false
       matrix:
@@ -245,6 +303,8 @@ jobs:
           compression-level: 0
 
   dashboard:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.heavy != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
