@@ -67,9 +67,23 @@ cp -a /opt/paseo/Caddyfile /opt/paseo/Caddyfile.bak-app-dark-forge
 sha256sum /opt/paseo/Caddyfile /opt/paseo/Caddyfile.bak-app-dark-forge
 ```
 
-Append the `app.dark-forge.dev` site from `deploy/app.Caddyfile` when that site is not already present. If the live file has no trailing newline, add one first. A bare `cat >>` joins the previous `}` to `app.dark-forge.dev {` and Caddy rejects the file. Leave every other site as it is. Run this from the extracted server archive.
+Append the `app.dark-forge.dev` site from `deploy/app.Caddyfile` when that site is not already present. If the file already contains `}app.dark-forge.dev {`, split that join before you append. If the live file has no trailing newline, add one before you append. A bare `cat >>` joins the previous `}` to `app.dark-forge.dev {` and Caddy rejects the file. Leave every other site as it is. Run this from the extracted server archive.
 
 ```sh
+if grep -q '}app.dark-forge.dev {' /opt/paseo/Caddyfile; then
+  fixed=$(mktemp)
+  awk '
+    BEGIN { needle = "}app.dark-forge.dev {"; repl = "}\napp.dark-forge.dev {" }
+    {
+      while (i = index($0, needle)) {
+        $0 = substr($0, 1, i - 1) repl substr($0, i + length(needle))
+      }
+      print
+    }
+  ' /opt/paseo/Caddyfile > "$fixed"
+  cat "$fixed" > /opt/paseo/Caddyfile
+  rm -f "$fixed"
+fi
 if ! grep -qx 'app.dark-forge.dev {' /opt/paseo/Caddyfile; then
   if [ -n "$(tail -c1 /opt/paseo/Caddyfile)" ]; then
     printf '\n' >> /opt/paseo/Caddyfile
@@ -78,7 +92,7 @@ if ! grep -qx 'app.dark-forge.dev {' /opt/paseo/Caddyfile; then
 fi
 ```
 
-Running the block again does not append a second site.
+Running the block again does not append a second site, and it leaves a repaired file unchanged.
 
 Do not repeat the container recreate in `docs/runbooks/2026-10-20-paseo-caddy-override.md`. Leave `COMPOSE_FILE` as it is. Leave the CA mount as it is.
 
@@ -90,13 +104,13 @@ docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfi
 
 ## Check DNS before the reload
 
-Reload only after validate exits 0 and the two names resolve to the same address. On 2026-10-20 both names resolve to `78.46.98.73`. The check compares the addresses. It does not pin that number.
+Reload only after validate exits 0 and `app.dark-forge.dev` and `dark-forge.dev` resolve to the same set of addresses. On 2026-10-20 both names resolve to `78.46.98.73`. The check compares every address from `getent ahostsv4`. It does not pin that number. If the sets differ, or either name has no address, copy the backup back and do not reload.
 
 ```sh
-app=$(getent ahostsv4 app.dark-forge.dev | awk 'NR==1 { print $1 }')
-apex=$(getent ahostsv4 dark-forge.dev | awk 'NR==1 { print $1 }')
-printf '%s %s\n' "$app" "$apex"
-if [ "$app" != "$apex" ] || [ -z "$app" ]; then
+app=$(getent ahostsv4 app.dark-forge.dev | awk '{ print $1 }' | sort -u)
+apex=$(getent ahostsv4 dark-forge.dev | awk '{ print $1 }' | sort -u)
+printf '%s\n' "$app" "$apex"
+if [ "$app" != "$apex" ] || [ -z "$app" ] || [ -z "$apex" ]; then
   cp -a /opt/paseo/Caddyfile.bak-app-dark-forge /opt/paseo/Caddyfile
   printf '%s\n' 'DNS does not match. Restored the Caddyfile. Did not reload.'
 else
@@ -117,7 +131,7 @@ curl -sS -D /tmp/kiln-app.headers -o /tmp/kiln-app.body https://app.dark-forge.d
 curl -sS -D /tmp/kiln-app-v1x.headers -o /tmp/kiln-app-v1x.json https://app.dark-forge.dev/v1/x
 ```
 
-If sign-in or `:443` is wrong, or the new site is not that 200 and that JSON 404, copy the backup back and reload it.
+If sign-in or `:443` is wrong, or the new site is not that 200 and that JSON 404, copy the backup back. Reload that file only when validate exits 0. When validate fails, leave the running Caddy process untouched and print the failure.
 
 ```sh
 rollback=0
@@ -131,8 +145,11 @@ grep -q 'application/json' /tmp/kiln-app-v1x.headers || rollback=1
 grep -q '"code":"not_found"' /tmp/kiln-app-v1x.json || rollback=1
 if [ "$rollback" -eq 1 ]; then
   cp -a /opt/paseo/Caddyfile.bak-app-dark-forge /opt/paseo/Caddyfile
-  docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-  docker exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+  if docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
+    docker exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+  else
+    printf '%s\n' 'Restored Caddyfile failed validation. Did not reload.'
+  fi
 fi
 ```
 
