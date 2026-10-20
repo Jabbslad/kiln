@@ -68,7 +68,7 @@ for arg in "$@"; do
   case "$arg" in
     --property=*) prop=${{arg#--property=}} ;;
     --value|--no-pager) ;;
-    show|stop|start|enable|disable|daemon-reload) ;;
+    show|stop|start|restart|enable|disable|daemon-reload) ;;
     *) service=$arg ;;
   esac
 done
@@ -79,10 +79,28 @@ case "$1" in
         if [ -f {state}/load-state ]; then cat {state}/load-state; else printf '%s\\n' not-found; fi
         ;;
       ActiveState) cat {state}/active-"$service" ;;
+      MainPID)
+        if [ -f {state}/pid-"$service" ]; then cat {state}/pid-"$service"; else printf '%s\\n' 0; fi
+        ;;
       KillMode) cat {state}/killmode ;;
       ExecStart) cat {state}/exec-"$service" ;;
       *) printf '%s\\n' "" ;;
     esac
+    ;;
+  restart)
+    if [ -f {state}/fail-restart-"$service" ]; then
+      rm -f {state}/fail-restart-"$service"
+      exit 1
+    fi
+    old=0
+    if [ -f {state}/pid-"$service" ]; then
+      old=$(tr -d '[:space:]' < {state}/pid-"$service")
+    fi
+    case "$old" in
+      ''|*[!0-9]*) old=0 ;;
+    esac
+    printf '%s\\n' "$((old + 1))" > {state}/pid-"$service"
+    printf '%s\\n' active > {state}/active-"$service"
     ;;
   stop|start)
     for svc in "${{@:2}}"; do
@@ -979,6 +997,102 @@ class UpgradeTests(InstallerTest):
                 if path.is_file():
                     self.assertIn(path.name, NAMES, path)
                     self.assertNotIn("snap", path.name)
+
+    def mark_running(self, unit, pid):
+        (self.state / f"active-{unit}").write_text("active\n")
+        (self.state / f"pid-{unit}").write_text(f"{pid}\n")
+
+    def pid_of(self, unit):
+        return (self.state / f"pid-{unit}").read_text().strip()
+
+    def test_replaced_kiln_api_restarts_listeners_that_still_run_it(self):
+        self.mark_running("kiln-app.service", 4100)
+        self.mark_running("kiln-door.service", 4200)
+        self.mark_running("kiln-identity.service", 4300)
+        result = self.invoke("--apply")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertNotEqual(self.pid_of("kiln-app.service"), "4100")
+        self.assertNotEqual(self.pid_of("kiln-door.service"), "4200")
+        self.assertEqual(self.pid_of("kiln-identity.service"), "4300")
+        self.assertEqual(self.identity.read_bytes(), b"identity-bytes-v1")
+        self.assertIn("systemctl restart kiln-app.service", self.lines())
+        self.assertIn("systemctl restart kiln-door.service", self.lines())
+        self.assertNotIn("systemctl restart kiln-identity.service", self.lines())
+        self.assertNotIn("systemctl stop kiln-network.service", self.lines())
+        self.assertNotIn("systemctl restart kiln-network.service", self.lines())
+        self.assert_untouched_neighbors()
+
+    def test_unchanged_kiln_api_leaves_listener_pids(self):
+        self.write_versions("0.4.4", "0.4.4")
+        self.mark_running("kiln-app.service", 4100)
+        self.mark_running("kiln-door.service", 4200)
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        result = self.invoke("--apply")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("already current", result.stdout)
+        self.assertEqual(self.pid_of("kiln-app.service"), "4100")
+        self.assertEqual(self.pid_of("kiln-door.service"), "4200")
+        self.assertNotIn("systemctl restart kiln-app.service", self.lines())
+        self.assertNotIn("systemctl restart kiln-door.service", self.lines())
+
+    def test_another_binary_change_leaves_kiln_app_running(self):
+        self.write_release("0.4.5")
+        self.write_versions("0.4.5", "0.4.5")
+        client = self.package / "bin" / "kiln"
+        client.write_text(client.read_text() + "# rebuilt\n")
+        self.mark_running("kiln-app.service", 4100)
+        self.mark_running("kiln-door.service", 4200)
+        self.plan_curl("ok", "ok", body=UPGRADE_CATALOG)
+        result = self.invoke("--apply")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertNotEqual(
+            self.destinations["kiln"].read_bytes(),
+            self.original["kiln"],
+        )
+        self.assertEqual(self.pid_of("kiln-app.service"), "4100")
+        self.assertEqual(self.pid_of("kiln-door.service"), "4200")
+        self.assertNotIn("systemctl restart kiln-app.service", self.lines())
+        self.assertNotIn("systemctl restart kiln-door.service", self.lines())
+
+    def test_changed_app_unit_restarts_the_running_listener(self):
+        self.write_versions("0.4.4", "0.4.4")
+        self.stage_app_units()
+        archive = self.write_dashboard_archive({"index.html": b"<html>one</html>\n"})
+        units = self.root / "etc/systemd/system"
+        units.mkdir(exist_ok=True)
+        (units / "kiln-app.service").write_text(
+            (ROOT / "deploy" / "kiln-app.service").read_text() + "# stale\n"
+        )
+        (units / "kiln-app-proxy.socket").write_text(
+            (ROOT / "deploy" / "kiln-app-proxy.socket").read_text() + "# stale\n"
+        )
+        self.mark_running("kiln-app.service", 4100)
+        self.mark_running("kiln-app-proxy.socket", 5100)
+        self.plan_curl("ok", body=UPGRADE_CATALOG)
+        result = self.invoke("--apply", "--dashboard-archive", str(archive))
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(
+            (units / "kiln-app.service").read_bytes(),
+            (ROOT / "deploy" / "kiln-app.service").read_bytes(),
+        )
+        self.assertNotEqual(self.pid_of("kiln-app.service"), "4100")
+        self.assertNotEqual(self.pid_of("kiln-app-proxy.socket"), "5100")
+        self.assertNotIn("systemctl restart kiln-app-proxy.service", self.lines())
+        self.assert_data_preserved()
+
+    def test_listener_restart_failure_restores_the_previous_binary(self):
+        self.mark_running("kiln-app.service", 4100)
+        (self.state / "fail-restart-kiln-app.service").write_text("1\n")
+        result = self.invoke("--apply")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("restored", result.stderr)
+        self.assert_original_binaries()
+        self.assertNotEqual(self.pid_of("kiln-app.service"), "4100")
+        restarts = [
+            line for line in self.lines() if line == "systemctl restart kiln-app.service"
+        ]
+        self.assertGreaterEqual(len(restarts), 2)
+        self.assert_untouched_neighbors()
 
     def test_update_preserves_configuration_identity_and_snapshot(self):
         result = self.invoke("--apply")
