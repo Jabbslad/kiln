@@ -16,7 +16,7 @@ Surfaces:
 - `deploy/bootstrap/install.sh` for client and server install.
 - The dashboard in `web/`. It is a static React app. Preview mode does not call a VM API. `GET /api/v1/dashboard` is served by `kiln-host` and by loopback `kiln-api`. `kiln-door` forwards it for a read-scope owner JWT. The public name is `https://cli.dark-forge.dev` on port 443. The drive is in `features/dashboard.md`.
 
-Workspace version is `0.4.8` (`Cargo.toml`).
+Workspace version is `0.4.10` (`Cargo.toml`).
 
 Build once. Give each drive its own tmux session. Do not run `kiln-runtime` as root.
 
