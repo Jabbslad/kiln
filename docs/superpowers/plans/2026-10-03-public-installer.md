@@ -1,6 +1,6 @@
 # Public unattended installation implementation plan
 
-> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). The Python provisioner named below is historical. The public bootstrap pins v0.4.9 and runs `install.sh` only. Deploying tag v0.4.4 still overlays this tree's `install.sh`, because that archive contains `install.py` and rejects Debian 13.
+> Current decision: installing and deploying Kiln is shell scripts only (`deploy/install.sh`). The Python provisioner named below is historical. The public bootstrap pins v0.4.10 and runs `install.sh` only. Deploying tag v0.4.4 still overlays this tree's `install.sh`, because that archive contains `install.py` and rejects Debian 13.
 
 **Goal:** Publish Kiln source and releases and install without a GitHub token or terminal.
 
