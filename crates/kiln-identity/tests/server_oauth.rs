@@ -16,11 +16,6 @@ use std::{
 };
 use tower::ServiceExt;
 
-static CLOCK: AtomicI64 = AtomicI64::new(1_000);
-fn now() -> i64 {
-    CLOCK.load(Ordering::SeqCst)
-}
-
 const VERIFIER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const OTHER_VERIFIER: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
@@ -28,10 +23,11 @@ struct Fixture {
     root: tempfile::TempDir,
     app: Router,
     store: Store,
+    now: fn() -> i64,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    fn new(now: fn() -> i64) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -61,7 +57,12 @@ impl Fixture {
             now,
         };
         let app = kiln_identity::router(cfg, store.clone()).unwrap();
-        Self { root, app, store }
+        Self {
+            root,
+            app,
+            store,
+            now,
+        }
     }
 
     fn db(&self) -> rusqlite::Connection {
@@ -138,7 +139,7 @@ fn remember(f: &Fixture, account: &str, raw: &str) {
                 Sha256::digest(raw.as_bytes()).to_vec(),
                 Sha256::digest(b"csrf").to_vec(),
                 account,
-                now() + 43_200
+                (f.now)() + 43_200
             ],
         )
         .unwrap();
@@ -215,8 +216,12 @@ fn version_one_migrates_to_two_and_leaves_the_redirect_empty() {
 
 #[tokio::test]
 async fn server_oauth_is_single_use_and_split_from_the_directory_token() {
+    static CLOCK: AtomicI64 = AtomicI64::new(1_000);
+    fn now() -> i64 {
+        CLOCK.load(Ordering::SeqCst)
+    }
     CLOCK.store(1_000, Ordering::SeqCst);
-    let f = Fixture::new();
+    let f = Fixture::new(now);
     let version: i64 = f
         .db()
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -764,8 +769,10 @@ async fn install_login(f: &Fixture, server: &str, directory: &str, peer: &str) -
 
 #[tokio::test]
 async fn two_servers_share_the_redirect_and_keep_their_owners() {
-    CLOCK.store(3_000, Ordering::SeqCst);
-    let f = Fixture::new();
+    fn now() -> i64 {
+        3_000
+    }
+    let f = Fixture::new(now);
     let owner_a = f
         .store
         .seed_account("github", "301", "owner-a", now())
@@ -864,8 +871,10 @@ async fn two_servers_share_the_redirect_and_keep_their_owners() {
 
 #[tokio::test]
 async fn an_expired_signed_in_session_does_not_issue_a_code() {
-    CLOCK.store(4_000, Ordering::SeqCst);
-    let f = Fixture::new();
+    fn now() -> i64 {
+        4_000
+    }
+    let f = Fixture::new(now);
     let owner = f
         .store
         .seed_account("github", "401", "owner", now())
@@ -906,8 +915,10 @@ async fn an_expired_signed_in_session_does_not_issue_a_code() {
 
 #[tokio::test]
 async fn a_provider_start_does_not_revive_an_expired_session() {
-    CLOCK.store(5_000, Ordering::SeqCst);
-    let f = Fixture::new();
+    fn now() -> i64 {
+        5_000
+    }
+    let f = Fixture::new(now);
     let owner = f
         .store
         .seed_account("github", "501", "owner", now())
@@ -1050,7 +1061,12 @@ mod lab {
             now: lab_now,
         };
         let app = kiln_identity::router(cfg, store.clone()).unwrap();
-        let fixture = Fixture { root, app, store };
+        let fixture = Fixture {
+            root,
+            app,
+            store,
+            now: lab_now,
+        };
         let install = json!({"redirect_uri": APP_OAUTH_REDIRECT}).to_string();
         let (status, _, body) = fixture
             .raw(
