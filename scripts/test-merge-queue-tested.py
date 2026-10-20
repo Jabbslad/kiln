@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""The merge queue skip is a tree match, and every other event still tests."""
+
+import importlib.util
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SCRIPT = ROOT / "scripts" / "merge_queue_tested.py"
+SHA_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+SHA_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+TREE_OTHER = "cccccccccccccccccccccccccccccccccccccccc"
+
+
+def load():
+    spec = importlib.util.spec_from_file_location("merge_queue_tested", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def git(repo, *args):
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def make_repo(repo: Path):
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test")
+    (repo / "README").write_text("kiln\n")
+    git(repo, "add", "README")
+    git(repo, "commit", "-q", "-m", "first")
+    first = git(repo, "rev-parse", "HEAD").stdout.strip()
+    git(repo, "commit", "-q", "--allow-empty", "-m", "second")
+    second = git(repo, "rev-parse", "HEAD").stdout.strip()
+    tree = git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+    return first, second, tree
+
+
+def runs(tree, event="merge_group", conclusion="success", sha=SHA_A):
+    def fetch(url, token):
+        assert token == "test-token"
+        if url.endswith(f"/commits/{sha}"):
+            return {"commit": {"tree": {"sha": tree}}}
+        return {
+            "workflow_runs": [
+                {"event": event, "conclusion": conclusion, "head_sha": sha},
+            ]
+        }
+
+    return fetch
+
+
+class MergeQueueTestedTests(unittest.TestCase):
+    def test_same_tree_on_a_new_commit_skips_main_tests(self):
+        module = load()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            first, second, tree = make_repo(repo)
+            self.assertNotEqual(first, second)
+            self.assertEqual(git(repo, "rev-parse", f"{first}^{{tree}}").stdout.strip(), tree)
+            self.assertTrue(
+                module.decide(
+                    {
+                        "GITHUB_EVENT_NAME": "push",
+                        "GITHUB_REF": "refs/heads/main",
+                        "GITHUB_REPOSITORY": "Jabbslad/kiln",
+                        "GITHUB_TOKEN": "test-token",
+                        "GITHUB_API_URL": "https://api.github.com",
+                    },
+                    runs(tree),
+                    repo,
+                )
+            )
+
+    def test_a_different_tree_still_runs_tests(self):
+        module = load()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            make_repo(repo)
+            self.assertFalse(
+                module.decide(
+                    _main_push(),
+                    runs(TREE_OTHER),
+                    repo,
+                )
+            )
+
+    def test_pull_request_tag_and_dispatch_ignore_a_matching_tree(self):
+        module = load()
+        calls = []
+
+        def fetch(url, token):
+            calls.append(url)
+            raise AssertionError(url)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            make_repo(repo)
+            for environ in (
+                {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_REF": "refs/pull/1/merge"},
+                {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/tags/v1.2.3"},
+                {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main"},
+                {"GITHUB_EVENT_NAME": "merge_group", "GITHUB_REF": "refs/heads/gh-readonly-queue/main/pr-1"},
+            ):
+                self.assertFalse(module.decide(environ, fetch, repo))
+        self.assertEqual(calls, [])
+
+    def test_failed_or_non_queue_runs_do_not_count(self):
+        module = load()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            _first, _second, tree = make_repo(repo)
+            for event, conclusion in (
+                ("merge_group", "failure"),
+                ("pull_request", "success"),
+                ("push", "success"),
+            ):
+                self.assertFalse(module.decide(_main_push(), runs(tree, event, conclusion), repo))
+
+    def test_lookup_failure_runs_tests_and_exits_zero(self):
+        env = os.environ.copy()
+        env.update(_main_push())
+        output = Path(tempfile.mkdtemp()) / "output"
+        env["GITHUB_OUTPUT"] = str(output)
+        env["GITHUB_API_URL"] = "https://127.0.0.1:9"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            make_repo(repo)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT)],
+                cwd=repo,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("skip_tests=false", result.stdout)
+        self.assertEqual(output.read_text(), "skip_tests=false\n")
+        self.assertNotIn("test-token", result.stderr)
+
+    def test_pull_request_process_does_not_need_a_token(self):
+        env = os.environ.copy()
+        env["GITHUB_EVENT_NAME"] = "pull_request"
+        env["GITHUB_REF"] = "refs/pull/8/merge"
+        env.pop("GITHUB_TOKEN", None)
+        output = Path(tempfile.mkdtemp()) / "output"
+        env["GITHUB_OUTPUT"] = str(output)
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT)],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output.read_text(), "skip_tests=false\n")
+
+
+def _main_push():
+    return {
+        "GITHUB_EVENT_NAME": "push",
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_REPOSITORY": "Jabbslad/kiln",
+        "GITHUB_TOKEN": "test-token",
+        "GITHUB_API_URL": "https://api.github.com",
+    }
+
+
+if __name__ == "__main__":
+    unittest.main()
