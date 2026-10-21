@@ -1228,19 +1228,13 @@ fn draft_place(
     event: &str,
     tag: bool,
     reuse_result: &str,
-    mode: &str,
+    _mode: &str,
     packages_ok: bool,
 ) -> &'static str {
-    if event != "push" || !tag || reuse_result == "cancelled" {
+    if event != "push" || tag || reuse_result == "cancelled" || !packages_ok {
         return "";
     }
-    if reuse_result == "success" && mode == "reuse" {
-        return "reused";
-    }
-    if packages_ok {
-        return "packages";
-    }
-    ""
+    "auto"
 }
 
 fn job_graph() -> Vec<Job> {
@@ -1318,12 +1312,12 @@ fn job_graph() -> Vec<Job> {
 
 fn expected_jobs() -> Vec<Job> {
     vec![
-        ("tag reuse", false, false, "reused"),
-        ("tag no match", true, true, "packages"),
-        ("tag error", true, true, "packages"),
-        ("tag upload error", true, true, "packages"),
-        ("tag timeout", true, true, "packages"),
-        ("main", true, true, ""),
+        ("tag reuse", false, false, ""),
+        ("tag no match", true, true, ""),
+        ("tag error", true, true, ""),
+        ("tag upload error", true, true, ""),
+        ("tag timeout", true, true, ""),
+        ("main", true, true, "auto"),
         ("code pr", false, true, ""),
         ("docs pr", false, false, ""),
         ("plain dispatch", true, true, ""),
@@ -1905,9 +1899,9 @@ fn test_attest_signs_the_archives_a_tag_publishes() {
         assert!(expr.contains(result), "{result}");
     }
     assert!(expr.contains("github.ref == 'refs/heads/main'"));
-    assert!(expr.contains("startsWith(github.ref, 'refs/tags/v')"));
+    assert!(!expr.contains("startsWith(github.ref, 'refs/tags/v')"));
     assert!(attest_runs(&expr, "push", "refs/heads/main"));
-    assert!(attest_runs(&expr, "push", "refs/tags/v0.4.11"));
+    assert!(!attest_runs(&expr, "push", "refs/tags/v0.4.11"));
     assert!(attest_runs(&expr, "workflow_dispatch", "refs/heads/main"));
     assert!(
         !attest_runs(&expr, "workflow_dispatch", "refs/heads/feature"),
@@ -1951,10 +1945,8 @@ fn test_workflow_keeps_drafts_and_does_not_move_tags() {
     assert!(text.contains("dry_run:"));
     assert!(text.contains("needs.reuse.outputs.mode == 'fallback'"));
     let draft_if = job_if_expression(&text, "draft-release");
-    assert!(
-        draft_if
-            .contains("(needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse')")
-    );
+    assert!(draft_if.contains("needs.release-plan.outputs.release == 'true'"));
+    assert!(draft_if.contains("github.ref == 'refs/heads/main'"));
     // A trailing `\` in a string literal drops the next line's leading
     // whitespace, so the fixture is joined from explicit lines.
     let step_only = [
@@ -1973,7 +1965,11 @@ fn test_workflow_keeps_drafts_and_does_not_move_tags() {
         !job_if_expression(&step_only, "draft-release").contains("needs.reuse.result == 'success'")
     );
     let reuse_guard = "needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'";
-    assert!(step_if_expression(&text, "draft-release", "name: reused-dist").contains(reuse_guard));
+    assert!(
+        !job_body(&text, "draft-release")
+            .join("\n")
+            .contains("name: reused-dist")
+    );
     assert!(job_if_expression(&text, "dry-run-assets").contains(reuse_guard));
     let sibling = [
         "  draft-release:",
@@ -1998,9 +1994,8 @@ fn test_workflow_keeps_drafts_and_does_not_move_tags() {
             .count(),
         3
     );
-    assert!(
-        text.contains("needs.reuse.result != 'success' || needs.reuse.outputs.mode != 'reuse'")
-    );
+    assert!(text.contains("needs.version-guard.outputs.stamped == 'true'"));
+    assert!(text.contains("needs.version-guard.outputs.stamped != 'true'"));
     assert_eq!(
         text.matches("!startsWith(github.ref, 'refs/tags/v')")
             .count(),

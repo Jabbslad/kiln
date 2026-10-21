@@ -46,7 +46,7 @@ fn test_deploy_is_manual_from_main() {
     assert!(text.contains("name: Install the release\n"));
     let caller = workflow("build.yml");
     assert!(!caller.contains("types: [published]"));
-    assert!(caller.contains("tag: ${{ github.ref_name }}"));
+    assert!(caller.contains("tag: ${{ needs.release-plan.outputs.tag }}"));
     let docs = read_repo("docs/releases.md");
     assert!(docs.contains("Publishing a release runs"));
     assert!(!docs.contains("Publishing a release does not start it."));
@@ -154,6 +154,40 @@ fn test_guard_allows_main_dispatch_and_a_tag_release() {
         ],
     );
     assert!(called.status.success(), "{}", called.stderr);
+    let main_push = run_guard(
+        "deploy",
+        &[
+            ("GITHUB_EVENT_NAME", "push"),
+            ("GITHUB_REPOSITORY", "Jabbslad/kiln"),
+            ("GITHUB_REF", "refs/heads/main"),
+            ("KILN_RELEASE_TAG", "v0.4.20"),
+        ],
+    );
+    assert!(main_push.status.success(), "{}", main_push.stderr);
+    let main_call = run_guard(
+        "deploy",
+        &[
+            ("GITHUB_EVENT_NAME", "workflow_call"),
+            ("GITHUB_REPOSITORY", "Jabbslad/kiln"),
+            ("GITHUB_REF", "refs/heads/main"),
+            ("TAG", "v0.4.20"),
+        ],
+    );
+    assert!(main_call.status.success(), "{}", main_call.stderr);
+    let bare_main = run_guard(
+        "deploy",
+        &[
+            ("GITHUB_EVENT_NAME", "push"),
+            ("GITHUB_REPOSITORY", "Jabbslad/kiln"),
+            ("GITHUB_REF", "refs/heads/main"),
+        ],
+    );
+    assert!(!bare_main.status.success(), "{}", bare_main.stderr);
+    assert!(
+        bare_main.stderr.contains("stable tag"),
+        "{}",
+        bare_main.stderr
+    );
     let branch = run_guard(
         "deploy",
         &[
@@ -642,6 +676,8 @@ fn run_guard(mode: &str, env: &[(&str, &str)]) -> Captured {
     command.env_remove("GITHUB_EVENT_NAME");
     command.env_remove("GITHUB_REF");
     command.env_remove("GITHUB_REPOSITORY");
+    command.env_remove("KILN_RELEASE_TAG");
+    command.env_remove("TAG");
     for (key, value) in env {
         command.env(key, value);
     }

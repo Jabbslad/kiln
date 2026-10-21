@@ -334,7 +334,8 @@ fn test_queue_runs_checks_and_only_push_or_dispatch_packages() {
     );
     assert!(!package.contains("test-release"));
     assert!(package.contains("cargo xtask release client"));
-    assert!(text.contains("github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"));
+    assert!(text.contains("github.event_name == 'push' && github.ref == 'refs/heads/main'"));
+    assert!(!text.contains("github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"));
     assert!(text.contains("github.event.merge_group.base_sha"));
     assert!(text.contains("github.event.merge_group.head_sha"));
     assert!(text.contains("github.event_name != 'merge_group'"));
@@ -365,7 +366,7 @@ fn test_required_is_the_only_stable_check() {
     assert!(!block.lines().any(|line| line.starts_with("    name:")));
     assert!(!block.contains("server-package"));
     assert!(text.split("  draft-release:\n").nth(1).unwrap().contains(
-        "needs: [version-guard, server-check, reuse, server-package, client, dashboard, attest]"
+        "needs: [version-guard, release-plan, server-check, server-package, client, dashboard, attest]"
     ));
 }
 

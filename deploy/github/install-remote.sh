@@ -225,7 +225,5 @@ if [ "$before" != "$after" ]; then
   printf 'before:\n%s\nafter:\n%s\n' "$before" "$after" >&2
   exit 1
 fi
-identity_rc=0
-run_identity || identity_rc=$?
 [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] \
-  && [ "$smoke_rc" -eq 0 ] && [ "$dashboard_rc" -eq 0 ] && [ "$identity_rc" -eq 0 ]
+  && [ "$smoke_rc" -eq 0 ] && [ "$dashboard_rc" -eq 0 ]

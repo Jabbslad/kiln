@@ -149,50 +149,75 @@ atomic_copy() {
 }
 
 loopback_ok() {
-  local i=0 body code
+  local log_probe=${1:-} i=0 body code phrase=missing
   while [ "$i" -lt 5 ]; do
     body=$(mktemp)
     code=$(curl --silent --show-error --proto '=http' --proto-redir '=http' --max-time 10 \
       --output "$body" --write-out '%{http_code}' \
       http://127.0.0.1:8091/login || true)
-    if [ "$code" = 200 ] && grep -q 'Light the way in.' "$body"; then
-      rm -f "$body"
-      return 0
+    phrase=missing
+    if grep -q 'Light the way in.' "$body"; then
+      phrase=found
     fi
     rm -f "$body"
+    if [ "$code" = 200 ] && [ "$phrase" = found ]; then
+      if [ "$log_probe" = log ]; then
+        printf 'identity probe loopback: status=%s phrase=%s\n' "$code" "$phrase"
+      fi
+      return 0
+    fi
     i=$((i + 1))
     if [ "$i" -lt 5 ]; then
       sleep 1
     fi
   done
+  if [ "$log_probe" = log ]; then
+    printf 'identity probe loopback: status=%s phrase=%s\n' "${code:-000}" "$phrase"
+  fi
   return 1
 }
 
-public_ok() {
-  local body code hdr
+public_login_ok() {
+  local body code phrase=missing
   body=$(mktemp)
   code=$(curl --silent --show-error --proto '=https' --proto-redir '=https' --max-time 10 \
     --output "$body" --write-out '%{http_code}' \
     https://dark-forge.dev/login || true)
-  if [ "$code" != 200 ] || ! grep -q 'Light the way in.' "$body"; then
-    rm -f "$body"
-    return 1
+  if grep -q 'Light the way in.' "$body"; then
+    phrase=found
   fi
   rm -f "$body"
+  printf 'identity probe public: status=%s phrase=%s\n' "${code:-000}" "$phrase"
+  [ "$code" = 200 ] && [ "$phrase" = found ]
+}
+
+app_login_ok() {
+  local code hdr oauth=no challenge=absent
   hdr=$(mktemp)
   code=$(curl --silent --show-error --proto '=https' --proto-redir '=https' --max-redirs 0 --max-time 10 \
     -D "$hdr" --output /dev/null --write-out '%{http_code}' \
     https://app.dark-forge.dev/login || true)
-  if [ "$code" = 303 ] && grep -qi 'dark-forge.dev/oauth/server' "$hdr" && grep -q 'code_challenge_method=S256' "$hdr"; then
-    rm -f "$hdr"
-    return 0
+  if grep -qi '/oauth/server' "$hdr"; then
+    oauth=yes
+  fi
+  if grep -q 'code_challenge_method=S256' "$hdr"; then
+    challenge=S256
   fi
   rm -f "$hdr"
-  return 1
+  printf 'identity probe app: status=%s location_oauth_server=%s code_challenge_method=%s\n' \
+    "${code:-000}" "$oauth" "$challenge"
+  [ "$code" = 303 ] && [ "$oauth" = yes ] && [ "$challenge" = S256 ]
 }
 
 probe_ok() {
-  loopback_ok && public_ok
+  local have
+  have=$(read_version "$live" || true)
+  if [ "$have" = "$version" ]; then
+    printf 'identity probe version: match %s\n' "$version"
+  else
+    printf 'identity probe version: mismatch have=%s want=%s\n' "${have:-unknown}" "$version"
+  fi
+  loopback_ok log && public_login_ok && app_login_ok
 }
 
 retire_marker() {
@@ -243,12 +268,46 @@ if [ "$order" = newer ]; then
   fail "refusing downgrade from $installed to $version"
 fi
 
-if cmp -s "$package" "$live"; then
+mask_slot() {
+  local src=$1 dest=$2 matches count offset
+  cp -- "$src" "$dest"
+  matches=$(LC_ALL=C grep -a -o -b -F 'KILNRELSLOT=' "$dest" || true)
+  if [ -z "$matches" ]; then
+    return 0
+  fi
+  count=$(printf '%s\n' "$matches" | wc -l | awk '{ print $1 }')
+  if [ "$count" != 1 ]; then
+    return 1
+  fi
+  offset=${matches%%:*}
+  case $offset in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  dd if=/dev/zero of="$dest" bs=1 seek=$((offset + 12)) count=32 conv=notrunc status=none
+}
+
+slot_equal() {
+  local a b
+  a=$(mktemp)
+  b=$(mktemp)
+  if ! mask_slot "$1" "$a" || ! mask_slot "$2" "$b"; then
+    rm -f "$a" "$b"
+    return 1
+  fi
+  if cmp -s "$a" "$b"; then
+    rm -f "$a" "$b"
+    return 0
+  fi
+  rm -f "$a" "$b"
+  return 1
+}
+
+if slot_equal "$package" "$live"; then
   if ! process_matches; then
     systemctl restart kiln-identity.service
+    probe_ok || fail 'identity probe failed'
   fi
-  probe_ok || fail 'identity probe failed'
-  printf 'identity %s\n' "$version"
+  printf 'identity unchanged %s\n' "$version"
   exit 0
 fi
 

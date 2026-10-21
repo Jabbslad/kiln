@@ -1,0 +1,6 @@
+docs/runbooks/2026-10-19-public-door.md
+docs/releases.md
+README.md
+web/README.md
+AGENTS.md
+docs/picture.png

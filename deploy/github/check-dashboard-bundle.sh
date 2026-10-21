@@ -12,17 +12,20 @@ archive=${1:?usage: check-dashboard-bundle.sh ARCHIVE}
 
 expected=$(
   tar -xOzf "$archive" index.html 2>/dev/null \
+    | tr -d '\r' \
     | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' \
     | head -1
 )
 [ -n "$expected" ] || fail 'release index.html has no /assets/index-*.js script'
 bundle=${expected#/assets/}
-tar -tzf "$archive" | grep -Fxq "assets/${bundle}" \
-  || fail "release archive is missing assets/${bundle}"
+if ! tar -xOzf "$archive" "assets/${bundle}" >/dev/null 2>&1; then
+  fail "release archive is missing assets/${bundle}"
+fi
 
 if [ -n "${KILN_DASHBOARD_LIVE_HTML:-}" ]; then
   live=$(
-    grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' "$KILN_DASHBOARD_LIVE_HTML" \
+    tr -d '\r' <"$KILN_DASHBOARD_LIVE_HTML" \
+      | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' \
       | head -1
   )
 else
@@ -32,7 +35,7 @@ else
       --proto '=https' --proto-redir '=https' --max-time 30 \
       "${origin}/"
   )
-  live=$(printf '%s' "$body" | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' | head -1)
+  live=$(printf '%s' "$body" | tr -d '\r' | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' | head -1)
 fi
 
 [ -n "$live" ] || fail 'live dashboard HTML has no /assets/index-*.js script'
