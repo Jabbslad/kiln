@@ -28,6 +28,7 @@ pub fn attest_violations(workflow: &str) -> Vec<String> {
             git_ref,
             cancelled: false,
             needs_success: true,
+            jobs: None,
         };
         match parsed.eval(&ctx) {
             Ok(actual) if actual == *allowed => {}
@@ -38,6 +39,282 @@ pub fn attest_violations(workflow: &str) -> Vec<String> {
         }
     }
     violations
+}
+
+struct Gate {
+    name: &'static str,
+    event: &'static str,
+    git_ref: &'static str,
+    cancelled: bool,
+    changes: &'static str,
+    heavy: &'static str,
+    reuse: &'static str,
+    mode: &'static str,
+    proved: &'static str,
+    server_check: &'static str,
+    packages: &'static str,
+    want_publish: bool,
+    want_server_check: bool,
+}
+
+const PUBLISH_GATES: &[Gate] = &[
+    Gate {
+        name: "reuse path",
+        event: "push",
+        git_ref: "refs/tags/v0.4.14",
+        cancelled: false,
+        changes: "success",
+        heavy: "true",
+        reuse: "success",
+        mode: "reuse",
+        proved: "success",
+        server_check: "skipped",
+        packages: "skipped",
+        want_publish: true,
+        want_server_check: false,
+    },
+    Gate {
+        name: "reuse path with a failed tag server-check",
+        event: "push",
+        git_ref: "refs/tags/v0.4.14",
+        cancelled: false,
+        changes: "success",
+        heavy: "true",
+        reuse: "success",
+        mode: "reuse",
+        proved: "success",
+        server_check: "failure",
+        packages: "skipped",
+        want_publish: true,
+        want_server_check: false,
+    },
+    Gate {
+        name: "reuse path without server-check proof",
+        event: "push",
+        git_ref: "refs/tags/v0.4.14",
+        cancelled: false,
+        changes: "success",
+        heavy: "true",
+        reuse: "success",
+        mode: "reuse",
+        proved: "",
+        server_check: "skipped",
+        packages: "skipped",
+        want_publish: false,
+        want_server_check: true,
+    },
+    Gate {
+        name: "rebuild path",
+        event: "push",
+        git_ref: "refs/tags/v0.4.14",
+        cancelled: false,
+        changes: "success",
+        heavy: "true",
+        reuse: "success",
+        mode: "fallback",
+        proved: "",
+        server_check: "skipped",
+        packages: "success",
+        want_publish: false,
+        want_server_check: true,
+    },
+    Gate {
+        name: "rebuild path with server-check",
+        event: "push",
+        git_ref: "refs/tags/v0.4.14",
+        cancelled: false,
+        changes: "success",
+        heavy: "true",
+        reuse: "success",
+        mode: "fallback",
+        proved: "",
+        server_check: "success",
+        packages: "success",
+        want_publish: true,
+        want_server_check: true,
+    },
+    Gate {
+        name: "rebuild path with a failed package",
+        event: "push",
+        git_ref: "refs/tags/v0.4.14",
+        cancelled: false,
+        changes: "success",
+        heavy: "true",
+        reuse: "failure",
+        mode: "",
+        proved: "",
+        server_check: "success",
+        packages: "failure",
+        want_publish: false,
+        want_server_check: true,
+    },
+    Gate {
+        name: "cancelled tag",
+        event: "push",
+        git_ref: "refs/tags/v0.4.14",
+        cancelled: true,
+        changes: "success",
+        heavy: "true",
+        reuse: "success",
+        mode: "reuse",
+        proved: "success",
+        server_check: "skipped",
+        packages: "skipped",
+        want_publish: false,
+        want_server_check: false,
+    },
+    Gate {
+        name: "main push",
+        event: "push",
+        git_ref: "refs/heads/main",
+        cancelled: false,
+        changes: "success",
+        heavy: "true",
+        reuse: "skipped",
+        mode: "",
+        proved: "",
+        server_check: "success",
+        packages: "success",
+        want_publish: false,
+        want_server_check: true,
+    },
+    Gate {
+        name: "docs pull request",
+        event: "pull_request",
+        git_ref: "refs/pull/1/merge",
+        cancelled: false,
+        changes: "success",
+        heavy: "false",
+        reuse: "skipped",
+        mode: "",
+        proved: "",
+        server_check: "skipped",
+        packages: "skipped",
+        want_publish: false,
+        want_server_check: false,
+    },
+    Gate {
+        name: "code pull request",
+        event: "pull_request",
+        git_ref: "refs/pull/2/merge",
+        cancelled: false,
+        changes: "success",
+        heavy: "true",
+        reuse: "skipped",
+        mode: "",
+        proved: "",
+        server_check: "success",
+        packages: "skipped",
+        want_publish: false,
+        want_server_check: true,
+    },
+];
+
+pub fn publish_server_check_violations(workflow: &str) -> Vec<String> {
+    let Some(publish_expr) = job_if(workflow, "draft-release") else {
+        return vec!["draft-release job has no if".to_string()];
+    };
+    let Some(server_expr) = job_if(workflow, "server-check") else {
+        return vec!["server-check job has no if".to_string()];
+    };
+    let publish = match parse_expr(&bare_expr(&publish_expr)) {
+        Ok(parsed) => parsed,
+        Err(error) => return vec![format!("draft-release if cannot be checked: {error}")],
+    };
+    let server = match parse_expr(&bare_expr(&server_expr)) {
+        Ok(parsed) => parsed,
+        Err(error) => return vec![format!("server-check if cannot be checked: {error}")],
+    };
+    let mut violations = Vec::new();
+    for case in PUBLISH_GATES {
+        let changes_outputs = [("heavy", case.heavy)];
+        let reuse_outputs = [("mode", case.mode), ("server_check", case.proved)];
+        let jobs = [
+            (
+                "changes",
+                JobState {
+                    result: case.changes,
+                    outputs: &changes_outputs,
+                },
+            ),
+            (
+                "reuse",
+                JobState {
+                    result: case.reuse,
+                    outputs: &reuse_outputs,
+                },
+            ),
+            (
+                "server-check",
+                JobState {
+                    result: case.server_check,
+                    outputs: &[],
+                },
+            ),
+            (
+                "server-package",
+                JobState {
+                    result: case.packages,
+                    outputs: &[],
+                },
+            ),
+            (
+                "client",
+                JobState {
+                    result: case.packages,
+                    outputs: &[],
+                },
+            ),
+            (
+                "dashboard",
+                JobState {
+                    result: case.packages,
+                    outputs: &[],
+                },
+            ),
+            (
+                "attest",
+                JobState {
+                    result: case.packages,
+                    outputs: &[],
+                },
+            ),
+        ];
+        let ctx = Ctx {
+            event: case.event,
+            git_ref: case.git_ref,
+            cancelled: case.cancelled,
+            needs_success: false,
+            jobs: Some(&jobs),
+        };
+        match publish.eval(&ctx) {
+            Ok(actual) if actual == case.want_publish => {}
+            Ok(actual) => violations.push(format!(
+                "{}: publish is {actual}, want {}",
+                case.name, case.want_publish
+            )),
+            Err(error) => violations.push(format!("{}: publish if: {error}", case.name)),
+        }
+        match server.eval(&ctx) {
+            Ok(actual) if actual == case.want_server_check => {}
+            Ok(actual) => violations.push(format!(
+                "{}: server-check is {actual}, want {}",
+                case.name, case.want_server_check
+            )),
+            Err(error) => violations.push(format!("{}: server-check if: {error}", case.name)),
+        }
+    }
+    violations
+}
+
+fn bare_expr(expr: &str) -> String {
+    let trimmed = expr.trim();
+    let trimmed = trimmed.strip_prefix("${{").unwrap_or(trimmed).trim();
+    trimmed
+        .strip_suffix("}}")
+        .unwrap_or(trimmed)
+        .trim()
+        .to_string()
 }
 
 pub fn secret_violations(workflow: &str) -> Vec<String> {
@@ -76,11 +353,17 @@ pub fn download_violations(script: &str) -> Vec<String> {
     violations
 }
 
+struct JobState<'a> {
+    result: &'a str,
+    outputs: &'a [(&'a str, &'a str)],
+}
+
 struct Ctx<'a> {
     event: &'a str,
     git_ref: &'a str,
     cancelled: bool,
     needs_success: bool,
+    jobs: Option<&'a [(&'a str, JobState<'a>)]>,
 }
 
 enum Expr {
@@ -95,7 +378,8 @@ enum Expr {
 enum Value {
     Event,
     Ref,
-    Needs,
+    NeedResult(String),
+    NeedOutput(String, String),
     Lit(String),
 }
 
@@ -119,9 +403,45 @@ fn eval_eq(left: &Value, right: &Value, ctx: &Ctx<'_>) -> Result<bool, String> {
     match (left, right) {
         (Value::Event, Value::Lit(expected)) => Ok(ctx.event == expected),
         (Value::Ref, Value::Lit(expected)) => Ok(ctx.git_ref == expected),
-        (Value::Needs, Value::Lit(expected)) if expected == "success" => Ok(ctx.needs_success),
+        (Value::NeedResult(job), Value::Lit(expected)) => match ctx.jobs {
+            Some(jobs) => Ok(job_result(jobs, job) == expected),
+            None if expected == "success" => Ok(ctx.needs_success),
+            None => Err(format!(
+                "needs.{job}.result is outside the checked comparison"
+            )),
+        },
+        (Value::NeedOutput(job, name), Value::Lit(expected)) => {
+            let Some(jobs) = ctx.jobs else {
+                return Err(format!("needs.{job}.outputs.{name} needs a job map"));
+            };
+            Ok(job_output(jobs, job, name) == expected)
+        }
         _ => Err("comparison is outside the attest event check".to_string()),
     }
+}
+
+fn job_state<'a>(jobs: &'a [(&'a str, JobState<'a>)], name: &str) -> Option<&'a JobState<'a>> {
+    jobs.iter()
+        .find(|(job, _)| *job == name)
+        .map(|(_, state)| state)
+}
+
+fn job_result<'a>(jobs: &'a [(&'a str, JobState<'a>)], name: &str) -> &'a str {
+    job_state(jobs, name)
+        .map(|state| state.result)
+        .unwrap_or("")
+}
+
+fn job_output<'a>(jobs: &'a [(&'a str, JobState<'a>)], job: &str, name: &str) -> &'a str {
+    job_state(jobs, job)
+        .and_then(|state| {
+            state
+                .outputs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| *value)
+        })
+        .unwrap_or("")
 }
 
 fn job_if(workflow: &str, job: &str) -> Option<String> {
@@ -266,11 +586,20 @@ impl<'a> Parser<'a> {
         }
         let left = named_value(&ident)?;
         self.skip();
-        if !self.eat("==") {
+        let negated = if self.eat("!=") {
+            true
+        } else if self.eat("==") {
+            false
+        } else {
             return Err(format!("unsupported expression {ident}"));
-        }
+        };
         let right = self.parse_value()?;
-        Ok(Expr::Eq(left, right))
+        let eq = Expr::Eq(left, right);
+        if negated {
+            Ok(Expr::Not(Box::new(eq)))
+        } else {
+            Ok(eq)
+        }
     }
 
     fn parse_value(&mut self) -> Result<Value, String> {
@@ -349,12 +678,21 @@ fn named_value(ident: &str) -> Result<Value, String> {
     if ident == "github.ref" {
         return Ok(Value::Ref);
     }
-    if let Some(name) = ident
-        .strip_prefix("needs.")
-        .and_then(|rest| rest.strip_suffix(".result"))
-        && !name.is_empty()
-    {
-        return Ok(Value::Needs);
+    if let Some(rest) = ident.strip_prefix("needs.") {
+        if let Some((job, output)) = rest.split_once(".outputs.")
+            && !job.is_empty()
+            && !output.is_empty()
+            && !job.contains('.')
+            && !output.contains('.')
+        {
+            return Ok(Value::NeedOutput(job.to_string(), output.to_string()));
+        }
+        if let Some(name) = rest.strip_suffix(".result")
+            && !name.is_empty()
+            && !name.contains('.')
+        {
+            return Ok(Value::NeedResult(name.to_string()));
+        }
     }
     Err(format!("unknown name {ident}"))
 }
@@ -1193,6 +1531,7 @@ pub fn repin_violations(workflow: &str, files: &[(&str, &str)]) -> Vec<String> {
                             git_ref,
                             cancelled: *cancelled,
                             needs_success: *needs_success,
+                            jobs: None,
                         };
                         match parsed.eval(&ctx) {
                             Ok(actual) if actual == *allowed => {}
