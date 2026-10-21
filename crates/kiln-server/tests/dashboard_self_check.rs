@@ -44,7 +44,7 @@ fn passes_when_running_box_cpu_is_null_and_host_metrics_are_numeric() {
 
 #[test]
 fn rejects_null_host_disk() {
-    let body = br#"{"schema_version":1,"observed_at":"2026-10-21T12:00:01Z","workspace":"local","host":{"name":"local","state":"online","metrics":{"cpu_percent":1.0,"memory_bytes":5000,"disk_bytes":null,"disk_total_bytes":8000}},"boxes":[],"templates":[],"checkpoints":[],"operations":[]}"#;
+    let body = br#"{"schema_version":1,"version":"0.4.17","observed_at":"2026-10-21T12:00:01Z","workspace":"local","host":{"name":"local","state":"online","metrics":{"cpu_percent":1.0,"memory_bytes":5000,"disk_bytes":null,"disk_total_bytes":8000}},"boxes":[],"templates":[],"checkpoints":[],"operations":[]}"#;
     let error = dashboard_check::parse_and_validate(body).unwrap_err();
     assert!(matches!(error, CheckError::HostDiskMissing));
 }

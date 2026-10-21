@@ -40,6 +40,7 @@ const timing = z.object({
 
 export const dashboardSchema = z.object({
   schema_version: z.literal(1),
+  version: z.string().min(1).optional(),
   observed_at: z.iso.datetime(),
   workspace: z.string().min(1),
   host: z.object({ name: z.string(), state: z.enum(['online', 'offline', 'unknown']), metrics }),

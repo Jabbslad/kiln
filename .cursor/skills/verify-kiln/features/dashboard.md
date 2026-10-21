@@ -26,7 +26,7 @@ Live mutations (not preview, host `online`): create box, pause, resume, stop (op
 
 ## Document
 
-`schema_version` is `1`. `observed_at` is UTC `YYYY-MM-DDTHH:MM:SSZ`. The gateway stamps `observed_at` and `workspace` after authentication. `Content-Type` contains `application/json`. `Cache-Control` is `no-store`.
+`schema_version` is `1`. Top-level `version` is the stamped server release (for example `0.4.17`); the gateway adds it when stamping the dashboard document. The web header shows `v` plus that value, or the build-stamped dashboard version when the field is absent. `observed_at` is UTC `YYYY-MM-DDTHH:MM:SSZ`. The gateway stamps `observed_at` and `workspace` after authentication. `Content-Type` contains `application/json`. `Cache-Control` is `no-store`.
 
 `workspace` is the enrollment server id on an enrolled server, else `local`. `host.name` matches.
 
@@ -52,6 +52,7 @@ A host body larger than 1 MiB makes the gateway return HTTP 502 with code `host_
 - Settings at `/settings` and the guide at `/docs`.
 - Explicit preview versus live authenticated console.
 - Sign out for the operate session.
+- Release version label in the console header (`web/src/kiln-version.ts`, `web/src/App.test.tsx`).
 - Access panel (SSH, HTTP preview, public access labelled unavailable).
 - Shared `trackOperation` polling and dashboard refresh after mutations.
 

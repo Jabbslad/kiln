@@ -188,6 +188,7 @@ mod tests {
     fn running_box_null_cpu_does_not_fail_host_gate() {
         let body = json!({
             "schema_version": 1,
+            "version": "0.4.17",
             "observed_at": "2026-10-21T12:00:01Z",
             "workspace": "local",
             "host": {

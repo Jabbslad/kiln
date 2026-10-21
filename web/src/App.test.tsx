@@ -19,6 +19,15 @@ function open(path = '/boxes?preview=1') {
   )
 }
 
+it('shows the server-reported version in the header', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockResolvedValue(Response.json({ ...previewDashboard, version: '0.4.99' })),
+  )
+  open('/boxes')
+  expect(await screen.findByText('v0.4.99')).toBeVisible()
+})
+
 it('keeps the public page independent of the host and makes preview an explicit choice', async () => {
   const request = vi.fn().mockRejectedValue(new Error('Host unavailable'))
   vi.stubGlobal('fetch', request)
