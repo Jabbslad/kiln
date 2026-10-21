@@ -39,6 +39,10 @@ if [ -f "$dir/installer.sh" ]; then
   install -m 0755 "$dir/installer.sh" "$extract/package/install.sh"
 fi
 [ -f "$extract/package/install.sh" ] || fail 'archive is missing install.sh'
+if [ "${KILN_INSTALL_CHECK_ONLY:-}" = 1 ]; then
+  printf 'server inputs %s\n' "$archive"
+  exit 0
+fi
 
 stamp() {
   if [ ! -d /run/systemd/system ]; then
