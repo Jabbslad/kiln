@@ -107,6 +107,7 @@ jobs:
           sh scripts/test-wait-main-run.sh
           sh scripts/test-tag-path-dry-run.sh
           sh scripts/test-tag-path-pr-stamp-order.sh
+          sh scripts/test-deploy-host-tools.sh
           sh scripts/test-check-dashboard-bundle.sh
           cargo test -p kiln-server --test dashboard_self_check --locked
           sh scripts/test-releasable.sh
@@ -243,6 +244,7 @@ jobs:
           sh scripts/test-wait-main-run.sh
           sh scripts/test-tag-path-dry-run.sh
           sh scripts/test-tag-path-pr-stamp-order.sh
+          sh scripts/test-deploy-host-tools.sh
           sh scripts/test-check-dashboard-bundle.sh
           cargo test -p kiln-server --test dashboard_self_check --locked
           sh scripts/test-releasable.sh
@@ -252,6 +254,7 @@ jobs:
           sh scripts/test-release-budget.sh
           sh scripts/test-check-dropped-platform.sh
           sh scripts/test-feature-map-guard.sh
+          sh scripts/test-check-pr-proof.sh
           sh scripts/test-operations-journal-version-sync.sh
           sh scripts/test-fmt.sh
           shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-bootstrap-pins.sh scripts/test-bootstrap-pins.sh scripts/test-caddy-endings.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
@@ -261,6 +264,7 @@ jobs:
             deploy/github/install-remote.sh deploy/github/install-identity.sh deploy/github/smoke.sh \
             deploy/github/check-dashboard-bundle.sh \
             scripts/test-check-dashboard-bundle.sh \
+            scripts/test-deploy-host-tools.sh \
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
             scripts/test-listener-restart.sh \
             scripts/test-wait-for-operations-journal-v2.sh \
