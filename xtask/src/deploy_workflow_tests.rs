@@ -692,8 +692,7 @@ fn run_deploy(
         write_release_asset(&assets, &server_name, &server_blob, bad_checksum);
         let identity_name = format!("kiln-identity-{tag}-x86_64-unknown-linux-gnu.tar.gz");
         let ver = tag.strip_prefix('v').unwrap_or(tag);
-        let identity_json =
-            format!(r#"{{"target":"x86_64-unknown-linux-gnu","version":"{ver}"}}"#);
+        let identity_json = format!(r#"{{"target":"x86_64-unknown-linux-gnu","version":"{ver}"}}"#);
         let identity_script = format!("#!/bin/sh\nprintf 'kiln-identity {ver}\n'\n");
         let identity_blob = tar_bytes(&[
             ("release.json", &identity_json),
@@ -713,11 +712,7 @@ fn run_deploy(
     }
     write_executable(
         &tmp.path().join("curl"),
-        &curl_stub(
-            &log,
-            releases,
-            archive_installer.map(|_| assets.as_path()),
-        ),
+        &curl_stub(&log, releases, archive_installer.map(|_| assets.as_path())),
     );
     let mut command = Command::new("bash");
     command.arg("deploy/github/deploy.sh");
