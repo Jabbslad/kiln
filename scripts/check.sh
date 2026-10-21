@@ -58,6 +58,9 @@ run_check() {
 run_check fmt sh scripts/fmt.sh --check
 run_check install-caddy bash scripts/install-caddy.sh
 run_check socket-tools bash scripts/ci/ensure-socket-tools.sh
+if ! command -v shellcheck >/dev/null 2>&1; then
+  run_check shellcheck-install sh -c 'sudo apt-get update && sudo apt-get install -y shellcheck'
+fi
 token=$(github_token)
 run_check docs-check env GITHUB_TOKEN="$token" bash scripts/ci/run-docs-check.sh
 run_check server-check env GITHUB_TOKEN="$token" bash scripts/ci/run-server-check.sh
