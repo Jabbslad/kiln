@@ -317,6 +317,23 @@ fn test_queue_runs_checks_and_only_push_or_dispatch_packages() {
     assert!(text.contains(
         "(github.event_name == 'push' || github.event_name == 'workflow_dispatch') && matrix.target == 'aarch64-apple-darwin'"
     ));
+    assert!(text.contains(
+        "if: runner.os == 'Windows' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'\n        run: cargo xtask test-release\n"
+    ));
+    let package = text
+        .split("      - name: Package client\n")
+        .nth(1)
+        .unwrap()
+        .split("      - uses:")
+        .next()
+        .unwrap();
+    assert!(
+        package.contains(
+            "if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'\n"
+        )
+    );
+    assert!(!package.contains("test-release"));
+    assert!(package.contains("cargo xtask release client"));
     assert!(text.contains("github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"));
     assert!(text.contains("github.event.merge_group.base_sha"));
     assert!(text.contains("github.event.merge_group.head_sha"));

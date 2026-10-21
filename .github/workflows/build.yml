@@ -393,10 +393,12 @@ jobs:
           cargo build --release --locked -p kiln-client --bin kiln --target ${{ matrix.target }}
           cargo xtask release-version check-binary --version "$VERSION" -- \
             target/${{ matrix.target }}/release/kiln${{ matrix.suffix }}
+      - name: Test release packaging
+        if: runner.os == 'Windows' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: cargo xtask test-release
       - name: Package client
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: |
-          cargo xtask test-release
           cargo xtask release client --version "$VERSION" --target ${{ matrix.target }} \
             --bin-dir target/${{ matrix.target }}/release --output dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
