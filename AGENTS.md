@@ -2,6 +2,8 @@
 
 Run `bash scripts/fmt.sh` before every push.
 
+For pull requests that change dashboard or CLI output, run `sh scripts/proof.sh` and attach the generated screenshots or CLI captures to the PR body (see `.cursor/skills/verify-kiln/features/proof.md`).
+
 After each completed iteration, verify the changes, commit, push, and publish a
 release through the existing GitHub release workflow. This is the
 owner's standing authorization; do not ask again for these delivery steps.

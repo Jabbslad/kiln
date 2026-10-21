@@ -120,7 +120,7 @@ sh scripts/test-check-dashboard-bundle.sh
 
 ## Driving it with Playwright
 
-Install the browser once: `npx playwright install chromium`. Set `KILN_SCREENSHOT_DIR` before `npm run test:browser`.
+Pull requests that change console output should attach rerunnable proof via `scripts/proof.sh` (see [proof.md](proof.md)). For ad-hoc verification, install the browser once: `npx playwright install chromium`. Set `KILN_SCREENSHOT_DIR` before `npm run test:browser`.
 
 ```sh
 cd web
