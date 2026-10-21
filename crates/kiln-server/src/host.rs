@@ -1,6 +1,6 @@
 use crate::{
     Failure,
-    journal::{Conflict, Journal},
+    journal::{Conflict, Journal, JournalFull},
 };
 use anyhow::{Result, ensure};
 use axum::{
@@ -319,6 +319,26 @@ impl Host {
     }
 }
 
+fn live_box_ids(runtime_dir: &FsPath) -> Result<Vec<String>> {
+    let boxes_dir = runtime_dir.join("boxes");
+    let Ok(entries) = fs::read_dir(&boxes_dir) else {
+        return Ok(Vec::new());
+    };
+    let mut ids = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if kiln_runtime::storage::valid_id(&id) && path.join("box.json").is_file() {
+            ids.push(id);
+        }
+    }
+    ids.sort();
+    Ok(ids)
+}
+
 fn read_box(runtime_dir: &FsPath, id: &str) -> Result<Option<BoxRecord>> {
     if !kiln_runtime::storage::valid_id(id) {
         return Ok(None);
@@ -561,7 +581,19 @@ async fn submit(
             "Eight operations are already in flight. No new operation was accepted.",
         )
     })?;
-    let accepted = db.accept(&request).map_err(Failure::internal)?;
+    let live_ids = live_box_ids(&host.runtime_dir).map_err(Failure::internal)?;
+    let live_refs: Vec<&str> = live_ids.iter().map(String::as_str).collect();
+    let accepted = db.accept(&request, &live_refs).map_err(|error| {
+        if error.is::<JournalFull>() {
+            Failure::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "journal_full",
+                "The operation journal is full after automatic retention. Archive this installation or delete old boxes, then retry.",
+            )
+        } else {
+            Failure::internal(error)
+        }
+    })?;
     let mut op = accepted.clone();
     drop(db);
     let worker_host = host.clone();
@@ -650,13 +682,16 @@ mod tests {
             .journal
             .lock()
             .unwrap()
-            .accept(&Submit {
-                id: "c".repeat(32),
-                action: Action::Create {
-                    template: "base".into(),
-                    name: "box".into(),
+            .accept(
+                &Submit {
+                    id: "c".repeat(32),
+                    action: Action::Create {
+                        template: "base".into(),
+                        name: "box".into(),
+                    },
                 },
-            })
+                &[],
+            )
             .unwrap();
         let _held: Vec<_> = (0..32)
             .map(|_| host.sessions.clone().try_acquire_owned().unwrap())

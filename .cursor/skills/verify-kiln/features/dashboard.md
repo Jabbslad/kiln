@@ -22,7 +22,7 @@ A missing credential or a bogus bearer is HTTP 401, code `unauthorized`, on the 
 
 `checkpoints` is an empty array. Metric fields are null. A box is listed only when the journal has its create row. Box `state` is `running`, `paused`, `stopped`, `failed`, `creating`, or `unknown`.
 
-Operations are the newest journal rows. `kiln-host` reads 100 rows ordered by `created_at` descending, then `id` (`crates/kiln-server/src/journal.rs`, `recent`). A row whose stored JSON does not parse is skipped. That skip happens after the 100-row read, so a corrupt row still uses a slot. An operation whose state is unknown is omitted. `kind` is `create` for a create row and `unknown` otherwise. `state` is `running`, `completed`, or `failed`. `detail` is the operation error text. Exec stdout and stderr are not copied into the document.
+Operations are the newest journal rows. `kiln-host` reads 100 rows ordered by `created_at` descending, then `id` (`crates/kiln-server/src/journal.rs`, `recent`). Automatic journal retention never removes a live box's create row, so pruning does not drop boxes from this document. A row whose stored JSON does not parse is skipped. That skip happens after the 100-row read, so a corrupt row still uses a slot. An operation whose state is unknown is omitted. `kind` is `create` for a create row and `unknown` otherwise. `state` is `running`, `completed`, or `failed`. `detail` is the operation error text. Exec stdout and stderr are not copied into the document.
 
 Error text that contains `/` or `\` is dropped (`crates/kiln-server/src/dashboard.rs`, `public_error`). On a box, `last_error` is null. On an operation, `detail` is empty.
 
