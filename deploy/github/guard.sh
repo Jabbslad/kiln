@@ -15,8 +15,16 @@ guard_github_event() {
       [ "${GITHUB_REF:-}" = "refs/heads/main" ] || fail 'manual runs only from main'
       ;;
     deploy:release|deploy:workflow_call|deploy:push)
-      printf '%s\n' "${GITHUB_REF:-}" | grep -Eq '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
-        || fail 'release runs only from a stable tag'
+      if printf '%s\n' "${GITHUB_REF:-}" | grep -Eq '^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'; then
+        return 0
+      fi
+      if [ "${GITHUB_REF:-}" = "refs/heads/main" ]; then
+        release_tag=${KILN_RELEASE_TAG:-${TAG:-}}
+        printf '%s\n' "$release_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+          || fail 'release runs only from a stable tag'
+        return 0
+      fi
+      fail 'release runs only from a stable tag'
       ;;
     *) fail "refusing event ${GITHUB_EVENT_NAME}" ;;
   esac

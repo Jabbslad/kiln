@@ -252,7 +252,7 @@ fn reuse_publish_does_not_need_server_check_and_rebuild_does() {
     assert!(
         stuck
             .iter()
-            .any(|violation| violation.contains("reuse path: publish is false")),
+            .any(|violation| violation.contains("main release: publish is false")),
         "{stuck:?}"
     );
 
@@ -261,7 +261,7 @@ fn reuse_publish_does_not_need_server_check_and_rebuild_does() {
     ));
     assert!(
         open.iter()
-            .any(|violation| { violation.contains("rebuild path: publish is true") }),
+            .any(|violation| violation.contains("main with a failed server-check: publish is true")),
         "{open:?}"
     );
 }
@@ -303,6 +303,30 @@ jobs:
             .iter()
             .any(|violation| violation.contains("draft-release finish")),
         "{named:?}"
+    );
+}
+
+#[test]
+fn release_jobs_have_a_pull_request_rehearsal() {
+    let workflow = read(&repo_root().join(".github/workflows/build.yml"));
+    let violations = ci_guards::rehearsal_violations(&workflow);
+    assert!(violations.is_empty(), "{violations:?}");
+    let bare = "\
+jobs:
+  version-guard:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - run: sh scripts/stamp-release-dist.sh
+  tag-path-dry-run:
+    if: github.event_name == 'pull_request'
+    steps:
+      - run: sh scripts/tag-path-dry-run.sh
+";
+    let hits = ci_guards::rehearsal_violations(bare);
+    assert!(
+        hits.iter()
+            .any(|violation| violation.contains("version-guard")),
+        "{hits:?}"
     );
 }
 

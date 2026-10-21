@@ -1,6 +1,6 @@
 #!/bin/sh
 # Rehearse the tag path against main's latest green packages.
-# The fake tag is v<patch+1>-dryrun and is never pushed. The stamp,
+# The fake tag is the next patch plus -dryrun and is never pushed. The stamp,
 # version-guard, draft-release, and deploy scripts accept only vX.Y.Z,
 # so they receive that version with the suffix removed.
 set -eu
@@ -12,6 +12,12 @@ fail() {
   printf 'tag-path-dry-run: %s\n' "$*" >&2
   exit 1
 }
+
+sh scripts/test-releasable.sh
+sh scripts/test-next-release-tag.sh
+sh scripts/test-plan-release.sh
+sh scripts/test-check-stamped-clients.sh
+sh scripts/test-release-budget.sh
 
 repo=${GH_REPO:-Jabbslad/kiln}
 case $repo in
@@ -32,8 +38,7 @@ printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{40}$' || fail 'no green main run'
 
 dist=$(mktemp -d)
 output=$(mktemp)
-bindir=$(mktemp -d)
-trap 'rm -rf "$dist" "$output" "$bindir"' EXIT
+trap 'rm -rf "$dist" "$output"' EXIT
 
 env -u REUSE_VERSION \
   GITHUB_OUTPUT="$output" \
@@ -49,25 +54,17 @@ mode=$(awk -F= '$1 == "mode" { print $2 }' "$output")
 printf '%s\n' "$from" | grep -Eq '^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$' \
   || fail "from-tag ${from}"
 
-rest=${from#v}
-major=${rest%%.*}
-tail=${rest#*.}
-minor=${tail%%.*}
-patch=${tail#*.}
-tag=$(printf 'v%s.%s.%s' "$major" "$minor" "$((patch + 1))")
+tags=$(git ls-remote --tags origin 'refs/tags/v*') || fail 'could not list tags'
+tag=$(printf '%s\n' "$tags" | sh scripts/next-release-tag.sh)
 dry_tag=${tag}-dryrun
 printf '%s\n' "$tag" | grep -Eq '^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$' \
   || fail "next tag ${tag}"
 printf '%s\n' "$dry_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-dryrun$' || fail "fake tag ${dry_tag}"
-[ "$tag" != "$from" ] || fail 'next tag did not advance'
-printf 'dry-run %s reuses %s as %s\n' "$dry_tag" "$from" "$tag"
+printf 'dry-run tag %s sha %s\n' "$tag" "$sha"
+printf 'dry-run release %s\n' "$tag"
 
 sh scripts/stamp-release-dist.sh "$dist" "$from" "$tag"
-
-archive="kiln-${tag}-x86_64-unknown-linux-gnu.tar.gz"
-(cd "$dist" && sha256sum -c "${archive}.sha256")
-tar -xzf "$dist/$archive" -C "$bindir" kiln
-cargo xtask release-version check-binary --version "$tag" -- "$bindir/kiln"
+sh scripts/check-stamped-clients.sh "$dist" "$tag"
 
 count=0
 for path in "$dist"/*.tar.gz "$dist"/*.zip; do
@@ -84,7 +81,7 @@ for path in "$dist"/*.tar.gz "$dist"/*.zip; do
   count=$((count + 1))
 done
 [ "$count" -gt 0 ] || fail 'no attest subjects'
-printf 'attest source-ref refs/tags/%s\n' "$tag"
+printf 'attest source-ref refs/heads/main\n'
 
 cargo xtask reuse-release finish --version "$tag" --dist "$dist"
 (cd "$dist" && sha256sum -c ./*.sha256)

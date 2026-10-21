@@ -467,9 +467,9 @@ Pushes to main run the package jobs and keep the archives as run artifacts for
 and does not upload packages. A documentation pull request runs the Python
 checks only. Use `gh run download RUN_ID --repo OWNER/NAME` for branch builds; do not
 confuse those with a reviewed release. The build workflow uses no credentials
-beyond the scoped GitHub Actions token and does not deploy a server. Public workflows/logs/artifacts
+beyond the scoped GitHub Actions token. A releasable push to main creates the next patch tag, publishes the release, and deploys it. Public workflows/logs/artifacts
 must not contain credentials or runtime data. Fork PRs use hosted runners and
-read-only permissions. Only the tag release job has contents-write permission.
+read-only permissions. The release-plan job and the draft-release job have contents-write permission.
 The attest job signs the package archives a tag publishes. A main push
 signs the archives a later tag reuses. A tag whose package jobs rebuild
 signs that rebuild. A manual run on main signs the archives it builds. A pull
@@ -477,26 +477,14 @@ request does not run the job. The job has `id-token` and attestations
 write, and it does not have contents write.
 A reused archive was signed on main, so verify with `gh attestation verify ARCHIVE --repo Jabbslad/kiln --cert-identity-regex '^https://github\.com/Jabbslad/kiln/\.github/workflows/build\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$'`, which accepts `refs/heads/main` or `refs/tags/vX.Y.Z` and rejects any other branch.
 
-For an approved release, push an annotated `vMAJOR.MINOR.PATCH` tag of the green
-main commit (`git tag -a vX.Y.Z -m "..."`). The workflow finds that commit's
-successful push of this workflow on main. It checks the run, the archive
-checksums, and build provenance when that commit's workflow emitted provenance.
-It then publishes that release from those archives. `install.sh` is rendered in the tag
-job from the archive checksums. The job publishes only after `sha256sum -c` and
-`gh attestation verify` succeed for every archive. A reused archive whose
-version already matches the tag is verified with `--source-ref refs/heads/main`.
-A reused archive stamped onto a different tag, and a fallback build, are
-verified with `--source-ref refs/tags/vX.Y.Z`. The identity regex is
+A push to main is releasable when the diff is not documentation only. The release-plan job reads the highest existing `vMAJOR.MINOR.PATCH` tag, including a tag that has no GitHub release, and chooses the next patch. It creates that lightweight tag on the push commit before the job returns. The same run stamps the packages it just built onto that tag, checks every shipped client, and publishes the release. `install.sh` is rendered in that job from the archive checksums. The job publishes only after `sha256sum -c` and
+`gh attestation verify` succeed for every archive. Attestations for this run are bound to `refs/heads/main`, so verification uses `--source-ref refs/heads/main`. The identity regex is
 `^https://github\.com/Jabbslad/kiln/\.github/workflows/build\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$`.
-If that run is missing, expired, or fails those checks, or the reuse job
-errors, the tag builds from scratch with the Rust, npm, and Playwright
-caches disabled. That fallback
-stamps the tag into the workspace version before it compiles. A tag that is
-not stable `vMAJOR.MINOR.PATCH` fails before compile. Branch and pull-request
+A documentation-only push does not create a tag. A tag push does not start this workflow. Branch and pull-request
 builds keep the committed workspace version. A local stamp still rewrites
 `Cargo.toml` and `Cargo.lock` when they differ. Do not commit that rewrite.
 When the jobs pass, the workflow publishes the release, including that filled
-`install.sh`. That tag run then calls `.github/workflows/deploy.yml`.
+`install.sh`. That same run then calls `.github/workflows/deploy.yml`.
 Reruns do not overwrite
 existing releases. Real KVM tests remain separate; ordinary CI tests do not prove
 host isolation, reboot persistence or installer success on a real server.
