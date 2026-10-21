@@ -1,6 +1,6 @@
 //! Portable, public management contract. No runtime records or host paths.
 pub mod auth;
-pub use kiln_protocol::{ExecRequest, ExecResult, SshReady, valid_ssh_public_key};
+pub use kiln_protocol::{ExecRequest, ExecResult, SshReady, release_version, valid_ssh_public_key};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_REQUEST_BYTES: usize = 128 * 1024;
@@ -8,8 +8,7 @@ pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const SSH_UPGRADE: &str = "kiln-ssh";
 pub const SSH_KEY_HEADER: &str = "x-kiln-ssh-key";
 
-/// Token bytes never appear in errors. On Windows, restrict the file's ACL to
-/// the current user; Unix additionally enforces owner-only mode here.
+/// Token bytes never appear in errors. Unix enforces owner-only mode here.
 pub fn read_token(path: &std::path::Path) -> std::io::Result<String> {
     use std::{
         fs,
@@ -304,6 +303,71 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn dashboard_operation_action_types_match_api_action_tags() {
+        use std::collections::BTreeSet;
+
+        let web_source = include_str!("../../../web/src/operationKinds.ts");
+        let marker = "export const OPERATION_ACTION_TYPES = [";
+        let rest = web_source
+            .split(marker)
+            .nth(1)
+            .expect("web operation action type list");
+        let inner = rest.split(']').next().expect("web operation action array");
+        let web: BTreeSet<String> = inner
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| entry.trim_matches(['\'', '"']).to_string())
+            .collect();
+
+        let samples = [
+            Action::Create {
+                template: "ubuntu".into(),
+                name: "box".into(),
+            },
+            Action::Pause { id: "a".repeat(32) },
+            Action::Resume { id: "a".repeat(32) },
+            Action::Stop {
+                id: "a".repeat(32),
+                force: false,
+            },
+            Action::Start { id: "a".repeat(32) },
+            Action::Delete { id: "a".repeat(32) },
+            Action::Exec {
+                id: "a".repeat(32),
+                request: ExecRequest {
+                    argv: vec!["/bin/true".into()],
+                    cwd: None,
+                    env: Default::default(),
+                    timeout_ms: 1_000,
+                },
+            },
+            Action::Checkpoint { id: "a".repeat(32) },
+            Action::Restore {
+                id: "a".repeat(32),
+                checkpoint: "b".repeat(32),
+                acknowledge_external_state_replay: true,
+            },
+        ];
+        let api: BTreeSet<String> = samples
+            .iter()
+            .map(|action| {
+                let value = serde_json::to_value(action).expect("serialize action");
+                value
+                    .get("type")
+                    .and_then(|tag| tag.as_str())
+                    .expect("action tag")
+                    .to_string()
+            })
+            .collect();
+
+        assert_eq!(
+            web, api,
+            "web OPERATION_ACTION_TYPES must match kiln_api::Action tags"
+        );
     }
 
     #[cfg(unix)]

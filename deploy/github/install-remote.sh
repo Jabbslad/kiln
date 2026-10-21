@@ -16,6 +16,25 @@ cd "$dir"
 archive=$(printf '%s\n' kiln-server-*.tar.gz)
 [ -f "$archive" ] || fail 'missing release archive'
 [ -f "${archive}.sha256" ] || fail 'missing release checksum'
+dashboard_archive=
+dashboard_found=0
+shopt -s nullglob
+for candidate in kiln-dashboard-*.tar.gz; do
+  if [ -f "$candidate" ]; then
+    dashboard_found=$((dashboard_found + 1))
+    dashboard_archive=$candidate
+  fi
+done
+shopt -u nullglob
+[ "$dashboard_found" -le 1 ] || fail 'more than one dashboard archive'
+if [ "$dashboard_found" -eq 1 ]; then
+  [ -f "${dashboard_archive}.sha256" ] || fail 'missing dashboard checksum'
+  awk -v name="$dashboard_archive" '
+    NF != 2 || $2 != name || $1 !~ /^[0-9a-f]{64}$/ { bad = 1 }
+    END { exit bad || NR != 1 }
+  ' "${dashboard_archive}.sha256" || fail 'unexpected dashboard checksum file'
+  sha256sum -c "${dashboard_archive}.sha256"
+fi
 awk -v name="$archive" '
   NF != 2 || $2 != name || $1 !~ /^[0-9a-f]{64}$/ { bad = 1 }
   END { exit bad || NR != 1 }
@@ -39,6 +58,12 @@ if [ -f "$dir/installer.sh" ]; then
   install -m 0755 "$dir/installer.sh" "$extract/package/install.sh"
 fi
 [ -f "$extract/package/install.sh" ] || fail 'archive is missing install.sh'
+if [ "${KILN_INSTALL_CHECK_ONLY:-}" = 1 ]; then
+  printf 'server inputs %s\n' "$archive"
+  [ "$dashboard_found" -eq 1 ] || fail 'missing dashboard archive'
+  printf 'dashboard inputs %s\n' "$dashboard_archive"
+  exit 0
+fi
 
 stamp() {
   if [ ! -d /run/systemd/system ]; then
@@ -49,6 +74,19 @@ stamp() {
     -p LoadState -p ActiveState -p ActiveEnterTimestamp -p NRestarts -p MainPID \
     --no-pager
 }
+# Identity is a separate archive. Upgrade it before the stamp so an intentional
+# restart is not the same event as a surprise restart during the server install.
+run_identity() {
+  local found=0 archive
+  for archive in kiln-identity-*.tar.gz; do
+    [ -f "$archive" ] || continue
+    found=$((found + 1))
+  done
+  [ "$found" -eq 0 ] && return 0
+  [ "$found" -eq 1 ] || fail 'more than one identity archive'
+  [ -f "$dir/install-identity.sh" ] || fail 'missing install-identity.sh'
+  bash "$dir/install-identity.sh" "$dir"
+}
 restarts() {
   if [ ! -d /run/systemd/system ]; then
     printf 'unavailable\n'
@@ -56,6 +94,7 @@ restarts() {
   fi
   systemctl show kiln-api.service -p NRestarts --value --no-pager
 }
+run_identity
 before=$(stamp)
 printf 'kiln-api NRestarts before: %s\n' "$(restarts)"
 
@@ -103,10 +142,17 @@ if [ -n "$address" ]; then
 fi
 
 install_rc=0
-if [ -n "$address" ]; then
-  bash "$extract/package/install.sh" --address "$address" --apply || install_rc=$?
+dashboard_args=()
+if [ "$dashboard_found" -eq 1 ]; then
+  dashboard_args=(--dashboard-archive "$dir/$dashboard_archive")
 else
-  bash "$extract/package/install.sh" --apply || install_rc=$?
+  fail 'missing dashboard archive'
+fi
+if [ -n "$address" ]; then
+  bash "$extract/package/install.sh" --address "$address" --apply "${dashboard_args[@]}" \
+    || install_rc=$?
+else
+  bash "$extract/package/install.sh" --apply "${dashboard_args[@]}" || install_rc=$?
 fi
 
 doctor_rc=1
@@ -155,12 +201,30 @@ else
   printf 'deploy: skipping the health check because installation failed\n' >&2
 fi
 
-smoke_rc=1
+metrics_rc=1
 if [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]; then
+  metrics_rc=0
+  /usr/local/libexec/kiln-api self-check --address "$address" || metrics_rc=$?
+else
+  printf 'deploy: skipping the dashboard metrics check because installation failed\n' >&2
+fi
+
+smoke_rc=1
+if [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] \
+  && [ "$metrics_rc" -eq 0 ]; then
   smoke_rc=0
   bash "$dir/smoke.sh" "$address" || smoke_rc=$?
 else
   printf 'deploy: skipping the guest smoke test because installation failed\n' >&2
+fi
+
+dashboard_rc=1
+if [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] \
+  && [ "$metrics_rc" -eq 0 ] && [ "$smoke_rc" -eq 0 ] && [ "$dashboard_found" -eq 1 ]; then
+  dashboard_rc=0
+  bash "$dir/check-dashboard-bundle.sh" "$dir/$dashboard_archive" || dashboard_rc=$?
+else
+  printf 'deploy: skipping the dashboard bundle check because installation failed\n' >&2
 fi
 
 printf 'kiln-api NRestarts after: %s\n' "$(restarts)"
@@ -170,4 +234,5 @@ if [ "$before" != "$after" ]; then
   printf 'before:\n%s\nafter:\n%s\n' "$before" "$after" >&2
   exit 1
 fi
-[ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] && [ "$smoke_rc" -eq 0 ]
+[ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] \
+  && [ "$metrics_rc" -eq 0 ] && [ "$smoke_rc" -eq 0 ] && [ "$dashboard_rc" -eq 0 ]

@@ -194,8 +194,7 @@ restart an existing server. See [identity operations](identity-service.md).
 This is a trusted-workload, single-administrator pilot, not a hosted multi-tenant
 sandbox. The automation is checked in; that alone does not mean a GitHub build,
 release or real server installation has succeeded. Check the Actions run for the
-version you download. macOS binaries are not signed/notarized, and Windows
-binaries are not Authenticode-signed.
+version you download. macOS binaries are not signed or notarized.
 
 ## v0.3.0 compatibility
 
@@ -274,8 +273,8 @@ is supplied (explicit uplink). See the [bootstrap guide](../deploy/bootstrap/REA
 SFTP, editor SSH configuration, and optional isolated guest IPv4 egress. The
 public installer pins v0.4.10. These features require the new client, server,
 and updated Ubuntu guest agent. Existing templates/boxes are not
-upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
-management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
+upgraded automatically. SSH/SFTP require OpenSSH on Linux and macOS.
+See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
 
 **v0.2.1 guest login fix:** the image starts `systemd-user-sessions` before the
 warm preparation barrier and workload agent. Ready guests no longer retain
@@ -316,7 +315,6 @@ HTTPS-only redirects, and ignores user curl configuration. It removes temporary
 files on normal exit and handled signals. Checksums assume trust in the bootstrap publisher, not
 independent package signing. To inspect before execution, download the script
 with `curl -fsSL URL -o install.sh`, read it, then run `sh install.sh [server]`.
-Native Windows continues to use the public release zip described below.
 
 **Fresh-host provisioning and reboot remain unverified.** The pilot uses the copy
 disk backend, not the faster overlay benchmark configuration. After server setup,
@@ -335,9 +333,8 @@ Choose one target:
 | Apple Silicon Mac | `aarch64-apple-darwin` |
 | Intel Mac | `x86_64-apple-darwin` |
 | Linux x86-64, glibc 2.39+ | `x86_64-unknown-linux-gnu` |
-| Windows x86-64 | `x86_64-pc-windows-msvc` (`.zip`, contains `kiln.exe`) |
 
-For macOS/Linux, in a new download directory:
+In a new download directory:
 
 ```sh
 REPO=Jabbslad/kiln
@@ -353,11 +350,9 @@ install -m 755 kiln "$HOME/.local/bin/kiln"
 "$HOME/.local/bin/kiln" --version
 ```
 
-Put `$HOME/.local/bin` on your shell's PATH if it is not already there. On Windows,
-download the matching `.zip` and `.zip.sha256` from GitHub Releases, compare
-`Get-FileHash -Algorithm SHA256` to the checksum, then `Expand-Archive` and place
-`kiln.exe` in a directory on your user PATH. Verify downloads before execution;
-do not disable system-wide OS security policies to run an unsigned pilot binary.
+Put `$HOME/.local/bin` on your shell's PATH if it is not already there.
+Verify downloads before execution; do not disable system-wide OS security
+policies to run an unsigned pilot binary.
 
 Checksums detect corruption, not a compromised publisher. The trust boundary is
 the release publisher and the reviewed workflow; signing is not implemented yet.
@@ -373,7 +368,7 @@ The shell bootstrap manages sqlite3, OpenSSL, curl, CA certificates, tar, and
 Ubuntu account tools. For manual installation, supply these dependencies yourself.
 `deploy/install.sh` only checks them. Installing and deploying Kiln is shell
 scripts. The public bootstrap pins v0.4.10 and runs `install.sh`. It rejects an
-archive whose installer is `install.py`. `scripts/release.py` packages releases in
+archive whose installer is `install.py`. `cargo xtask release` packages releases in
 CI and does not run on the server.
 The installer downloads checksum-pinned Firecracker/jailer 1.17.0 from GitHub. The package
 already contains the kernel, Ubuntu filesystem and guest agent.
@@ -449,8 +444,7 @@ kiln exec BOX_ID -- /bin/sh -c 'printf hello'
 ```
 
 Profiles reference the extracted token/CA files; do not delete them after setup.
-Unix token permissions must be 0600 or 0400. On Windows, restrict the directory
-and token ACL to your account. The service currently supports buffered exec,
+Unix token permissions must be 0600 or 0400. The service currently supports buffered exec,
 while v0.1.1 does not include an interactive shell, SSH, file transfer, or guest
 internet access. Those additions require the new builds described above.
 
@@ -467,9 +461,9 @@ Pushes to main run the package jobs and keep the archives as run artifacts for
 and does not upload packages. A documentation pull request runs the Python
 checks only. Use `gh run download RUN_ID --repo OWNER/NAME` for branch builds; do not
 confuse those with a reviewed release. The build workflow uses no credentials
-beyond the scoped GitHub Actions token and does not deploy a server. Public workflows/logs/artifacts
+beyond the scoped GitHub Actions token. A releasable push to main creates the next patch tag, publishes the release, and deploys it. Public workflows/logs/artifacts
 must not contain credentials or runtime data. Fork PRs use hosted runners and
-read-only permissions. Only the tag release job has contents-write permission.
+read-only permissions. The release-plan job and the draft-release job have contents-write permission.
 The attest job signs the package archives a tag publishes. A main push
 signs the archives a later tag reuses. A tag whose package jobs rebuild
 signs that rebuild. A manual run on main signs the archives it builds. A pull
@@ -477,25 +471,14 @@ request does not run the job. The job has `id-token` and attestations
 write, and it does not have contents write.
 A reused archive was signed on main, so verify with `gh attestation verify ARCHIVE --repo Jabbslad/kiln --cert-identity-regex '^https://github\.com/Jabbslad/kiln/\.github/workflows/build\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$'`, which accepts `refs/heads/main` or `refs/tags/vX.Y.Z` and rejects any other branch.
 
-For an approved release, push an annotated `vMAJOR.MINOR.PATCH` tag of the green
-main commit (`git tag -a vX.Y.Z -m "..."`). The workflow finds that commit's
-successful push of this workflow on main. It checks the run, the archive
-checksums, and build provenance when that commit's workflow emitted provenance.
-It then publishes that release from those archives. `install.sh` is rendered in the tag
-job from the archive checksums. The job publishes only after `sha256sum -c` and
-`gh attestation verify` succeed for every archive. A reused archive is verified
-with `--source-ref refs/heads/main`. A fallback build is verified with
-`--source-ref refs/tags/vX.Y.Z`. The identity regex is
+A push to main is releasable when the diff is not documentation only. The release-plan job reads the highest existing `vMAJOR.MINOR.PATCH` tag, including a tag that has no GitHub release, and chooses the next patch. It creates that lightweight tag on the push commit before the job returns. The same run stamps the packages it just built onto that tag, checks every shipped client, and publishes the release. `install.sh` is rendered in that job from the archive checksums. The job publishes only after `sha256sum -c` and
+`gh attestation verify` succeed for every archive. Attestations for this run are bound to `refs/heads/main`, so verification uses `--source-ref refs/heads/main`. The identity regex is
 `^https://github\.com/Jabbslad/kiln/\.github/workflows/build\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$`.
-If that run is missing, expired, or fails those checks, or the reuse job
-errors, the tag builds from scratch with the Rust, npm, and Playwright
-caches disabled. That fallback
-stamps the tag into the workspace version before it compiles. A tag that is
-not stable `vMAJOR.MINOR.PATCH` fails before compile. Branch and pull-request
+A documentation-only push does not create a tag. A tag push does not start this workflow. Branch and pull-request
 builds keep the committed workspace version. A local stamp still rewrites
 `Cargo.toml` and `Cargo.lock` when they differ. Do not commit that rewrite.
 When the jobs pass, the workflow publishes the release, including that filled
-`install.sh`. That tag run then calls `.github/workflows/deploy.yml`.
+`install.sh`. That same run then calls `.github/workflows/deploy.yml`.
 Reruns do not overwrite
 existing releases. Real KVM tests remain separate; ordinary CI tests do not prove
 host isolation, reboot persistence or installer success on a real server.
@@ -515,14 +498,16 @@ downloads that tag and refuses the archive when the checksum differs.
 The tag job renders `install.sh` from the archive checksums and writes that
 tag into `version=`. The rendered copy installs that tag and checks the
 checksums in its asset block. A `v*` tag that is not the `Cargo.toml`
-version is refused before publish, and a reused Linux client must print
-that same version. The installer accepts the download when `kiln --version`
-prints `kiln` and that version.
+version stamps that tag into the reused binaries, archive names, and
+`release.json`, then re-attests those archives. A matching tag publishes
+main's archives unchanged. The reused Linux client must print the tag.
+The installer accepts the download when `kiln --version` prints `kiln` and
+that version.
 The tag job publishes only after `sha256sum -c` and
 `gh attestation verify` succeed for every archive. The same job attaches
 `install.sh` and `install.sh.sha256`. Publishing a release leaves main
-unchanged. The workspace version in `Cargo.toml` can move ahead of the
-latest published tag while a release is prepared.
+unchanged. The tag does not have to match the workspace version in
+`Cargo.toml`, and the tag job does not commit a version rewrite back to main.
 The public command stays on the raw main URL.
 `releases/latest/download/install.sh` returns 404 for v0.4.7, and the
 published v0.4.14 `install.sh` reports 0.4.10 while it downloads 0.4.14.
@@ -542,7 +527,9 @@ a fork.
 
 The `dark-forge` environment is the approval gate. The API stays on the installer
 default, a private address at port 8443 with the private CA. The deploy does not
-open port 443, install the dashboard, or restart `kiln-identity`. Guest NAT stays
+open port 443 or install the dashboard. It installs the release's
+`kiln-identity` archive, checks its checksum, and restarts `kiln-identity`
+before the server installer restarts `kiln-app`. Guest NAT stays
 off. When `address` is empty, the deploy detects one private source address.
 The deploy stops if the host's default address is public. A manual run can
 set the `address` input.

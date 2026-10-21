@@ -1,10 +1,9 @@
 use anyhow::{Context, Result, ensure};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Parser)]
 #[command(
-    version,
     about = "Unprivileged HTTPS gateway for kiln",
     subcommand_negates_reqs = true
 )]
@@ -56,6 +55,17 @@ enum Command {
     /// Create /etc/kiln/login.token when that path is absent.
     #[command(hide = true)]
     PublishLoginToken,
+    /// Validate live host dashboard metrics over loopback kiln-api.
+    SelfCheck {
+        #[arg(long)]
+        address: String,
+        #[arg(long, default_value = "/etc/kiln/admin.token")]
+        token_file: PathBuf,
+        #[arg(long, default_value = "/etc/kiln/ca.crt")]
+        ca_file: PathBuf,
+        #[arg(long)]
+        require_launch_timing: Option<String>,
+    },
     /// Serve the dashboard archive and the read API on 127.0.0.1:8093.
     App {
         #[arg(long, default_value = "127.0.0.1:8093")]
@@ -76,7 +86,10 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let matches = Args::command()
+        .version(kiln_api::release_version())
+        .get_matches();
+    let args = Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     if let Some(command) = args.command {
         return match command {
             Command::Enroll(options) => kiln_server::enrollment::run(options).await,
@@ -143,6 +156,27 @@ async fn main() -> Result<()> {
                     dashboard_root,
                 })
                 .await
+            }
+            Command::SelfCheck {
+                address,
+                token_file,
+                ca_file,
+                require_launch_timing,
+            } => {
+                if let Err(error) = kiln_server::dashboard_check::run_self_check(
+                    kiln_server::dashboard_check::SelfCheckOptions {
+                        address,
+                        token_file,
+                        ca_file,
+                        require_launch_timing,
+                    },
+                )
+                .await
+                {
+                    eprintln!("dashboard-metrics: {error:#}");
+                    std::process::exit(1);
+                }
+                Ok(())
             }
         };
     }

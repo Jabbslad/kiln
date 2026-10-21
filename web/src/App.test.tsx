@@ -2,6 +2,10 @@ import { render, screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, expect, it, vi } from 'vitest'
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 import App from './App'
 import { previewDashboard } from './fixtures'
 
@@ -14,6 +18,15 @@ function open(path = '/boxes?preview=1') {
     </MemoryRouter>,
   )
 }
+
+it('shows the server-reported version in the header', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockResolvedValue(Response.json({ ...previewDashboard, version: '0.4.99' })),
+  )
+  open('/boxes')
+  expect(await screen.findByText('v0.4.99')).toBeVisible()
+})
 
 it('keeps the public page independent of the host and makes preview an explicit choice', async () => {
   const request = vi.fn().mockRejectedValue(new Error('Host unavailable'))
@@ -80,7 +93,7 @@ it('shows only same-box checkpoints and keeps restore gated after acknowledgemen
   const restore = within(dialog).getByRole('button', { name: 'Restore checkpoint' })
   expect(restore).toBeDisabled()
   await user.click(
-    within(dialog).getByRole('checkbox', { name: 'I understand the rollback risks.' }),
+    within(dialog).getByRole('checkbox', { name: /I understand external state may replay/ }),
   )
   expect(restore).toBeDisabled()
   await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
@@ -142,8 +155,103 @@ it('enables create only on a live authenticated console and shows the box once o
   await waitFor(() => expect(posts).toBe(1))
   expect(screen.queryByRole('link', { name: 'api-staging' })).not.toBeInTheDocument()
   releaseObserved(Response.json(observed))
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   expect(await screen.findByRole('link', { name: 'api-staging' })).toBeVisible()
   expect(posts).toBe(1)
+})
+
+it('shows Creating… while create polls and closes with the new box once observed', async () => {
+  const boxId = 'd'.repeat(32)
+  const live = {
+    ...previewDashboard,
+    boxes: [],
+    operations: [],
+    checkpoints: [],
+    templates: [{ ...previewDashboard.templates[0], id: 'tpl-ubuntu', name: 'ubuntu' }],
+  }
+  const observed = {
+    ...live,
+    boxes: [{ ...previewDashboard.boxes[0], id: boxId, name: 'jamie' }],
+  }
+  let pollCount = 0
+  let createFinished = false
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json(
+          { id: posted.id, box_id: boxId, state: 'running', result: null, error: null },
+          { status: 202 },
+        )
+      }
+      if (String(url).startsWith('/v1/operations/')) {
+        pollCount += 1
+        const id = String(url).slice('/v1/operations/'.length)
+        if (pollCount < 8) {
+          return Response.json({ id, box_id: boxId, state: 'running', result: null, error: null })
+        }
+        createFinished = true
+        return Response.json({ id, box_id: boxId, state: 'succeeded', result: null, error: null })
+      }
+      return Response.json(createFinished ? observed : live)
+    }),
+  )
+  document.cookie = '__Host-kiln_csrf=browser-csrf'
+  open('/boxes')
+  const user = userEvent.setup()
+  const [openCreate] = await screen.findAllByRole('button', { name: 'Create box' })
+  await user.click(openCreate)
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Box name' }), 'jamie')
+  await user.click(within(dialog).getByRole('button', { name: 'Create box' }))
+  expect(await within(dialog).findByRole('button', { name: 'Creating…' })).toBeVisible()
+  expect(within(dialog).getByRole('status')).toHaveTextContent(/Creating…/)
+  expect(await screen.findByRole('link', { name: 'jamie' }, { timeout: 5000 })).toBeVisible()
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  expect(pollCount).toBeGreaterThanOrEqual(8)
+})
+
+it('shows the host failure message when create returns failed', async () => {
+  const live = {
+    ...previewDashboard,
+    boxes: [],
+    operations: [],
+    checkpoints: [],
+    templates: [{ ...previewDashboard.templates[0], id: 'tpl-ubuntu', name: 'ubuntu' }],
+  }
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json(
+          {
+            id: posted.id,
+            box_id: 'f'.repeat(32),
+            state: 'failed',
+            result: null,
+            error: { message: 'Template disk is unavailable.' },
+          },
+          { status: 202 },
+        )
+      }
+      return Response.json(live)
+    }),
+  )
+  document.cookie = '__Host-kiln_csrf=browser-csrf'
+  open('/boxes')
+  const user = userEvent.setup()
+  const [openCreate] = await screen.findAllByRole('button', { name: 'Create box' })
+  await user.click(openCreate)
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Box name' }), 'jamie')
+  await user.click(within(dialog).getByRole('button', { name: 'Create box' }))
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    'Template disk is unavailable.',
+  )
+  expect(within(dialog).queryByText(/still in progress/i)).not.toBeInTheDocument()
+  expect(screen.getByRole('dialog')).toBeInTheDocument()
 })
 
 it('keeps create disabled when the live host is offline and keeps other mutations disabled', async () => {
@@ -161,13 +269,13 @@ it('keeps create disabled when the live host is offline and keeps other mutation
   expect(within(dialog).getByText(/Read-only console/)).toBeVisible()
 })
 
-it('keeps checkpoint confirmation disabled on a live console', async () => {
+it('enables checkpoint confirmation on a live console', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(previewDashboard)))
   open('/boxes/box-7f3a2c1e')
   const user = userEvent.setup()
   await user.click(await screen.findByRole('button', { name: 'Create checkpoint' }))
   const dialog = screen.getByRole('dialog')
-  expect(within(dialog).getByRole('button', { name: 'Create checkpoint' })).toBeDisabled()
+  expect(within(dialog).getByRole('button', { name: 'Create checkpoint' })).toBeEnabled()
 })
 
 it.each([
@@ -283,7 +391,7 @@ it('submits stop with force only when that option is chosen', async () => {
   await waitFor(() => expect(force).toBe(true))
 })
 
-it('shows an unknown lifecycle outcome and leaves the box state unchanged', async () => {
+it('shows lifecycle still in progress and leaves the box state unchanged', async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
@@ -304,7 +412,7 @@ it('shows an unknown lifecycle outcome and leaves the box state unchanged', asyn
   const user = userEvent.setup()
   await user.click(await screen.findByRole('button', { name: 'Pause' }))
   await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Pause' }))
-  expect(await screen.findByRole('alert')).toHaveTextContent(/unknown/i)
+  expect(await screen.findByRole('alert')).toHaveTextContent(/still in progress/i)
   expect(screen.getByText('running', { selector: '.status' })).toBeVisible()
 })
 
@@ -327,6 +435,204 @@ it('disables lifecycle confirmation when the console is not live or not authenti
   expect(within(screen.getByRole('dialog')).getByText(/Read-only console/)).toBeVisible()
 })
 
+it('does not submit delete until the typed name matches', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(previewDashboard)))
+  open('/boxes/box-7f3a2c1e')
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
+  const dialog = screen.getByRole('dialog')
+  const confirm = within(dialog).getByRole('button', { name: 'Delete box' })
+  const name = within(dialog).getByRole('textbox', { name: 'Type the box name' })
+  expect(confirm).toBeDisabled()
+  await user.type(name, 'API-DEV')
+  expect(confirm).toBeDisabled()
+  await user.clear(name)
+  await user.type(name, 'api-de')
+  expect(confirm).toBeDisabled()
+  await user.type(name, 'v')
+  expect(confirm).toBeEnabled()
+})
+
+it('submits delete and removes the box only after the server observes it gone', async () => {
+  const boxId = 'box-7f3a2c1e'
+  let releaseObserved: (response: Response) => void = () => {}
+  const observedResponse = new Promise<Response>((resolve) => {
+    releaseObserved = resolve
+  })
+  let posts = 0
+  let observations = 0
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        posts += 1
+        const posted = JSON.parse(String(init.body))
+        expect(posted.action).toEqual({ type: 'delete', id: boxId })
+        expect(init.credentials).toBe('same-origin')
+        return Response.json(
+          {
+            id: posted.id,
+            box_id: boxId,
+            state: 'succeeded',
+            result: { type: 'deleted', id: boxId },
+            error: null,
+          },
+          { status: 202 },
+        )
+      }
+      if (posts === 0) return Response.json(previewDashboard)
+      observations += 1
+      if (observations === 1) return Response.json(previewDashboard)
+      return observedResponse
+    }),
+  )
+  document.cookie = '__Host-kiln_csrf=browser-csrf'
+  open(`/boxes/${boxId}`)
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Type the box name' }), 'api-dev')
+  await user.click(within(dialog).getByRole('button', { name: 'Delete box' }))
+  await waitFor(() => expect(posts).toBe(1))
+  expect(screen.getByRole('heading', { name: 'api-dev' })).toBeVisible()
+  expect(screen.queryByText('Box not found')).not.toBeInTheDocument()
+  const gone = structuredClone(previewDashboard)
+  gone.boxes = gone.boxes.filter((box) => box.id !== boxId)
+  releaseObserved(Response.json(gone))
+  expect(await screen.findByText('Box not found')).toBeVisible()
+  expect(posts).toBe(1)
+})
+
+it('shows delete still in progress and leaves the box in the inventory', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json({
+          id: posted.id,
+          box_id: 'box-7f3a2c1e',
+          state: 'unknown',
+          result: null,
+          error: null,
+        })
+      }
+      return Response.json(previewDashboard)
+    }),
+  )
+  open('/boxes/box-7f3a2c1e')
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Type the box name' }), 'api-dev')
+  await user.click(within(dialog).getByRole('button', { name: 'Delete box' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent(/still in progress/i)
+  expect(screen.getByRole('heading', { name: 'api-dev' })).toBeVisible()
+  expect(screen.queryByText('Box not found')).not.toBeInTheDocument()
+})
+
+it('disables delete when the console is not live or not authenticated', async () => {
+  const user = userEvent.setup()
+  const { unmount } = open('/boxes/box-7f3a2c1e?preview=1')
+  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
+  const previewDialog = screen.getByRole('dialog')
+  await user.type(
+    within(previewDialog).getByRole('textbox', { name: 'Type the box name' }),
+    'api-dev',
+  )
+  expect(within(previewDialog).getByRole('button', { name: 'Delete box' })).toBeDisabled()
+  expect(within(previewDialog).getByText(/Read-only preview/)).toBeVisible()
+  unmount()
+
+  const offline = {
+    ...previewDashboard,
+    host: { ...previewDashboard.host, state: 'offline' as const },
+  }
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(offline)))
+  open('/boxes/box-7f3a2c1e')
+  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Type the box name' }), 'api-dev')
+  expect(within(dialog).getByRole('button', { name: 'Delete box' })).toBeDisabled()
+  expect(within(dialog).getByText(/Read-only console/)).toBeVisible()
+})
+
+it('disables exec in preview, when the host is offline or unknown, and when the box is stopped', async () => {
+  const user = userEvent.setup()
+  const { unmount } = open('/boxes/box-7f3a2c1e?preview=1&tab=exec')
+  expect(await screen.findByRole('button', { name: /Execute command/ })).toBeDisabled()
+  expect(screen.getByText(/Read-only preview/)).toBeVisible()
+  unmount()
+
+  for (const state of ['offline', 'unknown'] as const) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        Response.json({
+          ...previewDashboard,
+          host: { ...previewDashboard.host, state },
+        }),
+      ),
+    )
+    const view = open('/boxes/box-7f3a2c1e?tab=exec')
+    expect(await screen.findByRole('button', { name: /Execute command/ })).toBeDisabled()
+    expect(screen.getByText(/Read-only console/)).toBeVisible()
+    view.unmount()
+  }
+
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(previewDashboard)))
+  open('/boxes/box-a1b2c3d4?tab=exec')
+  expect(await screen.findByRole('button', { name: /Execute command/ })).toBeDisabled()
+  expect(screen.queryByText(/Read-only console/)).not.toBeInTheDocument()
+})
+
+it('shows the exit code, stdout and stderr after one exec', async () => {
+  const boxId = 'box-7f3a2c1e'
+  let posts = 0
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        posts += 1
+        const posted = JSON.parse(String(init.body))
+        expect(posted.action).toEqual({
+          type: 'exec',
+          id: boxId,
+          request: { argv: ['/bin/pwd'], timeout_ms: 10000 },
+        })
+        expect(init.credentials).toBe('same-origin')
+        return Response.json(
+          {
+            id: posted.id,
+            box_id: boxId,
+            state: 'succeeded',
+            result: {
+              type: 'exec',
+              stdout: [...'hello'].map((char) => char.charCodeAt(0)),
+              stderr: [...'err'].map((char) => char.charCodeAt(0)),
+              exit_code: 0,
+              truncated: false,
+              timed_out: false,
+            },
+            error: null,
+          },
+          { status: 202 },
+        )
+      }
+      return Response.json(previewDashboard)
+    }),
+  )
+  open(`/boxes/${boxId}?tab=exec`)
+  const user = userEvent.setup()
+  const submit = await screen.findByRole('button', { name: /Execute command/ })
+  expect(submit).toBeEnabled()
+  await user.click(submit)
+  expect(await screen.findByText('Exit code 0')).toBeVisible()
+  expect(screen.getByText('hello')).toBeVisible()
+  expect(screen.getByText('err')).toBeVisible()
+  expect(posts).toBe(1)
+})
+
 it('validates a create form but cannot create a fake VM', async () => {
   open('/templates?preview=1')
   const user = userEvent.setup()
@@ -343,9 +649,30 @@ it('validates a create form but cannot create a fake VM', async () => {
   expect(previewDashboard.boxes).toHaveLength(4)
 })
 
-it('does not present an interactive terminal session as connected', async () => {
+it('labels the terminal capability as not available yet', async () => {
   open('/boxes/box-7f3a2c1e?preview=1')
-  expect(await screen.findByText('Session not connected')).toBeVisible()
-  expect(screen.queryByText('Connected', { exact: true })).not.toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Connect terminal' })).toBeDisabled()
+  const terminal = await screen.findByTestId('capability-terminal')
+  expect(terminal).toHaveAttribute('data-capability-state', 'not-yet')
+  expect(within(terminal).getByText('Not available yet')).toBeVisible()
+  expect(screen.queryByText('Session not connected')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Connect terminal' })).not.toBeInTheDocument()
+})
+
+it('posts sign-out to /logout with the CSRF value', async () => {
+  const request = vi.fn(async (url: string, _init?: RequestInit) => {
+    if (url === '/logout') return new Response(null, { status: 204 })
+    return Response.json(previewDashboard)
+  })
+  vi.stubGlobal('fetch', request)
+  document.cookie = '__Host-kiln_csrf=browser-csrf; Secure; Path=/'
+  open('/boxes')
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'Sign out' }))
+  await waitFor(() => {
+    const logout = request.mock.calls.find((call) => call[0] === '/logout')
+    expect(logout?.[1]).toMatchObject({
+      method: 'POST',
+      credentials: 'same-origin',
+      body: 'csrf=browser-csrf',
+    })
+  })
 })

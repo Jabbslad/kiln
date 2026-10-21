@@ -4,7 +4,7 @@ import { formatBytes, type Template } from './data'
 import { CreateDrawer } from './dialogs'
 import { CreateButton, Empty, PageHeading, type PageProps } from './ui'
 
-export default function Templates({ data, preview, onObserved }: PageProps) {
+export default function Templates({ data, preview }: PageProps) {
   const [selected, setSelected] = useState(data.templates[0]?.id)
   const [creating, setCreating] = useState(false)
   const template = data.templates.find((item) => item.id === selected)
@@ -88,7 +88,6 @@ export default function Templates({ data, preview, onObserved }: PageProps) {
           preview={preview}
           authenticated={!preview && data.host.state === 'online'}
           initialTemplate={template}
-          onObserved={onObserved}
           onClose={() => setCreating(false)}
         />
       )}

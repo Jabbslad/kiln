@@ -1,4 +1,7 @@
 import { z } from 'zod'
+import { type OperationActionType } from './operationKinds.ts'
+
+export { OPERATION_ACTION_TYPES, type OperationActionType } from './operationKinds.ts'
 
 export const boxStates = [
   'running',
@@ -20,22 +23,24 @@ const metrics = z.object({
   cpu_percent: z.number().min(0).max(100).nullable(),
   memory_bytes: measurement,
   disk_bytes: measurement,
+  disk_total_bytes: measurement,
 })
 const timing = z.object({
   method: z.string(),
   cache: z.string(),
   disk_copy: z.string(),
-  storage_ms: measurement,
-  vmm_ms: measurement,
-  restore_ms: measurement,
-  agent_ms: measurement,
-  init_ms: measurement,
-  first_command_ms: measurement,
-  total_ms: measurement,
+  storage_ms: measurement.optional(),
+  vmm_ms: measurement.optional(),
+  restore_ms: measurement.optional(),
+  agent_ms: measurement.optional(),
+  init_ms: measurement.optional(),
+  first_command_ms: measurement.optional(),
+  total_ms: measurement.optional(),
 })
 
 export const dashboardSchema = z.object({
   schema_version: z.literal(1),
+  version: z.string().min(1).optional(),
   observed_at: z.iso.datetime(),
   workspace: z.string().min(1),
   host: z.object({ name: z.string(), state: z.enum(['online', 'offline', 'unknown']), metrics }),
@@ -101,7 +106,7 @@ export type Checkpoint = Dashboard['checkpoints'][number]
 export type Operation = Dashboard['operations'][number]
 export type BoxState = Box['state']
 
-function requestId() {
+export function requestId() {
   const bytes = new Uint8Array(16)
   crypto.getRandomValues(bytes)
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
@@ -116,29 +121,240 @@ export function readCsrf(cookie: string) {
   return value ? value.slice(prefix.length) : ''
 }
 
-type OperationReceipt = {
+export type OperationReceipt = {
   id: string
   box_id: string
   state: string
-  result?: { state?: string } | null
+  result?: {
+    type?: string
+    id?: string
+    box_id?: string
+    state?: string
+    stdout?: number[]
+    stderr?: number[]
+    exit_code?: number | null
+    truncated?: boolean
+    timed_out?: boolean
+  } | null
   error?: { message?: string } | null
 }
 
-type SubmittedAction =
+export type OperationAction =
   | { type: 'create'; template: string; name: string }
   | { type: 'pause'; id: string }
   | { type: 'resume'; id: string }
   | { type: 'stop'; id: string; force: boolean }
   | { type: 'start'; id: string }
+  | { type: 'delete'; id: string }
+  | { type: 'exec'; id: string; request: { argv: string[]; timeout_ms: number; cwd?: string } }
+  | { type: 'checkpoint'; id: string }
+  | {
+      type: 'restore'
+      id: string
+      checkpoint: string
+      acknowledge_external_state_replay: true
+    }
 
-async function submitOperation(
-  action: SubmittedAction,
+type DashboardRefreshingAction = Exclude<OperationAction, { type: 'exec' }>
+
+const OPERATION_POLL_START_MS = 50
+const OPERATION_POLL_MAX_MS = 2_000
+const OPERATION_POLL_GROWTH = 1.5
+
+const OPERATION_WAIT_MS = {
+  create: 300_000,
+  pause: 120_000,
+  resume: 120_000,
+  stop: 120_000,
+  start: 120_000,
+  checkpoint: 180_000,
+  restore: 300_000,
+  delete: 120_000,
+  exec: 60_000,
+} satisfies Record<OperationActionType, number>
+
+function operationWaitMs(action: OperationAction): number {
+  if (action.type === 'exec') return action.request.timeout_ms + 30_000
+  return OPERATION_WAIT_MS[action.type]
+}
+
+const OPERATION_PENDING_LABEL = {
+  create: 'Creating…',
+  pause: 'Pausing…',
+  resume: 'Resuming…',
+  stop: 'Stopping…',
+  start: 'Starting…',
+  checkpoint: 'Creating checkpoint…',
+  restore: 'Restoring…',
+  delete: 'Deleting…',
+  exec: 'Running…',
+} satisfies Record<OperationActionType, string>
+
+export function operationPendingLabel(action: OperationAction): string {
+  return OPERATION_PENDING_LABEL[action.type]
+}
+
+const OPERATION_IN_PROGRESS_MESSAGE = {
+  create:
+    'Create is still in progress. Refresh the dashboard to see the box once the control plane records it.',
+  pause: 'Pause is still in progress. Refresh the dashboard to see updated state.',
+  resume: 'Resume is still in progress. Refresh the dashboard to see updated state.',
+  stop: 'Stop is still in progress. Refresh the dashboard to see updated state.',
+  start: 'Start is still in progress. Refresh the dashboard to see updated state.',
+  checkpoint:
+    'Checkpoint creation is still in progress. Refresh the dashboard to see it once recorded.',
+  restore: 'Restore is still in progress. Refresh the dashboard to see updated state.',
+  delete: 'Delete is still in progress. Refresh the dashboard to confirm removal.',
+  exec: 'The command is still running. Refresh or retry later if output does not appear.',
+} satisfies Record<OperationActionType, string>
+
+function operationInProgressMessage(action: OperationAction): string {
+  return OPERATION_IN_PROGRESS_MESSAGE[action.type]
+}
+
+const OPERATION_FAILURE_FALLBACK = {
+  create: 'Create did not succeed. The box is shown only after the control plane records it.',
+  pause: 'Pause did not succeed. Inventory updates only after the control plane records them.',
+  resume: 'Resume did not succeed. Inventory updates only after the control plane records them.',
+  stop: 'Stop did not succeed. Inventory updates only after the control plane records them.',
+  start: 'Start did not succeed. Inventory updates only after the control plane records them.',
+  checkpoint:
+    'Checkpoint creation did not succeed. Checkpoints appear only after the control plane records them.',
+  restore: 'Restore did not succeed. Inventory updates only after the control plane records them.',
+  delete: 'Delete did not succeed. Inventory updates only after the control plane records them.',
+  exec: 'The command did not finish successfully.',
+} satisfies Record<OperationActionType, string>
+
+function operationFailureFallback(action: OperationAction): string {
+  return OPERATION_FAILURE_FALLBACK[action.type]
+}
+
+const DASHBOARD_PENDING_MESSAGE = {
+  create: 'The control plane has not observed the new box.',
+  pause: 'The control plane has not observed the box state.',
+  resume: 'The control plane has not observed the box state.',
+  stop: 'The control plane has not observed the box state.',
+  start: 'The control plane has not observed the box state.',
+  checkpoint: 'The control plane has not observed the checkpoint.',
+  restore: 'The control plane has not observed the restore.',
+  delete: 'The control plane has not observed the deletion.',
+} satisfies Record<Exclude<OperationActionType, 'exec'>, string>
+
+function dashboardReflectsOperation(
+  dashboard: Dashboard,
+  receipt: OperationReceipt,
+  action: DashboardRefreshingAction,
+): boolean {
+  switch (action.type) {
+    case 'create':
+      return dashboard.boxes.some((box) => box.id === receipt.box_id)
+    case 'pause':
+    case 'resume':
+    case 'stop':
+    case 'start': {
+      const observed = receipt.result?.state
+      return Boolean(
+        observed &&
+        dashboard.boxes.some((box) => box.id === receipt.box_id && box.state === observed),
+      )
+    }
+    case 'checkpoint': {
+      const checkpointId = receipt.result?.type === 'checkpoint' ? receipt.result.id : undefined
+      return Boolean(
+        checkpointId &&
+        dashboard.checkpoints.some(
+          (checkpoint) => checkpoint.id === checkpointId && checkpoint.box_id === action.id,
+        ),
+      )
+    }
+    case 'restore':
+      return dashboard.boxes.some(
+        (box) => box.id === action.id && box.restored_from === action.checkpoint,
+      )
+    case 'delete':
+      return !dashboard.boxes.some((box) => box.id === receipt.box_id)
+  }
+}
+
+function assertReceiptReadyForRefresh(
+  receipt: OperationReceipt,
+  action: DashboardRefreshingAction,
+): void {
+  switch (action.type) {
+    case 'create':
+    case 'delete':
+      return
+    case 'pause':
+    case 'resume':
+    case 'stop':
+    case 'start':
+      if (!receipt.result?.state)
+        throw new Error('The control plane has not observed the box state.')
+      return
+    case 'checkpoint': {
+      const checkpointId = receipt.result?.type === 'checkpoint' ? receipt.result.id : undefined
+      if (!checkpointId || (receipt.result?.box_id && receipt.result.box_id !== action.id)) {
+        throw new Error('unknown')
+      }
+      return
+    }
+    case 'restore':
+      if (receipt.box_id !== action.id) throw new Error('unknown')
+      return
+  }
+}
+
+let dashboardObserver: ((dashboard: Dashboard) => void) | undefined
+
+export function setDashboardObserver(listener: ((dashboard: Dashboard) => void) | undefined) {
+  dashboardObserver = listener
+}
+
+function settleOperationReceipt(receipt: OperationReceipt, action: OperationAction) {
+  if (receipt.state === 'succeeded') return receipt
+  if (receipt.state === 'failed') {
+    throw new Error(receipt.error?.message || operationFailureFallback(action))
+  }
+  if (receipt.state === 'running' || receipt.state === 'unknown') {
+    throw new Error(operationInProgressMessage(action))
+  }
+  throw new Error(receipt.error?.message || operationFailureFallback(action))
+}
+
+async function rejected(response: Response) {
+  let code = ''
+  try {
+    code = ((await response.json()) as { code?: string }).code ?? ''
+  } catch {
+    code = ''
+  }
+  if (response.status === 401 || code === 'unauthorized') {
+    return new Error('Unauthenticated (HTTP 401). No operation was accepted.')
+  }
+  if (code === 'invalid_origin') {
+    return new Error('The origin was rejected. No operation was accepted.')
+  }
+  if (code === 'invalid_csrf' || response.status === 403) {
+    return new Error('The CSRF check was rejected. No operation was accepted.')
+  }
+  return new Error(
+    `The operation was not accepted (HTTP ${response.status}). No change was recorded.`,
+  )
+}
+
+function pause(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+async function pollOperationReceipt(
+  action: OperationAction,
   fetcher: typeof fetch,
   cookie: string,
-  rejected: (status: number) => string,
-  stalled: (status: number) => string,
+  id: string,
+  waitMs?: number,
 ): Promise<OperationReceipt> {
-  const id = requestId()
   const response = await fetcher('/v1/operations', {
     method: 'POST',
     credentials: 'same-origin',
@@ -150,18 +366,81 @@ async function submitOperation(
     },
     body: JSON.stringify({ id, action }),
   })
-  if (response.status !== 200 && response.status !== 202) throw new Error(rejected(response.status))
+  if (response.status !== 200 && response.status !== 202) throw await rejected(response)
   let receipt = (await response.json()) as OperationReceipt
-  for (let attempt = 0; attempt < 20 && receipt.state === 'running'; attempt += 1) {
+  let interval = OPERATION_POLL_START_MS
+  const deadline = Date.now() + (waitMs ?? operationWaitMs(action))
+  while (receipt.state === 'running' && Date.now() < deadline) {
+    await pause(interval)
+    interval = Math.min(OPERATION_POLL_MAX_MS, Math.round(interval * OPERATION_POLL_GROWTH))
     const polled = await fetcher(`/v1/operations/${receipt.id}`, {
       credentials: 'same-origin',
       cache: 'no-store',
       headers: { Accept: 'application/json' },
     })
-    if (!polled.ok) throw new Error(stalled(polled.status))
+    if (!polled.ok) {
+      if (polled.status === 401 || polled.status === 403) throw await rejected(polled)
+      throw new Error('unknown')
+    }
     receipt = (await polled.json()) as OperationReceipt
   }
-  return receipt
+  return settleOperationReceipt(receipt, action)
+}
+
+async function refreshDashboardAfterOperation(
+  receipt: OperationReceipt,
+  action: DashboardRefreshingAction,
+  fetcher: typeof fetch,
+): Promise<Dashboard> {
+  assertReceiptReadyForRefresh(receipt, action)
+  const dashboard = await awaitDashboard(
+    fetcher,
+    (snapshot) => dashboardReflectsOperation(snapshot, receipt, action),
+    DASHBOARD_PENDING_MESSAGE[action.type],
+  )
+  dashboardObserver?.(dashboard)
+  return dashboard
+}
+
+export async function trackOperation(
+  action: Extract<OperationAction, { type: 'exec' }>,
+  fetcher?: typeof fetch,
+  cookie?: string,
+  id?: string,
+  waitMs?: number,
+): Promise<OperationReceipt>
+export async function trackOperation(
+  action: DashboardRefreshingAction,
+  fetcher?: typeof fetch,
+  cookie?: string,
+  id?: string,
+  waitMs?: number,
+): Promise<Dashboard>
+export async function trackOperation(
+  action: OperationAction,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+  id = requestId(),
+  waitMs?: number,
+): Promise<Dashboard | OperationReceipt> {
+  const receipt = await pollOperationReceipt(action, fetcher, cookie, id, waitMs)
+  if (action.type === 'exec') return receipt
+  return refreshDashboardAfterOperation(receipt, action, fetcher)
+}
+
+/** @deprecated Use trackOperation */
+export const submitOperation = trackOperation
+
+async function awaitDashboard(
+  fetcher: typeof fetch,
+  seen: (dashboard: Dashboard) => boolean,
+  pending: string,
+) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const dashboard = await fetchDashboard(undefined, fetcher)
+    if (seen(dashboard)) return dashboard
+  }
+  throw new Error(pending)
 }
 
 export async function createBox(
@@ -170,24 +449,36 @@ export async function createBox(
   fetcher: typeof fetch = fetch,
   cookie = globalThis.document?.cookie ?? '',
 ): Promise<Dashboard> {
-  const receipt = await submitOperation(
-    { type: 'create', template, name },
+  return trackOperation({ type: 'create', template, name }, fetcher, cookie)
+}
+
+export async function createCheckpoint(
+  boxId: string,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+  id = requestId(),
+): Promise<Dashboard> {
+  return trackOperation({ type: 'checkpoint', id: boxId }, fetcher, cookie, id)
+}
+
+export async function restoreCheckpoint(
+  boxId: string,
+  checkpointId: string,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+  id = requestId(),
+): Promise<Dashboard> {
+  return trackOperation(
+    {
+      type: 'restore',
+      id: boxId,
+      checkpoint: checkpointId,
+      acknowledge_external_state_replay: true,
+    },
     fetcher,
     cookie,
-    (status) => `Create was not accepted (HTTP ${status}). No box was added.`,
-    (status) => `Operation status returned HTTP ${status}. The box is unchanged.`,
+    id,
   )
-  if (receipt.state !== 'succeeded') {
-    throw new Error(
-      receipt.error?.message ||
-        'Create did not succeed. The box is shown only after the control plane records it.',
-    )
-  }
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const dashboard = await fetchDashboard(undefined, fetcher)
-    if (dashboard.boxes.some((box) => box.id === receipt.box_id)) return dashboard
-  }
-  throw new Error('The control plane has not observed the new box.')
 }
 
 export async function applyLifecycle(
@@ -197,29 +488,53 @@ export async function applyLifecycle(
   fetcher: typeof fetch = fetch,
   cookie = globalThis.document?.cookie ?? '',
 ): Promise<Dashboard> {
-  const receipt = await submitOperation(
-    action === 'stop' ? { type: 'stop', id: boxId, force } : { type: action, id: boxId },
-    fetcher,
-    cookie,
-    (status) => `The operation was not accepted (HTTP ${status}). The box is unchanged.`,
-    (status) => `Operation status returned HTTP ${status}. The box is unchanged.`,
-  )
-  if (receipt.state === 'unknown') throw new Error('The outcome is unknown.')
-  if (receipt.state !== 'succeeded') {
-    throw new Error(
-      receipt.error?.message ||
-        'The operation did not succeed. The box state is shown only after the control plane reports it.',
-    )
+  const operation =
+    action === 'stop'
+      ? ({ type: 'stop', id: boxId, force } as const)
+      : ({ type: action, id: boxId } as const)
+  return trackOperation(operation, fetcher, cookie)
+}
+
+export type ExecOutput = {
+  exitCode: number | null
+  stdout: string
+  stderr: string
+  truncated: boolean
+  timedOut: boolean
+}
+
+export async function execCommand(
+  boxId: string,
+  argv: string[],
+  timeoutMs: number,
+  cwd?: string,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+): Promise<ExecOutput> {
+  const request: { argv: string[]; timeout_ms: number; cwd?: string } = {
+    argv,
+    timeout_ms: timeoutMs,
   }
-  const observed = receipt.result?.state
-  if (!observed) throw new Error('The control plane has not observed the box state.')
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const dashboard = await fetchDashboard(undefined, fetcher)
-    if (dashboard.boxes.some((box) => box.id === receipt.box_id && box.state === observed)) {
-      return dashboard
-    }
+  if (cwd) request.cwd = cwd
+  const receipt = await trackOperation({ type: 'exec', id: boxId, request }, fetcher, cookie)
+  const stdout = receipt.result?.stdout
+  const stderr = receipt.result?.stderr
+  if (receipt.result?.type !== 'exec' || !stdout || !stderr) throw new Error('unknown')
+  return {
+    exitCode: receipt.result.exit_code ?? null,
+    stdout: new TextDecoder().decode(Uint8Array.from(stdout)),
+    stderr: new TextDecoder().decode(Uint8Array.from(stderr)),
+    truncated: receipt.result.truncated === true,
+    timedOut: receipt.result.timed_out === true,
   }
-  throw new Error('The control plane has not observed the box state.')
+}
+
+export async function deleteBox(
+  boxId: string,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+): Promise<Dashboard> {
+  return trackOperation({ type: 'delete', id: boxId }, fetcher, cookie)
 }
 
 export async function fetchDashboard(
@@ -265,6 +580,15 @@ export function formatBytes(bytes: number | null) {
   if (bytes === 0) return '0 B'
   const power = Math.min(4, Math.floor(Math.log(bytes) / Math.log(1024)))
   return `${Number((bytes / 1024 ** power).toFixed(1))} ${['B', 'KiB', 'MiB', 'GiB', 'TiB'][power]}`
+}
+
+export function formatDiskUsedOfTotal(used: number | null, total: number | null) {
+  if (used === null) return '—'
+  if (total === null || total <= 0) return formatBytes(used)
+  const power = Math.min(4, Math.floor(Math.log(total) / Math.log(1024)))
+  const unit = ['B', 'KiB', 'MiB', 'GiB', 'TiB'][power]
+  const scale = 1024 ** power
+  return `${(used / scale).toFixed(1)} of ${(total / scale).toFixed(1)} ${unit}`
 }
 
 export function timestamp(value: string) {

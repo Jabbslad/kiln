@@ -139,7 +139,7 @@ platform() {
         Linux:x86_64) target=x86_64-unknown-linux-gnu ;;
         Darwin:x86_64) target=x86_64-apple-darwin ;;
         Darwin:arm64) target=aarch64-apple-darwin ;;
-        *) fail 'Supported clients: macOS ARM/Intel or Linux x86-64. Windows uses the release zip.' ;;
+        *) fail 'Supported clients: macOS ARM/Intel or Linux x86-64.' ;;
     esac
     if [ "$target" = x86_64-unknown-linux-gnu ]; then
         libc=$(getconf GNU_LIBC_VERSION 2>/dev/null || :)
@@ -220,6 +220,9 @@ FILES
         # packages remain installable, but cannot opt in to networking.
         if grep -qx 'bin/kiln-network' "$work/names"; then
             printf 'bin/kiln-network\n' >> "$work/expected"
+        fi
+        if grep -qx 'operations-journal.max-version' "$work/names"; then
+            printf '%s\n' operations-journal.max-version >> "$work/expected"
         fi
         # Door proxy units and their runbook ship together. An archive that
         # has any of these files must include the private unit and the

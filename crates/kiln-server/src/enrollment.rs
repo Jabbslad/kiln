@@ -508,9 +508,7 @@ trait LoginIssuer {
     ) -> impl Future<Output = Result<reqwest::Response>> + '_;
 }
 
-struct IdentityLogin {
-    http: reqwest::Client,
-}
+struct IdentityLogin;
 
 impl LoginIssuer for IdentityLogin {
     fn issue(
@@ -519,12 +517,12 @@ impl LoginIssuer for IdentityLogin {
         server_id: &str,
         directory_token: &str,
     ) -> impl Future<Output = Result<reqwest::Response>> + '_ {
-        let http = self.http.clone();
         let issuer = issuer.to_owned();
         let server_id = server_id.to_owned();
         let directory_token = directory_token.to_owned();
         async move {
             let issuer = origin(&issuer)?;
+            let http = publish_client(&issuer)?;
             send_app_login(&http, &issuer, &server_id, &directory_token).await
         }
     }
@@ -535,8 +533,7 @@ pub async fn publish_login() -> Result<LoginPublish, LoginPublishError> {
         return Err(LoginPublishError::NotWritten);
     }
     let gid = service_gid().map_err(|_| LoginPublishError::NotWritten)?;
-    let http = identity_client().map_err(|_| LoginPublishError::Unreachable)?;
-    let mut issuer = IdentityLogin { http };
+    let mut issuer = IdentityLogin;
     publish_at(Path::new(ETC), || Ok(gid), &mut issuer).await
 }
 
@@ -582,15 +579,38 @@ where
     Ok(LoginPublish::Created)
 }
 
-fn identity_client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
+fn identity_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
         .https_only(true)
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(30))
-        .build()?)
+}
+
+fn identity_client() -> Result<reqwest::Client> {
+    Ok(identity_builder().build()?)
+}
+
+fn publish_client(issuer: &reqwest::Url) -> Result<reqwest::Client> {
+    let mut builder = identity_builder();
+    // A loopback issuer in the upgrade test presents a private CA. Production
+    // issuers are never loopback, so this file cannot intercept them.
+    if issuer.host_str() == Some("127.0.0.1") {
+        let path = Path::new(ETC).join("loopback-identity-ca.pem");
+        match read(&path, 0o077, 65536) {
+            Ok(pem) => {
+                builder = builder.add_root_certificate(reqwest::Certificate::from_pem(&pem)?);
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(builder.build()?)
 }
 
 fn service_gid() -> Result<u32> {

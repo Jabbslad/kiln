@@ -153,10 +153,8 @@ never point development builds at production identity state.
 
 GitHub and Google subjects are distinct identities even when emails match.
 Cross-provider account linking, teams, invitations and hosted tenant isolation
-are not implemented. Windows central credential storage uses a protected ACL
-allowing only the current user and LocalSystem; native execution passed CI.
-Unix storage enforces owner-only files/directories. Unsafe existing ACLs or
-permissions are rejected rather than silently modified.
+are not implemented. Unix storage enforces owner-only files and directories.
+Unsafe existing permissions are rejected rather than silently modified.
 
 ## Verification and remaining acceptance
 
@@ -170,7 +168,7 @@ change nor testing disables CSRF or TLS validation.
 
 These checks do not establish real GitHub/Google consent or central-authenticated
 VM access. After approved provider setup and disposable host enrollment,
-`scripts/test-central-login.py --config PRIVATE_PROFILE --box DISPOSABLE_BOX_ID`
+`cargo xtask central-login --config PRIVATE_PROFILE --box DISPOSABLE_BOX_ID`
 checks real central status, inventory, binary exec and SSH without changing host
 configuration. It has not yet run against a deployed central service. SFTP/PTY,
 multi-process renewal, revocation and identity-outage acceptance remain required

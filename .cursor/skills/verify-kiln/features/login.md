@@ -19,6 +19,8 @@ kiln login
 
 The terminal prints `Open URL and enter code CODE`. The browser page is `/device` on the issuer. Sign in with GitHub or Google, then approve. With one enrolled server, login saves a profile and exits 0. With none, it exits with `no active servers are available` and tells you to run `kiln-api enroll`.
 
+The issuer `/login` and `/device` pages use the same dark console tokens as `web/` (`#0e0e0e` surface, `#202020` hairline borders, `#78e772` accent, Geist and Geist Mono). Styles live in `crates/kiln-identity/static/auth.css`; fonts are served from `/static/fonts/` on the identity origin (no third-party font hosts). `crates/kiln-identity/tests/auth_theme.rs` checks those tokens in CI.
+
 `kiln-identity` itself listens on loopback HTTP (`crates/kiln-identity/src/main.rs`, default `127.0.0.1:8091`). The CLI client is HTTPS-only and uses the public root store. A loopback process is not a login target.
 
 ## Driving it with tmux
@@ -41,5 +43,5 @@ Do not run this against `https://dark-forge.dev` from an unattended agent. Appro
 - Completing approval needs the real issuer and a provider account. The authoring proof did not log in.
 - `kiln-identity` will not bind a non-loopback address. Its `public_origin` must be an HTTPS origin with an empty path. `https://dark-forge.dev` refuses substitute GitHub URLs. `--github-authorize-url`, `--github-token-url`, `--github-user-url`, and `--provider-ca-file` exist only on a build with the non-default `lab-provider` feature. A release binary does not accept them.
 - First-use interactive VM commands can start login. `--json`, SSH proxy, and a missing explicit profile do not open a browser.
-- `scripts/test-central-login.py` checks an already approved profile. It is not a substitute for this journey.
+- `cargo xtask central-login` checks an already approved profile. It is not a substitute for this journey.
 - Device requests last ten minutes. The client poll interval starts at the value the server returns (5 seconds in the identity store).

@@ -14,12 +14,23 @@ import {
   Plus,
   Square,
   Terminal,
+  Trash2,
 } from 'lucide-react'
-import { formatBytes, formatMetric, timestamp, type Box, type Checkpoint } from './data'
-import { LifecycleDialog, RestoreDialog } from './dialogs'
+import {
+  execCommand,
+  operationPendingLabel,
+  formatBytes,
+  formatMetric,
+  timestamp,
+  type Box,
+  type Checkpoint,
+  type ExecOutput,
+} from './data'
+import { DeleteDialog, LifecycleDialog, RestoreDialog } from './dialogs'
 import { OperationList } from './Operations'
 import {
   AppLink,
+  CapabilitySurface,
   CopyButton,
   Empty,
   ResourceMetrics,
@@ -27,10 +38,11 @@ import {
   Unavailable,
   type PageProps,
 } from './ui'
+import { capabilityAvailable } from './capabilities'
 
 const tabs = ['Terminal', 'Exec', 'Previews', 'Checkpoints', 'Metrics', 'Activity']
 
-export default function BoxDetail({ data, preview, onObserved }: PageProps) {
+export default function BoxDetail({ data, preview }: PageProps) {
   const { id } = useParams()
   const [params, setParams] = useSearchParams()
   const requestedTab = params.get('tab') ?? 'terminal'
@@ -55,6 +67,7 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
       </Empty>
     )
   const checkpoints = data.checkpoints.filter((checkpoint) => checkpoint.box_id === box.id)
+  const authenticated = !preview && data.host.state === 'online'
   return (
     <>
       <div className="breadcrumb">
@@ -115,6 +128,10 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
               </button>
             </>
           )}
+          <button className="button" onClick={() => setAction('Delete')}>
+            <Trash2 size={14} />
+            Delete
+          </button>
         </div>
       </header>
       {box.last_error && (
@@ -175,12 +192,8 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
                   <Terminal size={16} />
                   shell
                 </span>
-                <span className="micro">
-                  <span className="status-dot" />
-                  Session not connected
-                </span>
               </div>
-              <div className="terminal-body">
+              <CapabilitySurface capability="terminal" className="terminal-body">
                 <div className="terminal-watermark">
                   <Terminal size={30} strokeWidth={1} />
                 </div>
@@ -201,42 +214,43 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
                   </button>
                   <span>Requires the terminal service</span>
                 </div>
-              </div>
-              <div className="terminal-footer">
-                <span>UTF-8</span>
-                <span>No session active</span>
-              </div>
+              </CapabilitySurface>
             </section>
             <div className="access-column">
               <Access />
-              <ResourceMetrics metrics={box.metrics} />
+              <ResourceMetrics
+                metrics={box.metrics}
+                boxState={box.state}
+                diskTotalBytes={box.resources?.disk_bytes ?? null}
+                hostObservedDisk
+              />
             </div>
           </div>
           <LaunchTiming box={box} />
         </>
       )}
-      {activeTab === 'exec' && <Exec preview={preview} />}
+      {activeTab === 'exec' && <Exec box={box} preview={preview} authenticated={authenticated} />}
       {activeTab === 'previews' && (
         <section className="panel preview-panel">
           <div className="panel-heading">
             <h2>HTTP previews</h2>
             <Lock size={15} />
           </div>
-          <div className="preview-content">
+          <CapabilitySurface capability="httpPreview" className="preview-content">
             <Lock size={30} strokeWidth={1} />
             <h2>Private until you say otherwise.</h2>
             <p>
               Preview routes require the authenticated gateway. No ports are exposed by this
               dashboard.
             </p>
-            <div className="form-row">
+            <CapabilitySurface capability="publicUrl" className="form-row">
               <span>Public access</span>
-              <span className="tag">Not configured</span>
-            </div>
+              <span className="tag">Enabled</span>
+            </CapabilitySurface>
             <button className="button" disabled>
               Add preview <Plus size={14} />
             </button>
-          </div>
+          </CapabilitySurface>
         </section>
       )}
       {activeTab === 'checkpoints' && (
@@ -292,12 +306,19 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
       )}
       {activeTab === 'metrics' && (
         <>
-          <ResourceMetrics metrics={box.metrics} />
+          <ResourceMetrics
+            metrics={box.metrics}
+            boxState={box.state}
+            diskTotalBytes={box.resources?.disk_bytes ?? null}
+            hostObservedDisk
+          />
           <LaunchTiming box={box} />
-          <p className="section-note">
-            Only host-reported measurements are shown. Missing data is never interpreted as zero
-            usage.
-          </p>
+          {capabilityAvailable('metrics') && (
+            <p className="section-note">
+              Only host-reported measurements are shown. Missing data is never interpreted as zero
+              usage.
+            </p>
+          )}
         </>
       )}
       {activeTab === 'activity' && (
@@ -305,21 +326,30 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
           operations={data.operations.filter((operation) => operation.box_id === box.id)}
         />
       )}
-      {action && (
-        <LifecycleDialog
-          action={action}
+      {action === 'Delete' ? (
+        <DeleteDialog
           box={box}
           preview={preview}
-          authenticated={!preview && data.host.state === 'online'}
-          onObserved={onObserved}
+          authenticated={authenticated}
           onClose={() => setAction(null)}
         />
+      ) : (
+        action && (
+          <LifecycleDialog
+            action={action}
+            box={box}
+            preview={preview}
+            authenticated={!preview && data.host.state === 'online'}
+            onClose={() => setAction(null)}
+          />
+        )
       )}
       {restoring && (
         <RestoreDialog
           box={box}
           checkpoint={restoring}
           preview={preview}
+          authenticated={authenticated}
           onClose={() => setRestoring(null)}
         />
       )}
@@ -335,34 +365,51 @@ function Access() {
         <ArrowUpRight size={15} />
       </div>
       <div className="access-section">
-        <span className="eyebrow">SSH</span>
-        <div className="connection-placeholder">
-          <Terminal size={15} />
-          <span>Endpoint not configured</span>
+        <div className="split-line">
+          <span className="eyebrow">SSH</span>
+          <Lock size={14} />
         </div>
-        <span className="field-hint">Requires the SSH gateway.</span>
+        <CapabilitySurface capability="ssh">
+          <button className="button full-width" disabled>
+            Connect
+          </button>
+        </CapabilitySurface>
       </div>
       <div className="access-section">
         <div className="split-line">
           <span className="eyebrow">HTTP preview</span>
           <Lock size={14} />
         </div>
-        <p>No routes configured</p>
-        <button className="button full-width" disabled>
-          Open preview <ArrowUpRight size={14} />
-        </button>
-        <span className="field-hint">Authenticated workspace access.</span>
+        <CapabilitySurface capability="httpPreview">
+          <button className="button full-width" disabled>
+            Add preview
+          </button>
+        </CapabilitySurface>
       </div>
-      <div className="access-bottom">
+      <CapabilitySurface capability="publicUrl" className="access-bottom">
         <span className="micro">Public access</span>
-        <span className="tag">Not configured</span>
-      </div>
+        <span className="tag">Enabled</span>
+      </CapabilitySurface>
     </section>
   )
 }
 
-function Exec({ preview }: { preview: boolean }) {
+function Exec({
+  box,
+  preview,
+  authenticated,
+}: {
+  box: Box
+  preview: boolean
+  authenticated: boolean
+}) {
   const [argv, setArgv] = useState('["/bin/pwd"]')
+  const [cwd, setCwd] = useState('')
+  const [timeout, setTimeoutMs] = useState('10000')
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+  const [output, setOutput] = useState<ExecOutput | null>(null)
+  let command: string[] = []
   let valid = false
   try {
     const parsed: unknown = JSON.parse(argv)
@@ -371,16 +418,44 @@ function Exec({ preview }: { preview: boolean }) {
       parsed.length > 0 &&
       parsed.every((item) => typeof item === 'string') &&
       parsed[0].length > 0
+    if (valid) command = parsed as string[]
   } catch {
-    /* Inline validation below. */
+    valid = false
   }
+  const timeoutMs = Number(timeout)
+  const timeoutValid = Number.isInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= 3_600_000
+  const cwdValid = cwd === '' || (cwd.startsWith('/') && !cwd.includes('\0'))
+  const ready =
+    authenticated && box.state === 'running' && valid && timeoutValid && cwdValid && !pending
+  const execAction = {
+    type: 'exec',
+    id: box.id,
+    request: { argv: command, timeout_ms: timeoutMs, cwd: cwd || undefined },
+  } as const
   return (
     <section className="panel exec-panel">
       <div className="panel-heading">
         <h2>Execute a command</h2>
         <Terminal size={16} />
       </div>
-      <form onSubmit={(event) => event.preventDefault()}>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (!ready) return
+          setPending(true)
+          setError('')
+          setOutput(null)
+          void execCommand(box.id, command, timeoutMs, cwd || undefined)
+            .then((result) => {
+              setOutput(result)
+              setPending(false)
+            })
+            .catch((reason: unknown) => {
+              setError(reason instanceof Error ? reason.message : 'unknown')
+              setPending(false)
+            })
+        }}
+      >
         <p>Structured arguments, bounded output. Commands are never retried automatically.</p>
         <div className="field">
           <label htmlFor="exec-argv">Arguments (JSON array)</label>
@@ -401,16 +476,61 @@ function Exec({ preview }: { preview: boolean }) {
         <div className="exec-options">
           <div className="field">
             <label htmlFor="exec-cwd">Working directory</label>
-            <input id="exec-cwd" placeholder="Guest default" />
+            <input
+              id="exec-cwd"
+              placeholder="Guest default"
+              value={cwd}
+              onChange={(event) => setCwd(event.target.value)}
+            />
           </div>
           <div className="field">
             <label htmlFor="exec-timeout">Timeout (ms)</label>
-            <input id="exec-timeout" type="number" min={1} max={3600000} defaultValue={10000} />
+            <input
+              id="exec-timeout"
+              type="number"
+              min={1}
+              max={3600000}
+              value={timeout}
+              onChange={(event) => setTimeoutMs(event.target.value)}
+            />
           </div>
         </div>
-        <Unavailable preview={preview} />
-        <button className="button primary" disabled>
-          Execute command <ArrowUpRight size={15} />
+        {authenticated ? (
+          box.state === 'running' ? null : (
+            <p className="field-hint">Commands run only while the box is running.</p>
+          )
+        ) : (
+          <Unavailable preview={preview} />
+        )}
+        {pending && (
+          <p className="field-hint" role="status">
+            {operationPendingLabel(execAction)} Waiting for the command result.
+          </p>
+        )}
+        {error && (
+          <p className="field-hint error-text" role="alert">
+            {error}
+          </p>
+        )}
+        {output && (
+          <>
+            <p>
+              Exit code {output.exitCode ?? 'none'}
+              {output.timedOut ? '. The command timed out.' : ''}
+              {output.truncated ? ' Output was truncated.' : ''}
+            </p>
+            <pre aria-label="stdout">{output.stdout}</pre>
+            <pre aria-label="stderr">{output.stderr}</pre>
+          </>
+        )}
+        <button className="button primary" disabled={!ready} aria-busy={pending}>
+          {pending ? (
+            operationPendingLabel(execAction)
+          ) : (
+            <>
+              Execute command <ArrowUpRight size={15} />
+            </>
+          )}
         </button>
       </form>
     </section>
@@ -418,7 +538,16 @@ function Exec({ preview }: { preview: boolean }) {
 }
 
 function LaunchTiming({ box }: { box: Box }) {
-  const phases = ['storage', 'vmm', 'restore', 'agent', 'init', 'first_command'] as const
+  const phase = (label: string, value: number | null | undefined) =>
+    typeof value === 'number' ? { label, value } : null
+  const phases = [
+    phase('storage', box.timing?.storage_ms),
+    phase('vmm', box.timing?.vmm_ms),
+    phase('restore', box.timing?.restore_ms),
+    phase('agent', box.timing?.agent_ms),
+    phase('init', box.timing?.init_ms),
+    phase('first command', box.timing?.first_command_ms),
+  ].filter((row): row is { label: string; value: number } => row !== null)
   return (
     <section className="panel timing-panel">
       <div className="panel-heading">
@@ -426,29 +555,37 @@ function LaunchTiming({ box }: { box: Box }) {
           <Clock3 size={15} />
           Launch timing
         </h2>
-        <span className="micro">
-          {box.timing?.total_ms == null
-            ? 'No measurement available'
-            : `${formatMetric(box.timing.total_ms, ' ms')} end to end`}
-        </span>
+        {capabilityAvailable('launchTiming') && (
+          <span className="micro">
+            {box.timing?.total_ms == null
+              ? 'Not reported'
+              : `${formatMetric(box.timing.total_ms, ' ms')} end to end`}
+          </span>
+        )}
       </div>
-      <div className="timing-grid">
-        {phases.map((phase) => (
-          <div key={phase}>
-            <span className="eyebrow">{phase.replace('_', ' ')}</span>
-            <strong>{formatMetric(box.timing?.[`${phase}_ms`] ?? null, ' ms')}</strong>
-            <span className="timing-tick" />
-          </div>
-        ))}
-      </div>
-      <div className="timing-footer">
-        <span>Request → first successful guest command</span>
-        <span>
-          {box.timing
-            ? `${box.timing.method} / Cache: ${box.timing.cache} / Copy: ${box.timing.disk_copy}`
-            : 'Cache and copy method not reported'}
-        </span>
-      </div>
+      <CapabilitySurface capability="launchTiming">
+        <div className="timing-grid">
+          {phases.length === 0 ? (
+            <p className="micro">Phase breakdown not reported for this launch.</p>
+          ) : (
+            phases.map(({ label, value }) => (
+              <div key={label}>
+                <span className="eyebrow">{label}</span>
+                <strong>{formatMetric(value, ' ms')}</strong>
+                <span className="timing-tick" />
+              </div>
+            ))
+          )}
+        </div>
+        <div className="timing-footer">
+          <span>Request → first successful guest command</span>
+          <span>
+            {box.timing
+              ? `${box.timing.method} / Cache: ${box.timing.cache} / Copy: ${box.timing.disk_copy}`
+              : 'Cache and copy method not reported'}
+          </span>
+        </div>
+      </CapabilitySurface>
     </section>
   )
 }

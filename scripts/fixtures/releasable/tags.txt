@@ -1,0 +1,6 @@
+refs/tags/v0.4.9
+refs/tags/v0.4.18
+abc123	refs/tags/v0.4.19
+refs/tags/v0.4.19^{}
+refs/tags/v1.0.0-rc1
+refs/tags/latest

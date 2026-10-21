@@ -1,6 +1,6 @@
 ---
 name: verify-kiln
-description: Drive Kiln (self-hosted Linux microVMs) the way a user does and keep evidence. Covers kiln-runtime, the kiln laptop client, browser login, the installer, and the read-only web dashboard. Use when checking a Kiln change against a real checkout.
+description: Drive Kiln (self-hosted Linux microVMs) the way a user does and keep evidence. Covers kiln-runtime, the kiln laptop client, browser login, the installer, and the web dashboard (preview or live operate session). Use when checking a Kiln change against a real checkout.
 ---
 
 # Verify Kiln
@@ -10,13 +10,13 @@ Kiln has several user surfaces. Pick the one in the feature file and launch only
 Surfaces:
 
 - `kiln-runtime` on a Linux host with KVM. This is the local box, exec, template, and checkpoint tool.
-- `kiln` over HTTPS to `kiln-host` / `kiln-api`. This is the laptop client, including SSH and a private CA.
+- `kiln` over HTTPS to `kiln-host` / `kiln-api`. This is the laptop client and private CA profiles. Guest SSH (`kiln ssh`) needs a client URL that reaches the gateway SSH routes; the public door does not expose them yet (`features/guest-access.md`, `features/public-door.md`).
 - `kiln login` against the identity service. The client default issuer is `https://dark-forge.dev`.
 - The public door in `features/public-door.md`. A laptop dials `https://cli.dark-forge.dev` on port 443 after identity approval. The door checks the token before it dials loopback `kiln-api`. tcp/8443 is closed.
 - `deploy/bootstrap/install.sh` for client and server install.
 - The dashboard in `web/`. It is a static React app. Preview mode does not call a VM API. `GET /api/v1/dashboard` is served by `kiln-host` and by loopback `kiln-api`. `kiln-door` forwards it for a read-scope owner JWT. The public name is `https://cli.dark-forge.dev` on port 443. The drive is in `features/dashboard.md`.
 
-Workspace version is `0.4.10` (`Cargo.toml`).
+Workspace version is `0.4.17` (`Cargo.toml`).
 
 Build once. Give each drive its own tmux session. Do not run `kiln-runtime` as root.
 
@@ -150,14 +150,14 @@ This skill ships no extra script. Repo scripts:
 | `scripts/fetch-firecracker.sh` | `bash scripts/fetch-firecracker.sh .tools/firecracker-1.17.0` |
 | `images/build-fixture.sh` | `bash images/build-fixture.sh images/output/fixture /usr/bin/busybox` |
 | `images/build-ubuntu.sh` | `bash images/build-ubuntu.sh images/output/ubuntu` |
-| `scripts/test-bootstrap.py` | `python3 scripts/test-bootstrap.py` |
-| `scripts/test-install.py` | `python3 scripts/test-install.py` |
-| `scripts/test-release.py` | `python3 scripts/test-release.py` |
+| `cargo xtask test-bootstrap` | `cargo xtask test-bootstrap` |
+| `cargo xtask test-install` | `cargo xtask test-install` |
+| `cargo xtask test-release` | `cargo xtask test-release` |
 | `scripts/test-network.sh` | `sudo sh scripts/test-network.sh` |
 | `scripts/test-network-kvm.sh` | see the script header; needs a built Ubuntu image |
-| `scripts/test-ssh-pty.py` | `python3 scripts/test-ssh-pty.py SSH_CONFIG HOST` on an already running guest |
-| `scripts/test-warm-guest.py` | `python3 scripts/test-warm-guest.py IMAGE_JSON FIRECRACKER OUTPUT_DIR` |
-| `scripts/test-central-login.py` | after a real enrolled host and a disposable running box; it does not log in |
+| `cargo xtask ssh-pty` | `cargo xtask ssh-pty SSH_CONFIG HOST` on an already running guest |
+| `cargo xtask warm-guest` | `cargo xtask warm-guest IMAGE_JSON FIRECRACKER OUTPUT_DIR` |
+| `cargo xtask central-login` | after a real enrolled host and a disposable running box; it does not log in |
 
 ## Maintenance
 

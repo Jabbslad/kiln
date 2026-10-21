@@ -1,6 +1,6 @@
 #!/bin/sh
 # Wait until main's build.yml run for this commit has completed.
-# reuse_release.py then sees a finished run. Failure, cancellation, and the
+# reuse-release fetch then sees a finished run. Failure, cancellation, and the
 # 15 minute bound record a fallback and do not call it.
 # REUSE_WAIT_LIMIT and REUSE_POLL_INTERVAL are seconds. Tests shorten them.
 set -eu

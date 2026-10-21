@@ -17,7 +17,7 @@ import {
   SlidersHorizontal,
   UserRound,
 } from 'lucide-react'
-import { fetchDashboard, timestamp, type Dashboard } from './data'
+import { fetchDashboard, readCsrf, setDashboardObserver, timestamp, type Dashboard } from './data'
 import { previewDashboard } from './fixtures'
 import Inventory from './Inventory'
 import BoxDetail from './BoxDetail'
@@ -26,9 +26,20 @@ import Operations from './Operations'
 import { Docs, Settings } from './Settings'
 import { AppLink, Empty } from './ui'
 import Landing from './Landing'
+import { kilnVersionLabel } from './kiln-version'
 
 type Connection =
   { state: 'loading' } | { state: 'error'; message: string } | { state: 'ready'; data: Dashboard }
+async function signOut() {
+  const response = await fetch('/logout', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `csrf=${readCsrf(document.cookie)}`,
+  })
+  if (response.ok) window.location.assign('/login')
+}
+
 const navigation = [
   { path: '/boxes', label: 'Boxes', icon: Box },
   { path: '/templates', label: 'Templates', icon: Layers },
@@ -82,7 +93,11 @@ function Dashboard() {
     }
   }, [preview, attempt])
   const data = preview ? previewDashboard : connection.state === 'ready' ? connection.data : null
-  const observe = (next: Dashboard) => setConnection({ state: 'ready', data: next })
+  useEffect(() => {
+    if (preview) return
+    setDashboardObserver((next) => setConnection({ state: 'ready', data: next }))
+    return () => setDashboardObserver(undefined)
+  }, [preview])
   const routeLabel =
     navigation.find((item) => location.pathname.startsWith(item.path))?.label ?? 'Guide'
   useEffect(() => {
@@ -114,7 +129,12 @@ function Dashboard() {
                   ? 'Connecting'
                   : 'Not connected'}
           </span>
-          <span className="topbar-version">Console / pilot</span>
+          <span className="topbar-version">{kilnVersionLabel(data?.version)}</span>
+          {data && !preview && (
+            <button className="button" type="button" onClick={() => void signOut()}>
+              Sign out
+            </button>
+          )}
         </div>
       </header>
       <aside id="sidebar" className="sidebar">
@@ -219,24 +239,14 @@ function Dashboard() {
               element={
                 data ? (
                   <Routes>
-                    <Route
-                      path="/boxes"
-                      element={<Inventory data={data} preview={preview} onObserved={observe} />}
-                    />
+                    <Route path="/boxes" element={<Inventory data={data} preview={preview} />} />
                     <Route
                       path="/boxes/:id"
-                      element={
-                        <BoxDetail
-                          key={location.pathname}
-                          data={data}
-                          preview={preview}
-                          onObserved={observe}
-                        />
-                      }
+                      element={<BoxDetail key={location.pathname} data={data} preview={preview} />}
                     />
                     <Route
                       path="/templates"
-                      element={<Templates data={data} preview={preview} onObserved={observe} />}
+                      element={<Templates data={data} preview={preview} />}
                     />
                     <Route
                       path="/operations"

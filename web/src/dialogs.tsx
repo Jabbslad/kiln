@@ -3,10 +3,16 @@ import { AlertTriangle, ArrowUpRight, Check, Lock, ShieldCheck } from 'lucide-re
 import {
   applyLifecycle,
   createBox,
+  createCheckpoint,
+  deleteBox,
   formatBytes,
+  operationPendingLabel,
+  requestId,
+  restoreCheckpoint,
   type Box,
   type Checkpoint,
   type Dashboard,
+  type OperationAction,
   type Template,
 } from './data'
 import { Modal, Unavailable } from './ui'
@@ -16,14 +22,12 @@ export function CreateDrawer({
   preview,
   authenticated,
   initialTemplate,
-  onObserved,
   onClose,
 }: {
   data: Dashboard
   preview: boolean
   authenticated: boolean
   initialTemplate?: Template
-  onObserved?: (data: Dashboard) => void
   onClose: () => void
 }) {
   const [templateId, setTemplateId] = useState(
@@ -36,6 +40,7 @@ export function CreateDrawer({
   const template = data.templates.find((item) => item.id === templateId)
   const invalidName = name.length > 0 && !/^[a-z][a-z0-9-]{0,62}$/.test(name)
   const duplicateName = data.boxes.some((box) => box.name === name)
+  const createAction = { type: 'create', template: template?.name ?? '', name } as const
   const ready =
     authenticated &&
     !pending &&
@@ -52,10 +57,7 @@ export function CreateDrawer({
           setPending(true)
           setError('')
           void createBox(template.name, name)
-            .then((observed) => {
-              onObserved?.(observed)
-              onClose()
-            })
+            .then(() => onClose())
             .catch((reason: unknown) => {
               setError(reason instanceof Error ? reason.message : 'Create did not finish.')
               setPending(false)
@@ -185,6 +187,12 @@ export function CreateDrawer({
           ) : (
             <Unavailable preview={preview} />
           )}
+          {pending && (
+            <p className="field-hint" role="status">
+              {operationPendingLabel(createAction)} Waiting for the control plane to finish booting
+              the box.
+            </p>
+          )}
           {error && (
             <p className="field-hint error-text" role="alert">
               {error}
@@ -192,11 +200,17 @@ export function CreateDrawer({
           )}
         </div>
         <footer className="modal-footer">
-          <button type="button" className="button" onClick={onClose}>
+          <button type="button" className="button" onClick={onClose} disabled={pending}>
             Cancel
           </button>
-          <button className="button primary" disabled={!ready}>
-            Create box <ArrowUpRight size={16} />
+          <button className="button primary" disabled={!ready} aria-busy={pending}>
+            {pending ? (
+              operationPendingLabel(createAction)
+            ) : (
+              <>
+                Create box <ArrowUpRight size={16} />
+              </>
+            )}
           </button>
         </footer>
       </form>
@@ -208,14 +222,27 @@ export function RestoreDialog({
   box,
   checkpoint,
   preview,
+  authenticated = false,
   onClose,
 }: {
   box: Box
   checkpoint: Checkpoint
   preview: boolean
+  authenticated?: boolean
   onClose: () => void
 }) {
   const [acknowledged, setAcknowledged] = useState(false)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+  const [operationId] = useState(() => requestId())
+  const sameBox = checkpoint.box_id === box.id
+  const ready = authenticated && acknowledged && sameBox && !pending
+  const restoreAction = {
+    type: 'restore',
+    id: box.id,
+    checkpoint: checkpoint.id,
+    acknowledge_external_state_replay: true,
+  } as const
   return (
     <Modal title="Restore checkpoint?" onClose={onClose}>
       <div className="modal-body">
@@ -248,22 +275,55 @@ export function RestoreDialog({
             checked={acknowledged}
             onChange={(event) => setAcknowledged(event.target.checked)}
           />
-          I understand the rollback risks.
+          I understand external state may replay.
         </label>
-        <Unavailable preview={preview} />
+        {authenticated ? (
+          <p className="field-hint">
+            This box updates after the control plane observes the restore.
+          </p>
+        ) : (
+          <Unavailable preview={preview} />
+        )}
+        {pending && (
+          <p className="field-hint" role="status">
+            {operationPendingLabel(restoreAction)} Waiting for the control plane to observe the
+            restore.
+          </p>
+        )}
+        {error && (
+          <p className="field-hint error-text" role="alert">
+            {error}
+          </p>
+        )}
       </div>
       <footer className="modal-footer">
-        <button className="button" onClick={onClose}>
+        <button className="button" onClick={onClose} disabled={pending}>
           Cancel
         </button>
-        <button className="button primary" disabled aria-describedby="restore-gate">
-          Restore checkpoint
+        <button
+          className="button primary"
+          disabled={!ready}
+          aria-busy={pending}
+          aria-describedby="restore-gate"
+          onClick={() => {
+            if (!ready) return
+            setPending(true)
+            setError('')
+            void restoreCheckpoint(box.id, checkpoint.id, fetch, document.cookie, operationId)
+              .then(() => onClose())
+              .catch((reason: unknown) => {
+                setError(reason instanceof Error ? reason.message : 'unknown')
+                setPending(false)
+              })
+          }}
+        >
+          {pending ? operationPendingLabel(restoreAction) : 'Restore checkpoint'}
         </button>
       </footer>
       <p id="restore-gate" className="dialog-footnote">
-        {acknowledged
-          ? 'Acknowledged. Restore remains unavailable without the authenticated service.'
-          : 'Acknowledge the risks before restoring through the authenticated service.'}
+        {authenticated && acknowledged
+          ? 'Same-box restore. External state may replay.'
+          : 'Acknowledge that external state may replay before restoring.'}
       </p>
     </Modal>
   )
@@ -274,22 +334,27 @@ export function LifecycleDialog({
   box,
   preview,
   authenticated = false,
-  onObserved,
   onClose,
 }: {
   action: string
   box: Box
   preview: boolean
   authenticated?: boolean
-  onObserved?: (data: Dashboard) => void
   onClose: () => void
 }) {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
+  const [operationId] = useState(() => requestId())
   const [force, setForce] = useState(false)
+  const checkpoint = action === 'Create checkpoint'
   const lifecycle =
     action === 'Pause' || action === 'Resume' || action === 'Stop' || action === 'Start'
-  const ready = authenticated && lifecycle && !pending
+  const ready = authenticated && (checkpoint || lifecycle) && !pending
+  const lifecycleAction = checkpoint
+    ? ({ type: 'checkpoint', id: box.id } as const)
+    : action === 'Stop'
+      ? ({ type: 'stop', id: box.id, force } as const)
+      : ({ type: action.toLowerCase(), id: box.id } as OperationAction)
   const explanations: Record<string, string> = {
     Pause:
       'Freeze vCPUs while keeping the VMM process, RAM and disk. Pausing does not release memory.',
@@ -316,10 +381,20 @@ export function LifecycleDialog({
             Force stop
           </label>
         )}
-        {lifecycle && authenticated ? (
-          <p className="field-hint">The box state updates after the control plane observes it.</p>
+        {(checkpoint || lifecycle) && authenticated ? (
+          <p className="field-hint">
+            {checkpoint
+              ? 'The checkpoint appears after the control plane observes it.'
+              : 'The box state updates after the control plane observes it.'}
+          </p>
         ) : (
           <Unavailable preview={preview} />
+        )}
+        {pending && (
+          <p className="field-hint" role="status">
+            {operationPendingLabel(lifecycleAction)} Waiting for the control plane to observe the
+            change.
+          </p>
         )}
         {error && (
           <p className="field-hint error-text" role="alert">
@@ -328,29 +403,111 @@ export function LifecycleDialog({
         )}
       </div>
       <footer className="modal-footer">
-        <button className="button" onClick={onClose}>
+        <button className="button" onClick={onClose} disabled={pending}>
           Cancel
         </button>
         <button
           className="button primary"
           disabled={!ready}
+          aria-busy={pending}
           onClick={() => {
             if (!ready) return
-            const kind = action.toLowerCase() as 'pause' | 'resume' | 'stop' | 'start'
             setPending(true)
             setError('')
-            void applyLifecycle(kind, box.id, action === 'Stop' && force)
-              .then((observed) => {
-                onObserved?.(observed)
-                onClose()
+            const task = checkpoint
+              ? createCheckpoint(box.id, fetch, document.cookie, operationId)
+              : applyLifecycle(
+                  action.toLowerCase() as 'pause' | 'resume' | 'stop' | 'start',
+                  box.id,
+                  action === 'Stop' && force,
+                )
+            void task
+              .then(() => onClose())
+              .catch((reason: unknown) => {
+                setError(reason instanceof Error ? reason.message : 'unknown')
+                setPending(false)
               })
+          }}
+        >
+          {pending ? operationPendingLabel(lifecycleAction) : action}
+        </button>
+      </footer>
+    </Modal>
+  )
+}
+
+export function DeleteDialog({
+  box,
+  preview,
+  authenticated = false,
+  onClose,
+}: {
+  box: Box
+  preview: boolean
+  authenticated?: boolean
+  onClose: () => void
+}) {
+  const [typed, setTyped] = useState('')
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+  const ready = authenticated && typed === box.name && !pending
+  const deleteAction = { type: 'delete', id: box.id } as const
+  return (
+    <Modal title="Delete box?" onClose={onClose}>
+      <div className="modal-body">
+        <div className="restore-target">{box.name}</div>
+        <p className="body-copy">
+          Permanently delete this box and its writable disk. Type the box name to confirm.
+        </p>
+        <div className="field">
+          <label htmlFor="delete-name">Type the box name</label>
+          <input
+            id="delete-name"
+            value={typed}
+            autoComplete="off"
+            disabled={pending}
+            onChange={(event) => setTyped(event.target.value)}
+          />
+        </div>
+        {authenticated ? (
+          <p className="field-hint">
+            The box leaves the inventory after the control plane observes it gone.
+          </p>
+        ) : (
+          <Unavailable preview={preview} />
+        )}
+        {pending && (
+          <p className="field-hint" role="status">
+            {operationPendingLabel(deleteAction)} Waiting for the control plane to observe removal.
+          </p>
+        )}
+        {error && (
+          <p className="field-hint error-text" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+      <footer className="modal-footer">
+        <button className="button" onClick={onClose} disabled={pending}>
+          Cancel
+        </button>
+        <button
+          className="button primary"
+          disabled={!ready}
+          aria-busy={pending}
+          onClick={() => {
+            if (!ready) return
+            setPending(true)
+            setError('')
+            void deleteBox(box.id)
+              .then(() => onClose())
               .catch((reason: unknown) => {
                 setError(reason instanceof Error ? reason.message : 'The operation did not finish.')
                 setPending(false)
               })
           }}
         >
-          {action}
+          {pending ? operationPendingLabel(deleteAction) : 'Delete box'}
         </button>
       </footer>
     </Modal>

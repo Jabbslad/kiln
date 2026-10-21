@@ -1,6 +1,6 @@
 mod ssh;
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use kiln_api::{Action, BoxView, ExecRequest, Operation, OperationState, Outcome, Submit, new_id};
 use kiln_client::Client;
 use kiln_client::auth::{IdentityClient, LoginPoll, Session, credential_from_login};
@@ -15,11 +15,7 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(
-    name = "kiln",
-    version,
-    about = "Manage Kiln microVMs over authenticated HTTPS"
-)]
+#[command(name = "kiln", about = "Manage Kiln microVMs over authenticated HTTPS")]
 struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -403,9 +399,7 @@ fn identity_origin(explicit: Option<&str>) -> String {
         .unwrap_or_else(|| kiln_api::auth::DEFAULT_IDENTITY_ORIGIN.to_owned())
 }
 fn open_browser(url: &str) -> Result<()> {
-    // Windows resolves `rundll32` to System32 even when PATH is replaced, so a
-    // `.cmd` stand-in never runs. Debug builds read KILN_BROWSER=0 and skip
-    // the launch. The release binary does not.
+    // Debug builds read KILN_BROWSER=0 and skip the launch. The release binary does not.
     #[cfg(debug_assertions)]
     if std::env::var_os("KILN_BROWSER").is_some_and(|value| value == "0") {
         bail!("browser launch failed");
@@ -414,12 +408,6 @@ fn open_browser(url: &str) -> Result<()> {
     let mut command = std::process::Command::new("open");
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut command = std::process::Command::new("xdg-open");
-    #[cfg(windows)]
-    let mut command = {
-        let mut c = std::process::Command::new("rundll32");
-        c.arg("url.dll,FileProtocolHandler");
-        c
-    };
     command.arg(url);
     let status = command.status().context("could not launch browser")?;
     anyhow::ensure!(status.success(), "browser launch failed");
@@ -1106,9 +1094,16 @@ async fn ssh_details(path: &Path, profile: &str, id: &str, client: &Client) -> R
     })
 }
 
+fn parse_cli() -> Cli {
+    let matches = Cli::command()
+        .version(kiln_api::release_version())
+        .get_matches();
+    Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    let cli = parse_cli();
     let as_json = cli.json;
     match run(cli).await {
         Ok(exit) => std::process::exit(exit),
