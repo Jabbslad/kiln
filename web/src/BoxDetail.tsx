@@ -26,6 +26,7 @@ import {
   type Checkpoint,
   type ExecOutput,
 } from './data'
+import { apiErrorMessage } from './kilnFetch'
 import { DeleteDialog, LifecycleDialog, RestoreDialog } from './dialogs'
 import { OperationList } from './Operations'
 import {
@@ -451,7 +452,7 @@ function Exec({
               setPending(false)
             })
             .catch((reason: unknown) => {
-              setError(reason instanceof Error ? reason.message : 'unknown')
+              setError(apiErrorMessage(reason, 'The command did not finish successfully.'))
               setPending(false)
             })
         }}

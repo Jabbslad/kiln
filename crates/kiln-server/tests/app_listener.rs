@@ -666,6 +666,39 @@ async fn dashboard_body_over_one_mib_is_refused() {
 }
 
 #[tokio::test]
+async fn failed_dashboard_upstream_refresh_is_audited() {
+    let root = tempfile::tempdir().unwrap();
+    archive(root.path());
+    let up = upstream_json().await;
+    let (auth, key) = auth(root.path());
+    let closed = up.port.saturating_add(50_000);
+    let session = app_listener::router_with_operate_session(
+        auth,
+        &format!("https://127.0.0.1:{closed}"),
+        up.ca_pem.as_bytes(),
+        Some(root.path()),
+        &token(&key, "owner-a", Scope::Read),
+    )
+    .unwrap();
+    let request = Request::builder()
+        .uri("/api/v1/dashboard")
+        .header("cookie", format!("__Host-kiln_app={}", session.session))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, body) = text(send(&session.router, "127.0.0.1:9", request).await).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    assert!(
+        session
+            .audit
+            .records()
+            .iter()
+            .any(|record| record.outcome == "dashboard_unreachable"),
+        "{:?}",
+        session.audit.records()
+    );
+}
+
+#[tokio::test]
 async fn rate_limit_is_checked_before_the_upstream_dial() {
     let root = tempfile::tempdir().unwrap();
     let up = upstream_json().await;

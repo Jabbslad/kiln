@@ -60,6 +60,23 @@ it('combines search and filters without mutating fixture state or fetching', asy
   expect(previewDashboard.boxes[1].state).toBe('paused')
 })
 
+it('shows a clear unreachable message, retry, and recovery after network failure', async () => {
+  let calls = 0
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => {
+      calls += 1
+      if (calls === 1) throw new TypeError('Load failed')
+      return Response.json(previewDashboard)
+    }),
+  )
+  open('/boxes')
+  expect(await screen.findByText("Couldn't reach the server")).toBeVisible()
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Retry connection' }))
+  expect(await screen.findByRole('heading', { name: 'Boxes' })).toBeVisible()
+  expect(calls).toBeGreaterThanOrEqual(2)
+})
+
 it('never substitutes examples when the service is down', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 503 })))
   open('/boxes')

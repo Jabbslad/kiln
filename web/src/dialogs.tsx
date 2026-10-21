@@ -15,6 +15,7 @@ import {
   type OperationAction,
   type Template,
 } from './data'
+import { apiErrorMessage } from './kilnFetch'
 import { Modal, Unavailable } from './ui'
 
 export function CreateDrawer({
@@ -59,7 +60,7 @@ export function CreateDrawer({
           void createBox(template.name, name)
             .then(() => onClose())
             .catch((reason: unknown) => {
-              setError(reason instanceof Error ? reason.message : 'Create did not finish.')
+              setError(apiErrorMessage(reason, 'Create did not finish.'))
               setPending(false)
             })
         }}
@@ -312,7 +313,7 @@ export function RestoreDialog({
             void restoreCheckpoint(box.id, checkpoint.id, fetch, document.cookie, operationId)
               .then(() => onClose())
               .catch((reason: unknown) => {
-                setError(reason instanceof Error ? reason.message : 'unknown')
+                setError(apiErrorMessage(reason, 'The operation did not finish.'))
                 setPending(false)
               })
           }}
@@ -424,7 +425,7 @@ export function LifecycleDialog({
             void task
               .then(() => onClose())
               .catch((reason: unknown) => {
-                setError(reason instanceof Error ? reason.message : 'unknown')
+                setError(apiErrorMessage(reason, 'The operation did not finish.'))
                 setPending(false)
               })
           }}
@@ -502,7 +503,7 @@ export function DeleteDialog({
             void deleteBox(box.id)
               .then(() => onClose())
               .catch((reason: unknown) => {
-                setError(reason instanceof Error ? reason.message : 'The operation did not finish.')
+                setError(apiErrorMessage(reason, 'The operation did not finish.'))
                 setPending(false)
               })
           }}
