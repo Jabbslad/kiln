@@ -40,7 +40,7 @@ import {
 
 const tabs = ['Terminal', 'Exec', 'Previews', 'Checkpoints', 'Metrics', 'Activity']
 
-export default function BoxDetail({ data, preview, onObserved }: PageProps) {
+export default function BoxDetail({ data, preview }: PageProps) {
   const { id } = useParams()
   const [params, setParams] = useSearchParams()
   const requestedTab = params.get('tab') ?? 'terminal'
@@ -186,7 +186,7 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
           <div className="workspace-grid">
             <TerminalPane box={box} preview={preview} authenticated={authenticated} />
             <div className="access-column">
-              <Access />
+              <Access boxId={box.id} />
               <ResourceMetrics metrics={box.metrics} />
             </div>
           </div>
@@ -209,7 +209,7 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
             </p>
             <div className="form-row">
               <span>Public access</span>
-              <span className="tag">Not configured</span>
+              <span className="tag">Not available yet</span>
             </div>
             <button className="button" disabled>
               Add preview <Plus size={14} />
@@ -288,7 +288,6 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
           box={box}
           preview={preview}
           authenticated={authenticated}
-          onObserved={onObserved}
           onClose={() => setAction(null)}
         />
       ) : (
@@ -298,7 +297,6 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
             box={box}
             preview={preview}
             authenticated={!preview && data.host.state === 'online'}
-            onObserved={onObserved}
             onClose={() => setAction(null)}
           />
         )
@@ -309,7 +307,6 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
           checkpoint={restoring}
           preview={preview}
           authenticated={authenticated}
-          onObserved={onObserved}
           onClose={() => setRestoring(null)}
         />
       )}
@@ -317,7 +314,9 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
   )
 }
 
-function Access() {
+function Access({ boxId }: { boxId: string }) {
+  const sshCommand = `kiln ssh ${boxId}`
+  const sshConfigCommand = `kiln ssh-config ${boxId}`
   return (
     <section className="panel access-panel">
       <div className="panel-heading">
@@ -328,24 +327,28 @@ function Access() {
         <span className="eyebrow">SSH</span>
         <div className="connection-placeholder">
           <Terminal size={15} />
-          <span>Endpoint not configured</span>
+          <span>{sshCommand}</span>
+          <CopyButton value={sshCommand} label="Copy kiln ssh command" />
         </div>
-        <span className="field-hint">Requires the SSH gateway.</span>
+        <div className="connection-placeholder">
+          <span>{sshConfigCommand}</span>
+          <CopyButton value={sshConfigCommand} label="Copy kiln ssh-config command" />
+        </div>
+        <span className="field-hint">Use the Kiln CLI on Linux or macOS.</span>
       </div>
       <div className="access-section">
         <div className="split-line">
           <span className="eyebrow">HTTP preview</span>
           <Lock size={14} />
         </div>
-        <p>No routes configured</p>
+        <p>Not available yet</p>
         <button className="button full-width" disabled>
-          Open preview <ArrowUpRight size={14} />
+          Not available yet
         </button>
-        <span className="field-hint">Authenticated workspace access.</span>
       </div>
       <div className="access-bottom">
         <span className="micro">Public access</span>
-        <span className="tag">Not configured</span>
+        <span className="tag">Not available yet</span>
       </div>
     </section>
   )
