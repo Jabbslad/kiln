@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { AlertTriangle, ArrowUpRight, Check, Lock, ShieldCheck } from 'lucide-react'
 import {
+  applyLifecycle,
   createBox,
   createCheckpoint,
   formatBytes,
@@ -327,8 +328,11 @@ export function LifecycleDialog({
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
   const [operationId] = useState(() => requestId())
+  const [force, setForce] = useState(false)
   const checkpoint = action === 'Create checkpoint'
-  const ready = checkpoint && authenticated && !pending
+  const lifecycle =
+    action === 'Pause' || action === 'Resume' || action === 'Stop' || action === 'Start'
+  const ready = authenticated && (checkpoint || lifecycle) && !pending
   const explanations: Record<string, string> = {
     Pause:
       'Freeze vCPUs while keeping the VMM process, RAM and disk. Pausing does not release memory.',
@@ -344,8 +348,23 @@ export function LifecycleDialog({
       <div className="modal-body">
         <div className="restore-target">{box.name}</div>
         <p className="body-copy">{explanations[action]}</p>
-        {checkpoint && authenticated ? (
-          <p className="field-hint">The checkpoint appears after the control plane observes it.</p>
+        {action === 'Stop' && (
+          <label className="acknowledgement">
+            <input
+              type="checkbox"
+              checked={force}
+              disabled={pending}
+              onChange={(event) => setForce(event.target.checked)}
+            />
+            Force stop
+          </label>
+        )}
+        {(checkpoint || lifecycle) && authenticated ? (
+          <p className="field-hint">
+            {checkpoint
+              ? 'The checkpoint appears after the control plane observes it.'
+              : 'The box state updates after the control plane observes it.'}
+          </p>
         ) : (
           <Unavailable preview={preview} />
         )}
@@ -363,10 +382,17 @@ export function LifecycleDialog({
           className="button primary"
           disabled={!ready}
           onClick={() => {
-            if (!ready || action !== 'Create checkpoint') return
+            if (!ready) return
             setPending(true)
             setError('')
-            void createCheckpoint(box.id, fetch, document.cookie, operationId)
+            const task = checkpoint
+              ? createCheckpoint(box.id, fetch, document.cookie, operationId)
+              : applyLifecycle(
+                  action.toLowerCase() as 'pause' | 'resume' | 'stop' | 'start',
+                  box.id,
+                  action === 'Stop' && force,
+                )
+            void task
               .then((observed) => {
                 onObserved?.(observed)
                 onClose()

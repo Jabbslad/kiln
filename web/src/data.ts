@@ -120,12 +120,16 @@ type OperationReceipt = {
   id: string
   box_id: string
   state: string
-  result?: { type?: string; id?: string; box_id?: string } | null
+  result?: { type?: string; id?: string; box_id?: string; state?: string } | null
   error?: { message?: string } | null
 }
 
 export type OperationAction =
   | { type: 'create'; template: string; name: string }
+  | { type: 'pause'; id: string }
+  | { type: 'resume'; id: string }
+  | { type: 'stop'; id: string; force: boolean }
+  | { type: 'start'; id: string }
   | { type: 'checkpoint'; id: string }
   | {
       type: 'restore'
@@ -276,6 +280,36 @@ export async function restoreCheckpoint(
       dashboard.boxes.some((box) => box.id === boxId && box.restored_from === checkpointId),
     'The control plane has not observed the restore.',
   )
+}
+
+export async function applyLifecycle(
+  action: 'pause' | 'resume' | 'stop' | 'start',
+  boxId: string,
+  force = false,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+): Promise<Dashboard> {
+  const receipt = await submitOperation(
+    action === 'stop' ? { type: 'stop', id: boxId, force } : { type: action, id: boxId },
+    fetcher,
+    cookie,
+  )
+  if (receipt.state === 'unknown') throw new Error('The outcome is unknown.')
+  if (receipt.state !== 'succeeded') {
+    throw new Error(
+      receipt.error?.message ||
+        'The operation did not succeed. The box state is shown only after the control plane reports it.',
+    )
+  }
+  const observed = receipt.result?.state
+  if (!observed) throw new Error('The control plane has not observed the box state.')
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const dashboard = await fetchDashboard(undefined, fetcher)
+    if (dashboard.boxes.some((box) => box.id === receipt.box_id && box.state === observed)) {
+      return dashboard
+    }
+  }
+  throw new Error('The control plane has not observed the box state.')
 }
 
 export async function fetchDashboard(
