@@ -76,5 +76,6 @@ See `features/auto-release.md` for the main-push release and deploy chain.
 - Server mode requires `/dev/kvm`, Ubuntu 24.04, Ubuntu 26.04, or Debian 13, systemd, and cgroup controllers `cpu`, `memory`, and `pids`. The harness stubs those checks.
 - CI runs the xtask harnesses, shell fixture tests, and ShellCheck in `.github/workflows/build.yml`. Pull-request tag-path dry-run also rehearses a server upgrade over a fixture journal plus reuse-fetched release tarballs.
 - `scripts/test-operations-journal-version-sync.sh` fails when `deploy/operations-journal.max-version` diverges from `crates/kiln-server/src/journal.rs`.
+- `cargo xtask release-version read-json-field` and `scripts/test-release-json-field.sh` read `release.json` versions with typed JSON (upgrade rehearsal and CI no longer scrape versions with sed).
 - Failed server update steps print step name, command, exit code, and trailing output (`install_step_fail` / `report_install_step` in `deploy/install.sh`).
 - Bootstrap server install does not lay down `kiln-identity` or the dashboard archive; those arrive on tagged deploy/auto-release (`deploy/github/install-remote.sh`).

@@ -25,6 +25,7 @@ Rehearse without publishing:
 ```sh
 sh scripts/test-plan-release.sh
 sh scripts/test-tag-path-dry-run.sh
+sh scripts/test-tag-path-pr-stamp-order.sh
 sh scripts/test-releasable.sh
 cargo xtask test-deploy-workflow
 cargo xtask test-reuse-release
@@ -32,7 +33,7 @@ cargo xtask test-reuse-release
 
 A pass is exit 0 from each command. Save combined output in `$VERIFY_EVIDENCE/auto-release-harness.txt`.
 
-The tag-path dry run on pull requests stamps packages to a `-dryrun` tag locally and runs the same attest and reuse checks the release jobs use, without `gh release create` or deploy.
+The tag-path dry run on pull requests stamps packages to a `-dryrun` tag locally and runs the same attest and reuse checks the release jobs use, without `gh release create` or deploy. On pull requests it also resolves the dry-run tag, builds release binaries, and runs `check-binary` before assembling a server upgrade tarball; `scripts/test-tag-path-pr-stamp-order.sh` fails if resolve/build/check order or the `v`-prefixed tag drifts.
 
 ## Gotchas
 
