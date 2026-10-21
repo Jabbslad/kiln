@@ -39,7 +39,7 @@ deploy=$work/deploy
 log=$work/commands.log
 live=$fx/usr/local/libexec/kiln-identity
 state=$work/state
-mkdir -p "$fx/usr/local/libexec" "$fx/opt/kiln" "$fx/proc" "$fx/run/lock" "$deploy" "$state"
+mkdir -p "$fx/usr/local/libexec" "$fx/opt/kiln" "$fx/proc" "$fx/run/lock" "$deploy" "$state" "$work/stubs"
 printf 'active\n' >"$state/active"
 printf '4300\n' >"$state/pid"
 mkdir -p "$fx/proc/4300"
