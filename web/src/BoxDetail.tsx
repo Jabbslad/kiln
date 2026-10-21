@@ -186,7 +186,7 @@ export default function BoxDetail({ data, preview }: PageProps) {
           <div className="workspace-grid">
             <TerminalPane box={box} preview={preview} authenticated={authenticated} />
             <div className="access-column">
-              <Access boxId={box.id} />
+              <Access />
               <ResourceMetrics metrics={box.metrics} />
             </div>
           </div>
@@ -314,9 +314,7 @@ export default function BoxDetail({ data, preview }: PageProps) {
   )
 }
 
-function Access({ boxId }: { boxId: string }) {
-  const sshCommand = `kiln ssh ${boxId}`
-  const sshConfigCommand = `kiln ssh-config ${boxId}`
+function Access() {
   return (
     <section className="panel access-panel">
       <div className="panel-heading">
@@ -324,17 +322,14 @@ function Access({ boxId }: { boxId: string }) {
         <ArrowUpRight size={15} />
       </div>
       <div className="access-section">
-        <span className="eyebrow">SSH</span>
-        <div className="connection-placeholder">
-          <Terminal size={15} />
-          <span>{sshCommand}</span>
-          <CopyButton value={sshCommand} label="Copy kiln ssh command" />
+        <div className="split-line">
+          <span className="eyebrow">SSH</span>
+          <Lock size={14} />
         </div>
-        <div className="connection-placeholder">
-          <span>{sshConfigCommand}</span>
-          <CopyButton value={sshConfigCommand} label="Copy kiln ssh-config command" />
-        </div>
-        <span className="field-hint">Use the Kiln CLI on Linux or macOS.</span>
+        <p>Not available yet</p>
+        <button className="button full-width" disabled>
+          Not available yet
+        </button>
       </div>
       <div className="access-section">
         <div className="split-line">
