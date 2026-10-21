@@ -54,17 +54,13 @@ identity_nrestarts() {
   printf '%s\n' "$value"
 }
 
-loopback_login_step() {
-  loopback_ok
-}
-
 verify_signin_after_restart() {
   local restarts_before restarts_after
   restarts_before=$(identity_nrestarts) || restarts_before=unknown
   identity_step_fail "kiln-identity active after restart" \
     systemctl is-active --quiet kiln-identity.service || return 1
   identity_step_fail "kiln-identity login after restart" \
-    loopback_login_step || return 1
+    loopback_ok || return 1
   sleep 2
   restarts_after=$(identity_nrestarts) || restarts_after=unknown
   if [ "$restarts_before" != "$restarts_after" ]; then
@@ -221,7 +217,7 @@ atomic_copy() {
 }
 
 loopback_ok() {
-  local log_probe=${1:-} i=0 body code phrase=missing
+  local i=0 body code phrase=missing
   while [ "$i" -lt 5 ]; do
     body=$(mktemp)
     code=$(curl --silent --show-error --proto '=http' --proto-redir '=http' --max-time 10 \
@@ -233,9 +229,6 @@ loopback_ok() {
     fi
     rm -f "$body"
     if [ "$code" = 200 ] && [ "$phrase" = found ]; then
-      if [ "$log_probe" = log ]; then
-        printf 'identity probe loopback: status=%s phrase=%s\n' "$code" "$phrase"
-      fi
       return 0
     fi
     i=$((i + 1))
@@ -243,9 +236,6 @@ loopback_ok() {
       sleep 1
     fi
   done
-  if [ "$log_probe" = log ]; then
-    printf 'identity probe loopback: status=%s phrase=%s\n' "${code:-000}" "$phrase"
-  fi
   return 1
 }
 
