@@ -547,3 +547,22 @@ it('does not present an interactive terminal session as connected', async () => 
   expect(screen.queryByText('Connected', { exact: true })).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: 'Connect terminal' })).toBeDisabled()
 })
+
+it('posts sign-out to /logout with the CSRF value', async () => {
+  const request = vi.fn(async (url: string, _init?: RequestInit) => {
+    if (url === '/logout') return new Response(null, { status: 204 })
+    return Response.json(previewDashboard)
+  })
+  vi.stubGlobal('fetch', request)
+  document.cookie = '__Host-kiln_csrf=browser-csrf; Secure; Path=/'
+  open('/boxes')
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'Sign out' }))
+  await waitFor(() => {
+    const logout = request.mock.calls.find((call) => call[0] === '/logout')
+    expect(logout?.[1]).toMatchObject({
+      method: 'POST',
+      credentials: 'same-origin',
+      body: 'csrf=browser-csrf',
+    })
+  })
+})

@@ -17,7 +17,7 @@ import {
   SlidersHorizontal,
   UserRound,
 } from 'lucide-react'
-import { fetchDashboard, timestamp, type Dashboard } from './data'
+import { fetchDashboard, readCsrf, timestamp, type Dashboard } from './data'
 import { previewDashboard } from './fixtures'
 import Inventory from './Inventory'
 import BoxDetail from './BoxDetail'
@@ -29,6 +29,16 @@ import Landing from './Landing'
 
 type Connection =
   { state: 'loading' } | { state: 'error'; message: string } | { state: 'ready'; data: Dashboard }
+async function signOut() {
+  const response = await fetch('/logout', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `csrf=${readCsrf(document.cookie)}`,
+  })
+  if (response.ok) window.location.assign('/login')
+}
+
 const navigation = [
   { path: '/boxes', label: 'Boxes', icon: Box },
   { path: '/templates', label: 'Templates', icon: Layers },
@@ -115,6 +125,11 @@ function Dashboard() {
                   : 'Not connected'}
           </span>
           <span className="topbar-version">Console / pilot</span>
+          {data && !preview && (
+            <button className="button" type="button" onClick={() => void signOut()}>
+              Sign out
+            </button>
+          )}
         </div>
       </header>
       <aside id="sidebar" className="sidebar">
