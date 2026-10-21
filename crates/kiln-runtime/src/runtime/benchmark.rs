@@ -164,6 +164,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn launch_phase_timing_cli_proof() {
+        use crate::launch_timing::LaunchTiming;
+        use std::time::Duration;
+
+        scoped(async {
+            {
+                let _storage = Phase::start("disk_copy");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            {
+                let _vmm = Phase::start("vmm_start");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            {
+                let _guest = Phase::start("guest_ready");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            {
+                let _agent = Phase::start("guest_initialize");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await;
+        let before = LaunchTiming::from_phases("create", "Copy", 8367.8, take_phases());
+        println!(
+            "PROOF_BEFORE {}",
+            serde_json::to_string(&before).expect("timing json")
+        );
+
+        let phases = scoped(async {
+            {
+                let _storage = Phase::start("disk_copy");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            {
+                let _vmm = Phase::start("vmm_start");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            {
+                let _guest = Phase::start("guest_ready");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            {
+                let _agent = Phase::start("guest_initialize");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            take_phases()
+        })
+        .await;
+        let after = LaunchTiming::from_phases("create", "Copy", 8367.8, phases);
+        println!(
+            "PROOF_AFTER {}",
+            serde_json::to_string(&after).expect("timing json")
+        );
+    }
+
+    #[tokio::test]
     async fn launch_phases_map_into_last_launch_when_taken_inside_scope() {
         let phases = scoped(async {
             {
