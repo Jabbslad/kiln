@@ -3,6 +3,7 @@ import {
   applyLifecycle,
   createBox,
   dashboardSchema,
+  deleteBox,
   fetchDashboard,
   formatBytes,
   formatMetric,
@@ -217,6 +218,69 @@ describe('dashboard boundary', () => {
     await expect(
       applyLifecycle('pause', boxId, false, fetcher, '__Host-kiln_csrf=form-csrf'),
     ).rejects.toThrow(/unknown/)
+    expect(fetcher.mock.calls.some(([url]) => String(url) === '/api/v1/dashboard')).toBe(false)
+  })
+
+  it('submits delete and drops the box only once a later dashboard omits it', async () => {
+    const boxId = 'f'.repeat(32)
+    const kept = structuredClone(previewDashboard)
+    kept.boxes = [{ ...previewDashboard.boxes[0], id: boxId }]
+    const gone = structuredClone(previewDashboard)
+    gone.boxes = []
+    let observed = false
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        expect(posted.id).toMatch(/^[a-f0-9]{32}$/)
+        expect(posted.action).toEqual({ type: 'delete', id: boxId })
+        expect(init.headers).toMatchObject({ 'x-kiln-csrf': 'form-csrf' })
+        expect(init.credentials).toBe('same-origin')
+        return Response.json(
+          { id: posted.id, box_id: boxId, state: 'running', result: null, error: null },
+          { status: 202 },
+        )
+      }
+      if (url.startsWith('/v1/operations/')) {
+        return Response.json({
+          id: url.slice('/v1/operations/'.length),
+          box_id: boxId,
+          state: 'succeeded',
+          result: { type: 'deleted', id: boxId },
+          error: null,
+        })
+      }
+      if (!observed) {
+        observed = true
+        return Response.json(kept)
+      }
+      return Response.json(gone)
+    })
+    const dashboard = await deleteBox(boxId, fetcher, '__Host-kiln_csrf=form-csrf')
+    expect(dashboard.boxes.some((box) => box.id === boxId)).toBe(false)
+    expect(fetcher.mock.calls.filter(([url]) => String(url) === '/api/v1/dashboard').length).toBe(2)
+  })
+
+  it('reports an unknown delete outcome without removing the box', async () => {
+    const boxId = 'f'.repeat(32)
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json({
+          id: posted.id,
+          box_id: boxId,
+          state: 'unknown',
+          result: null,
+          error: null,
+        })
+      }
+      return Response.json({
+        ...previewDashboard,
+        boxes: [],
+      })
+    })
+    await expect(deleteBox(boxId, fetcher, '__Host-kiln_csrf=form-csrf')).rejects.toThrow(/unknown/)
     expect(fetcher.mock.calls.some(([url]) => String(url) === '/api/v1/dashboard')).toBe(false)
   })
 })

@@ -14,9 +14,10 @@ import {
   Plus,
   Square,
   Terminal,
+  Trash2,
 } from 'lucide-react'
 import { formatBytes, formatMetric, timestamp, type Box, type Checkpoint } from './data'
-import { LifecycleDialog, RestoreDialog } from './dialogs'
+import { DeleteDialog, LifecycleDialog, RestoreDialog } from './dialogs'
 import { OperationList } from './Operations'
 import {
   AppLink,
@@ -115,6 +116,10 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
               </button>
             </>
           )}
+          <button className="button" onClick={() => setAction('Delete')}>
+            <Trash2 size={14} />
+            Delete
+          </button>
         </div>
       </header>
       {box.last_error && (
@@ -305,15 +310,25 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
           operations={data.operations.filter((operation) => operation.box_id === box.id)}
         />
       )}
-      {action && (
-        <LifecycleDialog
-          action={action}
+      {action === 'Delete' ? (
+        <DeleteDialog
           box={box}
           preview={preview}
           authenticated={!preview && data.host.state === 'online'}
           onObserved={onObserved}
           onClose={() => setAction(null)}
         />
+      ) : (
+        action && (
+          <LifecycleDialog
+            action={action}
+            box={box}
+            preview={preview}
+            authenticated={!preview && data.host.state === 'online'}
+            onObserved={onObserved}
+            onClose={() => setAction(null)}
+          />
+        )
       )}
       {restoring && (
         <RestoreDialog

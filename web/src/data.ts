@@ -130,6 +130,7 @@ type SubmittedAction =
   | { type: 'resume'; id: string }
   | { type: 'stop'; id: string; force: boolean }
   | { type: 'start'; id: string }
+  | { type: 'delete'; id: string }
 
 async function submitOperation(
   action: SubmittedAction,
@@ -220,6 +221,32 @@ export async function applyLifecycle(
     }
   }
   throw new Error('The control plane has not observed the box state.')
+}
+
+export async function deleteBox(
+  boxId: string,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+): Promise<Dashboard> {
+  const receipt = await submitOperation(
+    { type: 'delete', id: boxId },
+    fetcher,
+    cookie,
+    (status) => `The operation was not accepted (HTTP ${status}). The box is unchanged.`,
+    (status) => `Operation status returned HTTP ${status}. The box is unchanged.`,
+  )
+  if (receipt.state === 'unknown') throw new Error('The outcome is unknown.')
+  if (receipt.state !== 'succeeded') {
+    throw new Error(
+      receipt.error?.message ||
+        'The operation did not succeed. The box stays until the control plane observes it gone.',
+    )
+  }
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const dashboard = await fetchDashboard(undefined, fetcher)
+    if (!dashboard.boxes.some((box) => box.id === receipt.box_id)) return dashboard
+  }
+  throw new Error('The control plane has not observed the deletion.')
 }
 
 export async function fetchDashboard(

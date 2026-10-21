@@ -3,6 +3,7 @@ import { AlertTriangle, ArrowUpRight, Check, Lock, ShieldCheck } from 'lucide-re
 import {
   applyLifecycle,
   createBox,
+  deleteBox,
   formatBytes,
   type Box,
   type Checkpoint,
@@ -351,6 +352,82 @@ export function LifecycleDialog({
           }}
         >
           {action}
+        </button>
+      </footer>
+    </Modal>
+  )
+}
+
+export function DeleteDialog({
+  box,
+  preview,
+  authenticated = false,
+  onObserved,
+  onClose,
+}: {
+  box: Box
+  preview: boolean
+  authenticated?: boolean
+  onObserved?: (data: Dashboard) => void
+  onClose: () => void
+}) {
+  const [typed, setTyped] = useState('')
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+  const ready = authenticated && typed === box.name && !pending
+  return (
+    <Modal title="Delete box?" onClose={onClose}>
+      <div className="modal-body">
+        <div className="restore-target">{box.name}</div>
+        <p className="body-copy">
+          Permanently delete this box and its writable disk. Type the box name to confirm.
+        </p>
+        <div className="field">
+          <label htmlFor="delete-name">Type the box name</label>
+          <input
+            id="delete-name"
+            value={typed}
+            autoComplete="off"
+            disabled={pending}
+            onChange={(event) => setTyped(event.target.value)}
+          />
+        </div>
+        {authenticated ? (
+          <p className="field-hint">
+            The box leaves the inventory after the control plane observes it gone.
+          </p>
+        ) : (
+          <Unavailable preview={preview} />
+        )}
+        {error && (
+          <p className="field-hint error-text" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+      <footer className="modal-footer">
+        <button className="button" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          className="button primary"
+          disabled={!ready}
+          onClick={() => {
+            if (!ready) return
+            setPending(true)
+            setError('')
+            void deleteBox(box.id)
+              .then((observed) => {
+                onObserved?.(observed)
+                onClose()
+              })
+              .catch((reason: unknown) => {
+                setError(reason instanceof Error ? reason.message : 'The operation did not finish.')
+                setPending(false)
+              })
+          }}
+        >
+          Delete box
         </button>
       </footer>
     </Modal>
