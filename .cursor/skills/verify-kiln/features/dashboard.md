@@ -34,6 +34,7 @@ A host body larger than 1 MiB (`kiln_api::MAX_RESPONSE_BYTES`) makes `stamp` ret
 
 - Inventory at `/boxes`: search, state filters, name sort, row links.
 - Box detail at `/boxes/:id` with workspace, exec, checkpoint, and preview tabs.
+- Capability guard in `web/src/capabilities.ts`: metrics, terminal, SSH, HTTP preview, public URL, and launch timing each declare `available` or `not-yet`. Panels read that map and render the shared **Not available yet** state instead of blank placeholders or fake broken controls. Vitest in `web/src/capabilities.test.tsx` fails if an `available` capability shows `—`, `-`, `N/A`, or empty values, or if a `not-yet` capability renders anything else. Metrics is `not-yet` until host telemetry is wired in the dashboard.
 - Templates at `/templates`, including the create-box drawer.
 - Operations at `/operations`.
 - Settings at `/settings` and the guide at `/docs`.
