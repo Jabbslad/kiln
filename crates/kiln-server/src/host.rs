@@ -48,6 +48,7 @@ pub struct Host {
     journal: Mutex<Journal>,
     capacity: Arc<Semaphore>,
     sessions: Arc<Semaphore>,
+    metrics: Mutex<crate::metrics::Sampler>,
     _locks: [File; 2],
 }
 
@@ -143,6 +144,8 @@ impl Host {
             });
         }
         let journal = Journal::open(&config.journal_dir.join("operations.sqlite"))?;
+        let mut metrics = crate::metrics::Sampler::new(crate::metrics::Paths::live());
+        metrics.prime();
         Ok(Arc::new(Self {
             runtime,
             runtime_dir: config.runtime_dir.clone(),
@@ -151,6 +154,7 @@ impl Host {
             journal: Mutex::new(journal),
             capacity: Arc::new(Semaphore::new(8)),
             sessions: Arc::new(Semaphore::new(32)),
+            metrics: Mutex::new(metrics),
             _locks: [runtime_lock, journal_lock],
         }))
     }
@@ -233,6 +237,7 @@ impl Host {
         drop(journal);
         let mut names = BTreeMap::new();
         let mut boxes = Vec::new();
+        let mut sampler = self.metrics.lock().unwrap();
         for id in ids {
             let Some(record) = read_box(&self.runtime_dir, &id)? else {
                 continue;
@@ -245,6 +250,9 @@ impl Host {
             };
             let disk_bytes = box_disk(&self.runtime_dir, &record).and_then(file_len);
             names.insert(id.clone(), record.name.clone());
+            let active = matches!(record.state.as_str(), "running" | "paused");
+            let cgroup = self.runtime.box_cgroup(&record.run);
+            let metrics = sampler.box_metrics(cgroup.as_deref(), active);
             boxes.push(crate::dashboard::BoxFacts {
                 id,
                 name: record.name,
@@ -256,6 +264,7 @@ impl Host {
                 last_operation: record.operation,
                 last_error: record.last_error,
                 restored_from: record.source,
+                metrics,
             });
         }
         let mut operations = Vec::new();
@@ -305,10 +314,12 @@ impl Host {
             });
         }
         checkpoints.sort_by(|left, right| left.id.cmp(&right.id));
+        let host_metrics = sampler.host();
         Ok(crate::dashboard::document(
             "",
             &crate::dashboard::utc_timestamp(crate::dashboard::unix_now()),
             "online",
+            host_metrics,
             &crate::dashboard::Inventory {
                 boxes,
                 templates,

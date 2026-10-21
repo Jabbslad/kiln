@@ -6,6 +6,7 @@ pub mod enrollment;
 pub mod gateway;
 pub mod host;
 mod journal;
+mod metrics;
 mod ssh;
 mod terminal;
 

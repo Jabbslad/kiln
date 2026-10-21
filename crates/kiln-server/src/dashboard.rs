@@ -29,6 +29,7 @@ pub(crate) struct BoxFacts {
     pub last_operation: Option<String>,
     pub last_error: Option<String>,
     pub restored_from: Option<String>,
+    pub metrics: crate::metrics::Snapshot,
 }
 
 pub(crate) struct TemplateFacts {
@@ -65,14 +66,7 @@ pub(crate) struct Document {
 struct HostBody {
     name: String,
     state: &'static str,
-    metrics: Metrics,
-}
-
-#[derive(Serialize)]
-struct Metrics {
-    cpu_percent: Option<f64>,
-    memory_bytes: Option<u64>,
-    disk_bytes: Option<u64>,
+    metrics: crate::metrics::Snapshot,
 }
 
 #[derive(Serialize)]
@@ -89,7 +83,7 @@ struct BoxBody {
     state: &'static str,
     image: &'static str,
     resources: Option<Resources>,
-    metrics: Metrics,
+    metrics: crate::metrics::Snapshot,
     created_at: String,
     last_operation: Option<String>,
     last_error: Option<String>,
@@ -163,6 +157,7 @@ pub(crate) fn document(
     workspace: &str,
     observed_at: &str,
     host_state: &'static str,
+    host_metrics: crate::metrics::Snapshot,
     inventory: &Inventory,
 ) -> Document {
     let workspace = published_workspace(workspace).to_owned();
@@ -189,7 +184,7 @@ pub(crate) fn document(
         host: HostBody {
             name: workspace,
             state: host_state,
-            metrics: Metrics::empty(),
+            metrics: host_metrics,
         },
         boxes: inventory.boxes.iter().map(box_body).collect(),
         templates: inventory
@@ -221,7 +216,7 @@ fn box_body(facts: &BoxFacts) -> BoxBody {
         state: box_state(&facts.state),
         image: "",
         resources: resources(facts.vcpus, facts.memory_mib, facts.disk_bytes),
-        metrics: Metrics::empty(),
+        metrics: facts.metrics,
         created_at: utc_timestamp(facts.created_at),
         last_operation: facts.last_operation.clone(),
         last_error: public_error(facts.last_error.as_deref()),
@@ -295,16 +290,6 @@ fn public_error(value: Option<&str>) -> Option<String> {
         return None;
     }
     Some(value.to_owned())
-}
-
-impl Metrics {
-    fn empty() -> Self {
-        Self {
-            cpu_percent: None,
-            memory_bytes: None,
-            disk_bytes: None,
-        }
-    }
 }
 
 fn civil_date(days_since_epoch: i64) -> (i32, u32, u32) {

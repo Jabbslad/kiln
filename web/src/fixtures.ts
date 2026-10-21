@@ -4,11 +4,21 @@ import type { Dashboard } from './data'
 // never written to localStorage, and never mutated by UI lifecycle actions.
 const GiB = 1024 ** 3
 const unknownMetrics = { cpu_percent: null, memory_bytes: null, disk_bytes: null }
+const hostMetrics = {
+  cpu_percent: 18.4,
+  memory_bytes: 6 * GiB + 512 * 1024 ** 2,
+  disk_bytes: null,
+}
+const activeBoxMetrics = {
+  cpu_percent: 42.6,
+  memory_bytes: 1 * GiB + 256 * 1024 ** 2,
+  disk_bytes: null,
+}
 export const previewDashboard: Dashboard = {
   schema_version: 1,
   observed_at: '2026-10-01T09:42:00Z',
   workspace: 'Personal',
-  host: { name: 'host-01', state: 'online', metrics: unknownMetrics },
+  host: { name: 'host-01', state: 'online', metrics: hostMetrics },
   boxes: [
     {
       id: 'box-7f3a2c1e',
@@ -16,7 +26,7 @@ export const previewDashboard: Dashboard = {
       state: 'running',
       image: 'Ubuntu 24.04',
       resources: { vcpus: 2, memory_bytes: 4 * GiB, disk_bytes: 20 * GiB },
-      metrics: unknownMetrics,
+      metrics: activeBoxMetrics,
       created_at: '2026-09-30T10:15:00Z',
       last_operation: 'Restored from before-upgrade',
       last_error: null,
@@ -29,7 +39,7 @@ export const previewDashboard: Dashboard = {
       state: 'paused',
       image: 'Ubuntu 24.04',
       resources: { vcpus: 2, memory_bytes: 2 * GiB, disk_bytes: 12 * GiB },
-      metrics: unknownMetrics,
+      metrics: { cpu_percent: 0.2, memory_bytes: 900 * 1024 ** 2, disk_bytes: null },
       created_at: '2026-09-30T12:40:00Z',
       last_operation: 'Paused by administrator',
       last_error: null,

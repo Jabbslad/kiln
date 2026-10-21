@@ -516,6 +516,7 @@ fn test_deploy_installs_dashboard_and_checks_the_live_bundle() {
     assert!(deploy.contains("check-dashboard-bundle.sh"));
     assert!(remote.contains("--dashboard-archive"));
     assert!(remote.contains("check-dashboard-bundle.sh"));
+    assert!(remote.contains("check-dashboard-metrics.sh"));
     assert!(remote.contains("dashboard inputs"));
 }
 
@@ -1008,11 +1009,30 @@ fn run_smoke(extra: &[(&str, &str)]) -> SmokeRun {
     let log = tmp.path().join("kiln.log");
     let kiln = tmp.path().join("kiln");
     write_executable(&kiln, &kiln_stub(&log));
+    let token = tmp.path().join("admin.token");
+    fs::write(&token, "a".repeat(64)).unwrap();
+    let ca = tmp.path().join("ca.crt");
+    fs::write(&ca, "fixture-ca\n").unwrap();
+    let curl = tmp.path().join("curl");
+    write_executable(
+        &curl,
+        r#"#!/bin/sh
+printf '%s' '{"host":{"metrics":{"cpu_percent":1,"memory_bytes":1000}},"boxes":[{"state":"running","metrics":{"cpu_percent":2,"memory_bytes":200}}]}'
+"#,
+    );
+    let path = format!(
+        "{}:{}",
+        tmp.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
     let mut command = Command::new("bash");
     command.arg(repo().join("deploy/github/smoke.sh"));
     command.arg("127.0.0.1");
     command.current_dir(repo());
     command.env("KILN_BIN", &kiln);
+    command.env("KILN_ADMIN_TOKEN_FILE", &token);
+    command.env("KILN_CA_FILE", &ca);
+    command.env("PATH", path);
     for (key, value) in extra {
         command.env(key, value);
     }

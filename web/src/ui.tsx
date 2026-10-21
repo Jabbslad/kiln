@@ -2,7 +2,28 @@ import { useEffect, useId, useRef, useState, type ReactNode, type ComponentProps
 import { Link, useSearchParams } from 'react-router-dom'
 import { ArrowUpRight, Box as BoxIcon, Check, Copy, Info, X } from 'lucide-react'
 import { capabilities, capabilityAvailable, type Capability } from './capabilities'
-import { formatBytes, formatMetric, type Dashboard } from './data'
+import { boxStates, formatBytes, formatMetric, type Dashboard } from './data'
+
+type BoxState = (typeof boxStates)[number]
+
+function metricRows(metrics: Dashboard['host']['metrics'], boxState?: BoxState) {
+  const active = !boxState || boxState === 'running' || boxState === 'paused'
+  const inactiveLabel = boxState === 'stopped' ? 'Stopped' : 'Not available yet'
+  const display = (value: number | null, format: (next: number) => string) => {
+    if (value !== null) {
+      return { value: format(value), hint: 'Observed use' }
+    }
+    if (!active) {
+      return { value: inactiveLabel, hint: inactiveLabel }
+    }
+    return { value: 'Not reported', hint: 'Not reported' }
+  }
+  return [
+    { label: 'CPU', ...display(metrics.cpu_percent, (value) => formatMetric(value, '%')) },
+    { label: 'Memory', ...display(metrics.memory_bytes, formatBytes) },
+    { label: 'Disk', ...display(metrics.disk_bytes, formatBytes) },
+  ]
+}
 
 export type PageProps = {
   data: Dashboard
@@ -111,30 +132,37 @@ export function Unavailable({ preview }: { preview: boolean }) {
 export function ResourceMetrics({
   metrics,
   title = 'Resource use',
+  boxState,
 }: {
   metrics: Dashboard['host']['metrics']
   title?: string
+  boxState?: BoxState
 }) {
   const missing = Object.values(metrics).every((value) => value === null)
+  const active = !boxState || boxState === 'running' || boxState === 'paused'
   return (
     <section className="panel metrics-panel" aria-label={title}>
       <div className="panel-heading">
         <h2>{title}</h2>
         {capabilityAvailable('metrics') && (
-          <span className="micro">{missing ? 'Awaiting host telemetry' : 'Reported by host'}</span>
+          <span className="micro">
+            {!active
+              ? boxState === 'stopped'
+                ? 'Box is stopped'
+                : 'Telemetry unavailable'
+              : missing
+                ? 'Awaiting host telemetry'
+                : 'Reported by host'}
+          </span>
         )}
       </div>
       <CapabilitySurface capability="metrics">
         <div className="metric-grid">
-          {[
-            ['CPU', formatMetric(metrics.cpu_percent, '%')],
-            ['Memory', formatBytes(metrics.memory_bytes)],
-            ['Disk', formatBytes(metrics.disk_bytes)],
-          ].map(([label, value]) => (
+          {metricRows(metrics, boxState).map(({ label, value, hint }) => (
             <div className="metric" key={label}>
               <span className="eyebrow">{label}</span>
               <strong>{value}</strong>
-              <span className="micro">{value === '—' ? 'Not reported' : 'Observed use'}</span>
+              <span className="micro">{hint}</span>
             </div>
           ))}
         </div>

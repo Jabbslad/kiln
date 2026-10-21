@@ -2364,6 +2364,25 @@ tbody tr:hover {
   .panel-heading .micro {
     font-size: 9px;
   }
+  .metrics-panel .metric-grid {
+    grid-template-columns: 1fr;
+  }
+  .metrics-panel .metric {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+  }
+  .metrics-panel .metric:last-child {
+    border-bottom: 0;
+  }
+  .metrics-panel .metric strong {
+    font-size: 16px;
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
   .metric {
     padding: 21px 15px;
   }

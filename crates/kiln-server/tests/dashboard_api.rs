@@ -473,9 +473,9 @@ fn assert_document(raw: &str, value: &Value, fixture: &Fixture) {
     assert_eq!(value["workspace"], WORKSPACE);
     assert_eq!(value["host"]["name"], WORKSPACE);
     assert_eq!(value["host"]["state"], "online");
-    for field in ["cpu_percent", "memory_bytes", "disk_bytes"] {
-        assert!(value["host"]["metrics"][field].is_null(), "{field}");
-    }
+    assert!(value["host"]["metrics"]["cpu_percent"].as_f64().is_some());
+    assert!(value["host"]["metrics"]["memory_bytes"].as_u64().unwrap() > 0);
+    assert!(value["host"]["metrics"]["disk_bytes"].is_null());
     let observed = value["observed_at"].as_str().unwrap();
     assert_eq!(observed.len(), 20, "{observed}");
     assert!(observed.ends_with('Z'), "{observed}");
