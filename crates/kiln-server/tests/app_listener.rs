@@ -1403,6 +1403,7 @@ struct ServedOperations {
     _root: tempfile::TempDir,
     operate: app_listener::OperateSession,
     read: app_listener::OperateSession,
+    other_owner: app_listener::OperateSession,
     journal: std::path::PathBuf,
     hits: Arc<AtomicUsize>,
     server: tokio::task::JoinHandle<()>,
@@ -1488,10 +1489,19 @@ async fn serve_operations() -> ServedOperations {
         &token(&key, "owner-a", Scope::Read),
     )
     .unwrap();
+    let other_owner = app_listener::router_with_operate_session(
+        central(root.path()),
+        &format!("https://127.0.0.1:{port}"),
+        ca_pem.as_bytes(),
+        Some(root.path()),
+        &token(&key, "owner-b", Scope::Operate),
+    )
+    .unwrap();
     ServedOperations {
         _root: root,
         operate,
         read,
+        other_owner,
         journal,
         hits,
         server,
@@ -2602,6 +2612,623 @@ async fn a_signed_in_operate_session_reaches_the_host() {
     assert_eq!(seen.last().map(String::as_str), Some(expected.as_str()));
     assert_eq!(seen.len(), forwarded_before + 1);
     server.abort();
+}
+
+fn terminal_request(id: &str, session: &str, csrf: &str, origin: &str) -> Request<Body> {
+    let mut builder = Request::builder().uri(format!("/v1/boxes/{id}/terminal"));
+    if !session.is_empty() {
+        builder = builder
+            .header(
+                "cookie",
+                format!("__Host-kiln_app={session}; __Host-kiln_csrf={csrf}"),
+            )
+            .header("origin", origin);
+    }
+    builder.body(Body::empty()).unwrap()
+}
+
+#[tokio::test]
+async fn terminal_rejects_unauthenticated_read_scope_bad_origin_and_other_owner() {
+    let served = serve_operations().await;
+    let peer = "127.0.0.1:9";
+    let box_id = new_id();
+    let hits = served.hits.load(Ordering::SeqCst);
+    let (status, _, denied) = text(
+        send(
+            &served.operate.router,
+            peer,
+            Request::builder()
+                .uri(format!("/v1/boxes/{box_id}/terminal"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{denied}");
+    assert!(denied.contains("unauthorized"), "{denied}");
+    let (status, _, scoped) = text(
+        send(
+            &served.read.router,
+            peer,
+            terminal_request(
+                &box_id,
+                &served.read.session,
+                &served.read.csrf,
+                "https://app.dark-forge.dev",
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{scoped}");
+    assert!(scoped.contains("insufficient_scope"), "{scoped}");
+    let (status, _, origin) = text(
+        send(
+            &served.operate.router,
+            peer,
+            terminal_request(
+                &box_id,
+                &served.operate.session,
+                &served.operate.csrf,
+                "https://evil.example",
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{origin}");
+    assert!(origin.contains("invalid_origin"), "{origin}");
+    let (status, _, other) = text(
+        send(
+            &served.other_owner.router,
+            peer,
+            terminal_request(
+                &box_id,
+                &served.other_owner.session,
+                &served.other_owner.csrf,
+                "https://app.dark-forge.dev",
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{other}");
+    assert!(other.contains("unauthorized"), "{other}");
+    assert_eq!(
+        served.hits.load(Ordering::SeqCst),
+        hits,
+        "rejected terminal requests must not reach the host"
+    );
+    for (audit, outcome) in [
+        (&served.operate.audit, "unauthorized"),
+        (&served.read.audit, "insufficient_scope"),
+        (&served.operate.audit, "invalid_origin"),
+        (&served.other_owner.audit, "unauthorized"),
+    ] {
+        assert!(
+            audit
+                .records()
+                .iter()
+                .any(|record| record.outcome == outcome),
+            "missing audit {outcome}: {:?}",
+            audit.records()
+        );
+    }
+    let (status, _, missing) = text(
+        send(
+            &served.operate.router,
+            peer,
+            terminal_request(
+                &box_id,
+                &served.operate.session,
+                &served.operate.csrf,
+                "https://app.dark-forge.dev",
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    assert!(missing.contains("not_found"), "{missing}");
+    assert!(
+        !served
+            .operate
+            .audit
+            .records()
+            .iter()
+            .any(|record| record.outcome == "opened"),
+        "a rejected box must not open a terminal session"
+    );
+    served.server.abort();
+}
+
+#[tokio::test]
+async fn operate_session_gets_a_pty_echo_from_a_running_box() {
+    use std::{
+        os::unix::fs::PermissionsExt,
+        process::{Child, Stdio},
+        sync::Mutex,
+    };
+    use tokio::net::UnixListener;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    assert!(
+        std::path::Path::new("/usr/sbin/sshd").is_file(),
+        "openssh-server is required for the terminal PTY test"
+    );
+    assert!(
+        Command::new("sudo")
+            .args(["-n", "mkdir", "-p", "/run/sshd"])
+            .status()
+            .expect("sudo")
+            .success(),
+        "could not create /run/sshd"
+    );
+    assert!(
+        Command::new("sudo")
+            .args(["-n", "chmod", "755", "/run/sshd"])
+            .status()
+            .unwrap()
+            .success(),
+        "could not set /run/sshd mode"
+    );
+
+    let served = serve_operations().await;
+    let peer = "127.0.0.1:9";
+    let operation = new_id();
+    let body = serde_json::to_vec(&Submit {
+        id: operation.clone(),
+        action: Action::Create {
+            template: "small".into(),
+            name: "terminal".into(),
+        },
+    })
+    .unwrap();
+    let (status, _, created) = text(
+        send(
+            &served.operate.router,
+            peer,
+            create_request(
+                &served.operate.session,
+                &served.operate.csrf,
+                &served.operate.csrf,
+                &body,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{created}");
+    let box_id = serde_json::from_str::<serde_json::Value>(&created).unwrap()["box_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut terminal_state = String::new();
+    let mut polled = String::new();
+    for _ in 0..200 {
+        let (status, _, body) = text(
+            send(
+                &served.operate.router,
+                peer,
+                Request::builder()
+                    .uri(format!("/v1/operations/{operation}"))
+                    .header(
+                        "cookie",
+                        format!(
+                            "__Host-kiln_app={}; __Host-kiln_csrf={}",
+                            served.operate.session, served.operate.csrf
+                        ),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        polled = body;
+        terminal_state = serde_json::from_str::<serde_json::Value>(&polled).unwrap()["state"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        if terminal_state != "running" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_ne!(terminal_state, "running", "{polled}");
+
+    let root = served
+        .journal
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let work = root.join("terminal-guest");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let bin_dir = work.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let source = work.join("vmm.rs");
+    std::fs::write(
+        &source,
+        "fn main() {\n    if std::env::args().nth(1).as_deref() == Some(\"--version\") {\n        println!(\"Firecracker v1.17.0\");\n        return;\n    }\n    std::thread::sleep(std::time::Duration::from_secs(180));\n}\n",
+    )
+    .unwrap();
+    let firecracker = bin_dir.join("firecracker");
+    assert!(
+        Command::new("rustc")
+            .current_dir(&work)
+            .args(["--edition=2024", "-O", "-o"])
+            .arg(&firecracker)
+            .arg(&source)
+            .status()
+            .expect("rustc")
+            .success(),
+        "could not compile the stand-in VMM"
+    );
+    let host_key = ssh_public_key(&work.join("hostkey"));
+    let root_key = work.join("hostkey.root");
+    assert!(sudo_cp(work.join("hostkey"), &root_key));
+    assert!(sudo_ok(["chown", "root:root"], &root_key));
+    assert!(sudo_ok(["chmod", "600"], &root_key));
+    let keys = work.join("authorized_keys");
+    std::fs::write(&keys, b"").unwrap();
+    std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let config = work.join("sshd_config");
+    std::fs::write(
+        &config,
+        format!(
+            "HostKey {}\nAuthorizedKeysFile {}\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nChallengeResponseAuthentication no\nPubkeyAuthentication yes\nAuthenticationMethods publickey\nUsePAM no\nPermitRootLogin prohibit-password\nAllowUsers root\nAllowAgentForwarding no\nX11Forwarding no\nAllowTcpForwarding no\nPermitTunnel no\nPidFile {}\nStrictModes no\nUseDNS no\nPrintMotd no\nPrintLastLog no\nLogLevel ERROR\n",
+            root_key.display(),
+            keys.display(),
+            work.join("sshd.pid").display()
+        ),
+    )
+    .unwrap();
+    let run_id = new_id();
+    let run = root
+        .join("runtime")
+        .join("boxes")
+        .join(&box_id)
+        .join(&run_id);
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::set_permissions(
+        run.parent().unwrap(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let api = UnixListener::bind(run.join("api.sock")).unwrap();
+    let vsock = UnixListener::bind(run.join("vsock.sock")).unwrap();
+    let children = Arc::new(Mutex::new(Vec::<Child>::new()));
+    let reap = Reap(children.clone());
+    let guest_key = host_key.clone();
+    let guest_work = work.clone();
+    let guest_children = children.clone();
+    let guest = tokio::spawn(async move {
+        serve_guest(api, vsock, guest_key, guest_work, guest_children).await;
+    });
+    let _path = PathGuard::prepend(&bin_dir);
+    let mut sleeper = Command::new(&firecracker)
+        .current_dir(&run)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let identity = kiln_runtime::process::identify(sleeper.id()).unwrap();
+    let record = serde_json::json!({
+        "schema_version": 1,
+        "id": box_id,
+        "name": "terminal",
+        "state": "running",
+        "run": run_id,
+        "process": identity,
+        "image": {
+            "schema_version": 1,
+            "architecture": "x86_64",
+            "kernel_path": "kernel",
+            "kernel_sha256": "ab".repeat(32),
+            "rootfs_path": "rootfs",
+            "rootfs_sha256": "cd".repeat(32),
+            "agent_protocol_version": 1
+        },
+        "host": "test",
+        "memory_mib": 256,
+        "vcpus": 1,
+        "source": null,
+        "operation": null,
+        "last_error": null,
+        "disk_copy": ""
+    });
+    std::fs::write(
+        root.join("runtime")
+            .join("boxes")
+            .join(&box_id)
+            .join("box.json"),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = served.operate.router.clone();
+    let http = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let mut request = format!("ws://{addr}/v1/boxes/{box_id}/terminal")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        "cookie",
+        format!(
+            "__Host-kiln_app={}; __Host-kiln_csrf={}",
+            served.operate.session, served.operate.csrf
+        )
+        .parse()
+        .unwrap(),
+    );
+    request
+        .headers_mut()
+        .insert("origin", "https://app.dark-forge.dev".parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("terminal websocket");
+    use futures_util::{SinkExt, StreamExt};
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::text(
+            "printf 'kiln-term-ok\\n'\n",
+        ))
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+    let mut collected = Vec::new();
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let message = tokio::time::timeout(remaining, socket.next()).await;
+        let Ok(Some(Ok(message))) = message else {
+            break;
+        };
+        match message {
+            tokio_tungstenite::tungstenite::Message::Binary(bytes) => {
+                collected.extend_from_slice(&bytes)
+            }
+            tokio_tungstenite::tungstenite::Message::Text(text) => {
+                collected.extend_from_slice(text.as_bytes())
+            }
+            tokio_tungstenite::tungstenite::Message::Close(_) => break,
+            _ => {}
+        }
+        if collected
+            .windows(b"kiln-term-ok".len())
+            .any(|window| window == b"kiln-term-ok")
+        {
+            break;
+        }
+    }
+    let output = String::from_utf8_lossy(&collected);
+    let sshd_err = std::fs::read_to_string(work.join("sshd.err")).unwrap_or_default();
+    assert!(
+        output.contains("kiln-term-ok"),
+        "pty output {output:?}\nsshd: {sshd_err}"
+    );
+    assert!(
+        served
+            .operate
+            .audit
+            .records()
+            .iter()
+            .any(|record| { record.outcome == "opened" && record.request_id == box_id }),
+        "opened audit missing: {:?}",
+        served.operate.audit.records()
+    );
+    drop(socket);
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
+    http.abort();
+    guest.abort();
+    drop(reap);
+    served.server.abort();
+}
+
+fn sudo_cp(from: impl AsRef<Path>, to: &Path) -> bool {
+    Command::new("sudo")
+        .args(["-n", "cp"])
+        .arg(from.as_ref())
+        .arg(to)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn sudo_ok(args: [&str; 2], path: &Path) -> bool {
+    Command::new("sudo")
+        .arg("-n")
+        .args(args)
+        .arg(path)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn ssh_public_key(path: &Path) -> String {
+    let status = Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "", "-f"])
+        .arg(path)
+        .status()
+        .expect("ssh-keygen");
+    assert!(status.success(), "ssh-keygen failed");
+    let public = std::fs::read_to_string(path.with_extension("pub")).unwrap();
+    let public = public.trim().to_owned();
+    assert!(kiln_api::valid_ssh_public_key(&public), "{public}");
+    public
+}
+
+struct PathGuard(Option<std::ffi::OsString>);
+
+impl PathGuard {
+    fn prepend(dir: &Path) -> Self {
+        let previous = std::env::var_os("PATH");
+        let mut next = std::ffi::OsString::from(dir);
+        if let Some(previous) = &previous {
+            next.push(":");
+            next.push(previous);
+        }
+        unsafe { std::env::set_var("PATH", next) };
+        Self(previous)
+    }
+}
+
+impl Drop for PathGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.0 {
+                Some(value) => std::env::set_var("PATH", value),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+    }
+}
+
+struct Reap(Arc<std::sync::Mutex<Vec<std::process::Child>>>);
+
+impl Drop for Reap {
+    fn drop(&mut self) {
+        let mut children = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        for child in children.iter_mut() {
+            let id = child.id();
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = Command::new("sudo")
+                .args(["-n", "kill", "-9", &format!("-{id}")])
+                .status();
+        }
+    }
+}
+
+async fn serve_guest(
+    api: tokio::net::UnixListener,
+    vsock: tokio::net::UnixListener,
+    host_key: String,
+    work: std::path::PathBuf,
+    children: Arc<std::sync::Mutex<Vec<std::process::Child>>>,
+) {
+    use std::os::unix::process::CommandExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = api.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let mut received = Vec::new();
+                let mut byte = [0u8; 1];
+                while !received.ends_with(b"\r\n\r\n") {
+                    if stream.read(&mut byte).await.unwrap_or(0) == 0 || received.len() > 65536 {
+                        return;
+                    }
+                    received.push(byte[0]);
+                }
+                let body = br#"{"state":"Running"}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.write_all(body).await;
+            });
+        }
+    });
+    loop {
+        let Ok((mut stream, _)) = vsock.accept().await else {
+            break;
+        };
+        let host_key = host_key.clone();
+        let work = work.clone();
+        let children = children.clone();
+        tokio::spawn(async move {
+            let line = read_unix_line(&mut stream).await;
+            let _ = stream.write_all(b"OK 1\n").await;
+            if line == "CONNECT 1024" {
+                let _request = read_unix_frame(&mut stream).await;
+                write_unix_frame(
+                    &mut stream,
+                    &serde_json::json!({"type": "ssh_host_key", "public_key": host_key}),
+                )
+                .await;
+                return;
+            }
+            if line != "CONNECT 1025" {
+                return;
+            }
+            let admission = read_unix_frame(&mut stream).await;
+            let public_key = admission["public_key"].as_str().unwrap_or("").to_owned();
+            std::fs::write(work.join("authorized_keys"), format!("{public_key}\n")).unwrap();
+            write_unix_frame(&mut stream, &serde_json::json!({"public_key": host_key})).await;
+            let _ = stream.flush().await;
+            let std_stream = stream.into_std().unwrap();
+            std_stream.set_nonblocking(false).unwrap();
+            let stdout = std_stream.try_clone().unwrap();
+            let stderr = std::fs::File::create(work.join("sshd.err")).unwrap();
+            let child = std::process::Command::new("sudo")
+                .args(["-n", "/usr/sbin/sshd", "-i", "-f"])
+                .arg(work.join("sshd_config"))
+                .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
+                    std_stream,
+                )))
+                .stdout(std::process::Stdio::from(std::os::fd::OwnedFd::from(
+                    stdout,
+                )))
+                .stderr(stderr)
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            children.lock().unwrap().push(child);
+        });
+    }
+}
+
+async fn read_unix_line(stream: &mut tokio::net::UnixStream) -> String {
+    use tokio::io::AsyncReadExt;
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        let count = stream.read(&mut byte).await.unwrap();
+        assert_ne!(count, 0, "vsock handshake closed");
+        if byte[0] == b'\n' {
+            break;
+        }
+        line.push(byte[0]);
+        assert!(line.len() < 80, "vsock handshake too long");
+    }
+    String::from_utf8(line).unwrap()
+}
+
+async fn read_unix_frame(stream: &mut tokio::net::UnixStream) -> serde_json::Value {
+    use tokio::io::AsyncReadExt;
+    let mut len = [0u8; 4];
+    stream.read_exact(&mut len).await.unwrap();
+    let count = u32::from_be_bytes(len) as usize;
+    assert!(count <= 1024 * 1024);
+    let mut payload = vec![0; count];
+    stream.read_exact(&mut payload).await.unwrap();
+    serde_json::from_slice(&payload).unwrap()
+}
+
+async fn write_unix_frame(stream: &mut tokio::net::UnixStream, value: &serde_json::Value) {
+    use tokio::io::AsyncWriteExt;
+    let payload = serde_json::to_vec(value).unwrap();
+    stream
+        .write_all(&(payload.len() as u32).to_be_bytes())
+        .await
+        .unwrap();
+    stream.write_all(&payload).await.unwrap();
+    stream.flush().await.unwrap();
 }
 
 fn signed_in_router(

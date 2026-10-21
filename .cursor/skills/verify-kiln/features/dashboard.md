@@ -146,7 +146,7 @@ A pass is the preview heading plus zero `/api/` requests, a disabled terminal bu
 ## Gotchas
 
 - Preview data is labelled example data. It is not the local runtime inventory.
-- `Create box`, `Restore checkpoint`, and `Connect terminal` are hard-disabled. A green browser run does not create a box.
+- `Create box` and `Restore checkpoint` stay disabled in preview. `Connect terminal` stays disabled in preview and on a stopped box. A live console enables it when the host is online and the box is running. A green browser run does not create a box.
 - CI runs this surface. `.github/workflows/build.yml` job `dashboard` runs `npm test`, Prettier, `npm run build`, and `npm run test:browser`. It does not boot Firecracker.
 - `README.md` still lists dashboard among outstanding platform work, and its intro still says the dashboard API is not integrated. `web/README.md` still says the CLI API does not implement this endpoint. Those sentences are behind `kiln-api`.
 - The authoring proof used the Vite dev server and Playwright. It did not extract the release tarball or attach the static app to a host. The live document drive above is curl against `kiln-api`, or the contract test.

@@ -647,6 +647,32 @@ it('does not present an interactive terminal session as connected', async () => 
   expect(screen.getByRole('button', { name: 'Connect terminal' })).toBeDisabled()
 })
 
+it('enables Connect terminal only for a running box on a live console', async () => {
+  const dashboard = () => Promise.resolve(Response.json(previewDashboard))
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(dashboard))
+  const running = open('/boxes/box-7f3a2c1e')
+  expect(await screen.findByRole('button', { name: 'Connect terminal' })).toBeEnabled()
+  running.unmount()
+
+  const stopped = open('/boxes/box-a1b2c3d4')
+  expect(await screen.findByRole('button', { name: 'Connect terminal' })).toBeDisabled()
+  stopped.unmount()
+
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        Response.json({
+          ...previewDashboard,
+          host: { ...previewDashboard.host, state: 'offline' as const },
+        }),
+      ),
+    ),
+  )
+  open('/boxes/box-7f3a2c1e')
+  expect(await screen.findByRole('button', { name: 'Connect terminal' })).toBeDisabled()
+})
+
 it('posts sign-out to /logout with the CSRF value', async () => {
   const request = vi.fn(async (url: string, _init?: RequestInit) => {
     if (url === '/logout') return new Response(null, { status: 204 })

@@ -7,6 +7,7 @@ pub mod gateway;
 pub mod host;
 mod journal;
 mod ssh;
+mod terminal;
 
 use axum::{
     Json,

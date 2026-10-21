@@ -14,7 +14,7 @@ tokio.workspace = true
 sha2.workspace = true
 libc.workspace = true
 anyhow = "1"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
@@ -34,3 +34,4 @@ x509-parser = "0.18"
 rcgen = "0.14"
 kiln-client = { path = "../kiln-client" }
 p256 = { version = "0.13", features = ["pem", "pkcs8"] }
+tokio-tungstenite = "0.29"

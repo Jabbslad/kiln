@@ -8,13 +8,14 @@ use crate::{
     auth::{Authenticator, Enrollment},
 };
 use anyhow::{Context, Result, ensure};
+use axum::extract::ws::WebSocketUpgrade;
 use axum::{
     Router,
     body::{Body, to_bytes},
-    extract::{ConnectInfo, Request, State},
+    extract::{ConnectInfo, FromRequestParts, Path as BoxId, Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
-    routing::any,
+    routing::{any, get},
 };
 use base64::Engine;
 use futures_util::StreamExt;
@@ -108,6 +109,7 @@ pub struct OperateSession {
 struct App {
     auth: Authenticator,
     client: reqwest::Client,
+    tunnel: reqwest::Client,
     identity: reqwest::Client,
     upstream: reqwest::Url,
     loopback: reqwest::Url,
@@ -202,9 +204,11 @@ pub fn router_with(
         .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(10))
         .build()?;
+    let tunnel = crate::terminal::tunnel_client(ca_pem)?;
     let state = Arc::new(App {
         auth,
         client,
+        tunnel,
         identity,
         upstream,
         loopback,
@@ -223,7 +227,10 @@ pub fn router_with(
 }
 
 fn into_router(state: Arc<App>) -> Router {
-    Router::new().fallback(any(handle)).with_state(state)
+    Router::new()
+        .route("/v1/boxes/{id}/terminal", get(terminal))
+        .fallback(any(handle))
+        .with_state(state)
 }
 
 /// Insert one read session so proxy limits can be tested without a browser login.
@@ -291,6 +298,7 @@ fn test_session(
         .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(10))
         .build()?;
+    let tunnel = crate::terminal::tunnel_client(ca_pem)?;
     let id = random_token();
     let csrf = random_token();
     let audit = AuditLog::new();
@@ -314,6 +322,7 @@ fn test_session(
     let state = Arc::new(App {
         auth,
         client,
+        tunnel,
         identity,
         upstream: upstream_url,
         loopback,
@@ -397,6 +406,133 @@ async fn handle(
     request: Request,
 ) -> Response {
     finish(dispatch(&app, peer, request).await)
+}
+
+async fn terminal(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    BoxId(id): BoxId<String>,
+    request: Request,
+) -> Response {
+    finish(open_terminal(app, peer, id, request).await)
+}
+
+async fn open_terminal(app: Arc<App>, peer: SocketAddr, id: String, request: Request) -> Response {
+    let ip = client_ip(peer, request.headers());
+    if !charge(&app.hits, ip, LIMIT) {
+        return deny(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "Too many requests from this address.",
+        );
+    }
+    let write = match cookie_write(&app, request.headers(), "The request was refused.") {
+        Ok(write) => write,
+        Err((outcome, response)) => {
+            audit_terminal(&app, outcome, &id);
+            return *response;
+        }
+    };
+    let Some(jwt) = fresh_jwt(&app, &write.raw).await else {
+        audit_terminal(&app, "unauthorized", &id);
+        return unauthorized();
+    };
+    match app.auth.authenticate_central(&jwt).await {
+        Ok(Scope::Operate) => {}
+        Ok(_) => {
+            audit_terminal(&app, "insufficient_scope", &id);
+            return deny(
+                StatusCode::FORBIDDEN,
+                "insufficient_scope",
+                "An operate credential is required.",
+            );
+        }
+        Err(_) => {
+            audit_terminal(&app, "unauthorized", &id);
+            return unauthorized();
+        }
+    }
+    if request.uri().query().is_some() {
+        audit_terminal(&app, "rejected", &id);
+        return deny(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Query parameters are not accepted.",
+        );
+    }
+    if !kiln_api::valid_id(&id) {
+        audit_terminal(&app, "rejected", &id);
+        return api_miss();
+    }
+    let Ok(authorization) = HeaderValue::from_str(&format!("Bearer {jwt}")) else {
+        audit_terminal(&app, "unauthorized", &id);
+        return unauthorized();
+    };
+    let key_path = format!("/v1/boxes/{id}/ssh-key");
+    let key_response = match forward(
+        &app,
+        Method::GET,
+        &key_path,
+        authorization.clone(),
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(failure) => {
+            audit_terminal(&app, "rejected", &id);
+            return nostore(failure.into_response());
+        }
+    };
+    if key_response.status() != StatusCode::OK {
+        audit_terminal(&app, "rejected", &id);
+        return key_response;
+    }
+    let bytes = match to_bytes(key_response.into_body(), kiln_api::MAX_RESPONSE_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            audit_terminal(&app, "rejected", &id);
+            return nostore(upstream_error().into_response());
+        }
+    };
+    let host_key = match crate::terminal::host_key(&bytes) {
+        Ok(key) => key,
+        Err(failure) => {
+            audit_terminal(&app, "rejected", &id);
+            return nostore(failure.into_response());
+        }
+    };
+    let (mut parts, _body) = request.into_parts();
+    let upgrade = match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
+        Ok(upgrade) => upgrade,
+        Err(rejection) => {
+            audit_terminal(&app, "rejected", &id);
+            return rejection.into_response();
+        }
+    };
+    let session =
+        match crate::terminal::open(&app.tunnel, &app.upstream, &authorization, &id, &host_key)
+            .await
+        {
+            Ok(session) => session,
+            Err(failure) => {
+                audit_terminal(&app, "rejected", &id);
+                return nostore(failure.into_response());
+            }
+        };
+    audit_terminal(&app, "opened", &id);
+    upgrade
+        .max_message_size(32 * 1024)
+        .max_frame_size(32 * 1024)
+        .on_upgrade(move |socket| {
+            crate::terminal::bridge(
+                socket,
+                session,
+                crate::terminal::IDLE,
+                crate::terminal::MAX_SESSION,
+            )
+        })
 }
 
 async fn dispatch(app: &App, peer: SocketAddr, request: Request) -> Response {
@@ -628,6 +764,15 @@ fn request_id(body: &[u8]) -> String {
 
 fn audit(app: &App, outcome: &'static str, request_id: &str) {
     eprintln!("audit operation outcome={outcome} request_id={request_id}");
+    push_audit(app, outcome, request_id);
+}
+
+fn audit_terminal(app: &App, outcome: &'static str, box_id: &str) {
+    eprintln!("audit terminal outcome={outcome} box_id={box_id}");
+    push_audit(app, outcome, box_id);
+}
+
+fn push_audit(app: &App, outcome: &'static str, request_id: &str) {
     let mut records = lock_map(&app.audit.0);
     if records.len() == 64 {
         records.remove(0);
