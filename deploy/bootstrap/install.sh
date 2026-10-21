@@ -198,6 +198,7 @@ bin/kiln
 bin/kiln-host
 bin/kiln-api
 install.sh
+operations-journal.max-version
 fetch-firecracker.sh
 README.md
 docs/releases.md
