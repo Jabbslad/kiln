@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { AlertTriangle, ArrowUpRight, Check, Lock, ShieldCheck } from 'lucide-react'
 import {
+  applyLifecycle,
   createBox,
   formatBytes,
   type Box,
@@ -272,13 +273,23 @@ export function LifecycleDialog({
   action,
   box,
   preview,
+  authenticated = false,
+  onObserved,
   onClose,
 }: {
   action: string
   box: Box
   preview: boolean
+  authenticated?: boolean
+  onObserved?: (data: Dashboard) => void
   onClose: () => void
 }) {
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+  const [force, setForce] = useState(false)
+  const lifecycle =
+    action === 'Pause' || action === 'Resume' || action === 'Stop' || action === 'Start'
+  const ready = authenticated && lifecycle && !pending
   const explanations: Record<string, string> = {
     Pause:
       'Freeze vCPUs while keeping the VMM process, RAM and disk. Pausing does not release memory.',
@@ -294,13 +305,51 @@ export function LifecycleDialog({
       <div className="modal-body">
         <div className="restore-target">{box.name}</div>
         <p className="body-copy">{explanations[action]}</p>
-        <Unavailable preview={preview} />
+        {action === 'Stop' && (
+          <label className="acknowledgement">
+            <input
+              type="checkbox"
+              checked={force}
+              disabled={pending}
+              onChange={(event) => setForce(event.target.checked)}
+            />
+            Force stop
+          </label>
+        )}
+        {lifecycle && authenticated ? (
+          <p className="field-hint">The box state updates after the control plane observes it.</p>
+        ) : (
+          <Unavailable preview={preview} />
+        )}
+        {error && (
+          <p className="field-hint error-text" role="alert">
+            {error}
+          </p>
+        )}
       </div>
       <footer className="modal-footer">
         <button className="button" onClick={onClose}>
           Cancel
         </button>
-        <button className="button primary" disabled>
+        <button
+          className="button primary"
+          disabled={!ready}
+          onClick={() => {
+            if (!ready) return
+            const kind = action.toLowerCase() as 'pause' | 'resume' | 'stop' | 'start'
+            setPending(true)
+            setError('')
+            void applyLifecycle(kind, box.id, action === 'Stop' && force)
+              .then((observed) => {
+                onObserved?.(observed)
+                onClose()
+              })
+              .catch((reason: unknown) => {
+                setError(reason instanceof Error ? reason.message : 'The operation did not finish.')
+                setPending(false)
+              })
+          }}
+        >
           {action}
         </button>
       </footer>
