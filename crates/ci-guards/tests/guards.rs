@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -413,4 +414,344 @@ fn downstream_of_a_reuse_skipped_job_guards_its_if() {
     let workflow = read(&repo_root().join(".github/workflows/build.yml"));
     let violations = ci_guards::reuse_skip_downstream_violations(&workflow);
     assert!(violations.is_empty(), "{violations:?}");
+}
+
+#[test]
+fn dark_forge_jobs_declare_the_environment_and_callers_pass_secrets() {
+    let root = repo_root();
+    let files = workflow_texts(&root);
+    let borrowed: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+    let live = ci_guards::dark_forge_secret_violations(&borrowed);
+    assert!(live.is_empty(), "{live:?}");
+
+    let called = fixture("dark-forge-called.yml");
+    let caller = fixture("dark-forge-caller-omits-secrets.yml");
+    let omitted = ci_guards::dark_forge_secret_violations(&[
+        ("deploy.yml", called.as_str()),
+        ("build.yml", caller.as_str()),
+    ]);
+    assert!(
+        omitted
+            .iter()
+            .any(|violation| violation.contains("without passing secrets")),
+        "{omitted:?}"
+    );
+    assert!(
+        omitted
+            .iter()
+            .all(|violation| !violation.contains("without environment")),
+        "{omitted:?}"
+    );
+
+    let bare = fixture("dark-forge-without-environment.yml");
+    let unscoped = ci_guards::dark_forge_secret_violations(&[("deploy.yml", bare.as_str())]);
+    assert!(
+        unscoped.iter().any(|violation| {
+            violation.contains("reads DARK_FORGE_SSH_KEY without environment: dark-forge")
+        }),
+        "{unscoped:?}"
+    );
+
+    let inherited = "\
+jobs:
+  deploy:
+    needs: [draft-release]
+    if: >-
+      !cancelled() &&
+      needs.draft-release.result == 'success'
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit
+";
+    let inherited_hits = ci_guards::dark_forge_secret_violations(&[
+        ("deploy.yml", called.as_str()),
+        ("build.yml", inherited),
+    ]);
+    assert!(inherited_hits.is_empty(), "{inherited_hits:?}");
+
+    let named = "\
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy.yml
+    secrets:
+      DARK_FORGE_SSH_KEY: ${{ secrets.DARK_FORGE_SSH_KEY }}
+      DARK_FORGE_KNOWN_HOSTS: ${{ secrets.DARK_FORGE_KNOWN_HOSTS }}
+";
+    let named_hits = ci_guards::dark_forge_secret_violations(&[
+        ("deploy.yml", called.as_str()),
+        ("build.yml", named),
+    ]);
+    assert!(named_hits.is_empty(), "{named_hits:?}");
+
+    let partial = "\
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy.yml
+    secrets:
+      DARK_FORGE_SSH_KEY: ${{ secrets.DARK_FORGE_SSH_KEY }}
+";
+    let partial_hits = ci_guards::dark_forge_secret_violations(&[
+        ("deploy.yml", called.as_str()),
+        ("build.yml", partial),
+    ]);
+    assert!(
+        partial_hits
+            .iter()
+            .any(|violation| { violation.contains("without passing DARK_FORGE_KNOWN_HOSTS") }),
+        "{partial_hits:?}"
+    );
+
+    let missing = "\
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy.yml
+";
+    let missing_hits = ci_guards::dark_forge_secret_violations(&[("build.yml", missing)]);
+    assert!(
+        missing_hits
+            .iter()
+            .any(|violation| violation.contains("was not provided")),
+        "{missing_hits:?}"
+    );
+
+    let build = read(&root.join(".github/workflows/build.yml"));
+    let deploy_job = build
+        .split_once("  deploy:\n")
+        .and_then(|(_, rest)| rest.split_once("\n  dry-run-assets:"))
+        .map(|(job, _)| job)
+        .expect("deploy job");
+    assert!(deploy_job.contains("!cancelled()"), "{deploy_job}");
+    assert!(
+        deploy_job.contains("needs.draft-release.result == 'success'"),
+        "{deploy_job}"
+    );
+    assert!(deploy_job.contains("secrets: inherit"), "{deploy_job}");
+    assert!(!deploy_job.contains("environment:"), "{deploy_job}");
+    assert!(!deploy_job.contains("secrets.DARK_FORGE_"), "{deploy_job}");
+}
+
+#[test]
+fn unpublished_tag_is_refused_before_install() {
+    let root = repo_root();
+    let deploy = read(&root.join(".github/workflows/deploy.yml"));
+    let require_at = deploy
+        .find("bash deploy/github/require-release.sh")
+        .expect("require step");
+    let install_at = deploy
+        .find("bash deploy/github/deploy.sh")
+        .expect("install step");
+    assert!(require_at < install_at, "{deploy}");
+    assert!(deploy.contains("workflow_dispatch:"), "{deploy}");
+    assert!(deploy.contains("default: latest"), "{deploy}");
+    assert!(!deploy.contains("pull_request"), "{deploy}");
+
+    let script = read(&root.join("deploy/github/require-release.sh"));
+    assert!(script.contains("guard_github_event deploy"), "{script}");
+    assert!(script.contains("repo=Jabbslad/kiln"), "{script}");
+    assert!(script.contains("releases/tags/"), "{script}");
+    assert!(script.contains("releases/latest"), "{script}");
+
+    let fork = run_require(
+        &root,
+        "v0.4.15",
+        "200",
+        r#"{"draft":false}"#,
+        0,
+        &[
+            ("GITHUB_EVENT_NAME", "workflow_dispatch"),
+            ("GITHUB_REPOSITORY", "example/kiln"),
+            ("GITHUB_REF", "refs/heads/main"),
+        ],
+    );
+    assert!(!fork.status.success(), "{fork:?}");
+    assert!(
+        String::from_utf8_lossy(&fork.stderr).contains("refusing a fork"),
+        "{fork:?}"
+    );
+    assert!(
+        fork.log.is_empty(),
+        "fork must not call the release API: {fork:?}"
+    );
+
+    let missing = run_require(
+        &root,
+        "v9.9.9",
+        "404",
+        r#"{"message":"Not Found"}"#,
+        0,
+        &[
+            ("GITHUB_EVENT_NAME", "workflow_dispatch"),
+            ("GITHUB_REPOSITORY", "Jabbslad/kiln"),
+            ("GITHUB_REF", "refs/heads/main"),
+        ],
+    );
+    assert!(!missing.status.success(), "{missing:?}");
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("no published release for v9.9.9"),
+        "{missing:?}"
+    );
+
+    let draft = run_require(
+        &root,
+        "v0.4.15",
+        "200",
+        r#"{"tag_name":"v0.4.15","draft": true,"prerelease":false}"#,
+        0,
+        &[
+            ("GITHUB_EVENT_NAME", "workflow_dispatch"),
+            ("GITHUB_REPOSITORY", "Jabbslad/kiln"),
+            ("GITHUB_REF", "refs/heads/main"),
+            ("GH_TOKEN", "token-must-stay-out-of-the-log"),
+        ],
+    );
+    assert!(!draft.status.success(), "{draft:?}");
+    assert!(
+        String::from_utf8_lossy(&draft.stderr).contains("no published release for v0.4.15"),
+        "{draft:?}"
+    );
+    let shown = format!(
+        "{}{}",
+        String::from_utf8_lossy(&draft.stdout),
+        String::from_utf8_lossy(&draft.stderr)
+    );
+    assert!(!shown.contains("token-must-stay-out-of-the-log"), "{shown}");
+    assert!(
+        draft
+            .log
+            .contains("Authorization: Bearer token-must-stay-out-of-the-log"),
+        "{draft:?}"
+    );
+
+    let published = run_require(
+        &root,
+        "v0.4.15",
+        "200",
+        r#"{"tag_name":"v0.4.15","draft": false,"prerelease":false}"#,
+        0,
+        &[
+            ("GITHUB_EVENT_NAME", "workflow_dispatch"),
+            ("GITHUB_REPOSITORY", "Jabbslad/kiln"),
+            ("GITHUB_REF", "refs/heads/main"),
+        ],
+    );
+    assert!(published.status.success(), "{published:?}");
+    assert!(
+        published
+            .log
+            .contains("/repos/Jabbslad/kiln/releases/tags/v0.4.15"),
+        "{published:?}"
+    );
+
+    let latest = run_require(
+        &root,
+        "latest",
+        "200",
+        r#"{"tag_name":"v0.4.15","draft":false}"#,
+        0,
+        &[
+            ("GITHUB_EVENT_NAME", "workflow_call"),
+            ("GITHUB_REPOSITORY", "Jabbslad/kiln"),
+            ("GITHUB_REF", "refs/tags/v0.4.15"),
+        ],
+    );
+    assert!(latest.status.success(), "{latest:?}");
+    assert!(
+        latest.log.contains("/repos/Jabbslad/kiln/releases/latest"),
+        "{latest:?}"
+    );
+
+    let invalid = run_require(
+        &root,
+        "not-a-tag",
+        "200",
+        r#"{"draft":false}"#,
+        0,
+        &[
+            ("GITHUB_EVENT_NAME", "workflow_dispatch"),
+            ("GITHUB_REPOSITORY", "Jabbslad/kiln"),
+            ("GITHUB_REF", "refs/heads/main"),
+        ],
+    );
+    assert!(!invalid.status.success(), "{invalid:?}");
+    assert!(
+        String::from_utf8_lossy(&invalid.stderr).contains("invalid release tag"),
+        "{invalid:?}"
+    );
+    assert!(invalid.log.is_empty(), "{invalid:?}");
+}
+
+#[derive(Debug)]
+struct RequireRun {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    log: String,
+}
+
+fn run_require(
+    root: &Path,
+    tag: &str,
+    code: &str,
+    body: &str,
+    curl_exit: i32,
+    env: &[(&str, &str)],
+) -> RequireRun {
+    let dir = std::env::temp_dir().join(format!(
+        "kiln-require-{}-{}",
+        std::process::id(),
+        tag.replace('.', "-")
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap_or_else(|error| panic!("mkdir {}: {error}", dir.display()));
+    let curl = dir.join("curl");
+    let log = dir.join("curl.log");
+    fs::write(
+        &curl,
+        "#!/bin/bash\nprintf '%s\\n' \"$*\" >> \"$CURL_LOG\"\nif [ \"${CURL_EXIT:-0}\" != 0 ]; then exit \"$CURL_EXIT\"; fi\nprintf '%s\\n%s' \"$CURL_BODY\" \"$CURL_CODE\"\n",
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&curl).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&curl, perms).unwrap();
+    let mut command = Command::new("bash");
+    command
+        .arg(root.join("deploy/github/require-release.sh"))
+        .env_clear()
+        .env("PATH", format!("{}:/usr/bin:/bin", dir.display()))
+        .env("HOME", dir.as_os_str())
+        .env("TAG", tag)
+        .env("CURL_LOG", &log)
+        .env("CURL_CODE", code)
+        .env("CURL_BODY", body)
+        .env("CURL_EXIT", curl_exit.to_string());
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("require-release: {error}"));
+    let recorded = fs::read_to_string(&log).unwrap_or_default();
+    let _ = fs::remove_dir_all(&dir);
+    RequireRun {
+        status: output.status,
+        stdout: output.stdout,
+        stderr: output.stderr,
+        log: recorded,
+    }
+}
+
+fn workflow_texts(root: &Path) -> Vec<(String, String)> {
+    workflows(root)
+        .into_iter()
+        .map(|path| {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("workflow.yml")
+                .to_string();
+            (name, read(&path))
+        })
+        .collect()
 }

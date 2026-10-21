@@ -1,0 +1,12 @@
+name: Secret without the environment
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          DARK_FORGE_SSH_KEY: ${{ secrets.DARK_FORGE_SSH_KEY }}
+        run: bash deploy/github/deploy.sh
