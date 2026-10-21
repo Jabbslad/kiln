@@ -2,26 +2,53 @@ import { useEffect, useId, useRef, useState, type ReactNode, type ComponentProps
 import { Link, useSearchParams } from 'react-router-dom'
 import { ArrowUpRight, Box as BoxIcon, Check, Copy, Info, X } from 'lucide-react'
 import { capabilities, capabilityAvailable, type Capability } from './capabilities'
-import { boxStates, formatBytes, formatMetric, type Dashboard } from './data'
+import {
+  boxStates,
+  formatBytes,
+  formatDiskUsedOfTotal,
+  formatMetric,
+  type Dashboard,
+} from './data'
 
 type BoxState = (typeof boxStates)[number]
+type MetricRow = { label: string; value: string; hint: string }
 
-function metricRows(metrics: Dashboard['host']['metrics'], boxState?: BoxState) {
+function metricRows(
+  metrics: Dashboard['host']['metrics'],
+  boxState?: BoxState,
+  diskTotalBytes: number | null = metrics.disk_total_bytes,
+  hostObservedDisk = false,
+): MetricRow[] {
   const active = !boxState || boxState === 'running' || boxState === 'paused'
   const inactiveLabel = boxState === 'stopped' ? 'Stopped' : 'Not available yet'
-  const display = (value: number | null, format: (next: number) => string) => {
+  const display = (value: number | null, format: (next: number) => string, hint = 'Observed use') => {
     if (value !== null) {
-      return { value: format(value), hint: 'Observed use' }
+      return { value: format(value), hint }
     }
     if (!active) {
       return { value: inactiveLabel, hint: inactiveLabel }
     }
     return { value: 'Not reported', hint: 'Not reported' }
   }
+  const diskHint = hostObservedDisk ? 'Host-observed' : 'Observed use'
+  const disk = (() => {
+    if (metrics.disk_bytes === null) {
+      if (!active) {
+        return { value: inactiveLabel, hint: inactiveLabel }
+      }
+      return { value: 'Not reported', hint: 'Not reported' }
+    }
+    const total = diskTotalBytes ?? metrics.disk_total_bytes
+    const value =
+      total !== null
+        ? formatDiskUsedOfTotal(metrics.disk_bytes, total)
+        : formatBytes(metrics.disk_bytes)
+    return { value, hint: diskHint }
+  })()
   return [
     { label: 'CPU', ...display(metrics.cpu_percent, (value) => formatMetric(value, '%')) },
     { label: 'Memory', ...display(metrics.memory_bytes, formatBytes) },
-    { label: 'Disk', ...display(metrics.disk_bytes, formatBytes) },
+    { label: 'Disk', ...disk },
   ]
 }
 
@@ -133,12 +160,18 @@ export function ResourceMetrics({
   metrics,
   title = 'Resource use',
   boxState,
+  diskTotalBytes = null,
+  hostObservedDisk = false,
 }: {
   metrics: Dashboard['host']['metrics']
   title?: string
   boxState?: BoxState
+  diskTotalBytes?: number | null
+  hostObservedDisk?: boolean
 }) {
-  const missing = Object.values(metrics).every((value) => value === null)
+  const missing = [metrics.cpu_percent, metrics.memory_bytes, metrics.disk_bytes].every(
+    (value) => value === null,
+  )
   const active = !boxState || boxState === 'running' || boxState === 'paused'
   return (
     <section className="panel metrics-panel" aria-label={title}>
@@ -158,7 +191,7 @@ export function ResourceMetrics({
       </div>
       <CapabilitySurface capability="metrics">
         <div className="metric-grid">
-          {metricRows(metrics, boxState).map(({ label, value, hint }) => (
+          {metricRows(metrics, boxState, diskTotalBytes, hostObservedDisk).map(({ label, value, hint }) => (
             <div className="metric" key={label}>
               <span className="eyebrow">{label}</span>
               <strong>{value}</strong>

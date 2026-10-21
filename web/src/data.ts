@@ -23,6 +23,7 @@ const metrics = z.object({
   cpu_percent: z.number().min(0).max(100).nullable(),
   memory_bytes: measurement,
   disk_bytes: measurement,
+  disk_total_bytes: measurement,
 })
 const timing = z.object({
   method: z.string(),
@@ -578,6 +579,15 @@ export function formatBytes(bytes: number | null) {
   if (bytes === 0) return '0 B'
   const power = Math.min(4, Math.floor(Math.log(bytes) / Math.log(1024)))
   return `${Number((bytes / 1024 ** power).toFixed(1))} ${['B', 'KiB', 'MiB', 'GiB', 'TiB'][power]}`
+}
+
+export function formatDiskUsedOfTotal(used: number | null, total: number | null) {
+  if (used === null) return '—'
+  if (total === null || total <= 0) return formatBytes(used)
+  const power = Math.min(4, Math.floor(Math.log(total) / Math.log(1024)))
+  const unit = ['B', 'KiB', 'MiB', 'GiB', 'TiB'][power]
+  const scale = 1024 ** power
+  return `${(used / scale).toFixed(1)} of ${(total / scale).toFixed(1)} ${unit}`
 }
 
 export function timestamp(value: string) {

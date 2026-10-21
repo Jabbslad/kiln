@@ -12,6 +12,8 @@ pub enum CheckError {
     HostCpuMissing,
     HostMemoryMissing,
     HostMemoryNotPositive,
+    HostDiskMissing,
+    HostDiskTotalMissing,
 }
 
 impl fmt::Display for CheckError {
@@ -22,6 +24,10 @@ impl fmt::Display for CheckError {
             Self::HostCpuMissing => f.write_str("host cpu_percent is missing or null"),
             Self::HostMemoryMissing => f.write_str("host memory_bytes is missing or null"),
             Self::HostMemoryNotPositive => f.write_str("host memory_bytes must be positive"),
+            Self::HostDiskMissing => f.write_str("host disk_bytes is missing or null"),
+            Self::HostDiskTotalMissing => {
+                f.write_str("host disk_total_bytes is missing or null")
+            }
         }
     }
 }
@@ -47,6 +53,16 @@ pub(crate) fn validate_document(document: &Document) -> Result<(), CheckError> {
         .ok_or(CheckError::HostMemoryMissing)?;
     if memory == 0 {
         return Err(CheckError::HostMemoryNotPositive);
+    }
+    if metrics.disk_bytes.filter(|value| *value > 0).is_none() {
+        return Err(CheckError::HostDiskMissing);
+    }
+    if metrics
+        .disk_total_bytes
+        .filter(|value| *value > 0)
+        .is_none()
+    {
+        return Err(CheckError::HostDiskTotalMissing);
     }
     Ok(())
 }
@@ -131,6 +147,7 @@ mod tests {
                         cpu_percent: None,
                         memory_bytes: Some(512_000_000),
                         disk_bytes: None,
+                        disk_total_bytes: None,
                     },
                 },
                 BoxFacts {
@@ -156,7 +173,8 @@ mod tests {
             Snapshot {
                 cpu_percent: Some(0.42),
                 memory_bytes: Some(5000),
-                disk_bytes: None,
+                disk_bytes: Some(4000),
+                disk_total_bytes: Some(8000),
             },
             &inventory,
         );
@@ -175,7 +193,12 @@ mod tests {
             "host": {
                 "name": "local",
                 "state": "online",
-                "metrics": { "cpu_percent": 1.0, "memory_bytes": 5000, "disk_bytes": null }
+                "metrics": {
+                    "cpu_percent": 1.0,
+                    "memory_bytes": 5000,
+                    "disk_bytes": 4000,
+                    "disk_total_bytes": 8000
+                }
             },
             "boxes": [{
                 "id": "b1",

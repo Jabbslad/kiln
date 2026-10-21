@@ -218,7 +218,12 @@ export default function BoxDetail({ data, preview }: PageProps) {
             </section>
             <div className="access-column">
               <Access />
-              <ResourceMetrics metrics={box.metrics} boxState={box.state} />
+              <ResourceMetrics
+                metrics={box.metrics}
+                boxState={box.state}
+                diskTotalBytes={box.resources?.disk_bytes ?? null}
+                hostObservedDisk
+              />
             </div>
           </div>
           <LaunchTiming box={box} />
@@ -301,7 +306,12 @@ export default function BoxDetail({ data, preview }: PageProps) {
       )}
       {activeTab === 'metrics' && (
         <>
-          <ResourceMetrics metrics={box.metrics} boxState={box.state} />
+          <ResourceMetrics
+            metrics={box.metrics}
+            boxState={box.state}
+            diskTotalBytes={box.resources?.disk_bytes ?? null}
+            hostObservedDisk
+          />
           <LaunchTiming box={box} />
           {capabilityAvailable('metrics') && (
             <p className="section-note">

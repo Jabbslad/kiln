@@ -1,33 +1,43 @@
 use std::{
     collections::HashMap,
-    fs,
+    fs::{self, File},
+    mem::MaybeUninit,
+    os::unix::io::AsRawFd,
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
 };
+#[cfg(target_os = "linux")]
+use std::os::linux::fs::MetadataExt;
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::MetadataExt;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Snapshot {
     pub cpu_percent: Option<f64>,
     pub memory_bytes: Option<u64>,
     pub disk_bytes: Option<u64>,
+    #[serde(default)]
+    pub disk_total_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Paths {
     proc: PathBuf,
+    storage: PathBuf,
 }
 
 impl Paths {
-    pub fn live() -> Self {
+    pub fn live(storage: PathBuf) -> Self {
         Self {
             proc: PathBuf::from("/proc"),
+            storage,
         }
     }
 
     #[cfg(test)]
-    pub fn fixture(proc: PathBuf) -> Self {
-        Self { proc }
+    pub fn fixture(proc: PathBuf, storage: PathBuf) -> Self {
+        Self { proc, storage }
     }
 }
 
@@ -59,25 +69,40 @@ impl Sampler {
     }
 
     pub fn host(&mut self) -> Snapshot {
+        let (disk_bytes, disk_total_bytes) = read_host_disk(&self.paths.storage);
         Snapshot {
             cpu_percent: self.host_cpu_percent(),
             memory_bytes: read_host_memory(&self.paths.proc),
-            disk_bytes: None,
+            disk_bytes,
+            disk_total_bytes,
         }
     }
 
-    pub fn box_metrics(&mut self, cgroup: Option<&Path>, active: bool) -> Snapshot {
+    pub fn box_metrics(
+        &mut self,
+        cgroup: Option<&Path>,
+        disk_image: Option<&Path>,
+        active: bool,
+    ) -> Snapshot {
+        let disk_bytes = disk_image.and_then(read_allocated_disk_bytes);
         if !active {
-            return Snapshot::default();
+            return Snapshot {
+                disk_bytes,
+                ..Snapshot::default()
+            };
         }
         if cgroup.is_none() {
-            return Snapshot::default();
+            return Snapshot {
+                disk_bytes,
+                ..Snapshot::default()
+            };
         }
         let cgroup = cgroup.unwrap();
         Snapshot {
             cpu_percent: self.box_cpu_percent(cgroup),
             memory_bytes: read_cgroup_memory(cgroup),
-            disk_bytes: None,
+            disk_bytes,
+            disk_total_bytes: None,
         }
     }
 
@@ -120,6 +145,42 @@ impl Sampler {
         let delta = usage.saturating_sub(previous_usec);
         Some((delta as f64 / 1_000_000.0) / elapsed * 100.0)
     }
+}
+
+fn read_host_disk(storage: &Path) -> (Option<u64>, Option<u64>) {
+    let file = File::open(storage).ok();
+    let Some(file) = file else {
+        return (None, None);
+    };
+    let mut stats = MaybeUninit::<libc::statvfs>::uninit();
+    if unsafe { libc::fstatvfs(file.as_raw_fd(), stats.as_mut_ptr()) } != 0 {
+        return (None, None);
+    }
+    let stats = unsafe { stats.assume_init() };
+    if stats.f_frsize == 0 || stats.f_blocks == 0 {
+        return (None, None);
+    }
+    let unit = stats.f_frsize as u128;
+    let Some(total) = (stats.f_blocks as u128).checked_mul(unit) else {
+        return (None, None);
+    };
+    let Some(used) = ((stats.f_blocks.saturating_sub(stats.f_bfree)) as u128).checked_mul(unit)
+    else {
+        return (None, None);
+    };
+    (
+        u64::try_from(used).ok().filter(|value| *value > 0),
+        u64::try_from(total).ok().filter(|value| *value > 0),
+    )
+}
+
+fn read_allocated_disk_bytes(path: &Path) -> Option<u64> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let blocks = metadata.st_blocks();
+    blocks.checked_mul(512).filter(|value| *value > 0)
 }
 
 fn read_host_cpu(proc: &Path) -> Option<CpuSample> {
@@ -210,6 +271,7 @@ mod tests {
 
     fn write_fixture(root: &Path) {
         fs::create_dir_all(root.join("proc")).unwrap();
+        fs::create_dir_all(root.join("storage")).unwrap();
         fs::create_dir_all(root.join("cgroup/kiln/run1")).unwrap();
         fs::write(root.join("proc/stat"), "cpu  100 0 100 1000 0 0 0 0 0 0\n").unwrap();
         fs::write(
@@ -227,7 +289,7 @@ mod tests {
 
     #[test]
     fn first_host_snapshot_after_prime_has_cpu() {
-        let mut sampler = Sampler::new(Paths::live());
+        let mut sampler = Sampler::new(Paths::live(std::env::temp_dir()));
         sampler.prime();
         assert!(sampler.host().cpu_percent.is_some());
     }
@@ -242,7 +304,7 @@ mod tests {
             thread::sleep(Duration::from_millis(15));
             fs::write(&delayed, "cpu  200 0 200 1100 0 0 0 0 0 0\n").unwrap();
         });
-        let paths = Paths::fixture(root.path().join("proc"));
+        let paths = Paths::fixture(root.path().join("proc"), root.path().join("storage"));
         let mut sampler = Sampler::new(paths);
         sampler.prime();
         let host = sampler.host();
@@ -254,7 +316,7 @@ mod tests {
     fn host_memory_and_cpu_use_fixture_proc() {
         let root = tempfile::tempdir().unwrap();
         write_fixture(root.path());
-        let paths = Paths::fixture(root.path().join("proc"));
+        let paths = Paths::fixture(root.path().join("proc"), root.path().join("storage"));
         let mut sampler = Sampler::new(paths);
         sampler.prime();
         thread::sleep(Duration::from_millis(5));
@@ -269,19 +331,37 @@ mod tests {
         assert!(cpu > 0.0 && cpu <= 100.0, "{cpu}");
 
         let cgroup = root.path().join("cgroup/kiln/run1");
-        let idle = sampler.box_metrics(Some(&cgroup), false);
+        let idle = sampler.box_metrics(Some(&cgroup), None, false);
         assert_eq!(idle.cpu_percent, None);
         assert_eq!(idle.memory_bytes, None);
 
-        sampler.box_metrics(Some(&cgroup), true);
+        sampler.box_metrics(Some(&cgroup), None, true);
         thread::sleep(Duration::from_millis(5));
         fs::write(
             root.path().join("cgroup/kiln/run1/cpu.stat"),
             "usage_usec 2000000\n",
         )
         .unwrap();
-        let active = sampler.box_metrics(Some(&cgroup), true);
+        let active = sampler.box_metrics(Some(&cgroup), None, true);
         assert_eq!(active.memory_bytes, Some(52_428_800));
         assert!(active.cpu_percent.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn host_disk_and_box_allocated_disk_use_stat_sources() {
+        let root = tempfile::tempdir().unwrap();
+        write_fixture(root.path());
+        let disk = root.path().join("storage/box-disk.ext4");
+        fs::write(&disk, vec![0u8; 4096]).unwrap();
+        let paths = Paths::fixture(root.path().join("proc"), root.path().join("storage"));
+        let mut sampler = Sampler::new(paths);
+        let host = sampler.host();
+        assert!(host.disk_bytes.is_some());
+        assert!(host.disk_total_bytes.is_some());
+        assert!(host.disk_bytes.unwrap() <= host.disk_total_bytes.unwrap());
+
+        let stopped = sampler.box_metrics(None, Some(&disk), false);
+        assert!(stopped.disk_bytes.is_some());
+        assert_eq!(stopped.cpu_percent, None);
     }
 }

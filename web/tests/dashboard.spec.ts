@@ -156,7 +156,12 @@ test('live loading, empty, zero metrics and service failure are distinct', async
         operations: [],
         host: {
           ...previewDashboard.host,
-          metrics: { cpu_percent: 0, memory_bytes: 0, disk_bytes: null },
+          metrics: {
+            cpu_percent: 0,
+            memory_bytes: 0,
+            disk_bytes: null,
+            disk_total_bytes: null,
+          },
         },
       },
     })

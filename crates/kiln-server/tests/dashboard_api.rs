@@ -475,7 +475,11 @@ fn assert_document(raw: &str, value: &Value, fixture: &Fixture) {
     assert_eq!(value["host"]["state"], "online");
     assert!(value["host"]["metrics"]["cpu_percent"].as_f64().is_some());
     assert!(value["host"]["metrics"]["memory_bytes"].as_u64().unwrap() > 0);
-    assert!(value["host"]["metrics"]["disk_bytes"].is_null());
+    assert!(value["host"]["metrics"]["disk_bytes"].as_u64().unwrap() > 0);
+    assert!(value["host"]["metrics"]["disk_total_bytes"]
+        .as_u64()
+        .unwrap()
+        > 0);
     let observed = value["observed_at"].as_str().unwrap();
     assert_eq!(observed.len(), 20, "{observed}");
     assert!(observed.ends_with('Z'), "{observed}");
@@ -507,6 +511,7 @@ fn assert_document(raw: &str, value: &Value, fixture: &Fixture) {
     assert_eq!(beta["resources"]["vcpus"], 2);
     assert_eq!(beta["resources"]["memory_bytes"], 512 * 1024 * 1024);
     assert_eq!(beta["resources"]["disk_bytes"], b"boxdisk!!".len());
+    assert!(beta["metrics"]["disk_bytes"].as_u64().unwrap() >= b"boxdisk!!".len() as u64);
     assert!(beta["metrics"]["memory_bytes"].is_null());
     assert!(beta["timing"].is_null());
     assert_eq!(beta["last_error"], SAFE_ERROR);
