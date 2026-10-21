@@ -200,7 +200,7 @@ jobs:
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
             scripts/test-listener-restart.sh \
             scripts/repin-installer.sh scripts/test-repin-installer.sh \
-            scripts/reuse-server-check.sh
+            scripts/check-tag-version.sh scripts/reuse-server-check.sh
 
   # A v* tag publishes main's packages for that commit when the run verifies.
   # A miss falls through to the cache-free package jobs.
@@ -235,7 +235,8 @@ jobs:
           REUSE_SHA: ${{ github.sha }}
           REUSE_SHA_INPUT: ${{ inputs.reuse_sha }}
         # REUSE_VERSION stays unset. fetch reads Cargo.toml at that commit.
-        # Main named the archives with that version, which can differ from the tag.
+        # Package jobs named the archives with that version. version-guard
+        # refuses the tag unless it is the same version.
         run: |
           if [ "$REUSE_EVENT" = workflow_dispatch ] && [ -z "$REUSE_SHA_INPUT" ]; then
             REUSE_SHA_INPUT=$(gh api "repos/${GH_REPO}/commits/main" --jq .sha)
@@ -541,6 +542,55 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
 
+  # A v* tag stops here unless it matches Cargo.toml at that commit.
+  # When main's archives are reused, the Linux client must report that version.
+  # !cancelled() keeps a skipped reuse from rewriting this if to success().
+  # The result check still requires the reuse job to have succeeded.
+  version-guard:
+    needs: [reuse]
+    if: >-
+      !cancelled() &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.reuse.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Require the tag to match Cargo.toml
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          cargo=$(awk '
+            /^\[workspace\.package\]$/ { in_pkg = 1; next }
+            /^\[/ { in_pkg = 0 }
+            in_pkg && /^version = "/ {
+              line = $0
+              sub(/^version = "/, "", line)
+              sub(/"$/, "", line)
+              print line
+              exit
+            }
+          ' Cargo.toml)
+          test -n "$cargo"
+          sh scripts/check-tag-version.sh "$TAG" "$cargo"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'
+        with:
+          name: reused-dist
+          path: dist
+      - name: Require the reused Linux binary to report the tag
+        if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          archive="kiln-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+          (cd dist && sha256sum -c "${archive}.sha256")
+          tar -xzf "dist/${archive}" -C "$RUNNER_TEMP" kiln
+          python3 scripts/release_version.py check-binary --version "$TAG" -- "$RUNNER_TEMP/kiln"
+
   # A client matrix leg and a skipped client job are different check names.
   # always() still runs when a dependency fails or is skipped. Without it,
   # GitHub skips this job and the check never reports.
@@ -561,11 +611,12 @@ jobs:
   # Reuse publishes from main's proof, including that run's server-check.
   # A rebuild still waits for this run's server-check and its package jobs.
   draft-release:
-    needs: [server-check, reuse, server-package, client, dashboard, attest]
+    needs: [version-guard, server-check, reuse, server-package, client, dashboard, attest]
     if: >-
       !cancelled() &&
       github.event_name == 'push' &&
       startsWith(github.ref, 'refs/tags/v') &&
+      needs.version-guard.result == 'success' &&
       ((needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse') &&
         needs.reuse.outputs.server_check == 'success' ||
         (needs.server-check.result == 'success' &&
@@ -602,37 +653,6 @@ jobs:
         run: |
           started=$(date +%s)
           python3 scripts/reuse_release.py finish --version "$VERSION" --dist dist
-          if [ "$REUSE_MODE" = reuse ]; then
-            built=$(sed -n 's/^    version=//p' dist/install.sh)
-            release=${TAG#v}
-            if [ -n "$built" ] && [ "$built" != "$release" ]; then
-              escaped=$(printf '%s\n' "$built" | sed 's/[.]/\\./g')
-              for path in dist/*; do
-                name=$(basename "$path")
-                new=$(printf '%s\n' "$name" | sed "s/-v${escaped}\\([.-]\\)/-v${release}\\1/")
-                [ "$name" = "$new" ] && continue
-                case "$name" in
-                  *.sha256)
-                    digest=$(awk 'NR==1 { print $1 }' "$path")
-                    printf '%s  %s\n' "$digest" "${new%.sha256}" >"$path"
-                    ;;
-                esac
-                mv "$path" "dist/$new"
-              done
-              awk -v release="$release" '
-                {
-                  gsub("kiln-v\\$version-", "kiln-v" release "-")
-                  gsub("kiln-server-v\\$version-", "kiln-server-v" release "-")
-                  gsub("releases/download/v\\$version/", "releases/download/v" release "/")
-                  print
-                }
-              ' dist/install.sh >dist/install.sh.new
-              chmod 755 dist/install.sh.new
-              mv dist/install.sh.new dist/install.sh
-              digest=$(sha256sum dist/install.sh | awk '{ print $1 }')
-              printf '%s  install.sh\n' "$digest" >dist/install.sh.sha256
-            fi
-          fi
           (cd dist && sha256sum -c ./*.sha256)
           if [ "$REUSE_MODE" = reuse ]; then
             source_ref=refs/heads/main
