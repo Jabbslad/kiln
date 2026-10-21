@@ -538,16 +538,16 @@ function Exec({
 }
 
 function LaunchTiming({ box }: { box: Box }) {
-  const phases = (
-    [
-      ['storage', box.timing?.storage_ms],
-      ['vmm', box.timing?.vmm_ms],
-      ['restore', box.timing?.restore_ms],
-      ['agent', box.timing?.agent_ms],
-      ['init', box.timing?.init_ms],
-      ['first command', box.timing?.first_command_ms],
-    ] as const
-  ).filter((entry): entry is [string, number] => entry[1] != null)
+  const phase = (label: string, value: number | null | undefined) =>
+    typeof value === 'number' ? { label, value } : null
+  const phases = [
+    phase('storage', box.timing?.storage_ms),
+    phase('vmm', box.timing?.vmm_ms),
+    phase('restore', box.timing?.restore_ms),
+    phase('agent', box.timing?.agent_ms),
+    phase('init', box.timing?.init_ms),
+    phase('first command', box.timing?.first_command_ms),
+  ].filter((row): row is { label: string; value: number } => row !== null)
   return (
     <section className="panel timing-panel">
       <div className="panel-heading">
@@ -568,7 +568,7 @@ function LaunchTiming({ box }: { box: Box }) {
           {phases.length === 0 ? (
             <p className="micro">Phase breakdown not reported for this launch.</p>
           ) : (
-            phases.map(([label, value]) => (
+            phases.map(({ label, value }) => (
               <div key={label}>
                 <span className="eyebrow">{label}</span>
                 <strong>{formatMetric(value, ' ms')}</strong>
