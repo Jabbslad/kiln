@@ -5,9 +5,9 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
-mode=write
+mode="write"
 if [ "${1:-}" = --check ]; then
-  mode=check
+  mode="check"
   shift
 fi
 if [ $# -gt 0 ]; then
