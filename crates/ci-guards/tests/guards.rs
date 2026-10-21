@@ -222,6 +222,39 @@ fn published_v0_4_14_linux_binary_fails_the_tag_version_check() {
 }
 
 #[test]
+fn reuse_publish_does_not_need_server_check_and_rebuild_does() {
+    let workflow = read(&repo_root().join(".github/workflows/build.yml"));
+    let violations = ci_guards::publish_server_check_violations(&workflow);
+    assert!(violations.is_empty(), "{violations:?}");
+    assert!(
+        workflow.contains("sh scripts/reuse-server-check.sh"),
+        "reuse must prove main's server-check before mode stays reuse"
+    );
+    assert!(
+        workflow.contains("server_check: ${{ steps.decide.outputs.server_check }}"),
+        "publish reads the server-check proof from the reuse job"
+    );
+
+    let stuck =
+        ci_guards::publish_server_check_violations(&fixture("publish-always-server-check.yml"));
+    assert!(
+        stuck
+            .iter()
+            .any(|violation| violation.contains("reuse path: publish is false")),
+        "{stuck:?}"
+    );
+
+    let open = ci_guards::publish_server_check_violations(&fixture(
+        "publish-skips-server-check-on-rebuild.yml",
+    ));
+    assert!(
+        open.iter()
+            .any(|violation| { violation.contains("rebuild path: publish is true") }),
+        "{open:?}"
+    );
+}
+
+#[test]
 fn reuse_looks_up_main_archives_by_the_committed_version() {
     let workflow = read(&repo_root().join(".github/workflows/build.yml"));
     let violations = ci_guards::reuse_lookup_violations(&workflow);
