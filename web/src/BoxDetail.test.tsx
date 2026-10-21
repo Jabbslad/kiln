@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, expect, it, vi } from 'vitest'
 import App from './App'
@@ -13,14 +13,15 @@ it('shows copyable kiln ssh commands with the full box id on Linux and macOS', a
       <App />
     </MemoryRouter>,
   )
-  expect(await screen.findByText(`kiln ssh ${boxId}`)).toBeVisible()
-  expect(screen.getByText(`kiln ssh-config ${boxId}`)).toBeVisible()
-  expect(screen.getByRole('button', { name: 'Copy kiln ssh command' })).toBeVisible()
-  expect(screen.getByRole('button', { name: 'Copy kiln ssh-config command' })).toBeVisible()
-  expect(screen.getByText('Use the Kiln CLI on Linux or macOS.')).toBeVisible()
-  const sshSection = screen.getByText('SSH').closest('.access-section')
-  expect(sshSection).not.toBeNull()
-  expect(sshSection).not.toHaveTextContent('Not available yet')
+  await screen.findByRole('heading', { name: /api-dev/i })
+  const ssh = screen.getByTestId('capability-ssh')
+  expect(ssh).toHaveAttribute('data-capability-state', 'available')
+  expect(within(ssh).getByText(`kiln ssh ${boxId}`)).toBeVisible()
+  expect(within(ssh).getByText(`kiln ssh-config ${boxId}`)).toBeVisible()
+  expect(within(ssh).getByRole('button', { name: 'Copy kiln ssh command' })).toBeVisible()
+  expect(within(ssh).getByRole('button', { name: 'Copy kiln ssh-config command' })).toBeVisible()
+  expect(within(ssh).getByText('Use the Kiln CLI on Linux or macOS.')).toBeVisible()
+  expect(within(ssh).queryByText('Not available yet')).not.toBeInTheDocument()
   expect(screen.queryByText(/SSH gateway/i)).not.toBeInTheDocument()
   expect(screen.queryByText(/Endpoint not configured/i)).not.toBeInTheDocument()
 })

@@ -33,7 +33,8 @@ A host body larger than 1 MiB (`kiln_api::MAX_RESPONSE_BYTES`) makes `stamp` ret
 ## Sub-features
 
 - Inventory at `/boxes`: search, state filters, name sort, row links.
-- Box detail at `/boxes/:id` with workspace, exec, checkpoint, and preview tabs. The Access panel's SSH section shows copyable `kiln ssh <full box id>` and `kiln ssh-config <full box id>` for the Linux and macOS CLI. HTTP preview and public access stay **Not available yet**.
+- Box detail at `/boxes/:id` with workspace, exec, checkpoint, and preview tabs. The Access panel's SSH capability is `available` and shows copyable `kiln ssh <full box id>` and `kiln ssh-config <full box id>` for the Linux and macOS CLI inside `CapabilitySurface`. HTTP preview and public access stay **Not available yet**.
+- Capability guard in `web/src/capabilities.ts`: metrics, terminal, SSH, HTTP preview, public URL, and launch timing each declare `available` or `not-yet`. Panels read that map and render the shared **Not available yet** state instead of blank placeholders or fake broken controls. Vitest in `web/src/capabilities.test.tsx` fails if an `available` capability shows `—`, `-`, `N/A`, or empty values, or if a `not-yet` capability renders anything else. SSH is `available` because the public door proxies `kiln ssh`. Metrics, terminal, HTTP preview, public URL, and launch timing stay `not-yet`.
 - Templates at `/templates`, including the create-box drawer.
 - Operations at `/operations`.
 - Settings at `/settings` and the guide at `/docs`.
@@ -120,7 +121,7 @@ cd web
 KILN_SCREENSHOT_DIR="$VERIFY_EVIDENCE/dashboard" npm run test:browser
 ```
 
-The inventory test (`web/tests/dashboard.spec.ts`) opens `/boxes?preview=1`, expects the title `Boxes — kiln`, types `worker` into the search box, and expects the link `worker-test`. The Running filter then shows `No matching boxes`. `Clear filters` brings the full table back. Sorting by Name puts `worker-test` first. Opening `api-dev` shows `Session not connected` and a disabled `Connect terminal` button. The exec tab accepts `["/bin/echo", "hello"]` as valid JSON and does not send it. The create drawer rejects `My Box!`, refuses the existing name `api-dev`, and leaves `Create box` disabled. Restore stays disabled after the acknowledgement checkbox. Search hides `api-dev`; clear the filter before opening that row.
+The inventory test (`web/tests/dashboard.spec.ts`) opens `/boxes?preview=1`, expects the title `Boxes — kiln`, types `worker` into the search box, and expects the link `worker-test`. The Running filter then shows `No matching boxes`. `Clear filters` brings the full table back. Sorting by Name puts `worker-test` first. Opening `api-dev` shows the terminal capability as **Not available yet** and the SSH capability as copyable `kiln ssh box-7f3a2c1e` and `kiln ssh-config box-7f3a2c1e`. The exec tab accepts `["/bin/echo", "hello"]` as valid JSON and does not send it. The create drawer rejects `My Box!`, refuses the existing name `api-dev`, and leaves `Create box` disabled. Restore stays disabled after the acknowledgement checkbox. Search hides `api-dev`; clear the filter before opening that row.
 
 Also open the Vite server without `?preview=1`. That process does not proxy `kiln-api`, so the page is the disconnected screen:
 
@@ -141,7 +142,7 @@ await browser.close()
 EOF
 ```
 
-A pass is the preview heading plus zero `/api/` requests, a disabled terminal button, and the live route showing `Connect your control plane` with the API error text. Fixture box names do not appear on the live route.
+A pass is the preview heading plus zero `/api/` requests, the terminal capability labelled Not available yet, and the live route showing `Connect your control plane` with the API error text. Fixture box names do not appear on the live route.
 
 ## Gotchas
 
