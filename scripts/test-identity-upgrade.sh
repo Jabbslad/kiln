@@ -519,6 +519,20 @@ if [ "\$1" = ssh ]; then
     rm "\$@"
     exit 0
   fi
+  cmd="\$*"
+  case "\$cmd" in
+    *fetch-dashboard-metrics.sh*)
+      printf '%s' '{"host":{"metrics":{"cpu_percent":1,"memory_bytes":1000}}}'
+      exit 0
+      ;;
+    *kiln-api.service.d/installer.conf*)
+      printf '127.0.0.1\\n'
+      exit 0
+      ;;
+    *install-remote.sh*)
+      exit 0
+      ;;
+  esac
   exit 0
 fi
 exit 1
