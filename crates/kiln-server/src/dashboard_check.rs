@@ -15,6 +15,8 @@ pub enum CheckError {
     HostDiskMissing,
     HostDiskTotalMissing,
     RunningLaunchTimingMissing,
+    RequireLaunchTimingBoxNotFound,
+    RequireLaunchTimingMissing,
 }
 
 impl fmt::Display for CheckError {
@@ -29,6 +31,12 @@ impl fmt::Display for CheckError {
             Self::HostDiskTotalMissing => f.write_str("host disk_total_bytes is missing or null"),
             Self::RunningLaunchTimingMissing => {
                 f.write_str("running box is missing last launch timing")
+            }
+            Self::RequireLaunchTimingBoxNotFound => {
+                f.write_str("dashboard has no box matching the required launch-timing identifier")
+            }
+            Self::RequireLaunchTimingMissing => {
+                f.write_str("required box is missing timing.total_ms on the dashboard")
             }
         }
     }
@@ -72,11 +80,28 @@ pub(crate) fn validate_document(document: &Document) -> Result<(), CheckError> {
     Ok(())
 }
 
+pub fn require_launch_timing(body: &[u8], identifier: &str) -> Result<(), CheckError> {
+    if body.is_empty() {
+        return Err(CheckError::EmptyBody);
+    }
+    let document: Document = serde_json::from_slice(body).map_err(|_| CheckError::InvalidJson)?;
+    require_launch_timing_document(&document, identifier)
+}
+
+fn require_launch_timing_document(document: &Document, identifier: &str) -> Result<(), CheckError> {
+    match document.named_box_missing_launch_total_ms(identifier) {
+        None => Err(CheckError::RequireLaunchTimingBoxNotFound),
+        Some(true) => Err(CheckError::RequireLaunchTimingMissing),
+        Some(false) => Ok(()),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SelfCheckOptions {
     pub address: String,
     pub token_file: std::path::PathBuf,
     pub ca_file: std::path::PathBuf,
+    pub require_launch_timing: Option<String>,
 }
 
 pub async fn run_self_check(options: SelfCheckOptions) -> Result<()> {
@@ -106,7 +131,11 @@ pub async fn run_self_check(options: SelfCheckOptions) -> Result<()> {
         status.is_success(),
         "dashboard request returned HTTP {status}"
     );
-    parse_and_validate(&body).map_err(|error| anyhow::anyhow!("{error}"))
+    parse_and_validate(&body).map_err(|error| anyhow::anyhow!("{error}"))?;
+    if let Some(identifier) = options.require_launch_timing {
+        require_launch_timing(&body, &identifier).map_err(|error| anyhow::anyhow!("{error}"))?;
+    }
+    Ok(())
 }
 
 fn parse_ipv4(address: &str) -> Result<Ipv4Addr> {

@@ -60,6 +60,8 @@ enum Command {
         token_file: PathBuf,
         #[arg(long, default_value = "/etc/kiln/ca.crt")]
         ca_file: PathBuf,
+        #[arg(long)]
+        require_launch_timing: Option<String>,
     },
     /// Serve the dashboard archive and the read API on 127.0.0.1:8093.
     App {
@@ -142,12 +144,14 @@ async fn main() -> Result<()> {
                 address,
                 token_file,
                 ca_file,
+                require_launch_timing,
             } => {
                 if let Err(error) = kiln_server::dashboard_check::run_self_check(
                     kiln_server::dashboard_check::SelfCheckOptions {
                         address,
                         token_file,
                         ca_file,
+                        require_launch_timing,
                     },
                 )
                 .await
