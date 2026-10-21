@@ -139,7 +139,7 @@ platform() {
         Linux:x86_64) target=x86_64-unknown-linux-gnu ;;
         Darwin:x86_64) target=x86_64-apple-darwin ;;
         Darwin:arm64) target=aarch64-apple-darwin ;;
-        *) fail 'Supported clients: macOS ARM/Intel or Linux x86-64. Windows uses the release zip.' ;;
+        *) fail 'Supported clients: macOS ARM/Intel or Linux x86-64.' ;;
     esac
     if [ "$target" = x86_64-unknown-linux-gnu ]; then
         libc=$(getconf GNU_LIBC_VERSION 2>/dev/null || :)

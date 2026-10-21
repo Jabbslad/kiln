@@ -158,7 +158,15 @@ read_run() {
   attempt=0
   while [ "$attempt" -lt 4 ]; do
     attempt=$((attempt + 1))
-    if curl -fsS \
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+      if curl -fsS \
+        -H 'Accept: application/vnd.github+json' \
+        -H 'User-Agent: kiln-wait-test' \
+        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+        "$1"; then
+        return 0
+      fi
+    elif curl -fsS \
       -H 'Accept: application/vnd.github+json' \
       -H 'User-Agent: kiln-wait-test' \
       "$1"; then

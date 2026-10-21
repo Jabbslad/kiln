@@ -111,6 +111,7 @@ jobs:
           sh scripts/test-plan-release.sh
           sh scripts/test-check-stamped-clients.sh
           sh scripts/test-release-budget.sh
+          sh scripts/test-check-dropped-platform.sh
 
   # A verified tag reuse already ran this job on main for the same commit.
   # A fallback, a main push, and a heavy pull request still run it.
@@ -214,6 +215,7 @@ jobs:
           sh scripts/test-plan-release.sh
           sh scripts/test-check-stamped-clients.sh
           sh scripts/test-release-budget.sh
+          sh scripts/test-check-dropped-platform.sh
           shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-bootstrap-pins.sh scripts/test-bootstrap-pins.sh scripts/test-caddy-endings.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/enroll-dark-forge.sh \
             deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
@@ -232,6 +234,7 @@ jobs:
             scripts/next-release-tag.sh scripts/test-next-release-tag.sh \
             scripts/plan-release.sh scripts/test-plan-release.sh \
             scripts/check-stamped-clients.sh scripts/test-check-stamped-clients.sh \
+            scripts/check-dropped-platform.sh scripts/test-check-dropped-platform.sh \
             scripts/test-release-budget.sh
 
   # A manual dry run fetches main's packages. A push builds in this run.
@@ -375,13 +378,8 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            suffix: ''
           - os: macos-15
             target: aarch64-apple-darwin
-            suffix: ''
-          - os: windows-2025
-            target: x86_64-pc-windows-msvc
-            suffix: .exe
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
@@ -415,7 +413,7 @@ jobs:
         if: steps.queue.outputs.skip_tests != 'true'
         run: cargo test --locked -p kiln-api -p kiln-client --target ${{ matrix.target }}
       - name: Native shell bootstrap tests
-        if: runner.os != 'Windows' && steps.queue.outputs.skip_tests != 'true'
+        if: steps.queue.outputs.skip_tests != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: cargo xtask test-bootstrap
@@ -424,9 +422,9 @@ jobs:
         run: |
           cargo build --release --locked -p kiln-client --bin kiln --target ${{ matrix.target }}
           cargo xtask release-version check-binary --version "$VERSION" -- \
-            target/${{ matrix.target }}/release/kiln${{ matrix.suffix }}
+            target/${{ matrix.target }}/release/kiln
       - name: Test release packaging
-        if: runner.os == 'Windows' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: cargo xtask test-release
       - name: Package client
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
@@ -565,9 +563,7 @@ jobs:
           merge-multiple: true
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
-          subject-path: |
-            dist/*.tar.gz
-            dist/*.zip
+          subject-path: dist/*.tar.gz
 
   # A main release names the next patch and creates that tag before this
   # job returns, so the next queued release sees it. A docs-only push sets
@@ -612,7 +608,7 @@ jobs:
         run: sh scripts/plan-release.sh
 
   # Stamp this run's packages onto the planned tag and check every client.
-  # The Linux client is executed. macOS and Windows are checked by the slot.
+  # The Linux client is executed. macOS is checked by the slot.
   version-guard:
     needs: [release-plan, server-package, client, dashboard]
     if: >-
@@ -670,9 +666,7 @@ jobs:
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         if: steps.stamp.outputs.stamped == 'true'
         with:
-          subject-path: |
-            dist/*.tar.gz
-            dist/*.zip
+          subject-path: dist/*.tar.gz
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.stamp.outputs.stamped == 'true'
         with:
@@ -754,7 +748,7 @@ jobs:
           regex='^https://github\.com/Jabbslad/kiln/\.github/workflows/build\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$'
           found=0
           pids=
-          for archive in dist/*.tar.gz dist/*.zip; do
+          for archive in dist/*.tar.gz; do
             [ -f "$archive" ] || continue
             found=1
             gh attestation verify "$archive" --repo Jabbslad/kiln --cert-identity-regex "$regex" --source-ref "$source_ref" &

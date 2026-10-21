@@ -194,8 +194,7 @@ restart an existing server. See [identity operations](identity-service.md).
 This is a trusted-workload, single-administrator pilot, not a hosted multi-tenant
 sandbox. The automation is checked in; that alone does not mean a GitHub build,
 release or real server installation has succeeded. Check the Actions run for the
-version you download. macOS binaries are not signed/notarized, and Windows
-binaries are not Authenticode-signed.
+version you download. macOS binaries are not signed or notarized.
 
 ## v0.3.0 compatibility
 
@@ -274,8 +273,8 @@ is supplied (explicit uplink). See the [bootstrap guide](../deploy/bootstrap/REA
 SFTP, editor SSH configuration, and optional isolated guest IPv4 egress. The
 public installer pins v0.4.10. These features require the new client, server,
 and updated Ubuntu guest agent. Existing templates/boxes are not
-upgraded automatically. SSH/SFTP require OpenSSH on Linux/macOS; Windows retains
-management-only support. See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
+upgraded automatically. SSH/SFTP require OpenSSH on Linux and macOS.
+See the [client commands](remote-client.md#interactive-terminal-files-and-editors).
 
 **v0.2.1 guest login fix:** the image starts `systemd-user-sessions` before the
 warm preparation barrier and workload agent. Ready guests no longer retain
@@ -316,7 +315,6 @@ HTTPS-only redirects, and ignores user curl configuration. It removes temporary
 files on normal exit and handled signals. Checksums assume trust in the bootstrap publisher, not
 independent package signing. To inspect before execution, download the script
 with `curl -fsSL URL -o install.sh`, read it, then run `sh install.sh [server]`.
-Native Windows continues to use the public release zip described below.
 
 **Fresh-host provisioning and reboot remain unverified.** The pilot uses the copy
 disk backend, not the faster overlay benchmark configuration. After server setup,
@@ -335,9 +333,8 @@ Choose one target:
 | Apple Silicon Mac | `aarch64-apple-darwin` |
 | Intel Mac | `x86_64-apple-darwin` |
 | Linux x86-64, glibc 2.39+ | `x86_64-unknown-linux-gnu` |
-| Windows x86-64 | `x86_64-pc-windows-msvc` (`.zip`, contains `kiln.exe`) |
 
-For macOS/Linux, in a new download directory:
+In a new download directory:
 
 ```sh
 REPO=Jabbslad/kiln
@@ -353,11 +350,9 @@ install -m 755 kiln "$HOME/.local/bin/kiln"
 "$HOME/.local/bin/kiln" --version
 ```
 
-Put `$HOME/.local/bin` on your shell's PATH if it is not already there. On Windows,
-download the matching `.zip` and `.zip.sha256` from GitHub Releases, compare
-`Get-FileHash -Algorithm SHA256` to the checksum, then `Expand-Archive` and place
-`kiln.exe` in a directory on your user PATH. Verify downloads before execution;
-do not disable system-wide OS security policies to run an unsigned pilot binary.
+Put `$HOME/.local/bin` on your shell's PATH if it is not already there.
+Verify downloads before execution; do not disable system-wide OS security
+policies to run an unsigned pilot binary.
 
 Checksums detect corruption, not a compromised publisher. The trust boundary is
 the release publisher and the reviewed workflow; signing is not implemented yet.
@@ -449,8 +444,7 @@ kiln exec BOX_ID -- /bin/sh -c 'printf hello'
 ```
 
 Profiles reference the extracted token/CA files; do not delete them after setup.
-Unix token permissions must be 0600 or 0400. On Windows, restrict the directory
-and token ACL to your account. The service currently supports buffered exec,
+Unix token permissions must be 0600 or 0400. The service currently supports buffered exec,
 while v0.1.1 does not include an interactive shell, SSH, file transfer, or guest
 internet access. Those additions require the new builds described above.
 
