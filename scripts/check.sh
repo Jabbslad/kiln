@@ -31,10 +31,17 @@ EOF
   shift
 done
 
-if [ -z "${GITHUB_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
-  GITHUB_TOKEN=$(gh auth token 2>/dev/null || true)
-  export GITHUB_TOKEN
-fi
+github_token() {
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    printf '%s\n' "$GITHUB_TOKEN"
+    return 0
+  fi
+  if command -v gh >/dev/null 2>&1; then
+    gh auth token 2>/dev/null || true
+    return 0
+  fi
+  printf '\n'
+}
 
 run_check() {
   name=$1
@@ -51,10 +58,11 @@ run_check() {
 run_check fmt sh scripts/fmt.sh --check
 run_check install-caddy bash scripts/install-caddy.sh
 run_check socket-tools bash scripts/ci/ensure-socket-tools.sh
-run_check docs-check bash scripts/ci/run-docs-check.sh
-run_check server-check bash scripts/ci/run-server-check.sh
+token=$(github_token)
+run_check docs-check env GITHUB_TOKEN="$token" bash scripts/ci/run-docs-check.sh
+run_check server-check env GITHUB_TOKEN="$token" bash scripts/ci/run-server-check.sh
 run_check dashboard bash scripts/ci/run-dashboard-check.sh
-run_check client bash scripts/ci/run-client-check.sh
+run_check client env GITHUB_TOKEN="$token" bash scripts/ci/run-client-check.sh
 run_check feature-map-guard bash scripts/ci/run-feature-map-guard.sh
 
 if [ "$release" = 1 ]; then
