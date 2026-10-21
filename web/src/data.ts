@@ -23,22 +23,24 @@ const metrics = z.object({
   cpu_percent: z.number().min(0).max(100).nullable(),
   memory_bytes: measurement,
   disk_bytes: measurement,
+  disk_total_bytes: measurement,
 })
 const timing = z.object({
   method: z.string(),
   cache: z.string(),
   disk_copy: z.string(),
-  storage_ms: measurement,
-  vmm_ms: measurement,
-  restore_ms: measurement,
-  agent_ms: measurement,
-  init_ms: measurement,
-  first_command_ms: measurement,
-  total_ms: measurement,
+  storage_ms: measurement.optional(),
+  vmm_ms: measurement.optional(),
+  restore_ms: measurement.optional(),
+  agent_ms: measurement.optional(),
+  init_ms: measurement.optional(),
+  first_command_ms: measurement.optional(),
+  total_ms: measurement.optional(),
 })
 
 export const dashboardSchema = z.object({
   schema_version: z.literal(1),
+  version: z.string().min(1).optional(),
   observed_at: z.iso.datetime(),
   workspace: z.string().min(1),
   host: z.object({ name: z.string(), state: z.enum(['online', 'offline', 'unknown']), metrics }),
@@ -578,6 +580,15 @@ export function formatBytes(bytes: number | null) {
   if (bytes === 0) return '0 B'
   const power = Math.min(4, Math.floor(Math.log(bytes) / Math.log(1024)))
   return `${Number((bytes / 1024 ** power).toFixed(1))} ${['B', 'KiB', 'MiB', 'GiB', 'TiB'][power]}`
+}
+
+export function formatDiskUsedOfTotal(used: number | null, total: number | null) {
+  if (used === null) return '—'
+  if (total === null || total <= 0) return formatBytes(used)
+  const power = Math.min(4, Math.floor(Math.log(total) / Math.log(1024)))
+  const unit = ['B', 'KiB', 'MiB', 'GiB', 'TiB'][power]
+  const scale = 1024 ** power
+  return `${(used / scale).toFixed(1)} of ${(total / scale).toFixed(1)} ${unit}`
 }
 
 export function timestamp(value: string) {

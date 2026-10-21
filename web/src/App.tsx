@@ -26,6 +26,7 @@ import Operations from './Operations'
 import { Docs, Settings } from './Settings'
 import { AppLink, Empty } from './ui'
 import Landing from './Landing'
+import { kilnVersionLabel } from './kiln-version'
 
 type Connection =
   { state: 'loading' } | { state: 'error'; message: string } | { state: 'ready'; data: Dashboard }
@@ -128,7 +129,7 @@ function Dashboard() {
                   ? 'Connecting'
                   : 'Not connected'}
           </span>
-          <span className="topbar-version">Console / pilot</span>
+          <span className="topbar-version">{kilnVersionLabel(data?.version)}</span>
           {data && !preview && (
             <button className="button" type="button" onClick={() => void signOut()}>
               Sign out

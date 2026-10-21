@@ -208,7 +208,7 @@ fi
 metrics_rc=1
 if [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]; then
   metrics_rc=0
-  bash "$dir/check-dashboard-metrics.sh" "$address" || metrics_rc=$?
+  /usr/local/libexec/kiln-api self-check --address "$address" || metrics_rc=$?
 else
   printf 'deploy: skipping the dashboard metrics check because installation failed\n' >&2
 fi

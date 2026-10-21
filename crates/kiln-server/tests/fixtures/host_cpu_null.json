@@ -1,0 +1,1 @@
+{"schema_version":1,"version":"0.4.17","observed_at":"2026-10-21T12:00:01Z","workspace":"local","host":{"name":"local","state":"online","metrics":{"cpu_percent":null,"memory_bytes":1000,"disk_bytes":null}},"boxes":[],"templates":[],"checkpoints":[],"operations":[]}
