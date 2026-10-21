@@ -198,6 +198,10 @@ fn server_files(
         files.push((format!("bin/{name}"), bins.join(name)));
     }
     files.push(("install.sh".into(), repo.join("deploy/install.sh")));
+    files.push((
+        "operations-journal.max-version".into(),
+        repo.join("deploy/operations-journal.max-version"),
+    ));
     files.push(("bin/kiln-network".into(), repo.join("deploy/kiln-network")));
     files.push((
         "fetch-firecracker.sh".into(),
@@ -660,6 +664,7 @@ fn test_server_contains_prebuilt_image_not_host_snapshots_or_secrets() {
     let fix = fixture();
     for name in [
         "deploy/install.sh",
+        "deploy/operations-journal.max-version",
         "deploy/kiln-network",
         "deploy/kiln-host.service",
         "deploy/kiln-api.service",
@@ -706,6 +711,7 @@ fn test_server_contains_prebuilt_image_not_host_snapshots_or_secrets() {
         "bin/kiln",
         "bin/kiln-network",
         "install.sh",
+        "operations-journal.max-version",
         "deploy/kiln-host.service",
         "deploy/kiln-api.service",
         "deploy/kiln-door.service",
@@ -825,6 +831,9 @@ fn bootstrap_accepts_text(
         .collect();
     if archive_names.contains("bin/kiln-network") {
         expected.insert("bin/kiln-network".into());
+    }
+    if archive_names.contains("operations-journal.max-version") {
+        expected.insert("operations-journal.max-version".into());
     }
     let door_core = [
         "deploy/kiln-door-proxy.service",
