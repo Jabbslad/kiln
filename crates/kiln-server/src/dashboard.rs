@@ -53,6 +53,7 @@ pub(crate) struct OperationFacts {
 #[derive(Serialize)]
 pub(crate) struct Document {
     schema_version: u32,
+    version: String,
     observed_at: String,
     workspace: String,
     host: HostBody,
@@ -179,6 +180,7 @@ pub(crate) fn document(
     }
     Document {
         schema_version: 1,
+        version: kiln_api::release_version().to_owned(),
         observed_at: observed_at.to_owned(),
         workspace: workspace.clone(),
         host: HostBody {
@@ -202,6 +204,7 @@ pub(crate) fn stamp_value(value: &mut Value, workspace: &str, observed_at: &str)
         return;
     }
     let workspace = published_workspace(workspace);
+    value["version"] = json!(kiln_api::release_version());
     value["observed_at"] = json!(observed_at);
     value["workspace"] = json!(workspace);
     if let Some(host) = value.get_mut("host") {
