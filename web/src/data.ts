@@ -29,13 +29,13 @@ const timing = z.object({
   method: z.string(),
   cache: z.string(),
   disk_copy: z.string(),
-  storage_ms: measurement,
-  vmm_ms: measurement,
-  restore_ms: measurement,
-  agent_ms: measurement,
-  init_ms: measurement,
-  first_command_ms: measurement,
-  total_ms: measurement,
+  storage_ms: measurement.optional(),
+  vmm_ms: measurement.optional(),
+  restore_ms: measurement.optional(),
+  agent_ms: measurement.optional(),
+  init_ms: measurement.optional(),
+  first_command_ms: measurement.optional(),
+  total_ms: measurement.optional(),
 })
 
 export const dashboardSchema = z.object({

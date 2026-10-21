@@ -4,6 +4,7 @@ use crate::{
     guest, host,
     image::{self, Manifest},
     isolation::{self, Config, JailIdentity},
+    launch_timing::LaunchTiming,
     network::{self, Topology},
     process::{self, Identity},
     storage,
@@ -28,7 +29,7 @@ mod benchmark;
 mod checkpoint;
 mod disk;
 mod ssh;
-use benchmark::Phase;
+use benchmark::{Phase, scoped, take_phases};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoxRecord {
@@ -52,6 +53,8 @@ pub struct BoxRecord {
     pub jail: Option<JailIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<Topology>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_launch: Option<LaunchTiming>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -576,19 +579,7 @@ impl Runtime {
             isolation::trusted_path(&image.rootfs_path)?;
         }
         drop(phase);
-        let phase = Phase::start("allocation_wait");
-        let allocation = self.allocation().await?;
-        drop(phase);
-        let phase = Phase::start("reservation");
-        let records = self.records()?;
-        ensure_unique_name(&records, name)?;
-        if records.len() >= 8
-            || records.iter().map(|r| r.memory_mib).sum::<u32>() + memory_mib > 16384
-        {
-            return Err(Error::Invalid(
-                "local quota exceeded (8 boxes / 16384 MiB allocated)".into(),
-            ));
-        }
+        let started = Instant::now();
         let mut record = BoxRecord {
             schema_version: 1,
             id: id()?,
@@ -605,16 +596,32 @@ impl Runtime {
             last_error: None,
             disk_copy: String::new(),
             disk_layer: None,
-            jail: self.allocate_identity(&records)?,
-            network: self.allocate_network(&records)?,
+            jail: None,
+            network: None,
+            last_launch: None,
         };
-        storage::private_dir(&self.root.join("boxes").join(&record.id))?;
-        let _lock = storage::lock(&self.directory(&record.id)?)?;
-        let run = self.run(&record)?;
-        self.save(&record)?;
-        drop(allocation); // The durable record reserves quota before parallel I/O.
-        drop(phase);
-        let result = async {
+        let result = scoped(async {
+            let phase = Phase::start("allocation_wait");
+            let allocation = self.allocation().await?;
+            drop(phase);
+            let phase = Phase::start("reservation");
+            let records = self.records()?;
+            ensure_unique_name(&records, name)?;
+            if records.len() >= 8
+                || records.iter().map(|r| r.memory_mib).sum::<u32>() + memory_mib > 16384
+            {
+                return Err(Error::Invalid(
+                    "local quota exceeded (8 boxes / 16384 MiB allocated)".into(),
+                ));
+            }
+            record.jail = self.allocate_identity(&records)?;
+            record.network = self.allocate_network(&records)?;
+            storage::private_dir(&self.root.join("boxes").join(&record.id))?;
+            let _lock = storage::lock(&self.directory(&record.id)?)?;
+            let run = self.run(&record)?;
+            self.save(&record)?;
+            drop(allocation);
+            drop(phase);
             let phase = Phase::start("disk_copy");
             let method = storage::copy_disk(
                 &record.image.rootfs_path,
@@ -624,16 +631,28 @@ impl Runtime {
             record.disk_copy = format!("{method:?}");
             drop(phase);
             self.boot(&mut record, None, !template).await
-        }
+        })
         .await;
-        self.finish_launch(&mut record, result)?;
+        self.finish_launch(&mut record, started, "create", result)?;
         Ok(record)
     }
 
-    fn finish_launch(&self, record: &mut BoxRecord, result: Result<()>) -> Result<()> {
+    fn finish_launch(
+        &self,
+        record: &mut BoxRecord,
+        started: Instant,
+        method: &str,
+        result: Result<()>,
+    ) -> Result<()> {
         let _phase = Phase::start("launch_commit");
         match result {
             Ok(()) => {
+                record.last_launch = Some(LaunchTiming::from_phases(
+                    method,
+                    &record.disk_copy,
+                    started.elapsed().as_secs_f64() * 1000.,
+                    take_phases(),
+                ));
                 record.operation = None;
                 record.last_error = None;
                 self.save(record)
@@ -1164,8 +1183,9 @@ impl Runtime {
         }
         record.operation = Some("start".into());
         self.save(&record)?;
-        let result = self.boot(&mut record, None, true).await;
-        self.finish_launch(&mut record, result)?;
+        let started = Instant::now();
+        let result = scoped(async { self.boot(&mut record, None, true).await }).await;
+        self.finish_launch(&mut record, started, "start", result)?;
         if self.is_isolated() {
             fs::remove_dir_all(self.generation(&previous)?)?;
         }

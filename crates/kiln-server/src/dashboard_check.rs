@@ -14,6 +14,7 @@ pub enum CheckError {
     HostMemoryNotPositive,
     HostDiskMissing,
     HostDiskTotalMissing,
+    RunningLaunchTimingMissing,
 }
 
 impl fmt::Display for CheckError {
@@ -26,6 +27,9 @@ impl fmt::Display for CheckError {
             Self::HostMemoryNotPositive => f.write_str("host memory_bytes must be positive"),
             Self::HostDiskMissing => f.write_str("host disk_bytes is missing or null"),
             Self::HostDiskTotalMissing => f.write_str("host disk_total_bytes is missing or null"),
+            Self::RunningLaunchTimingMissing => {
+                f.write_str("running box is missing last launch timing")
+            }
         }
     }
 }
@@ -61,6 +65,9 @@ pub(crate) fn validate_document(document: &Document) -> Result<(), CheckError> {
         .is_none()
     {
         return Err(CheckError::HostDiskTotalMissing);
+    }
+    if document.running_without_launch_timing() {
+        return Err(CheckError::RunningLaunchTimingMissing);
     }
     Ok(())
 }
@@ -147,6 +154,18 @@ mod tests {
                         disk_bytes: None,
                         disk_total_bytes: None,
                     },
+                    timing: Some(kiln_runtime::launch_timing::LaunchTiming {
+                        method: "create".into(),
+                        cache: "uncontrolled".into(),
+                        disk_copy: "Copy".into(),
+                        storage_ms: Some(1.),
+                        vmm_ms: Some(1.),
+                        restore_ms: None,
+                        agent_ms: None,
+                        init_ms: None,
+                        first_command_ms: None,
+                        total_ms: Some(10.),
+                    }),
                 },
                 BoxFacts {
                     id: "box-stopped".into(),
@@ -160,6 +179,7 @@ mod tests {
                     last_error: None,
                     restored_from: None,
                     metrics: Snapshot::default(),
+                    timing: None,
                 },
             ],
             ..Default::default()
@@ -210,7 +230,12 @@ mod tests {
                 "last_operation": null,
                 "last_error": null,
                 "restored_from": null,
-                "timing": null
+                "timing": {
+                    "method": "journal",
+                    "cache": "unmeasured",
+                    "disk_copy": "Copy",
+                    "total_ms": 1000
+                }
             }],
             "templates": [],
             "checkpoints": [],

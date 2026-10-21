@@ -235,6 +235,10 @@ impl Host {
         let ids = journal.managed_ids()?;
         let created = journal.create_times()?;
         let rows = journal.recent(100)?;
+        let mut launch_timings = BTreeMap::new();
+        for id in &ids {
+            launch_timings.insert(id.clone(), journal.last_launch_ms(id)?);
+        }
         drop(journal);
         let mut names = BTreeMap::new();
         let mut boxes = Vec::new();
@@ -255,6 +259,19 @@ impl Host {
             let active = matches!(record.state.as_str(), "running" | "paused");
             let cgroup = self.runtime.box_cgroup(&record.run);
             let metrics = sampler.box_metrics(cgroup.as_deref(), disk_path.as_deref(), active);
+            let timing = record.last_launch.clone().or_else(|| {
+                launch_timings
+                    .get(&id)
+                    .cloned()
+                    .flatten()
+                    .map(|(method, total_ms)| {
+                        kiln_runtime::launch_timing::LaunchTiming::from_journal(
+                            &method,
+                            &record.disk_copy,
+                            total_ms,
+                        )
+                    })
+            });
             boxes.push(crate::dashboard::BoxFacts {
                 id,
                 name: record.name,
@@ -267,6 +284,7 @@ impl Host {
                 last_error: record.last_error,
                 restored_from: record.source,
                 metrics,
+                timing,
             });
         }
         let mut operations = Vec::new();
@@ -719,6 +737,7 @@ mod tests {
                 disk_layer: None,
                 jail: None,
                 network: None,
+                last_launch: None,
             })
             .unwrap(),
         )

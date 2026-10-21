@@ -21,16 +21,26 @@ impl Journal {
         let mut db = Connection::open(path)?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")?;
         let version: u32 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        ensure!(version <= 1, "unsupported operation journal version");
+        ensure!(version <= 2, "unsupported operation journal version");
         let tx = db.transaction()?;
         tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS operations (
             id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
             is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
-            created_at INTEGER NOT NULL DEFAULT (unixepoch()));
+            created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+            finished_at INTEGER, action TEXT NOT NULL DEFAULT 'unknown');
             CREATE INDEX IF NOT EXISTS operation_boxes ON operations(box_id, is_create);
             PRAGMA user_version=1;",
         )?;
+        if version < 2 {
+            let _ = tx.execute_batch(
+                "ALTER TABLE operations ADD COLUMN finished_at INTEGER;
+                 ALTER TABLE operations ADD COLUMN action TEXT NOT NULL DEFAULT 'unknown';
+                 UPDATE operations SET finished_at = created_at WHERE running = 0 AND finished_at IS NULL;
+                 UPDATE operations SET action = 'create' WHERE is_create = 1;
+                 PRAGMA user_version=2;",
+            );
+        }
         let interrupted = tx
             .prepare("SELECT response FROM operations WHERE running=1")?
             .query_map([], |r| r.get::<_, String>(0))?
@@ -89,7 +99,17 @@ impl Journal {
             result: None,
             error: None,
         };
-        self.0.execute("INSERT INTO operations(id,fingerprint,box_id,is_create,running,response) VALUES (?1,?2,?3,?4,1,?5)", params![op.id, Self::fingerprint(request)?, op.box_id, matches!(request.action, Action::Create { .. }), serde_json::to_string(&op)?])?;
+        self.0.execute(
+            "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,action) VALUES (?1,?2,?3,?4,1,?5,?6)",
+            params![
+                op.id,
+                Self::fingerprint(request)?,
+                op.box_id,
+                matches!(request.action, Action::Create { .. }),
+                serde_json::to_string(&op)?,
+                launch_action(&request.action),
+            ],
+        )?;
         Ok(op)
     }
 
@@ -111,12 +131,47 @@ impl Journal {
         );
         ensure!(
             self.0.execute(
-                "UPDATE operations SET running=0,response=?2 WHERE id=?1 AND running=1",
+                "UPDATE operations SET running=0,response=?2,finished_at=unixepoch() WHERE id=?1 AND running=1",
                 params![op.id, serde_json::to_string(op)?]
             )? == 1,
             "operation not running"
         );
         Ok(())
+    }
+
+    pub(crate) fn last_launch_ms(&self, box_id: &str) -> Result<Option<(String, f64)>> {
+        let mut statement = self.0.prepare(
+            "SELECT action, created_at, finished_at, response
+             FROM operations
+             WHERE box_id = ?1 AND running = 0 AND action IN ('create', 'start', 'restore')
+             ORDER BY finished_at DESC, created_at DESC, id DESC",
+        )?;
+        let rows = statement.query_map([box_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        for row in rows {
+            let (action, created_at, finished_at, response) = row?;
+            let Ok(operation) = serde_json::from_str::<Operation>(&response) else {
+                continue;
+            };
+            if operation.state != OperationState::Succeeded {
+                continue;
+            }
+            let Some(finished_at) = finished_at else {
+                continue;
+            };
+            if finished_at <= created_at {
+                continue;
+            }
+            let total_ms = (finished_at - created_at) as f64 * 1000.;
+            return Ok(Some((action, total_ms)));
+        }
+        Ok(None)
     }
 
     pub fn owns(&self, id: &str) -> Result<bool> {
@@ -173,6 +228,15 @@ impl Journal {
             });
         }
         Ok(operations)
+    }
+}
+
+fn launch_action(action: &Action) -> &'static str {
+    match action {
+        Action::Create { .. } => "create",
+        Action::Start { .. } => "start",
+        Action::Restore { .. } => "restore",
+        _ => "other",
     }
 }
 

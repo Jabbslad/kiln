@@ -46,7 +46,7 @@ A host body larger than 1 MiB makes the gateway return HTTP 502 with code `host_
 
 - Inventory at `/boxes`: search, state filters, name sort, row links.
 - Box detail at `/boxes/:id` with Terminal, Exec, Previews, Checkpoints, Metrics, and Activity tabs.
-- Capability map in `web/src/capabilities.ts` (#113): `metrics`, `terminal`, `ssh`, `httpPreview`, `publicUrl`, and `launchTiming` are each `available` or `not-yet`. `CapabilitySurface` in `web/src/ui.tsx` renders **Not available yet** for `not-yet` entries (Access, terminal body, previews, launch timing). `web/src/capabilities.test.tsx` fails if an `available` capability shows placeholder dashes or empty values, or if a `not-yet` capability shows fake connected UI. `metrics` is `available` and reads live host and box telemetry from the dashboard document.
+- Capability map in `web/src/capabilities.ts` (#113): `metrics`, `terminal`, `ssh`, `httpPreview`, `publicUrl`, and `launchTiming` are each `available` or `not-yet`. `CapabilitySurface` in `web/src/ui.tsx` renders **Not available yet** for `not-yet` entries (Access, terminal body, previews). `launchTiming` is `available`: the Metrics tab shows end-to-end milliseconds plus phase rows when the host measured them, or **Not reported** when `timing.total_ms` is null. `web/src/capabilities.test.tsx` fails if an `available` capability shows placeholder dashes or empty values, or if a `not-yet` capability shows fake connected UI. `metrics` is `available` and reads live host and box telemetry from the dashboard document.
 - Templates at `/templates`, including the create-box drawer.
 - Operations at `/operations`.
 - Settings at `/settings` and the guide at `/docs`.
@@ -111,7 +111,7 @@ cargo test -p kiln-server --test app_listener --locked -- --nocapture \
   a_signed_in_operate_session_reaches_the_host
 ```
 
-Deploy and smoke validate live host metrics with `kiln-api self-check`, which deserializes the same `dashboard::Document` the server publishes and checks `host.metrics.cpu_percent`, `host.metrics.memory_bytes`, `host.metrics.disk_bytes`, and `host.metrics.disk_total_bytes` (running-box CPU may be null on the first read after restart; box disk is not gated). No shell JSON parsing on the host.
+Deploy and smoke validate live host metrics with `kiln-api self-check`, which deserializes the same `dashboard::Document` the server publishes and checks `host.metrics.cpu_percent`, `host.metrics.memory_bytes`, `host.metrics.disk_bytes`, and `host.metrics.disk_total_bytes` (running-box CPU may be null on the first read after restart; box disk is not gated). Every **running** box must publish `timing.total_ms` from the last create, start, or restore (measured phases when the runtime recorded them, otherwise journal duration). Stopped boxes may show their last launch or `timing: null`; with zero running boxes the gate passes before smoke creates a box. No shell JSON parsing on the host.
 
 ```sh
 cargo test -p kiln-server --test dashboard_self_check --locked
