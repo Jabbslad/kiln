@@ -315,6 +315,20 @@ test('phone inventory retains accessible table semantics after reflow', async ({
   ).toEqual([])
 })
 
+test('clicking the version label opens embedded release notes', async ({ page }) => {
+  await page.goto('/boxes?preview=1')
+  const version = page.getByRole('button', { name: /^Release notes for v/ })
+  await expect(version).toBeVisible()
+  await capture(page, 'release-notes-header')
+  await version.click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.getByRole('heading', { level: 2 })).toBeVisible()
+  await expect(dialog.getByRole('link', { name: /View on GitHub/i })).toBeVisible()
+  await capture(page, 'release-notes-open')
+  await dialog.getByRole('button', { name: 'Close dialog' }).click()
+  await expect(dialog).toHaveCount(0)
+})
+
 test('key screens have no automated accessibility violations', async ({ page }) => {
   for (const path of [
     '/boxes?preview=1',
