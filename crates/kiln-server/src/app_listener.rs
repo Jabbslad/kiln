@@ -516,7 +516,10 @@ async fn proxy(app: &App, request: Request) -> Response {
     .await
     {
         Ok(response) => response,
-        Err(failure) => nostore(failure.into_response()),
+        Err(failure) => {
+            audit(app, "dashboard_unreachable", "");
+            nostore(failure.into_response())
+        }
     }
 }
 

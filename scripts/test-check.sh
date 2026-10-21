@@ -35,4 +35,10 @@ printf '%s\n' "$body" | grep -q 'shellcheck not installed, skipped' \
 grep -q 'sh scripts/test-check.sh' .github/workflows/build.yml \
   || fail 'build.yml must run test-check.sh'
 
+docs=$root/scripts/check-docs.sh
+grep -q 'sh scripts/test-check-pr-proof.sh' "$docs" \
+  || fail 'check-docs.sh must run test-check-pr-proof.sh (docs-check parity)'
+grep -q 'sh scripts/test-check.sh' "$docs" \
+  || fail 'check-docs.sh must run test-check.sh (docs-check parity)'
+
 printf 'check wiring tests ok\n'
