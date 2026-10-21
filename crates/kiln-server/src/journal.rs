@@ -94,6 +94,8 @@ impl Journal {
             .query_row("SELECT count(*) FROM operations", [], |r| r.get(0))?)
     }
 
+    /// Drops finished rows using `running = 0` and `created_at` only; operation state in
+    /// `response` is not consulted. Live boxes are protected via `is_create = 1` and `box_id`.
     pub fn prune_terminal(&mut self, now: i64, live_box_ids: &[&str]) -> Result<u32> {
         let cutoff = now.saturating_sub(RETENTION_SECS);
         let tx = self.0.transaction()?;
@@ -378,6 +380,23 @@ mod tests {
         .unwrap();
     }
 
+    fn create_user_version_one_db(path: &Path) -> Connection {
+        let db = Connection::open(path).unwrap();
+        db.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=FULL;
+             CREATE TABLE operations (
+                id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
+                is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
+                created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE INDEX operation_boxes ON operations(box_id, is_create);
+             PRAGMA user_version=1;",
+        )
+        .unwrap();
+        db
+    }
+
     fn insert_running(db: &Connection, id: &str, box_id: &str, created_at: i64) {
         let op = Operation {
             id: id.into(),
@@ -482,6 +501,89 @@ mod tests {
             },
         };
         assert!(db.existing(&changed).is_err());
+    }
+
+    #[test]
+    fn v1_journal_shape_uses_created_at_and_running_for_retention() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("operations.sqlite");
+        let live_box = new_id();
+        let create_id = new_id();
+        let stale_exec = format!("{:032x}", 0);
+        let running_id = new_id();
+        let recent_exec = new_id();
+        let old = unix_now() - RETENTION_SECS - 3600;
+        let recent = unix_now() - 3600;
+        {
+            let db = create_user_version_one_db(&path);
+            for index in 1..=TERMINAL_KEEP_COUNT {
+                insert_terminal(
+                    &db,
+                    &format!("{:032x}", index),
+                    &new_id(),
+                    false,
+                    old,
+                    OperationState::Succeeded,
+                );
+            }
+            insert_terminal(
+                &db,
+                &create_id,
+                &live_box,
+                true,
+                old,
+                OperationState::Succeeded,
+            );
+            insert_terminal(
+                &db,
+                &stale_exec,
+                &live_box,
+                false,
+                old,
+                OperationState::Succeeded,
+            );
+            insert_running(&db, &running_id, &live_box, old);
+            insert_terminal(
+                &db,
+                &recent_exec,
+                &new_id(),
+                false,
+                recent,
+                OperationState::Succeeded,
+            );
+        }
+        let mut journal = Journal::open(&path).unwrap();
+        let version: u32 = journal
+            .0
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 1);
+        let columns: Vec<String> = journal
+            .0
+            .prepare("SELECT name FROM pragma_table_info('operations') ORDER BY cid")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            columns,
+            [
+                "id",
+                "fingerprint",
+                "box_id",
+                "is_create",
+                "running",
+                "response",
+                "created_at"
+            ]
+        );
+        journal.prune_terminal(unix_now(), &[&live_box]).unwrap();
+        assert!(journal.get(&create_id).unwrap().is_some());
+        assert!(journal.get(&running_id).unwrap().is_some());
+        assert!(journal.get(&recent_exec).unwrap().is_some());
+        assert!(journal.get(&stale_exec).unwrap().is_none());
+        assert!(journal.owns(&live_box).unwrap());
     }
 
     #[test]
