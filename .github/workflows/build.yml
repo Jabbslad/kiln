@@ -203,7 +203,7 @@ jobs:
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
             scripts/test-listener-restart.sh \
             scripts/test-installer-release.sh \
-            scripts/check-tag-version.sh scripts/reuse-server-check.sh \
+            scripts/stamp-release-version.sh scripts/stamp-release-dist.sh scripts/reuse-server-check.sh \
             scripts/wait-main-run.sh scripts/test-wait-main-run.sh
 
   # A v* tag publishes main's packages for that commit when the run verifies.
@@ -242,7 +242,7 @@ jobs:
           REUSE_SHA_INPUT: ${{ inputs.reuse_sha }}
         # REUSE_VERSION stays unset. fetch reads Cargo.toml at that commit.
         # Package jobs named the archives with that version. version-guard
-        # refuses the tag unless it is the same version.
+        # stamps those bytes onto the release ref when the two differ.
         run: |
           if [ "$REUSE_EVENT" = workflow_dispatch ] && [ -z "$REUSE_SHA_INPUT" ]; then
             REUSE_SHA_INPUT=$(gh api "repos/${GH_REPO}/commits/main" --jq .sha)
@@ -551,8 +551,9 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
 
-  # A v* tag stops here unless it matches Cargo.toml at that commit.
-  # When main's archives are reused, the Linux client must report that version.
+  # A v* tag stamps reused packages onto the tag when they were built
+  # with a different version, then re-attests those bytes. A matching tag
+  # publishes main's archives unchanged. The Linux client must report the tag.
   # !cancelled() keeps a skipped reuse from rewriting this if to success().
   # The result check still requires the reuse job to have succeeded.
   version-guard:
@@ -564,32 +565,40 @@ jobs:
       needs.reuse.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      stamped: ${{ steps.stamp.outputs.stamped }}
+      version: ${{ steps.stamp.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: Require the tag to match Cargo.toml
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          cargo=$(awk '
-            /^\[workspace\.package\]$/ { in_pkg = 1; next }
-            /^\[/ { in_pkg = 0 }
-            in_pkg && /^version = "/ {
-              line = $0
-              sub(/^version = "/, "", line)
-              sub(/"$/, "", line)
-              print line
-              exit
-            }
-          ' Cargo.toml)
-          test -n "$cargo"
-          sh scripts/check-tag-version.sh "$TAG" "$cargo"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'
         with:
           name: reused-dist
           path: dist
+      - name: Stamp reused packages onto the tag
+        id: stamp
+        if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'
+        env:
+          TAG: ${{ github.ref_name }}
+          FROM: ${{ needs.reuse.outputs.version }}
+        run: |
+          if [ -z "$FROM" ] || [ -z "$TAG" ]; then
+            echo "reuse did not name a version" >&2
+            exit 1
+          fi
+          if [ "$TAG" = "$FROM" ]; then
+            echo "stamped=false" >> "$GITHUB_OUTPUT"
+          else
+            sh scripts/stamp-release-dist.sh dist "$FROM" "$TAG"
+            echo "stamped=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=${TAG}" >> "$GITHUB_OUTPUT"
       - name: Require the reused Linux binary to report the tag
         if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'
         env:
@@ -599,6 +608,20 @@ jobs:
           (cd dist && sha256sum -c "${archive}.sha256")
           tar -xzf "dist/${archive}" -C "$RUNNER_TEMP" kiln
           python3 scripts/release_version.py check-binary --version "$TAG" -- "$RUNNER_TEMP/kiln"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        if: steps.stamp.outputs.stamped == 'true'
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.stamp.outputs.stamped == 'true'
+        with:
+          name: stamped-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
   # A client matrix leg and a skipped client job are different check names.
   # always() still runs when a dependency fails or is skipped. Without it,
@@ -642,9 +665,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse'
+        if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse' && needs.version-guard.outputs.stamped != 'true'
         with:
           name: reused-dist
+          path: dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse' && needs.version-guard.outputs.stamped == 'true'
+        with:
+          name: stamped-dist
           path: dist
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: needs.reuse.result != 'success' || needs.reuse.outputs.mode != 'reuse'
@@ -657,13 +685,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
-          VERSION: ${{ needs.reuse.outputs.mode == 'reuse' && needs.reuse.outputs.version || github.ref_name }}
+          VERSION: ${{ needs.version-guard.outputs.version || github.ref_name }}
           REUSE_MODE: ${{ needs.reuse.outputs.mode }}
+          STAMPED: ${{ needs.version-guard.outputs.stamped }}
         run: |
           started=$(date +%s)
           python3 scripts/reuse_release.py finish --version "$VERSION" --dist dist
           (cd dist && sha256sum -c ./*.sha256)
-          if [ "$REUSE_MODE" = reuse ]; then
+          if [ "$REUSE_MODE" = reuse ] && [ "$STAMPED" != true ]; then
             source_ref=refs/heads/main
           else
             source_ref="refs/tags/${TAG}"

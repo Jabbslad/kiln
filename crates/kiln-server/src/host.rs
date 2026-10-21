@@ -51,6 +51,26 @@ pub struct Host {
     _locks: [File; 2],
 }
 
+fn acquire_service_lock(file: &File) -> Result<()> {
+    let mut pause = std::time::Duration::from_millis(1);
+    for _ in 0..6 {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                std::thread::sleep(pause);
+                pause *= 2;
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
+    }
+    file.try_lock().map_err(|error| match error {
+        std::fs::TryLockError::Error(error) => error.into(),
+        std::fs::TryLockError::WouldBlock => {
+            std::io::Error::from(std::io::ErrorKind::WouldBlock).into()
+        }
+    })
+}
+
 impl Host {
     pub fn open(config: &Config) -> Result<Arc<Self>> {
         if unsafe { libc::geteuid() } == 0 {
@@ -90,7 +110,9 @@ impl Host {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(config.runtime_dir.join(".service.lock"))?;
-        runtime_lock.try_lock()?;
+        // flock can return EAGAIN just after another thread in this process
+        // closes a different lock file. A holder that is still alive still fails.
+        acquire_service_lock(&runtime_lock)?;
         storage::private_dir(&config.journal_dir)?;
         let journal_lock = storage::lock(&config.journal_dir)?;
         let snapshots = runtime.snapshots()?;

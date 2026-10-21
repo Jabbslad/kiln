@@ -483,9 +483,10 @@ successful push of this workflow on main. It checks the run, the archive
 checksums, and build provenance when that commit's workflow emitted provenance.
 It then publishes that release from those archives. `install.sh` is rendered in the tag
 job from the archive checksums. The job publishes only after `sha256sum -c` and
-`gh attestation verify` succeed for every archive. A reused archive is verified
-with `--source-ref refs/heads/main`. A fallback build is verified with
-`--source-ref refs/tags/vX.Y.Z`. The identity regex is
+`gh attestation verify` succeed for every archive. A reused archive whose
+version already matches the tag is verified with `--source-ref refs/heads/main`.
+A reused archive stamped onto a different tag, and a fallback build, are
+verified with `--source-ref refs/tags/vX.Y.Z`. The identity regex is
 `^https://github\.com/Jabbslad/kiln/\.github/workflows/build\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$`.
 If that run is missing, expired, or fails those checks, or the reuse job
 errors, the tag builds from scratch with the Rust, npm, and Playwright
@@ -515,14 +516,16 @@ downloads that tag and refuses the archive when the checksum differs.
 The tag job renders `install.sh` from the archive checksums and writes that
 tag into `version=`. The rendered copy installs that tag and checks the
 checksums in its asset block. A `v*` tag that is not the `Cargo.toml`
-version is refused before publish, and a reused Linux client must print
-that same version. The installer accepts the download when `kiln --version`
-prints `kiln` and that version.
+version stamps that tag into the reused binaries, archive names, and
+`release.json`, then re-attests those archives. A matching tag publishes
+main's archives unchanged. The reused Linux client must print the tag.
+The installer accepts the download when `kiln --version` prints `kiln` and
+that version.
 The tag job publishes only after `sha256sum -c` and
 `gh attestation verify` succeed for every archive. The same job attaches
 `install.sh` and `install.sh.sha256`. Publishing a release leaves main
-unchanged. The workspace version in `Cargo.toml` can move ahead of the
-latest published tag while a release is prepared.
+unchanged. The tag does not have to match the workspace version in
+`Cargo.toml`, and the tag job does not commit a version rewrite back to main.
 The public command stays on the raw main URL.
 `releases/latest/download/install.sh` returns 404 for v0.4.7, and the
 published v0.4.14 `install.sh` reports 0.4.10 while it downloads 0.4.14.

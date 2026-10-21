@@ -1,10 +1,10 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches, Parser};
 use kiln_server::host::{Config, Host, bind_socket};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(version, about = "Local kiln host service; Unix socket only")]
+#[command(about = "Local kiln host service; Unix socket only")]
 struct Args {
     #[arg(long)]
     config: PathBuf,
@@ -18,7 +18,10 @@ async fn main() -> Result<()> {
     unsafe {
         libc::umask(0o077);
     }
-    let args = Args::parse();
+    let matches = Args::command()
+        .version(kiln_api::release_version())
+        .get_matches();
+    let args = Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     if unsafe { libc::geteuid() } == 0 {
         kiln_runtime::isolation::trusted_path(&args.config)?;
     }
