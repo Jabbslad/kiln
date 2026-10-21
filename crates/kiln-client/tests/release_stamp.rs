@@ -1,4 +1,9 @@
 //! A release tag can differ from Cargo.toml. The packaged binary must report the tag.
+//!
+//! The stamp scripts run on the Ubuntu release runner (GNU tar). Client tests
+//! on macOS and Windows do not execute this proof.
+
+#![cfg(target_os = "linux")]
 
 use std::fs;
 use std::path::{Path, PathBuf};
