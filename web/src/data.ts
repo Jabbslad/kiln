@@ -1,7 +1,7 @@
 import { z } from 'zod'
-import { type OperationActionType } from './operationKinds'
+import { type OperationActionType } from './operationKinds.ts'
 
-export { OPERATION_ACTION_TYPES, type OperationActionType } from './operationKinds'
+export { OPERATION_ACTION_TYPES, type OperationActionType } from './operationKinds.ts'
 
 export const boxStates = [
   'running',
