@@ -1,26 +1,19 @@
 #!/usr/bin/env python3
-"""Reuse main's packages for a tag, or say why that run cannot be published.
-
-A main run that is still in progress is polled for 15 minutes. Success reuses
-that run. Failure, cancellation, and timeout fall back to a rebuild.
-"""
+"""Reuse main's packages for a tag, or say why that run cannot be published."""
 
 import argparse
 import hashlib
 import os
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import release_version
 
 WORKFLOW_PATH = ".github/workflows/build.yml"
 ATTEST_ACTION = "actions/attest-build-provenance@"
-WAIT_LIMIT = timedelta(minutes=15)
-POLL_INTERVAL = timedelta(seconds=15)
 PACKAGE_ARTIFACTS = frozenset(
     {
         "package-server",
@@ -44,7 +37,7 @@ class WorkflowRun:
     head_branch: str
     event: str
     path: str
-    conclusion: str | None
+    conclusion: str
     status: str
 
 
@@ -78,84 +71,16 @@ def select_run(runs: tuple[WorkflowRun, ...], sha: str) -> WorkflowRun:
     matches = [
         run
         for run in runs
-        if _matches(run, sha) and run.conclusion == "success" and run.status == "completed"
+        if run.head_sha == sha
+        and run.head_branch == "main"
+        and run.event == "push"
+        and run.path == WORKFLOW_PATH
+        and run.conclusion == "success"
+        and run.status == "completed"
     ]
     if not matches:
         raise ReuseRefused("no successful main push of this workflow for that commit")
     return max(matches, key=lambda run: run.run_id)
-
-
-def wait_for_main(runs, sha, *, clock, poll, sleep, log=None):
-    """Wait out one in-progress main run, then reuse it or refuse.
-
-    `poll` receives that run's id and returns the run again. `clock` returns
-    an aware datetime. `sleep` waits one poll interval. `log` records one line
-    per case; the default prints it.
-    """
-    started = clock()
-    if started.tzinfo is None:
-        raise ReuseRefused("clock must be timezone-aware")
-    deadline = started + WAIT_LIMIT
-    budget = int(WAIT_LIMIT / POLL_INTERVAL)
-    current = tuple(runs)
-    announced = None
-    polls = 0
-    while True:
-        latest = _latest_match(current, sha)
-        if latest is not None and latest.conclusion is None and latest.status != "completed":
-            if announced != latest.run_id:
-                _note(log, f"reuse waiting: main run {latest.run_id} is in progress")
-                announced = latest.run_id
-            if clock() >= deadline or polls >= budget:
-                raise ReuseRefused(f"timed out waiting for main run {latest.run_id}")
-            polls += 1
-            sleep(POLL_INTERVAL.total_seconds())
-            current = _replace_run(current, poll(latest.run_id))
-            continue
-        if announced is None:
-            return select_run(current, sha)
-        if (
-            latest is not None
-            and latest.run_id == announced
-            and latest.conclusion == "success"
-            and latest.status == "completed"
-        ):
-            _note(log, f"reuse reusing main run {latest.run_id}")
-            return latest
-        if latest is not None and latest.run_id == announced and latest.conclusion == "cancelled":
-            raise ReuseRefused(f"main run {announced} was cancelled")
-        if latest is not None and latest.run_id == announced:
-            raise ReuseRefused(f"main run {announced} failed")
-        raise ReuseRefused("no successful main push of this workflow for that commit")
-
-
-def _matches(run: WorkflowRun, sha: str) -> bool:
-    return (
-        run.head_sha == sha
-        and run.head_branch == "main"
-        and run.event == "push"
-        and run.path == WORKFLOW_PATH
-    )
-
-
-def _latest_match(runs, sha: str):
-    matches = [run for run in runs if _matches(run, sha)]
-    if not matches:
-        return None
-    return max(matches, key=lambda run: run.run_id)
-
-
-def _replace_run(runs, refreshed: WorkflowRun):
-    others = tuple(run for run in runs if run.run_id != refreshed.run_id)
-    return others + (refreshed,)
-
-
-def _note(log, line: str) -> None:
-    if log is not None:
-        log(line)
-        return
-    stream = sys.stdout if line.startswith("reuse reusing ") else sys.stderr
-    print(line, file=stream)
 
 
 def require_artifacts(
@@ -279,28 +204,11 @@ def parse_runs(items: list) -> tuple[WorkflowRun, ...]:
                 head_branch=_json_str(item, "headBranch"),
                 event=_json_str(item, "event"),
                 path=_json_str(item, "path"),
-                conclusion=_json_conclusion(item),
+                conclusion=_json_str(item, "conclusion"),
                 status=_json_str(item, "status"),
             )
         )
     return tuple(runs)
-
-
-def parse_api_run(payload: dict) -> WorkflowRun:
-    """Parse one Actions run object. A null conclusion is still in progress."""
-    if not isinstance(payload, dict):
-        raise ReuseRefused("workflow run is not an object")
-    item = {
-        "databaseId": payload.get("id"),
-        "headSha": payload.get("head_sha"),
-        "headBranch": payload.get("head_branch"),
-        "event": payload.get("event"),
-        "path": payload.get("path"),
-        "status": payload.get("status"),
-    }
-    if "conclusion" in payload:
-        item["conclusion"] = payload["conclusion"]
-    return parse_runs([item])[0]
 
 
 def parse_artifacts(payload: dict, now: datetime) -> tuple[PackageArtifact, ...]:
@@ -343,13 +251,7 @@ def fetch(repo: str, sha: str, version_text: str, dist: Path) -> tuple[str, rele
         raise ReuseRefused("dist is not empty")
     dist.mkdir(parents=True, exist_ok=True)
     runs = parse_runs(_with_paths(repo, _run_list(repo, sha)))
-    chosen = wait_for_main(
-        runs,
-        sha,
-        clock=lambda: datetime.now(timezone.utc),
-        poll=lambda run_id: _refresh_run(repo, run_id),
-        sleep=time.sleep,
-    )
+    chosen = select_run(runs, sha)
     now = datetime.now(timezone.utc)
     require_artifacts(parse_artifacts(_artifact_page(repo, chosen.run_id), now), now)
     for name in sorted(PACKAGE_ARTIFACTS):
@@ -492,20 +394,6 @@ def _run_list(repo: str, sha: str) -> list:
     return payload
 
 
-def _refresh_run(repo: str, run_id: int) -> WorkflowRun:
-    import json
-
-    text = _gh_text(
-        ["api", f"repos/{repo}/actions/runs/{run_id}"],
-        refuse="could not read the workflow run",
-    )
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ReuseRefused("workflow run was not json") from exc
-    return parse_api_run(payload)
-
-
 def _artifact_page(repo: str, run_id: int) -> dict:
     import json
 
@@ -606,17 +494,6 @@ def _json_str(item: dict, key: str) -> str:
     value = item.get(key)
     if not isinstance(value, str) or value == "":
         raise ReuseRefused(f"{key} is not a string")
-    return value
-
-
-def _json_conclusion(item: dict) -> str | None:
-    if "conclusion" not in item:
-        raise ReuseRefused("conclusion is not a string")
-    value = item["conclusion"]
-    if value is None:
-        return None
-    if not isinstance(value, str) or value == "":
-        raise ReuseRefused("conclusion is not a string")
     return value
 
 
