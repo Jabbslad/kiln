@@ -249,6 +249,7 @@ jobs:
             scripts/test-listener-restart.sh \
             scripts/test-wait-for-operations-journal-v2.sh \
             scripts/test-identity-upgrade.sh \
+            scripts/test-identity-slot-rehearsal.sh \
             scripts/test-installer-release.sh \
             scripts/stamp-release-version.sh scripts/stamp-release-dist.sh scripts/reuse-server-check.sh \
             scripts/wait-main-run.sh scripts/test-wait-main-run.sh \
