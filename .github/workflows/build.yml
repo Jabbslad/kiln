@@ -106,9 +106,17 @@ jobs:
           sh scripts/test-bootstrap-pins.sh
           sh scripts/test-repin-installer.sh
 
+  # A verified tag reuse already ran this job on main for the same commit.
+  # A fallback, a main push, and a heavy pull request still run it.
   server-check:
-    needs: changes
-    if: ${{ !cancelled() && ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.changes.result != 'success' || needs.changes.outputs.heavy != 'false') }}
+    needs: [changes, reuse]
+    if: >-
+      !cancelled() &&
+      (needs.reuse.result == 'skipped' ||
+        !(needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse' && needs.reuse.outputs.server_check == 'success')) &&
+      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') ||
+        needs.changes.result != 'success' ||
+        needs.changes.outputs.heavy != 'false')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -191,7 +199,8 @@ jobs:
             deploy/github/install-remote.sh deploy/github/smoke.sh \
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
             scripts/test-listener-restart.sh \
-            scripts/repin-installer.sh scripts/test-repin-installer.sh
+            scripts/repin-installer.sh scripts/test-repin-installer.sh \
+            scripts/reuse-server-check.sh
 
   # A v* tag publishes main's packages for that commit when the run verifies.
   # A miss falls through to the cache-free package jobs.
@@ -209,6 +218,7 @@ jobs:
       mode: ${{ steps.decide.outputs.mode }}
       version: ${{ steps.decide.outputs.version }}
       reason: ${{ steps.decide.outputs.reason }}
+      server_check: ${{ steps.decide.outputs.server_check }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -232,6 +242,7 @@ jobs:
             export REUSE_SHA_INPUT
           fi
           python3 scripts/reuse_release.py fetch --dist dist
+          sh scripts/reuse-server-check.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.decide.outputs.mode == 'reuse'
         with:
@@ -547,15 +558,18 @@ jobs:
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: python scripts/required_gate.py
 
+  # Reuse publishes from main's proof, including that run's server-check.
+  # A rebuild still waits for this run's server-check and its package jobs.
   draft-release:
     needs: [server-check, reuse, server-package, client, dashboard, attest]
     if: >-
       !cancelled() &&
       github.event_name == 'push' &&
       startsWith(github.ref, 'refs/tags/v') &&
-      needs.server-check.result == 'success' &&
-      ((needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse') ||
-        (needs.server-package.result == 'success' &&
+      ((needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse') &&
+        needs.reuse.outputs.server_check == 'success' ||
+        (needs.server-check.result == 'success' &&
+          needs.server-package.result == 'success' &&
           needs.client.result == 'success' &&
           needs.dashboard.result == 'success' &&
           needs.attest.result == 'success'))
