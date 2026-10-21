@@ -24,17 +24,15 @@ run_server_upgrade_rehearsal() {
   mkdir -p "$work/prev" "$work/next"
   tar -xzf "$prev_tar" -C "$work/prev"
   tar -xzf "$next_tar" -C "$work/next"
-  read_release_version() {
-    awk -F\" '
-      $2 == "version" {
-        sub(/^v/, "", $4)
-        print $4
-        exit
-      }
-    ' "$1/release.json"
+  read_release_version_json() {
+    sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\(v\?\)[^"]*"/\2/p' | head -1 | sed 's/^v//'
   }
-  installed=$(read_release_version "$work/prev")
-  target=$(read_release_version "$work/next")
+  installed=$(
+    tar -xOzf "$prev_tar" release.json 2>/dev/null | read_release_version_json
+  )
+  target=$(
+    tar -xOzf "$next_tar" release.json 2>/dev/null | read_release_version_json
+  )
   if [ -z "$installed" ] || [ -z "$target" ]; then
     fail "could not read release.json versions"
   fi
