@@ -70,6 +70,9 @@ for path in "$dist/kiln-server-${from}"*.tar.gz; do
   break
 done
 [ -n "$prev_server" ] || fail "reuse dist missing server archive for ${from}"
+prev_saved=$(mktemp -d)
+cp "$prev_server" "$prev_saved/"
+prev_server="$prev_saved/$(basename "$prev_server")"
 
 sh scripts/stamp-release-dist.sh "$dist" "$from" "$tag"
 sh scripts/check-stamped-clients.sh "$dist" "$tag"

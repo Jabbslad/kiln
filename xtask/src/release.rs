@@ -832,6 +832,9 @@ fn bootstrap_accepts_text(
     if archive_names.contains("bin/kiln-network") {
         expected.insert("bin/kiln-network".into());
     }
+    if archive_names.contains("operations-journal.max-version") {
+        expected.insert("operations-journal.max-version".into());
+    }
     let door_core = [
         "deploy/kiln-door-proxy.service",
         "deploy/kiln-door-proxy.socket",
