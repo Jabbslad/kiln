@@ -50,13 +50,11 @@ if [ -n "${KILN_VERSION_CHECK_DIST:-}" ]; then
   [ -n "$server" ] || fail 'missing server archive'
   [ -n "$identity" ] || fail 'missing identity archive'
   mkdir -p "$work/server/bin" "$work/identity/bin"
-  tar -xzf "$server" -C "$work/server" bin/kiln bin/kiln-runtime bin/kiln-network \
-    bin/kiln-host bin/kiln-api
+  tar -xzf "$server" -C "$work/server" bin/kiln bin/kiln-runtime bin/kiln-host bin/kiln-api
   tar -xzf "$identity" -C "$work/identity" bin/kiln-identity
   chmod 755 "$work/server/bin/"* "$work/identity/bin/kiln-identity"
   check_path "$work/server/bin/kiln" kiln
   check_path "$work/server/bin/kiln-runtime" kiln-runtime
-  check_path "$work/server/bin/kiln-network" kiln-network
   check_path "$work/server/bin/kiln-host" kiln-server
   check_path "$work/server/bin/kiln-api" kiln-server
   check_path "$work/identity/bin/kiln-identity" kiln-identity
@@ -66,7 +64,6 @@ fi
 
 check_path "$prefix/opt/kiln/bin/kiln" kiln
 check_path "$prefix/opt/kiln/bin/kiln-runtime" kiln-runtime
-check_path "$prefix/opt/kiln/bin/kiln-network" kiln-network
 check_path "$prefix/usr/local/libexec/kiln-host" kiln-server
 check_path "$prefix/usr/local/libexec/kiln-api" kiln-server
 check_path "$prefix/usr/local/libexec/kiln-identity" kiln-identity

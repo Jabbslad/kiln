@@ -112,7 +112,6 @@ EOF
 write_version_bin "$work/deploy/bin/kiln-identity" kiln-identity 0.4.18
 write_version_bin "$work/deploy/bin/kiln" kiln 0.4.18
 write_version_bin "$work/deploy/bin/kiln-runtime" kiln-runtime 0.4.18
-write_version_bin "$work/deploy/bin/kiln-network" kiln-network 0.4.18
 write_version_bin "$work/deploy/bin/kiln-host" kiln-server 0.4.18
 write_version_bin "$work/deploy/bin/kiln-api" kiln-server 0.4.18
 printf '%s\n' "$want_identity" >"$work/deploy/release.json"
@@ -120,7 +119,7 @@ printf 'install\n' >"$work/deploy/install.sh"
 mkdir -p "$work/deploy-dist"
 tar -C "$work/deploy" -czf "$work/deploy-dist/kiln-identity-v0.4.18-x86_64-unknown-linux-gnu.tar.gz" release.json bin/kiln-identity
 tar -C "$work/deploy" -czf "$work/deploy-dist/kiln-server-v0.4.18-x86_64-unknown-linux-gnu.tar.gz" \
-  install.sh bin/kiln bin/kiln-runtime bin/kiln-network bin/kiln-host bin/kiln-api
+  install.sh bin/kiln bin/kiln-runtime bin/kiln-host bin/kiln-api
 mkdir -p "$work/dashboard/assets"
 printf '<script type="module" crossorigin src="/assets/index-dryrun.js"></script>\n' \
   >"$work/dashboard/index.html"

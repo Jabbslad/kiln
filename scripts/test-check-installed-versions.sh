@@ -35,7 +35,6 @@ fx=$work/root
 mkdir -p "$fx/opt/kiln/bin" "$fx/usr/local/libexec"
 write_bin "$fx/opt/kiln/bin/kiln" kiln 0.4.20
 write_bin "$fx/opt/kiln/bin/kiln-runtime" kiln-runtime 0.4.20
-write_bin "$fx/opt/kiln/bin/kiln-network" kiln-network 0.4.20
 write_bin "$fx/usr/local/libexec/kiln-host" kiln-server 0.4.20
 write_bin "$fx/usr/local/libexec/kiln-api" kiln-server 0.4.20
 write_bin "$fx/usr/local/libexec/kiln-identity" kiln-identity 0.4.20
@@ -53,12 +52,11 @@ dist=$work/dist
 mkdir -p "$dist/server/bin" "$dist/identity/bin"
 write_bin "$dist/server/bin/kiln" kiln 0.4.21
 write_bin "$dist/server/bin/kiln-runtime" kiln-runtime 0.4.21
-write_bin "$dist/server/bin/kiln-network" kiln-network 0.4.21
 write_bin "$dist/server/bin/kiln-host" kiln-server 0.4.21
 write_bin "$dist/server/bin/kiln-api" kiln-server 0.4.21
 write_bin "$dist/identity/bin/kiln-identity" kiln-identity 0.4.21
 tar -C "$dist/server" -czf "$dist/kiln-server-v0.4.21-x86_64-unknown-linux-gnu.tar.gz" \
-  bin/kiln bin/kiln-runtime bin/kiln-network bin/kiln-host bin/kiln-api
+  bin/kiln bin/kiln-runtime bin/kiln-host bin/kiln-api
 tar -C "$dist/identity" -czf "$dist/kiln-identity-v0.4.21-x86_64-unknown-linux-gnu.tar.gz" \
   bin/kiln-identity
 
