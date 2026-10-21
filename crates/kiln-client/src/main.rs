@@ -1,6 +1,6 @@
 mod ssh;
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use kiln_api::{Action, BoxView, ExecRequest, Operation, OperationState, Outcome, Submit, new_id};
 use kiln_client::Client;
 use kiln_client::auth::{IdentityClient, LoginPoll, Session, credential_from_login};
@@ -15,11 +15,7 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(
-    name = "kiln",
-    version,
-    about = "Manage Kiln microVMs over authenticated HTTPS"
-)]
+#[command(name = "kiln", about = "Manage Kiln microVMs over authenticated HTTPS")]
 struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -115,6 +111,11 @@ enum Command {
         #[arg(value_name = "BOX")]
         id: String,
     },
+    /// Capture or restore a checkpoint of one box.
+    Checkpoint {
+        #[command(subcommand)]
+        command: CheckpointCommand,
+    },
     Exec {
         #[arg(value_name = "BOX")]
         id: String,
@@ -131,6 +132,24 @@ enum Command {
         id: String,
         #[arg(long)]
         wait: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum CheckpointCommand {
+    /// Capture memory and disk of a running or paused box.
+    Create {
+        #[arg(value_name = "BOX")]
+        id: String,
+    },
+    /// Restore memory and disk on the same box. External systems may replay.
+    Restore {
+        #[arg(value_name = "BOX")]
+        id: String,
+        checkpoint: String,
+        /// Required. Restore rewinds memory and disk, not external systems.
+        #[arg(long)]
+        acknowledge_external_state_replay: bool,
     },
 }
 
@@ -437,6 +456,9 @@ fn show_operation(op: &Operation, as_json: bool) -> Result<i32> {
                     .filter(|code| (0..=255).contains(code))
                     .unwrap_or(125)
             });
+        }
+        Some(Outcome::Checkpoint(checkpoint)) if !as_json => {
+            println!("checkpoint {}\tbox {}", checkpoint.id, checkpoint.box_id);
         }
         Some(Outcome::Box(record)) if !as_json => show_box(record),
         Some(Outcome::Deleted { id }) if !as_json => println!("deleted {id}"),
@@ -964,6 +986,20 @@ async fn run(cli: Cli) -> Result<i32> {
         Command::Delete { id } => Action::Delete {
             id: resolve_box(&client, &id).await?,
         },
+        Command::Checkpoint { command } => match command {
+            CheckpointCommand::Create { id } => Action::Checkpoint {
+                id: resolve_box(&client, &id).await?,
+            },
+            CheckpointCommand::Restore {
+                id,
+                checkpoint,
+                acknowledge_external_state_replay,
+            } => Action::Restore {
+                id: resolve_box(&client, &id).await?,
+                checkpoint,
+                acknowledge_external_state_replay,
+            },
+        },
         Command::Exec {
             id,
             timeout_ms,
@@ -1066,9 +1102,16 @@ async fn ssh_details(path: &Path, profile: &str, id: &str, client: &Client) -> R
     })
 }
 
+fn parse_cli() -> Cli {
+    let matches = Cli::command()
+        .version(kiln_api::release_version())
+        .get_matches();
+    Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    let cli = parse_cli();
     let as_json = cli.json;
     match run(cli).await {
         Ok(exit) => std::process::exit(exit),

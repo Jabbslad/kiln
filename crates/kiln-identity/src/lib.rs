@@ -1328,7 +1328,7 @@ fn insert_server_code(
     )?;
     Ok(raw)
 }
-fn issue_read(a: &App, owner: &str, server: &str, now: i64) -> anyhow::Result<String> {
+fn issue_app(a: &App, owner: &str, server: &str, now: i64) -> anyhow::Result<String> {
     let credential = format!("app_{server}");
     anyhow::ensure!(credential.len() <= 128, "invalid server id");
     let now = u64::try_from(now)?;
@@ -1340,7 +1340,7 @@ fn issue_read(a: &App, owner: &str, server: &str, now: i64) -> anyhow::Result<St
         nbf: now,
         exp: now + 300,
         credential_id: credential,
-        scope: Scope::Read,
+        scope: Scope::Operate,
     })
 }
 async fn oauth_server(
@@ -1599,7 +1599,7 @@ async fn server_token(State(a): State<Arc<App>>, h: HeaderMap, body: String) -> 
         return err(StatusCode::BAD_REQUEST, "invalid_grant");
     }
     let reader = secret();
-    let jwt = match issue_read(&a, &account, &server, now) {
+    let jwt = match issue_app(&a, &account, &server, now) {
         Ok(jwt) => jwt,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
     };
@@ -1641,7 +1641,7 @@ fn reader_token(a: &App, reader: &str, presented: &str) -> Response {
     let Some((server, account)) = row else {
         return err(StatusCode::UNAUTHORIZED, "invalid_token");
     };
-    let jwt = match issue_read(a, &account, &server, now) {
+    let jwt = match issue_app(a, &account, &server, now) {
         Ok(jwt) => jwt,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
     };

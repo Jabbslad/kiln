@@ -234,6 +234,9 @@ On a macOS or supported Linux laptop:
 curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh
 ```
 
+The script sets its version from the latest stable release tag and checks the
+SHA-256 sidecar published with that archive.
+
 On a dedicated **Ubuntu 24.04, Ubuntu 26.04, or Debian 13 x86-64/KVM** server:
 
 ```sh
@@ -480,9 +483,10 @@ successful push of this workflow on main. It checks the run, the archive
 checksums, and build provenance when that commit's workflow emitted provenance.
 It then publishes that release from those archives. `install.sh` is rendered in the tag
 job from the archive checksums. The job publishes only after `sha256sum -c` and
-`gh attestation verify` succeed for every archive. A reused archive is verified
-with `--source-ref refs/heads/main`. A fallback build is verified with
-`--source-ref refs/tags/vX.Y.Z`. The identity regex is
+`gh attestation verify` succeed for every archive. A reused archive whose
+version already matches the tag is verified with `--source-ref refs/heads/main`.
+A reused archive stamped onto a different tag, and a fallback build, are
+verified with `--source-ref refs/tags/vX.Y.Z`. The identity regex is
 `^https://github\.com/Jabbslad/kiln/\.github/workflows/build\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$`.
 If that run is missing, expired, or fails those checks, or the reuse job
 errors, the tag builds from scratch with the Rust, npm, and Playwright
@@ -503,23 +507,30 @@ packager includes only named binaries, installer files and pristine image files.
 Changing repository visibility later is a separate decision; this workflow never
 makes that change.
 
-The published bootstrap pin is v0.4.12.
+The installer version is the release tag.
 
-The public install command fetches `deploy/bootstrap/install.sh` from main.
-That file stays a pin of one published release. After you publish, copy
-that release's version and SHA-256 lines into the pin. Set the published
-bootstrap pin sentence above to the same version. The workspace version
-in `Cargo.toml` can move ahead of this pin while a release is prepared.
-`cargo xtask test-bootstrap` requires the pin and that sentence to name
-the same version. It also requires the tag to be a stable release whose
-archive digests match the pin. A publish edits neither version. The
-publish alone does not fail the test. The tag job also attaches
-`install.sh` and `install.sh.sha256` to the release, and the checksum check
-includes that sidecar. The attached script
-verifies each archive checksum and installs only that version. Leave the
-public command on the raw main URL until Jamie publishes a release that
-contains `install.sh`. `releases/latest/download/install.sh` returns 404 for
-v0.4.7. A later change can switch the command after that publish.
+The copy of `deploy/bootstrap/install.sh` on main still has the publish
+template in `version=` and the asset block. Running that copy reads the
+latest stable release tag and the SHA-256 sidecar for each archive, then
+downloads that tag and refuses the archive when the checksum differs.
+The tag job renders `install.sh` from the archive checksums and writes that
+tag into `version=`. The rendered copy installs that tag and checks the
+checksums in its asset block. A `v*` tag that is not the `Cargo.toml`
+version stamps that tag into the reused binaries, archive names, and
+`release.json`, then re-attests those archives. A matching tag publishes
+main's archives unchanged. The reused Linux client must print the tag.
+The installer accepts the download when `kiln --version` prints `kiln` and
+that version.
+The tag job publishes only after `sha256sum -c` and
+`gh attestation verify` succeed for every archive. The same job attaches
+`install.sh` and `install.sh.sha256`. Publishing a release leaves main
+unchanged. The tag does not have to match the workspace version in
+`Cargo.toml`, and the tag job does not commit a version rewrite back to main.
+The public command stays on the raw main URL.
+`releases/latest/download/install.sh` returns 404 for v0.4.7, and the
+published v0.4.14 `install.sh` reports 0.4.10 while it downloads 0.4.14.
+Leave that URL until Jamie publishes a release whose `install.sh` reports
+the tag it downloads.
 Never publish server state or credentials.
 The ordinary build workflow has no cross-repository publishing credentials.
 

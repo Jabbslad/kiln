@@ -7,6 +7,15 @@ pub(crate) struct Inventory {
     pub boxes: Vec<BoxFacts>,
     pub templates: Vec<TemplateFacts>,
     pub operations: Vec<OperationFacts>,
+    pub checkpoints: Vec<CheckpointFacts>,
+}
+
+pub(crate) struct CheckpointFacts {
+    pub id: String,
+    pub box_id: String,
+    pub created_at: i64,
+    pub size_bytes: Option<u64>,
+    pub compatible: bool,
 }
 
 pub(crate) struct BoxFacts {
@@ -48,7 +57,7 @@ pub(crate) struct Document {
     host: HostBody,
     boxes: Vec<BoxBody>,
     templates: Vec<TemplateBody>,
-    checkpoints: Vec<Value>,
+    checkpoints: Vec<CheckpointBody>,
     operations: Vec<OperationBody>,
 }
 
@@ -97,6 +106,16 @@ struct TemplateBody {
     compatible: bool,
     development_only: bool,
     resources: Resources,
+}
+
+#[derive(Serialize)]
+struct CheckpointBody {
+    id: String,
+    box_id: String,
+    name: String,
+    created_at: String,
+    size_bytes: Option<u64>,
+    compatible: bool,
 }
 
 #[derive(Serialize)]
@@ -178,7 +197,7 @@ pub(crate) fn document(
             .iter()
             .filter_map(template_body)
             .collect(),
-        checkpoints: Vec::new(),
+        checkpoints: inventory.checkpoints.iter().map(checkpoint_body).collect(),
         operations,
     }
 }
@@ -208,6 +227,17 @@ fn box_body(facts: &BoxFacts) -> BoxBody {
         last_error: public_error(facts.last_error.as_deref()),
         restored_from: facts.restored_from.clone(),
         timing: None,
+    }
+}
+
+fn checkpoint_body(facts: &CheckpointFacts) -> CheckpointBody {
+    CheckpointBody {
+        id: facts.id.clone(),
+        box_id: facts.box_id.clone(),
+        name: facts.id.clone(),
+        created_at: utc_timestamp(facts.created_at),
+        size_bytes: facts.size_bytes,
+        compatible: facts.compatible,
     }
 }
 

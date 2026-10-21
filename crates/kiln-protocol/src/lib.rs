@@ -1,3 +1,6 @@
+mod release_version;
+pub use release_version::release_version;
+
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};

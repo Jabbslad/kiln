@@ -80,11 +80,449 @@ it('shows only same-box checkpoints and keeps restore gated after acknowledgemen
   const restore = within(dialog).getByRole('button', { name: 'Restore checkpoint' })
   expect(restore).toBeDisabled()
   await user.click(
-    within(dialog).getByRole('checkbox', { name: 'I understand the rollback risks.' }),
+    within(dialog).getByRole('checkbox', { name: /I understand external state may replay/ }),
   )
   expect(restore).toBeDisabled()
   await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+})
+
+it('enables create only on a live authenticated console and shows the box once observed', async () => {
+  const boxId = 'c'.repeat(32)
+  const live = {
+    ...previewDashboard,
+    boxes: [],
+    operations: [],
+    checkpoints: [],
+    templates: [{ ...previewDashboard.templates[0], id: 'tpl-ubuntu', name: 'ubuntu' }],
+  }
+  const observed = {
+    ...live,
+    boxes: [{ ...previewDashboard.boxes[0], id: boxId, name: 'api-staging' }],
+  }
+  let releaseObserved: (response: Response) => void = () => {}
+  const observedResponse = new Promise<Response>((resolve) => {
+    releaseObserved = resolve
+  })
+  let posts = 0
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        posts += 1
+        const posted = JSON.parse(String(init.body))
+        return Response.json(
+          { id: posted.id, box_id: boxId, state: 'succeeded', result: null, error: null },
+          { status: 202 },
+        )
+      }
+      if (String(url).startsWith('/v1/operations/')) {
+        return Response.json({
+          id: 'ignored',
+          box_id: boxId,
+          state: 'succeeded',
+          result: null,
+          error: null,
+        })
+      }
+      if (posts === 0) return Response.json(live)
+      return observedResponse
+    }),
+  )
+  document.cookie = '__Host-kiln_csrf=browser-csrf'
+  open('/boxes')
+  const user = userEvent.setup()
+  const [openCreate] = await screen.findAllByRole('button', { name: 'Create box' })
+  await user.click(openCreate)
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Box name' }), 'api-staging')
+  const submit = within(dialog).getByRole('button', { name: 'Create box' })
+  expect(submit).toBeEnabled()
+  await user.click(submit)
+  await waitFor(() => expect(posts).toBe(1))
+  expect(screen.queryByRole('link', { name: 'api-staging' })).not.toBeInTheDocument()
+  releaseObserved(Response.json(observed))
+  expect(await screen.findByRole('link', { name: 'api-staging' })).toBeVisible()
+  expect(posts).toBe(1)
+})
+
+it('keeps create disabled when the live host is offline and keeps other mutations disabled', async () => {
+  const offline = {
+    ...previewDashboard,
+    host: { ...previewDashboard.host, state: 'offline' as const },
+  }
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(offline)))
+  open('/boxes')
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: 'Create box' }))
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Box name' }), 'api-staging')
+  expect(within(dialog).getByRole('button', { name: 'Create box' })).toBeDisabled()
+  expect(within(dialog).getByText(/Read-only console/)).toBeVisible()
+})
+
+it('enables checkpoint confirmation on a live console', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(previewDashboard)))
+  open('/boxes/box-7f3a2c1e')
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: 'Create checkpoint' }))
+  const dialog = screen.getByRole('dialog')
+  expect(within(dialog).getByRole('button', { name: 'Create checkpoint' })).toBeEnabled()
+})
+
+it.each([
+  ['box-7f3a2c1e', 'Pause', 'pause', 'paused', 'running'],
+  ['box-9c4d8e7b', 'Resume', 'resume', 'running', 'paused'],
+  ['box-7f3a2c1e', 'Stop', 'stop', 'stopped', 'running'],
+  ['box-a1b2c3d4', 'Start', 'start', 'running', 'stopped'],
+] as const)(
+  'submits %s once the console is live and shows %s only after the server observes it',
+  async (boxId, label, type, nextState, previousState) => {
+    const observed = structuredClone(previewDashboard)
+    const box = observed.boxes.find((item) => item.id === boxId)
+    if (!box) throw new Error(boxId)
+    box.state = nextState
+    let releaseObserved: (response: Response) => void = () => {}
+    const observedResponse = new Promise<Response>((resolve) => {
+      releaseObserved = resolve
+    })
+    let posts = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === '/v1/operations' && init?.method === 'POST') {
+          posts += 1
+          const posted = JSON.parse(String(init.body))
+          expect(posted.action).toEqual(
+            type === 'stop' ? { type, id: boxId, force: false } : { type, id: boxId },
+          )
+          return Response.json(
+            {
+              id: posted.id,
+              box_id: boxId,
+              state: 'succeeded',
+              result: { type: 'box', state: nextState },
+              error: null,
+            },
+            { status: 202 },
+          )
+        }
+        if (String(url).startsWith('/v1/operations/')) {
+          return Response.json({
+            id: 'ignored',
+            box_id: boxId,
+            state: 'succeeded',
+            result: { type: 'box', state: nextState },
+            error: null,
+          })
+        }
+        if (posts === 0) return Response.json(previewDashboard)
+        return observedResponse
+      }),
+    )
+    document.cookie = '__Host-kiln_csrf=browser-csrf'
+    open(`/boxes/${boxId}`)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: label }))
+    const dialog = screen.getByRole('dialog')
+    const confirm = within(dialog).getByRole('button', { name: label })
+    expect(confirm).toBeEnabled()
+    await user.click(confirm)
+    await waitFor(() => expect(posts).toBe(1))
+    expect(screen.getByText(previousState, { selector: '.status' })).toBeVisible()
+    releaseObserved(Response.json(observed))
+    expect(await screen.findByText(nextState, { selector: '.status' })).toBeVisible()
+    expect(posts).toBe(1)
+  },
+)
+
+it('submits stop with force only when that option is chosen', async () => {
+  const boxId = 'box-7f3a2c1e'
+  let force: boolean | undefined
+  let posts = 0
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        posts += 1
+        const posted = JSON.parse(String(init.body))
+        force = posted.action.force
+        return Response.json(
+          {
+            id: posted.id,
+            box_id: boxId,
+            state: 'succeeded',
+            result: { type: 'box', state: 'stopped' },
+            error: null,
+          },
+          { status: 202 },
+        )
+      }
+      if (String(url).startsWith('/v1/operations/')) {
+        return Response.json({
+          id: 'ignored',
+          box_id: boxId,
+          state: 'succeeded',
+          result: { type: 'box', state: 'stopped' },
+          error: null,
+        })
+      }
+      if (posts === 0) return Response.json(previewDashboard)
+      const observed = structuredClone(previewDashboard)
+      const box = observed.boxes.find((item) => item.id === boxId)
+      if (box) box.state = 'stopped'
+      return Response.json(observed)
+    }),
+  )
+  open(`/boxes/${boxId}`)
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: 'Stop' }))
+  const dialog = screen.getByRole('dialog')
+  await user.click(within(dialog).getByRole('checkbox', { name: 'Force stop' }))
+  await user.click(within(dialog).getByRole('button', { name: 'Stop' }))
+  await waitFor(() => expect(force).toBe(true))
+})
+
+it('shows an unknown lifecycle outcome and leaves the box state unchanged', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json({
+          id: posted.id,
+          box_id: 'box-7f3a2c1e',
+          state: 'unknown',
+          result: null,
+          error: null,
+        })
+      }
+      return Response.json(previewDashboard)
+    }),
+  )
+  open('/boxes/box-7f3a2c1e')
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: 'Pause' }))
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Pause' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent(/unknown/i)
+  expect(screen.getByText('running', { selector: '.status' })).toBeVisible()
+})
+
+it('disables lifecycle confirmation when the console is not live or not authenticated', async () => {
+  const user = userEvent.setup()
+  const { unmount } = open('/boxes/box-7f3a2c1e?preview=1')
+  await user.click(await screen.findByRole('button', { name: 'Pause' }))
+  expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Pause' })).toBeDisabled()
+  expect(within(screen.getByRole('dialog')).getByText(/Read-only preview/)).toBeVisible()
+  unmount()
+
+  const offline = {
+    ...previewDashboard,
+    host: { ...previewDashboard.host, state: 'offline' as const },
+  }
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(offline)))
+  open('/boxes/box-7f3a2c1e')
+  await user.click(await screen.findByRole('button', { name: 'Stop' }))
+  expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Stop' })).toBeDisabled()
+  expect(within(screen.getByRole('dialog')).getByText(/Read-only console/)).toBeVisible()
+})
+
+it('does not submit delete until the typed name matches', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(previewDashboard)))
+  open('/boxes/box-7f3a2c1e')
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
+  const dialog = screen.getByRole('dialog')
+  const confirm = within(dialog).getByRole('button', { name: 'Delete box' })
+  const name = within(dialog).getByRole('textbox', { name: 'Type the box name' })
+  expect(confirm).toBeDisabled()
+  await user.type(name, 'API-DEV')
+  expect(confirm).toBeDisabled()
+  await user.clear(name)
+  await user.type(name, 'api-de')
+  expect(confirm).toBeDisabled()
+  await user.type(name, 'v')
+  expect(confirm).toBeEnabled()
+})
+
+it('submits delete and removes the box only after the server observes it gone', async () => {
+  const boxId = 'box-7f3a2c1e'
+  let releaseObserved: (response: Response) => void = () => {}
+  const observedResponse = new Promise<Response>((resolve) => {
+    releaseObserved = resolve
+  })
+  let posts = 0
+  let observations = 0
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        posts += 1
+        const posted = JSON.parse(String(init.body))
+        expect(posted.action).toEqual({ type: 'delete', id: boxId })
+        expect(init.credentials).toBe('same-origin')
+        return Response.json(
+          {
+            id: posted.id,
+            box_id: boxId,
+            state: 'succeeded',
+            result: { type: 'deleted', id: boxId },
+            error: null,
+          },
+          { status: 202 },
+        )
+      }
+      if (posts === 0) return Response.json(previewDashboard)
+      observations += 1
+      if (observations === 1) return Response.json(previewDashboard)
+      return observedResponse
+    }),
+  )
+  document.cookie = '__Host-kiln_csrf=browser-csrf'
+  open(`/boxes/${boxId}`)
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Type the box name' }), 'api-dev')
+  await user.click(within(dialog).getByRole('button', { name: 'Delete box' }))
+  await waitFor(() => expect(posts).toBe(1))
+  expect(screen.getByRole('heading', { name: 'api-dev' })).toBeVisible()
+  expect(screen.queryByText('Box not found')).not.toBeInTheDocument()
+  const gone = structuredClone(previewDashboard)
+  gone.boxes = gone.boxes.filter((box) => box.id !== boxId)
+  releaseObserved(Response.json(gone))
+  expect(await screen.findByText('Box not found')).toBeVisible()
+  expect(posts).toBe(1)
+})
+
+it('shows an unknown delete outcome and leaves the box in the inventory', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json({
+          id: posted.id,
+          box_id: 'box-7f3a2c1e',
+          state: 'unknown',
+          result: null,
+          error: null,
+        })
+      }
+      return Response.json(previewDashboard)
+    }),
+  )
+  open('/boxes/box-7f3a2c1e')
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Type the box name' }), 'api-dev')
+  await user.click(within(dialog).getByRole('button', { name: 'Delete box' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent(/unknown/i)
+  expect(screen.getByRole('heading', { name: 'api-dev' })).toBeVisible()
+  expect(screen.queryByText('Box not found')).not.toBeInTheDocument()
+})
+
+it('disables delete when the console is not live or not authenticated', async () => {
+  const user = userEvent.setup()
+  const { unmount } = open('/boxes/box-7f3a2c1e?preview=1')
+  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
+  const previewDialog = screen.getByRole('dialog')
+  await user.type(
+    within(previewDialog).getByRole('textbox', { name: 'Type the box name' }),
+    'api-dev',
+  )
+  expect(within(previewDialog).getByRole('button', { name: 'Delete box' })).toBeDisabled()
+  expect(within(previewDialog).getByText(/Read-only preview/)).toBeVisible()
+  unmount()
+
+  const offline = {
+    ...previewDashboard,
+    host: { ...previewDashboard.host, state: 'offline' as const },
+  }
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(offline)))
+  open('/boxes/box-7f3a2c1e')
+  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Type the box name' }), 'api-dev')
+  expect(within(dialog).getByRole('button', { name: 'Delete box' })).toBeDisabled()
+  expect(within(dialog).getByText(/Read-only console/)).toBeVisible()
+})
+
+it('disables exec in preview, when the host is offline or unknown, and when the box is stopped', async () => {
+  const user = userEvent.setup()
+  const { unmount } = open('/boxes/box-7f3a2c1e?preview=1&tab=exec')
+  expect(await screen.findByRole('button', { name: /Execute command/ })).toBeDisabled()
+  expect(screen.getByText(/Read-only preview/)).toBeVisible()
+  unmount()
+
+  for (const state of ['offline', 'unknown'] as const) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        Response.json({
+          ...previewDashboard,
+          host: { ...previewDashboard.host, state },
+        }),
+      ),
+    )
+    const view = open('/boxes/box-7f3a2c1e?tab=exec')
+    expect(await screen.findByRole('button', { name: /Execute command/ })).toBeDisabled()
+    expect(screen.getByText(/Read-only console/)).toBeVisible()
+    view.unmount()
+  }
+
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(previewDashboard)))
+  open('/boxes/box-a1b2c3d4?tab=exec')
+  expect(await screen.findByRole('button', { name: /Execute command/ })).toBeDisabled()
+  expect(screen.queryByText(/Read-only console/)).not.toBeInTheDocument()
+})
+
+it('shows the exit code, stdout and stderr after one exec', async () => {
+  const boxId = 'box-7f3a2c1e'
+  let posts = 0
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        posts += 1
+        const posted = JSON.parse(String(init.body))
+        expect(posted.action).toEqual({
+          type: 'exec',
+          id: boxId,
+          request: { argv: ['/bin/pwd'], timeout_ms: 10000 },
+        })
+        expect(init.credentials).toBe('same-origin')
+        return Response.json(
+          {
+            id: posted.id,
+            box_id: boxId,
+            state: 'succeeded',
+            result: {
+              type: 'exec',
+              stdout: [...'hello'].map((char) => char.charCodeAt(0)),
+              stderr: [...'err'].map((char) => char.charCodeAt(0)),
+              exit_code: 0,
+              truncated: false,
+              timed_out: false,
+            },
+            error: null,
+          },
+          { status: 202 },
+        )
+      }
+      return Response.json(previewDashboard)
+    }),
+  )
+  open(`/boxes/${boxId}?tab=exec`)
+  const user = userEvent.setup()
+  const submit = await screen.findByRole('button', { name: /Execute command/ })
+  expect(submit).toBeEnabled()
+  await user.click(submit)
+  expect(await screen.findByText('Exit code 0')).toBeVisible()
+  expect(screen.getByText('hello')).toBeVisible()
+  expect(screen.getByText('err')).toBeVisible()
+  expect(posts).toBe(1)
 })
 
 it('validates a create form but cannot create a fake VM', async () => {

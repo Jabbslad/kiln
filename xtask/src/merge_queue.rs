@@ -347,12 +347,9 @@ fn test_required_is_the_only_stable_check() {
     assert!(block.contains("cargo xtask required-gate"));
     assert!(!block.lines().any(|line| line.starts_with("    name:")));
     assert!(!block.contains("server-package"));
-    assert!(
-        text.split("  draft-release:\n")
-            .nth(1)
-            .unwrap()
-            .contains("needs: [server-check, reuse, server-package, client, dashboard, attest]")
-    );
+    assert!(text.split("  draft-release:\n").nth(1).unwrap().contains(
+        "needs: [version-guard, server-check, reuse, server-package, client, dashboard, attest]"
+    ));
 }
 
 fn test_docs_only_and_heavy_success_pass() {

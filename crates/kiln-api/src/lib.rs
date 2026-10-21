@@ -1,6 +1,6 @@
 //! Portable, public management contract. No runtime records or host paths.
 pub mod auth;
-pub use kiln_protocol::{ExecRequest, ExecResult, SshReady, valid_ssh_public_key};
+pub use kiln_protocol::{ExecRequest, ExecResult, SshReady, release_version, valid_ssh_public_key};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_REQUEST_BYTES: usize = 128 * 1024;
@@ -92,6 +92,18 @@ pub enum Action {
         id: String,
         request: ExecRequest,
     },
+    /// Capture a checkpoint of a running or paused box.
+    Checkpoint {
+        id: String,
+    },
+    /// Restore a checkpoint onto the same box.
+    Restore {
+        id: String,
+        checkpoint: String,
+        /// Memory and disk rewind. External systems may replay; required.
+        #[serde(default)]
+        acknowledge_external_state_replay: bool,
+    },
 }
 
 impl Action {
@@ -103,7 +115,9 @@ impl Action {
             | Self::Stop { id, .. }
             | Self::Start { id }
             | Self::Delete { id }
-            | Self::Exec { id, .. } => Some(id),
+            | Self::Exec { id, .. }
+            | Self::Checkpoint { id }
+            | Self::Restore { id, .. } => Some(id),
         }
     }
 
@@ -134,6 +148,20 @@ impl Action {
             {
                 return Err("invalid exec arguments, environment, cwd or timeout (1..3600000 ms)");
             }
+            Self::Restore {
+                checkpoint,
+                acknowledge_external_state_replay,
+                ..
+            } => {
+                if !valid_id(checkpoint) {
+                    return Err("invalid checkpoint ID");
+                }
+                if !acknowledge_external_state_replay {
+                    return Err(
+                        "restore rewinds memory and disk, not external systems; pass --acknowledge-external-state-replay",
+                    );
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -163,6 +191,12 @@ pub struct TemplateView {
     pub vcpus: u8,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CheckpointView {
+    pub id: String,
+    pub box_id: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationState {
@@ -178,6 +212,7 @@ pub enum Outcome {
     Box(BoxView),
     Deleted { id: String },
     Exec(ExecResult),
+    Checkpoint(CheckpointView),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

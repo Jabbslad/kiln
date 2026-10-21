@@ -1,17 +1,33 @@
 import { useState } from 'react'
 import { AlertTriangle, ArrowUpRight, Check, Lock, ShieldCheck } from 'lucide-react'
-import { formatBytes, type Box, type Checkpoint, type Dashboard, type Template } from './data'
+import {
+  applyLifecycle,
+  createBox,
+  createCheckpoint,
+  deleteBox,
+  formatBytes,
+  requestId,
+  restoreCheckpoint,
+  type Box,
+  type Checkpoint,
+  type Dashboard,
+  type Template,
+} from './data'
 import { Modal, Unavailable } from './ui'
 
 export function CreateDrawer({
   data,
   preview,
+  authenticated,
   initialTemplate,
+  onObserved,
   onClose,
 }: {
   data: Dashboard
   preview: boolean
+  authenticated: boolean
   initialTemplate?: Template
+  onObserved?: (data: Dashboard) => void
   onClose: () => void
 }) {
   const [templateId, setTemplateId] = useState(
@@ -19,12 +35,37 @@ export function CreateDrawer({
   )
   const [name, setName] = useState('')
   const [egress, setEgress] = useState(false)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
   const template = data.templates.find((item) => item.id === templateId)
   const invalidName = name.length > 0 && !/^[a-z][a-z0-9-]{0,62}$/.test(name)
   const duplicateName = data.boxes.some((box) => box.name === name)
+  const ready =
+    authenticated &&
+    !pending &&
+    Boolean(template?.compatible) &&
+    name.length > 0 &&
+    !invalidName &&
+    !duplicateName
   return (
     <Modal title="Create box" drawer onClose={onClose}>
-      <form onSubmit={(event) => event.preventDefault()}>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (!ready || !template) return
+          setPending(true)
+          setError('')
+          void createBox(template.name, name)
+            .then((observed) => {
+              onObserved?.(observed)
+              onClose()
+            })
+            .catch((reason: unknown) => {
+              setError(reason instanceof Error ? reason.message : 'Create did not finish.')
+              setPending(false)
+            })
+        }}
+      >
         <div className="modal-body">
           <p className="form-intro">
             A fresh environment. An independent disk.
@@ -143,13 +184,22 @@ export function CreateDrawer({
               <span>Trusted test fixture. Not an environment for untrusted workloads.</span>
             </div>
           )}
-          <Unavailable preview={preview} />
+          {authenticated ? (
+            <p className="field-hint">The box appears after the control plane observes it.</p>
+          ) : (
+            <Unavailable preview={preview} />
+          )}
+          {error && (
+            <p className="field-hint error-text" role="alert">
+              {error}
+            </p>
+          )}
         </div>
         <footer className="modal-footer">
           <button type="button" className="button" onClick={onClose}>
             Cancel
           </button>
-          <button className="button primary" disabled>
+          <button className="button primary" disabled={!ready}>
             Create box <ArrowUpRight size={16} />
           </button>
         </footer>
@@ -162,14 +212,23 @@ export function RestoreDialog({
   box,
   checkpoint,
   preview,
+  authenticated = false,
+  onObserved,
   onClose,
 }: {
   box: Box
   checkpoint: Checkpoint
   preview: boolean
+  authenticated?: boolean
+  onObserved?: (data: Dashboard) => void
   onClose: () => void
 }) {
   const [acknowledged, setAcknowledged] = useState(false)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+  const [operationId] = useState(() => requestId())
+  const sameBox = checkpoint.box_id === box.id
+  const ready = authenticated && acknowledged && sameBox && !pending
   return (
     <Modal title="Restore checkpoint?" onClose={onClose}>
       <div className="modal-body">
@@ -202,22 +261,51 @@ export function RestoreDialog({
             checked={acknowledged}
             onChange={(event) => setAcknowledged(event.target.checked)}
           />
-          I understand the rollback risks.
+          I understand external state may replay.
         </label>
-        <Unavailable preview={preview} />
+        {authenticated ? (
+          <p className="field-hint">
+            This box updates after the control plane observes the restore.
+          </p>
+        ) : (
+          <Unavailable preview={preview} />
+        )}
+        {error && (
+          <p className="field-hint error-text" role="alert">
+            {error}
+          </p>
+        )}
       </div>
       <footer className="modal-footer">
         <button className="button" onClick={onClose}>
           Cancel
         </button>
-        <button className="button primary" disabled aria-describedby="restore-gate">
+        <button
+          className="button primary"
+          disabled={!ready}
+          aria-describedby="restore-gate"
+          onClick={() => {
+            if (!ready) return
+            setPending(true)
+            setError('')
+            void restoreCheckpoint(box.id, checkpoint.id, fetch, document.cookie, operationId)
+              .then((observed) => {
+                onObserved?.(observed)
+                onClose()
+              })
+              .catch((reason: unknown) => {
+                setError(reason instanceof Error ? reason.message : 'unknown')
+                setPending(false)
+              })
+          }}
+        >
           Restore checkpoint
         </button>
       </footer>
       <p id="restore-gate" className="dialog-footnote">
-        {acknowledged
-          ? 'Acknowledged. Restore remains unavailable without the authenticated service.'
-          : 'Acknowledge the risks before restoring through the authenticated service.'}
+        {authenticated && acknowledged
+          ? 'Same-box restore. External state may replay.'
+          : 'Acknowledge that external state may replay before restoring.'}
       </p>
     </Modal>
   )
@@ -227,13 +315,25 @@ export function LifecycleDialog({
   action,
   box,
   preview,
+  authenticated = false,
+  onObserved,
   onClose,
 }: {
   action: string
   box: Box
   preview: boolean
+  authenticated?: boolean
+  onObserved?: (data: Dashboard) => void
   onClose: () => void
 }) {
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+  const [operationId] = useState(() => requestId())
+  const [force, setForce] = useState(false)
+  const checkpoint = action === 'Create checkpoint'
+  const lifecycle =
+    action === 'Pause' || action === 'Resume' || action === 'Stop' || action === 'Start'
+  const ready = authenticated && (checkpoint || lifecycle) && !pending
   const explanations: Record<string, string> = {
     Pause:
       'Freeze vCPUs while keeping the VMM process, RAM and disk. Pausing does not release memory.',
@@ -249,14 +349,138 @@ export function LifecycleDialog({
       <div className="modal-body">
         <div className="restore-target">{box.name}</div>
         <p className="body-copy">{explanations[action]}</p>
-        <Unavailable preview={preview} />
+        {action === 'Stop' && (
+          <label className="acknowledgement">
+            <input
+              type="checkbox"
+              checked={force}
+              disabled={pending}
+              onChange={(event) => setForce(event.target.checked)}
+            />
+            Force stop
+          </label>
+        )}
+        {(checkpoint || lifecycle) && authenticated ? (
+          <p className="field-hint">
+            {checkpoint
+              ? 'The checkpoint appears after the control plane observes it.'
+              : 'The box state updates after the control plane observes it.'}
+          </p>
+        ) : (
+          <Unavailable preview={preview} />
+        )}
+        {error && (
+          <p className="field-hint error-text" role="alert">
+            {error}
+          </p>
+        )}
       </div>
       <footer className="modal-footer">
         <button className="button" onClick={onClose}>
           Cancel
         </button>
-        <button className="button primary" disabled>
+        <button
+          className="button primary"
+          disabled={!ready}
+          onClick={() => {
+            if (!ready) return
+            setPending(true)
+            setError('')
+            const task = checkpoint
+              ? createCheckpoint(box.id, fetch, document.cookie, operationId)
+              : applyLifecycle(
+                  action.toLowerCase() as 'pause' | 'resume' | 'stop' | 'start',
+                  box.id,
+                  action === 'Stop' && force,
+                )
+            void task
+              .then((observed) => {
+                onObserved?.(observed)
+                onClose()
+              })
+              .catch((reason: unknown) => {
+                setError(reason instanceof Error ? reason.message : 'unknown')
+                setPending(false)
+              })
+          }}
+        >
           {action}
+        </button>
+      </footer>
+    </Modal>
+  )
+}
+
+export function DeleteDialog({
+  box,
+  preview,
+  authenticated = false,
+  onObserved,
+  onClose,
+}: {
+  box: Box
+  preview: boolean
+  authenticated?: boolean
+  onObserved?: (data: Dashboard) => void
+  onClose: () => void
+}) {
+  const [typed, setTyped] = useState('')
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+  const ready = authenticated && typed === box.name && !pending
+  return (
+    <Modal title="Delete box?" onClose={onClose}>
+      <div className="modal-body">
+        <div className="restore-target">{box.name}</div>
+        <p className="body-copy">
+          Permanently delete this box and its writable disk. Type the box name to confirm.
+        </p>
+        <div className="field">
+          <label htmlFor="delete-name">Type the box name</label>
+          <input
+            id="delete-name"
+            value={typed}
+            autoComplete="off"
+            disabled={pending}
+            onChange={(event) => setTyped(event.target.value)}
+          />
+        </div>
+        {authenticated ? (
+          <p className="field-hint">
+            The box leaves the inventory after the control plane observes it gone.
+          </p>
+        ) : (
+          <Unavailable preview={preview} />
+        )}
+        {error && (
+          <p className="field-hint error-text" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+      <footer className="modal-footer">
+        <button className="button" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          className="button primary"
+          disabled={!ready}
+          onClick={() => {
+            if (!ready) return
+            setPending(true)
+            setError('')
+            void deleteBox(box.id)
+              .then((observed) => {
+                onObserved?.(observed)
+                onClose()
+              })
+              .catch((reason: unknown) => {
+                setError(reason instanceof Error ? reason.message : 'The operation did not finish.')
+                setPending(false)
+              })
+          }}
+        >
+          Delete box
         </button>
       </footer>
     </Modal>

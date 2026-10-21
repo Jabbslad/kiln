@@ -398,20 +398,6 @@ fn pinned_version() -> String {
         .to_string()
 }
 
-fn recorded_bootstrap_version() -> String {
-    let text = fs::read_to_string(repo_root().join("docs/releases.md")).expect("read releases.md");
-    let re = Regex::new(r"(?m)^The published bootstrap pin is v([0-9]+\.[0-9]+\.[0-9]+)\.$")
-        .expect("pin regex");
-    let matches: Vec<String> = re
-        .captures_iter(&text)
-        .map(|caps| caps.get(1).expect("pin group").as_str().to_string())
-        .collect();
-    if matches.len() != 1 {
-        panic!("releases.md needs exactly one published bootstrap pin");
-    }
-    matches[0].clone()
-}
-
 fn pinned_digests() -> Vec<(String, String)> {
     let text = install_text();
     let re = Regex::new(r"(?m)^(client|server):(\S+) ([0-9a-f]{64})$").expect("digest regex");
@@ -1017,7 +1003,6 @@ fn server_detects_address_and_installs_without_tty(fix: &Fixture) {
 fn test_pinned_version_matches_published_release() {
     let _fix = Fixture::new();
     let version = pinned_version();
-    assert_eq!(version, recorded_bootstrap_version());
     let url = format!("https://api.github.com/repos/Jabbslad/kiln/releases/tags/v{version}");
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))

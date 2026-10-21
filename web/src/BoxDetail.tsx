@@ -14,9 +14,18 @@ import {
   Plus,
   Square,
   Terminal,
+  Trash2,
 } from 'lucide-react'
-import { formatBytes, formatMetric, timestamp, type Box, type Checkpoint } from './data'
-import { LifecycleDialog, RestoreDialog } from './dialogs'
+import {
+  execCommand,
+  formatBytes,
+  formatMetric,
+  timestamp,
+  type Box,
+  type Checkpoint,
+  type ExecOutput,
+} from './data'
+import { DeleteDialog, LifecycleDialog, RestoreDialog } from './dialogs'
 import { OperationList } from './Operations'
 import {
   AppLink,
@@ -30,7 +39,7 @@ import {
 
 const tabs = ['Terminal', 'Exec', 'Previews', 'Checkpoints', 'Metrics', 'Activity']
 
-export default function BoxDetail({ data, preview }: PageProps) {
+export default function BoxDetail({ data, preview, onObserved }: PageProps) {
   const { id } = useParams()
   const [params, setParams] = useSearchParams()
   const requestedTab = params.get('tab') ?? 'terminal'
@@ -55,6 +64,7 @@ export default function BoxDetail({ data, preview }: PageProps) {
       </Empty>
     )
   const checkpoints = data.checkpoints.filter((checkpoint) => checkpoint.box_id === box.id)
+  const authenticated = !preview && data.host.state === 'online'
   return (
     <>
       <div className="breadcrumb">
@@ -115,6 +125,10 @@ export default function BoxDetail({ data, preview }: PageProps) {
               </button>
             </>
           )}
+          <button className="button" onClick={() => setAction('Delete')}>
+            <Trash2 size={14} />
+            Delete
+          </button>
         </div>
       </header>
       {box.last_error && (
@@ -215,7 +229,7 @@ export default function BoxDetail({ data, preview }: PageProps) {
           <LaunchTiming box={box} />
         </>
       )}
-      {activeTab === 'exec' && <Exec preview={preview} />}
+      {activeTab === 'exec' && <Exec box={box} preview={preview} authenticated={authenticated} />}
       {activeTab === 'previews' && (
         <section className="panel preview-panel">
           <div className="panel-heading">
@@ -305,19 +319,33 @@ export default function BoxDetail({ data, preview }: PageProps) {
           operations={data.operations.filter((operation) => operation.box_id === box.id)}
         />
       )}
-      {action && (
-        <LifecycleDialog
-          action={action}
+      {action === 'Delete' ? (
+        <DeleteDialog
           box={box}
           preview={preview}
+          authenticated={authenticated}
+          onObserved={onObserved}
           onClose={() => setAction(null)}
         />
+      ) : (
+        action && (
+          <LifecycleDialog
+            action={action}
+            box={box}
+            preview={preview}
+            authenticated={!preview && data.host.state === 'online'}
+            onObserved={onObserved}
+            onClose={() => setAction(null)}
+          />
+        )
       )}
       {restoring && (
         <RestoreDialog
           box={box}
           checkpoint={restoring}
           preview={preview}
+          authenticated={authenticated}
+          onObserved={onObserved}
           onClose={() => setRestoring(null)}
         />
       )}
@@ -359,8 +387,22 @@ function Access() {
   )
 }
 
-function Exec({ preview }: { preview: boolean }) {
+function Exec({
+  box,
+  preview,
+  authenticated,
+}: {
+  box: Box
+  preview: boolean
+  authenticated: boolean
+}) {
   const [argv, setArgv] = useState('["/bin/pwd"]')
+  const [cwd, setCwd] = useState('')
+  const [timeout, setTimeoutMs] = useState('10000')
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+  const [output, setOutput] = useState<ExecOutput | null>(null)
+  let command: string[] = []
   let valid = false
   try {
     const parsed: unknown = JSON.parse(argv)
@@ -369,16 +411,39 @@ function Exec({ preview }: { preview: boolean }) {
       parsed.length > 0 &&
       parsed.every((item) => typeof item === 'string') &&
       parsed[0].length > 0
+    if (valid) command = parsed as string[]
   } catch {
-    /* Inline validation below. */
+    valid = false
   }
+  const timeoutMs = Number(timeout)
+  const timeoutValid = Number.isInteger(timeoutMs) && timeoutMs >= 1 && timeoutMs <= 3_600_000
+  const cwdValid = cwd === '' || (cwd.startsWith('/') && !cwd.includes('\0'))
+  const ready =
+    authenticated && box.state === 'running' && valid && timeoutValid && cwdValid && !pending
   return (
     <section className="panel exec-panel">
       <div className="panel-heading">
         <h2>Execute a command</h2>
         <Terminal size={16} />
       </div>
-      <form onSubmit={(event) => event.preventDefault()}>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (!ready) return
+          setPending(true)
+          setError('')
+          setOutput(null)
+          void execCommand(box.id, command, timeoutMs, cwd || undefined)
+            .then((result) => {
+              setOutput(result)
+              setPending(false)
+            })
+            .catch((reason: unknown) => {
+              setError(reason instanceof Error ? reason.message : 'unknown')
+              setPending(false)
+            })
+        }}
+      >
         <p>Structured arguments, bounded output. Commands are never retried automatically.</p>
         <div className="field">
           <label htmlFor="exec-argv">Arguments (JSON array)</label>
@@ -399,15 +464,49 @@ function Exec({ preview }: { preview: boolean }) {
         <div className="exec-options">
           <div className="field">
             <label htmlFor="exec-cwd">Working directory</label>
-            <input id="exec-cwd" placeholder="Guest default" />
+            <input
+              id="exec-cwd"
+              placeholder="Guest default"
+              value={cwd}
+              onChange={(event) => setCwd(event.target.value)}
+            />
           </div>
           <div className="field">
             <label htmlFor="exec-timeout">Timeout (ms)</label>
-            <input id="exec-timeout" type="number" min={1} max={3600000} defaultValue={10000} />
+            <input
+              id="exec-timeout"
+              type="number"
+              min={1}
+              max={3600000}
+              value={timeout}
+              onChange={(event) => setTimeoutMs(event.target.value)}
+            />
           </div>
         </div>
-        <Unavailable preview={preview} />
-        <button className="button primary" disabled>
+        {authenticated ? (
+          box.state === 'running' ? null : (
+            <p className="field-hint">Commands run only while the box is running.</p>
+          )
+        ) : (
+          <Unavailable preview={preview} />
+        )}
+        {error && (
+          <p className="field-hint error-text" role="alert">
+            {error}
+          </p>
+        )}
+        {output && (
+          <>
+            <p>
+              Exit code {output.exitCode ?? 'none'}
+              {output.timedOut ? '. The command timed out.' : ''}
+              {output.truncated ? ' Output was truncated.' : ''}
+            </p>
+            <pre aria-label="stdout">{output.stdout}</pre>
+            <pre aria-label="stderr">{output.stderr}</pre>
+          </>
+        )}
+        <button className="button primary" disabled={!ready}>
           Execute command <ArrowUpRight size={15} />
         </button>
       </form>

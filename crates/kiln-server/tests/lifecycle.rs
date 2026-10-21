@@ -71,10 +71,15 @@ async fn ready(client: &Client) {
     panic!("host did not become ready");
 }
 
-async fn finished(client: &Client, mut op: Operation) -> Operation {
-    for _ in 0..1200 {
+async fn finished(client: &Client, op: Operation) -> Operation {
+    let op = settled(client, op).await;
+    assert_eq!(op.state, OperationState::Succeeded, "{op:?}");
+    op
+}
+
+async fn settled(client: &Client, mut op: Operation) -> Operation {
+    for _ in 0..3600 {
         if op.state != OperationState::Running {
-            assert_eq!(op.state, OperationState::Succeeded, "{op:?}");
             return op;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -370,6 +375,8 @@ async fn https_lifecycle_and_crashed_host_never_replay_exec() {
             "PASS: persistent SSH host key, distinct clone keys, egress after restart and on another network slot"
         );
     }
+    let checkpoint_id =
+        checkpoint_round_trip(&client, &runtime, &url, &token, pem.as_bytes(), &id).await;
     let side_effect = Submit {
         id: new_id(),
         action: exec(&id, "printf x >> /root/once; sleep 2"),
@@ -403,10 +410,165 @@ async fn https_lifecycle_and_crashed_host_never_replay_exec() {
         "retry after deletion must not resurrect a box"
     );
     assert!(client.list().await.unwrap().is_empty());
+    runtime.delete_snapshot(&checkpoint_id).unwrap();
     runtime.delete_snapshot(&template.id).unwrap();
     eprintln!(
-        "PASS: HTTPS create/retry/disconnect, exec, pause/resume, persistent stop/start, host-crash unknown/no-replay, delete/tombstone"
+        "PASS: HTTPS create/retry/disconnect, exec, pause/resume, persistent stop/start, checkpoint/restore, host-crash unknown/no-replay, delete/tombstone"
     );
+}
+
+async fn checkpoint_round_trip(
+    client: &Client,
+    runtime: &Runtime,
+    url: &str,
+    token: &str,
+    pem: &[u8],
+    id: &str,
+) -> String {
+    let request = Submit {
+        id: new_id(),
+        action: Action::Checkpoint { id: id.into() },
+    };
+    let captured = finished(client, client.submit(&request).await.unwrap()).await;
+    let checkpoint_id = match &captured.result {
+        Some(Outcome::Checkpoint(view)) => {
+            assert_eq!(view.box_id, id);
+            view.id.clone()
+        }
+        other => panic!("missing checkpoint result: {other:?}"),
+    };
+    let document = dashboard_value(url, token, pem).await;
+    let listed = document["checkpoints"].as_array().expect("checkpoints");
+    assert!(
+        listed
+            .iter()
+            .any(|row| row["id"] == checkpoint_id && row["box_id"] == id),
+        "{document}"
+    );
+    let replay = client.submit(&request).await.unwrap();
+    assert_eq!(replay.id, captured.id);
+    let snapshots = runtime
+        .snapshots()
+        .unwrap()
+        .into_iter()
+        .filter(|snapshot| !snapshot.template)
+        .map(|snapshot| snapshot.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        snapshots,
+        vec![checkpoint_id.clone()],
+        "a replayed request id must not capture a second checkpoint"
+    );
+    assert_eq!(
+        output(
+            action(
+                client,
+                exec(id, "printf later > /root/after-checkpoint; printf later",),
+            )
+            .await,
+        ),
+        b"later"
+    );
+    let denied = client
+        .submit(&Submit {
+            id: new_id(),
+            action: Action::Restore {
+                id: id.into(),
+                checkpoint: checkpoint_id.clone(),
+                acknowledge_external_state_replay: false,
+            },
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        denied.contains("acknowledge-external-state-replay"),
+        "{denied}"
+    );
+    let foreign = client
+        .submit(&Submit {
+            id: new_id(),
+            action: Action::Checkpoint { id: new_id() },
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(foreign.contains("not_found"), "{foreign}");
+    let restored = action(
+        client,
+        Action::Restore {
+            id: id.into(),
+            checkpoint: checkpoint_id.clone(),
+            acknowledge_external_state_replay: true,
+        },
+    )
+    .await;
+    assert!(matches!(restored.result, Some(Outcome::Box(_))));
+    assert_eq!(client.inspect(id).await.unwrap().state, "running");
+    assert_eq!(
+        output(action(client, exec(id, "cat /root/remote-data")).await),
+        b"retained"
+    );
+    assert_eq!(
+        output(
+            action(
+                client,
+                exec(id, "test ! -e /root/after-checkpoint; printf ok"),
+            )
+            .await
+        ),
+        b"ok"
+    );
+    let other = action(
+        client,
+        Action::Create {
+            template: "test".into(),
+            name: "other-box".into(),
+        },
+    )
+    .await
+    .box_id;
+    let crossed = settled(
+        client,
+        client
+            .submit(&Submit {
+                id: new_id(),
+                action: Action::Restore {
+                    id: other.clone(),
+                    checkpoint: checkpoint_id.clone(),
+                    acknowledge_external_state_replay: true,
+                },
+            })
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        crossed.state,
+        OperationState::Failed,
+        "restore is same-box only: {crossed:?}"
+    );
+    assert_eq!(client.inspect(id).await.unwrap().state, "running");
+    action(client, Action::Delete { id: other }).await;
+    checkpoint_id
+}
+
+async fn dashboard_value(url: &str, token: &str, pem: &[u8]) -> serde_json::Value {
+    let client = reqwest::Client::builder()
+        .https_only(true)
+        .no_proxy()
+        .add_root_certificate(reqwest::Certificate::from_pem(pem).unwrap())
+        .tls_built_in_root_certs(false)
+        .build()
+        .unwrap();
+    let response = client
+        .get(format!("{url}/api/v1/dashboard"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success(), "{}", response.status());
+    response.json().await.unwrap()
 }
 
 async fn output_of_forwarding_probe(

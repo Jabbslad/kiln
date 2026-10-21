@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to install
+        description: Existing published release tag. latest selects the newest one.
         required: false
         default: latest
         type: string
@@ -44,6 +44,11 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.workflow_sha }}
+      - name: Require a published release
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash deploy/github/require-release.sh
       - name: Install the release
         env:
           DARK_FORGE_SSH_KEY: ${{ secrets.DARK_FORGE_SSH_KEY }}
