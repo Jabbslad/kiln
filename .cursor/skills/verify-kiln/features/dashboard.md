@@ -52,7 +52,7 @@ A host body larger than 1 MiB makes the gateway return HTTP 502 with code `host_
 - Settings at `/settings` and the guide at `/docs`.
 - Explicit preview versus live authenticated console.
 - Sign out for the operate session.
-- Release version label in the console header (`web/src/kiln-version.ts`, `web/src/App.test.tsx`).
+- Release version label in the console header (`web/src/kiln-version.ts`, `web/src/App.test.tsx`). The label is a button that opens embedded release notes for the running build version (`web/src/release-notes.ts`, `web/src/ReleaseNotesDialog.tsx`, `scripts/release-notes-json.sh`, `scripts/write-release-notes.sh`). Notes are generated at dashboard build time from git history since the previous stable tag; the bundle never calls GitHub at runtime. A version with no embedded notes shows **No release notes for vX**. `web/src/App.test.tsx`, `web/tests/dashboard.spec.ts`, `scripts/test-release-notes.sh`, and `scripts/check-embedded-release-notes.sh` cover the UI and build-time embedding.
 - Access panel (SSH, HTTP preview, public access labelled unavailable).
 - Shared `trackOperation` polling and dashboard refresh after mutations.
 
