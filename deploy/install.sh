@@ -1213,7 +1213,7 @@ upgrade() {
     fi
     rm -f -- "$pending"
     sync "$OPT"
-    die "update failed (command); previous binaries/services restored. Backup: $backup"
+    die "update failed during binary swap; install step details are on stderr; previous binaries/services restored. Backup: $backup"
   fi
   rm -f -- "$pending"
   sync "$OPT"
