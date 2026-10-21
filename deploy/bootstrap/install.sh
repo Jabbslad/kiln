@@ -42,7 +42,7 @@ release_tag() {
         tag=${tag#v}
     fi
     stable_version "$tag" || fail 'Release tag is not a stable version.'
-    version=$tag
+    printf '%s\n' "$tag"
 }
 
 release_package() {
@@ -78,7 +78,9 @@ release_digest() {
 }
 
 print_release() {
-    release_tag
+    if tag=$(release_tag); then
+        version=$tag
+    fi
     for spec in \
         client:x86_64-unknown-linux-gnu \
         client:x86_64-apple-darwin \
@@ -121,7 +123,7 @@ align_release() {
 }
 
 assets() {
-    # Fixture and publish template. A normal run uses the release tag and its checksum sidecars.
+    # Fixture and publish template. An unstamped run replaces these with the release sidecars.
     cat <<'ASSETS'
 # BEGIN RELEASE ASSETS
 client:x86_64-unknown-linux-gnu 6df1a338b162111e47e4d006f67f3909694d905fc6d8110a43220f66644798b8
@@ -442,6 +444,9 @@ install_server() {
 
 main() {
     version=0.4.12
+    # Publish rewrites the version line above and leaves this one.
+    # Matching values mean this file was not stamped for a release.
+    template_pin=0.4.12
     work='' staged='' backup_staged='' lock='' upgrade=false
     address='' uplink=${KILN_NETWORK_UPLINK:-} network=false existing_server=false
     trap cleanup EXIT
@@ -473,8 +478,10 @@ main() {
         command -v "$tool" >/dev/null 2>&1 || fail "Missing standard system tool: $tool"
     done
     command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || fail 'Missing system SHA-256 tool.'
-    if ! fixture_pin; then
-        release_tag
+    resolve_release=false
+    if ! fixture_pin && [ "$version" = "$template_pin" ]; then
+        version=$(release_tag)
+        resolve_release=true
     fi
     if [ "$mode" = client ]; then
         [ -n "${HOME:-}" ] || fail 'HOME must be set.'
@@ -502,12 +509,12 @@ main() {
             sudo -n true < /dev/null || fail 'Server setup needs passwordless sudo or a root shell; no password prompts are used.'
         fi
     fi
-    if fixture_pin; then
+    if [ "$resolve_release" = true ]; then
+        release_digest
+    else
         digest=$(assets | awk -v key="$mode:$target" '$1==key {print $2}')
         case "$digest" in ''|*[!a-f0-9]*) fail 'Invalid pinned release digest.' ;; esac
         [ "${#digest}" = 64 ] || fail 'Invalid pinned release digest.'
-    else
-        release_digest
     fi
     work=$(mktemp -d "${TMPDIR:-/tmp}/kiln-install.XXXXXXXX")
     download

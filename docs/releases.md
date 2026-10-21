@@ -508,17 +508,24 @@ makes that change.
 
 The installer version is the release tag.
 
-`deploy/bootstrap/install.sh` reads the latest stable release tag and the
-SHA-256 sidecar for each archive. It downloads that tag and refuses the
-archive when the checksum differs. The lines in the asset block are the
-publish template. A normal run does not install from those lines.
-The tag job renders `install.sh` from the archive checksums. When a reused
-build's version differs from the tag, the job renames the archives and sets
-`version=` to the tag. It publishes only after `sha256sum -c` and
+The copy of `deploy/bootstrap/install.sh` on main still has the publish
+template in `version=` and the asset block. Running that copy reads the
+latest stable release tag and the SHA-256 sidecar for each archive, then
+downloads that tag and refuses the archive when the checksum differs.
+The tag job renders `install.sh` from the archive checksums and writes that
+tag into `version=`. The rendered copy installs that tag and checks the
+checksums in its asset block. When a reused build's version differs from
+the tag, the job renames the archives and sets `version=` to the tag.
+The tag job publishes only after `sha256sum -c` and
 `gh attestation verify` succeed for every archive. The same job attaches
 `install.sh` and `install.sh.sha256`. Publishing a release leaves main
 unchanged. The workspace version in `Cargo.toml` can move ahead of the
 latest published tag while a release is prepared.
+The public command stays on the raw main URL.
+`releases/latest/download/install.sh` returns 404 for v0.4.7, and the
+published v0.4.14 `install.sh` reports 0.4.10 while it downloads 0.4.14.
+Leave that URL until Jamie publishes a release whose `install.sh` reports
+the tag it downloads.
 Never publish server state or credentials.
 The ordinary build workflow has no cross-repository publishing credentials.
 
