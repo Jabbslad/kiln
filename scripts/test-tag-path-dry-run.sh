@@ -134,6 +134,8 @@ GITHUB_EVENT_NAME=pull_request \
 grep -q 'identity inputs 0.4.18' "$work/deploy-out" || fail 'identity inputs were not checked'
 grep -q 'server inputs kiln-server-v0.4.18-x86_64-unknown-linux-gnu.tar.gz' "$work/deploy-out" \
   || fail 'server inputs were not checked'
+grep -q 'ssh-session: dry-run control path' "$work/deploy-out" \
+  || fail 'deploy dry-run did not set up the multiplex session'
 grep -q 'deploy inputs v0.4.18' "$work/deploy-out" || fail 'deploy inputs were not reported'
 grep -q 'dashboard inputs kiln-dashboard-v0.4.18.tar.gz' "$work/deploy-out" \
   || fail 'dashboard inputs were not checked'
