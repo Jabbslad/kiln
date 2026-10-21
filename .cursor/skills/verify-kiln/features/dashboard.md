@@ -127,7 +127,7 @@ cd web
 KILN_SCREENSHOT_DIR="$VERIFY_EVIDENCE/dashboard" npm run test:browser
 ```
 
-Preview tests keep mutations disabled and make no `/api/` requests. Live-route tests mock `GET /api/v1/dashboard` for loading, empty, and error states. Without preview on the dev server (no proxy), `/boxes` shows **Connect your control plane** with **Couldn’t reach the server** when the API is unreachable. Unit tests include `web/src/kilnFetch.test.ts`, `web/src/capabilities.test.tsx`, `web/src/BoxDetail.test.tsx`, and `web/src/App.test.tsx` for capability surfaces and unreachable recovery. `cargo test -p kiln-server --test app_listener failed_dashboard_upstream_refresh_is_audited` covers the dashboard audit line. Proof screenshots for unreachable vs recovered states: `sh scripts/capture-dashboard-unreachable-proof.sh`.
+Preview tests keep mutations disabled and make no `/api/` requests. Live-route tests mock `GET /api/v1/dashboard` for loading, empty, and error states. Without preview on the dev server (no proxy), `/boxes` shows **Connect your control plane** with **Couldn’t reach the server** when the API is unreachable. Unit tests include `web/src/kilnFetch.test.ts`, `web/src/capabilities.test.tsx`, `web/src/BoxDetail.test.tsx`, and `web/src/App.test.tsx` for capability surfaces and unreachable recovery. `cargo test -p kiln-server --test app_listener failed_dashboard_upstream_refresh_is_audited` covers the dashboard audit line. Proof screenshots for unreachable vs recovered states: `sh scripts/proof.sh dashboard-unreachable`. Release-notes dialog proof (header, then open notes): `sh scripts/proof.sh dashboard-release-notes`.
 
 ```sh
 cd web
