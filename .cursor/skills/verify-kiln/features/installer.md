@@ -6,7 +6,7 @@ Tagged deploy and auto-release also ship `kiln-identity-*.tar.gz` and `kiln-dash
 
 ## Sub-features
 
-- `sh install.sh` and `sh install.sh client` install or update the laptop binary.
+- `sh install.sh` and `sh install.sh client` install or update the laptop binary (Linux x86-64, macOS Intel, or macOS Apple silicon only; Windows client builds were removed in #110).
 - `sh install.sh server` detects a private IPv4 from `ip -4 route get 1.1.1.1` and installs.
 - `sh install.sh server --address PRIVATE_IP` selects the address.
 - `sh install.sh server --network` or `--network-uplink INTERFACE` opts into guest egress.

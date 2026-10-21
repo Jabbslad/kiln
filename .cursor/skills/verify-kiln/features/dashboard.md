@@ -20,7 +20,7 @@ Live mutations (not preview, host `online`): create box, pause, resume, stop (op
 
 **Shared operation tracker (`trackOperation`, #104/#105).** All console mutations funnel through `trackOperation` in `web/src/data.ts` (formerly `submitOperation`). It POSTs `/v1/operations` with a random 32-hex `id`, sends `x-kiln-csrf` from `__Host-kiln_csrf`, polls `/v1/operations/{id}` with exponential backoff until the receipt leaves `running`, then either returns exec stdout/stderr on the receipt or re-fetches `GET /api/v1/dashboard` until `dashboardReflectsOperation` sees the expected box, checkpoint, or deletion. Inventory never updates optimistically. `web/src/data.test.ts` covers create, lifecycle, checkpoint, restore, delete, exec, CSRF or session rejection, and pending-dashboard messaging. `web/src/operationKinds.ts` lists the nine action tags kept in sync with `kiln_api::Action` by `dashboard_operation_action_types_match_api_action_tags`.
 
-**Access panel (#107, corrected in #109).** On the Terminal tab, `Access` labels SSH, HTTP preview, and public access **Not available yet** with disabled buttons. It does not show `kiln ssh` or `kiln ssh-config` copy hints. `web/src/BoxDetail.test.tsx` asserts the SSH section has no `kiln ssh` text.
+**Access panel (#107, corrected in #109).** On the Terminal tab, `Access` wraps SSH, HTTP preview, and public URL in `CapabilitySurface` (`ssh`, `httpPreview`, `publicUrl` all `not-yet`). It does not show `kiln ssh` or `kiln ssh-config` copy hints. `web/src/BoxDetail.test.tsx` checks `data-capability-state="not-yet"` on SSH and no `kiln ssh` text.
 
 **Why laptops still cannot `kiln ssh`.** SSH upgrade routes live on loopback `kiln-api` (`/v1/boxes/{id}/ssh`, `/v1/boxes/{id}/ssh-key` in `crates/kiln-server/src/gateway.rs`). The public door (`kiln-door`) forwards read and operate JSON routes only; it does not proxy SSH. A laptop profile aimed at `https://cli.dark-forge.dev` therefore cannot complete `kiln ssh` today even when boxes run on the host. Guest SSH remains a separate journey in `features/guest-access.md` for profiles that reach a gateway exposing those routes. Do not expand door SSH in this file; that belongs in its own PR.
 
@@ -46,6 +46,7 @@ A host body larger than 1 MiB makes the gateway return HTTP 502 with code `host_
 
 - Inventory at `/boxes`: search, state filters, name sort, row links.
 - Box detail at `/boxes/:id` with Terminal, Exec, Previews, Checkpoints, Metrics, and Activity tabs.
+- Capability map in `web/src/capabilities.ts` (#113): `metrics`, `terminal`, `ssh`, `httpPreview`, `publicUrl`, and `launchTiming` are each `available` or `not-yet`. `CapabilitySurface` in `web/src/ui.tsx` renders **Not available yet** for `not-yet` entries (Access, terminal body, previews, launch timing). `web/src/capabilities.test.tsx` fails if an `available` capability shows placeholder dashes or empty values, or if a `not-yet` capability shows fake connected UI. Today every key is `not-yet`.
 - Templates at `/templates`, including the create-box drawer.
 - Operations at `/operations`.
 - Settings at `/settings` and the guide at `/docs`.
@@ -124,11 +125,11 @@ cd web
 KILN_SCREENSHOT_DIR="$VERIFY_EVIDENCE/dashboard" npm run test:browser
 ```
 
-Preview tests keep mutations disabled and make no `/api/` requests. Live-route tests mock `GET /api/v1/dashboard` for loading, empty, and error states. Without preview on the dev server (no proxy), `/boxes` shows **Connect your control plane**. Unit tests include `web/src/BoxDetail.test.tsx` for the Access panel SSH wording.
+Preview tests keep mutations disabled and make no `/api/` requests. Live-route tests mock `GET /api/v1/dashboard` for loading, empty, and error states. Without preview on the dev server (no proxy), `/boxes` shows **Connect your control plane**. Unit tests include `web/src/capabilities.test.tsx`, `web/src/BoxDetail.test.tsx`, and `web/src/App.test.tsx` for capability surfaces.
 
 ```sh
 cd web
-npm test -- BoxDetail.test.tsx
+npm test -- capabilities.test.tsx BoxDetail.test.tsx
 ```
 
 ## Gotchas

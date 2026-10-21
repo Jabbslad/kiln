@@ -1,6 +1,6 @@
 # Guest access
 
-`kiln ssh`, `kiln cp`, and `kiln ssh-config` open a guest shell or copy a file. Traffic is HTTPS to the host and vsock inside the guest. There is no public SSH port. The commands need a matching Ubuntu guest with OpenSSH. Windows builds are management-only.
+`kiln ssh`, `kiln cp`, and `kiln ssh-config` open a guest shell or copy a file. Traffic is HTTPS to the host and vsock inside the guest. There is no public SSH port. The commands need a matching Ubuntu guest with OpenSSH.
 
 ## Sub-features
 

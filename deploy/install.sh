@@ -539,7 +539,6 @@ kiln create --template ubuntu-4g --name first-box
 
 Keep this directory: the profile stores file references, not copies.
 Unix: chmod 700 .; chmod 600 admin.token
-Windows: restrict this directory and token's ACL to your own account.
 The server leaf certificate expires in one year; arrange renewal before expiry.
 EOF
   tar --create --gzip --file "$dir/laptop.tar.gz" \
