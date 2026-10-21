@@ -85,8 +85,12 @@ async fn gateway_dashboard_body() -> String {
         axum::serve(listener, router).await.unwrap();
     });
     let token = "f".repeat(64);
-    let gateway =
-        gateway::router_with_workspace(&config.socket, kiln_server::auth::Authenticator::new(&token, None).unwrap(), String::new()).unwrap();
+    let gateway = gateway::router_with_workspace(
+        &config.socket,
+        kiln_server::auth::Authenticator::new(&token, None).unwrap(),
+        String::new(),
+    )
+    .unwrap();
     let response = gateway
         .oneshot(
             Request::builder()
@@ -98,7 +102,11 @@ async fn gateway_dashboard_body() -> String {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(hits.load(Ordering::SeqCst), 1, "expected one host dashboard read");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "expected one host dashboard read"
+    );
     String::from_utf8(
         to_bytes(response.into_body(), kiln_api::MAX_RESPONSE_BYTES)
             .await
