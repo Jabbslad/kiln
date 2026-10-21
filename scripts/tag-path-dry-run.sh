@@ -94,7 +94,6 @@ KILN_DEPLOY_DRY_RUN=1 \
   KILN_DEPLOY_DIST="$dist" \
   bash deploy/github/deploy.sh >"$output.deploy" 2>&1
 grep -q "deploy inputs ${tag}" "$output.deploy" || fail 'deploy dry-run did not finish'
-grep 'dashboard inputs\|dashboard live ' "$output.deploy" || fail 'deploy dry-run dashboard output missing'
 grep -q "dashboard inputs kiln-dashboard-${tag}.tar.gz" "$output.deploy" \
   || fail 'deploy dry-run did not check the dashboard archive'
 grep -q 'dashboard live ' "$output.deploy" || fail 'deploy dry-run did not check the bundle'
