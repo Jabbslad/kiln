@@ -27,6 +27,51 @@ EOF
   chmod 755 "$path"
 }
 
+write_slotted() {
+  local path=$1 version=$2 marker pad
+  marker=$(printf 'KILNREL%s=' SLOT)
+  cat > "$path" << 'EOF'
+#!/bin/bash
+if [ "${1:-}" = --version ]; then
+  marker=$(printf 'KILNREL%s=' SLOT)
+  slot=$(LC_ALL=C grep -a -o -b -F "$marker" "$0" | head -1)
+  offset=${slot%%:*}
+  dd if="$0" bs=1 skip=$((offset + 12)) count=32 status=none | tr -d '\000' \
+    | awk '{ printf "kiln-identity %s\n", $0 }'
+  exit 0
+fi
+exit 2
+EOF
+  {
+    printf '%s' "$marker"
+    printf '%s' "$version"
+    pad=$((32 - ${#version}))
+    dd if=/dev/zero bs=1 count="$pad" status=none
+  } >> "$path"
+  chmod 755 "$path"
+}
+
+pack_slotted() {
+  local dest=$1 version=$2
+  local stage archive
+  stage=$(mktemp -d)
+  mkdir -p "$stage/bin" "$stage/deploy" "$stage/docs"
+  write_slotted "$stage/bin/kiln-identity" "$version"
+  printf 'unit-from-archive\n' > "$stage/deploy/kiln-identity.service"
+  printf 'example-from-archive\n' > "$stage/deploy/identity.example.env"
+  printf 'guide-from-archive\n' > "$stage/docs/identity-service.md"
+  printf '{"version":"v%s","target":"x86_64-unknown-linux-gnu"}\n' "$version" > "$stage/release.json"
+  archive=$dest/kiln-identity-v${version}-x86_64-unknown-linux-gnu.tar.gz
+  tar -C "$stage" -czf "$archive" \
+    bin/kiln-identity deploy/kiln-identity.service deploy/identity.example.env \
+    docs/identity-service.md release.json
+  (
+    cd "$dest"
+    sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256"
+  )
+  rm -rf "$stage"
+}
+
 pack_identity() {
   local dest=$1 version=$2 bytes=$3
   local stage archive
@@ -201,6 +246,15 @@ sentinels=$(sentinel_inodes)
 run_id
 [ "$rc" = 0 ] || fail "swap failed: $(cat "$work/err")"
 grep -q 'identity 0.4.16' "$work/out" || fail "missing version line: $(cat "$work/out")"
+[ "$(grep -c 'identity probe version: match 0.4.16' "$work/out" || true)" = 1 ] \
+  || fail "version probe: $(cat "$work/out")"
+[ "$(grep -c 'identity probe loopback: status=200 phrase=found' "$work/out" || true)" = 1 ] \
+  || fail "loopback probe: $(cat "$work/out")"
+[ "$(grep -c 'identity probe public: status=200 phrase=found' "$work/out" || true)" = 1 ] \
+  || fail "public probe: $(cat "$work/out")"
+[ "$(grep -c 'identity probe app: status=303 location_oauth_server=yes code_challenge_method=S256' "$work/out" || true)" = 1 ] \
+  || fail "app probe: $(cat "$work/out")"
+if grep -q 'redirect_uri' "$work/out"; then fail "probe printed a redirect"; fi
 installed=$(PATH="$work/stubs:$PATH" "$live" --version)
 [ "$installed" = "kiln-identity 0.4.16" ] || fail "live version $installed"
 grep -q 'new-bytes' "$live"
@@ -229,6 +283,8 @@ run_id
 restarts=$(grep -c 'systemctl restart kiln-identity.service' "$work/first.log" || true)
 [ "$restarts" = 1 ] || fail "first call restarted $restarts times"
 if grep -q 'systemctl restart' "$log"; then fail "second call restarted identity"; fi
+grep -q 'identity unchanged 0.4.16' "$work/out" || fail "second call was not unchanged: $(cat "$work/out")"
+if grep -q 'curl ' "$log"; then fail "second call probed"; fi
 assert_sentinels
 
 # A failed public login after the swap puts the previous binary back.
@@ -252,6 +308,11 @@ printf '1\n' > "$state/fail-loopback"
 run_id
 [ "$rc" != 0 ] || fail "loopback failure should fail"
 grep -q 'old-bytes' "$live" || fail "loopback failure left the new binary"
+[ "$(grep -c 'identity probe loopback:' "$work/out" || true)" = 1 ] \
+  || fail "loopback logged every retry: $(cat "$work/out")"
+grep -q 'identity probe loopback: status=500 phrase=missing' "$work/out" \
+  || fail "loopback result: $(cat "$work/out")"
+if grep -q 'redirect_uri' "$work/out"; then fail "probe printed a redirect"; fi
 
 # Already on the package: a later public failure does not roll the binary back.
 prepare
@@ -261,10 +322,25 @@ pack_identity "$deploy" 0.4.16 'new-bytes'
 run_id
 [ "$rc" = 0 ] || fail "matching binary should pass: $(cat "$work/err")"
 if grep -q 'systemctl restart' "$log"; then fail "matching binary restarted"; fi
+grep -q 'identity unchanged 0.4.16' "$work/out" || fail "matching binary was probed: $(cat "$work/out")"
 printf '1\n' > "$state/fail-public"
+: > "$log"
 run_id
-[ "$rc" != 0 ] || fail "public failure on the matching binary should fail"
-grep -q 'new-bytes' "$live" || fail "confirm probe rolled the matching binary back"
+[ "$rc" = 0 ] || fail "unchanged binary should skip a later public failure: $(cat "$work/err")"
+if grep -q 'curl ' "$log"; then fail "unchanged binary probed again"; fi
+grep -q 'new-bytes' "$live" || fail "unchanged binary was replaced"
+
+# A version slot is the only difference. The live binary stays, and probes do not run.
+prepare
+write_slotted "$live" 0.4.19
+pack_slotted "$deploy" 0.4.20
+run_id
+[ "$rc" = 0 ] || fail "slot-only upgrade should skip: $(cat "$work/err")"
+grep -q 'identity unchanged 0.4.20' "$work/out" || fail "slot-only was installed: $(cat "$work/out")"
+if grep -q 'systemctl restart' "$log"; then fail "slot-only restarted"; fi
+if grep -q 'curl ' "$log"; then fail "slot-only probed"; fi
+live_version=$(PATH="$work/stubs:$PATH" "$live" --version)
+[ "$live_version" = "kiln-identity 0.4.19" ] || fail "slot-only replaced the binary: $live_version"
 
 # Downgrade is refused before a restart. 0.4.4 to 0.4.10 is allowed.
 prepare
@@ -336,15 +412,15 @@ found=$(find "$fx/opt/kiln/upgrades" -type f -name kiln-identity)
 grep -q 'old-bytes' "$found" || fail "retired marker lost the previous binary"
 
 # The deploy wrapper downloads the identity asset and will not SSH when it is bad.
-# install-remote.sh upgrades identity before the server installer and probes again after.
+# install-remote.sh upgrades identity once, before the server installer.
 order=$(awk '
   /run_identity\(\)/ { next }
   /run_identity/ { calls[++n] = NR }
   /before=\$\(stamp\)/ { stamp = NR }
   /package\/install.sh/ && /--apply/ && !apply { apply = NR }
   END {
-    if (n != 2 || !stamp || !apply) exit 1
-    if (calls[1] < stamp && stamp < apply && apply < calls[2]) print "ok"
+    if (n != 1 || !stamp || !apply) exit 1
+    if (calls[1] < stamp && stamp < apply) print "ok"
   }
 ' "$root/deploy/github/install-remote.sh")
 [ "$order" = ok ] || fail "identity swap is not around the server install"

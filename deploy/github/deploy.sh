@@ -110,17 +110,33 @@ if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
   done
   remote=$(mktemp -d /tmp/kiln-deploy.XXXXXX)
 else
-  fetch_asset "$asset"
-  fetch_asset "$identity"
+  fetch_asset "$asset" &
+  server_pid=$!
+  fetch_asset "$identity" &
+  identity_pid=$!
+  server_rc=0
+  identity_rc=0
+  wait "$server_pid" || server_rc=$?
+  wait "$identity_pid" || identity_rc=$?
+  [ "$server_rc" -eq 0 ] || fail 'server download failed'
+  [ "$identity_rc" -eq 0 ] || fail 'identity download failed'
   remote=$(bash "$ssh_sh" ssh -- mktemp -d /tmp/kiln-deploy.XXXXXX)
 fi
 case "$remote" in
   /tmp/kiln-deploy.[A-Za-z0-9]*) ;;
   *) fail "unexpected remote directory: ${remote}" ;;
 esac
-put "$work/$asset" "$remote/$asset"
+put "$work/$asset" "$remote/$asset" &
+server_pid=$!
+put "$work/$identity" "$remote/$identity" &
+identity_pid=$!
+server_rc=0
+identity_rc=0
+wait "$server_pid" || server_rc=$?
+wait "$identity_pid" || identity_rc=$?
+[ "$server_rc" -eq 0 ] || fail 'server upload failed'
+[ "$identity_rc" -eq 0 ] || fail 'identity upload failed'
 put "$work/${asset}.sha256" "$remote/${asset}.sha256"
-put "$work/$identity" "$remote/$identity"
 put "$work/${identity}.sha256" "$remote/${identity}.sha256"
 put "$script_dir/install-identity.sh" "$remote/install-identity.sh"
 if [ "$tag" = "v0.4.4" ]; then

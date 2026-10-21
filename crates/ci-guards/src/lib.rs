@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 
 const ATTEST_CASES: &[(&str, &str, bool)] = &[
     ("push", "refs/heads/main", true),
-    ("push", "refs/tags/v0.4.12", true),
+    ("push", "refs/tags/v0.4.12", false),
     ("workflow_dispatch", "refs/heads/main", true),
     ("push", "refs/heads/feature", false),
     ("workflow_dispatch", "refs/heads/feature", false),
@@ -54,118 +54,15 @@ struct Gate {
     proved: &'static str,
     server_check: &'static str,
     packages: &'static str,
+    plan: &'static str,
+    release: &'static str,
     want_publish: bool,
     want_server_check: bool,
 }
 
 const PUBLISH_GATES: &[Gate] = &[
     Gate {
-        name: "reuse path",
-        event: "push",
-        git_ref: "refs/tags/v0.4.14",
-        cancelled: false,
-        changes: "success",
-        heavy: "true",
-        reuse: "success",
-        mode: "reuse",
-        proved: "success",
-        server_check: "skipped",
-        packages: "skipped",
-        want_publish: true,
-        want_server_check: false,
-    },
-    Gate {
-        name: "reuse path with a failed tag server-check",
-        event: "push",
-        git_ref: "refs/tags/v0.4.14",
-        cancelled: false,
-        changes: "success",
-        heavy: "true",
-        reuse: "success",
-        mode: "reuse",
-        proved: "success",
-        server_check: "failure",
-        packages: "skipped",
-        want_publish: true,
-        want_server_check: false,
-    },
-    Gate {
-        name: "reuse path without server-check proof",
-        event: "push",
-        git_ref: "refs/tags/v0.4.14",
-        cancelled: false,
-        changes: "success",
-        heavy: "true",
-        reuse: "success",
-        mode: "reuse",
-        proved: "",
-        server_check: "skipped",
-        packages: "skipped",
-        want_publish: false,
-        want_server_check: true,
-    },
-    Gate {
-        name: "rebuild path",
-        event: "push",
-        git_ref: "refs/tags/v0.4.14",
-        cancelled: false,
-        changes: "success",
-        heavy: "true",
-        reuse: "success",
-        mode: "fallback",
-        proved: "",
-        server_check: "skipped",
-        packages: "success",
-        want_publish: false,
-        want_server_check: true,
-    },
-    Gate {
-        name: "rebuild path with server-check",
-        event: "push",
-        git_ref: "refs/tags/v0.4.14",
-        cancelled: false,
-        changes: "success",
-        heavy: "true",
-        reuse: "success",
-        mode: "fallback",
-        proved: "",
-        server_check: "success",
-        packages: "success",
-        want_publish: true,
-        want_server_check: true,
-    },
-    Gate {
-        name: "rebuild path with a failed package",
-        event: "push",
-        git_ref: "refs/tags/v0.4.14",
-        cancelled: false,
-        changes: "success",
-        heavy: "true",
-        reuse: "failure",
-        mode: "",
-        proved: "",
-        server_check: "success",
-        packages: "failure",
-        want_publish: false,
-        want_server_check: true,
-    },
-    Gate {
-        name: "cancelled tag",
-        event: "push",
-        git_ref: "refs/tags/v0.4.14",
-        cancelled: true,
-        changes: "success",
-        heavy: "true",
-        reuse: "success",
-        mode: "reuse",
-        proved: "success",
-        server_check: "skipped",
-        packages: "skipped",
-        want_publish: false,
-        want_server_check: false,
-    },
-    Gate {
-        name: "main push",
+        name: "main release",
         event: "push",
         git_ref: "refs/heads/main",
         cancelled: false,
@@ -176,6 +73,76 @@ const PUBLISH_GATES: &[Gate] = &[
         proved: "",
         server_check: "success",
         packages: "success",
+        plan: "success",
+        release: "true",
+        want_publish: true,
+        want_server_check: true,
+    },
+    Gate {
+        name: "main with a failed server-check",
+        event: "push",
+        git_ref: "refs/heads/main",
+        cancelled: false,
+        changes: "success",
+        heavy: "true",
+        reuse: "skipped",
+        mode: "",
+        proved: "",
+        server_check: "failure",
+        packages: "success",
+        plan: "success",
+        release: "true",
+        want_publish: false,
+        want_server_check: true,
+    },
+    Gate {
+        name: "docs main",
+        event: "push",
+        git_ref: "refs/heads/main",
+        cancelled: false,
+        changes: "success",
+        heavy: "true",
+        reuse: "skipped",
+        mode: "",
+        proved: "",
+        server_check: "success",
+        packages: "success",
+        plan: "success",
+        release: "false",
+        want_publish: false,
+        want_server_check: true,
+    },
+    Gate {
+        name: "cancelled main",
+        event: "push",
+        git_ref: "refs/heads/main",
+        cancelled: true,
+        changes: "success",
+        heavy: "true",
+        reuse: "skipped",
+        mode: "",
+        proved: "",
+        server_check: "skipped",
+        packages: "skipped",
+        plan: "skipped",
+        release: "",
+        want_publish: false,
+        want_server_check: false,
+    },
+    Gate {
+        name: "tag push",
+        event: "push",
+        git_ref: "refs/tags/v0.4.14",
+        cancelled: false,
+        changes: "success",
+        heavy: "true",
+        reuse: "skipped",
+        mode: "",
+        proved: "",
+        server_check: "success",
+        packages: "success",
+        plan: "skipped",
+        release: "",
         want_publish: false,
         want_server_check: true,
     },
@@ -191,6 +158,8 @@ const PUBLISH_GATES: &[Gate] = &[
         proved: "",
         server_check: "skipped",
         packages: "skipped",
+        plan: "skipped",
+        release: "",
         want_publish: false,
         want_server_check: false,
     },
@@ -206,6 +175,8 @@ const PUBLISH_GATES: &[Gate] = &[
         proved: "",
         server_check: "success",
         packages: "skipped",
+        plan: "skipped",
+        release: "",
         want_publish: false,
         want_server_check: true,
     },
@@ -230,6 +201,7 @@ pub fn publish_server_check_violations(workflow: &str) -> Vec<String> {
     for case in PUBLISH_GATES {
         let changes_outputs = [("heavy", case.heavy)];
         let reuse_outputs = [("mode", case.mode), ("server_check", case.proved)];
+        let plan_outputs = [("release", case.release)];
         let jobs = [
             (
                 "changes",
@@ -285,6 +257,13 @@ pub fn publish_server_check_violations(workflow: &str) -> Vec<String> {
                 JobState {
                     result: case.packages,
                     outputs: &[],
+                },
+            ),
+            (
+                "release-plan",
+                JobState {
+                    result: case.plan,
+                    outputs: &plan_outputs,
                 },
             ),
         ];
@@ -932,9 +911,13 @@ pub fn reuse_lookup_violations(workflow: &str) -> Vec<String> {
         violations.push("draft-release job is missing".to_string());
         return violations;
     };
-    if draft.contains("needs.reuse.outputs.version") || !draft.contains("github.ref_name") {
+    if draft.contains("needs.reuse.outputs.version")
+        || draft.contains("github.ref_name")
+        || !draft.contains("needs.release-plan.outputs.tag")
+    {
         violations.push(
-            "draft-release finish checks main's archive names instead of the git tag".to_string(),
+            "draft-release finish checks main's archive names instead of the planned tag"
+                .to_string(),
         );
     }
     violations
@@ -950,9 +933,13 @@ pub fn version_guard_violations(workflow: &str) -> Vec<String> {
         Some((_, guard)) => {
             let guard_if = job_if(workflow, "version-guard").unwrap_or_default();
             if !guard_if.contains("github.event_name == 'push'")
-                || !guard_if.contains("startsWith(github.ref, 'refs/tags/v')")
+                || !guard_if.contains("github.ref == 'refs/heads/main'")
+                || !guard_if.contains("needs.release-plan.outputs.release == 'true'")
             {
-                violations.push("version-guard does not run on v* tag pushes".to_string());
+                violations.push("version-guard does not run on a main release".to_string());
+            }
+            if guard.contains("cargo xtask") {
+                violations.push("version-guard compiles xtask".to_string());
             }
             if guard.contains("scripts/check-tag-version.sh") || guard.contains("Cargo.toml") {
                 violations.push(
@@ -962,19 +949,13 @@ pub fn version_guard_violations(workflow: &str) -> Vec<String> {
             }
             if !guard.contains("scripts/stamp-release-dist.sh") {
                 violations
-                    .push("version-guard does not stamp reused packages onto the tag".to_string());
+                    .push("version-guard does not stamp packages onto the planned tag".to_string());
             }
             if !guard.contains("actions/attest-build-provenance") {
                 violations.push("version-guard does not attest packages it stamps".to_string());
             }
-            if !guard.contains("check-binary")
-                || !guard.contains("x86_64-unknown-linux-gnu")
-                || !guard.contains("reused-dist")
-            {
-                violations.push(
-                    "version-guard does not run check-binary on the reused Linux archive"
-                        .to_string(),
-                );
+            if !guard.contains("scripts/check-stamped-clients.sh") {
+                violations.push("version-guard does not check every shipped client".to_string());
             }
         }
     }
@@ -988,6 +969,9 @@ pub fn version_guard_violations(workflow: &str) -> Vec<String> {
     let draft_if = job_if(workflow, "draft-release").unwrap_or_default();
     if !draft_if.contains("needs.version-guard.result == 'success'") {
         violations.push("publish does not require version-guard to succeed".to_string());
+    }
+    if !draft.contains("needs.release-plan.outputs.tag") {
+        violations.push("publish does not use the planned tag".to_string());
     }
     if draft.contains("${TAG#v}") {
         violations.push("publish renames archives from the Cargo version to the tag".to_string());
@@ -1439,6 +1423,42 @@ pub fn release_event_violations(workflow: &str) -> Vec<String> {
         }
         if indent == 2 && is_release_event_line(trimmed) {
             violations.push("workflow triggers on release".to_string());
+        }
+    }
+    violations
+}
+
+const REHEARSAL_MARK: &str = "rehearsal: tag-path-dry-run";
+
+/// A job that publishes, stamps, attests, or deploys, or whose `if` is limited
+/// to main or a tag push, needs the pull-request rehearsal named in its body.
+pub fn rehearsal_violations(workflow: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    match job_if(workflow, "tag-path-dry-run") {
+        Some(expr) if expr.contains("pull_request") => {}
+        Some(_) => {
+            violations.push("tag-path-dry-run if does not contain pull_request".to_string());
+        }
+        None => violations.push("tag-path-dry-run job is missing".to_string()),
+    }
+    for (name, body) in job_blocks(workflow) {
+        if name == "tag-path-dry-run" {
+            continue;
+        }
+        let expr = job_if(workflow, &name).unwrap_or_default();
+        if expr.contains("pull_request") {
+            continue;
+        }
+        let gated = expr.contains("refs/heads/main")
+            || expr.contains("refs/tags/")
+            || expr.contains("github.event_name == 'push'")
+            || body.contains("stamp-release")
+            || body.contains("gh release create")
+            || body.contains("attest-build-provenance")
+            || body.contains("plan-release.sh")
+            || body.contains("./.github/workflows/deploy.yml");
+        if gated && !body.contains(REHEARSAL_MARK) {
+            violations.push(format!("{name} has no PR rehearsal counterpart"));
         }
     }
     violations

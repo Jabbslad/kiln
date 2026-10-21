@@ -1,4 +1,4 @@
-name: Rebuild publishes without server-check
+name: Main publish skips server-check
 on:
   push:
 jobs:
@@ -15,16 +15,17 @@ jobs:
     steps:
       - run: echo check
   draft-release:
-    needs: [server-check, reuse, server-package, client, dashboard, attest]
+    needs: [release-plan, version-guard, server-package, client, dashboard, attest]
     if: >-
       !cancelled() &&
       github.event_name == 'push' &&
-      startsWith(github.ref, 'refs/tags/v') &&
-      ((needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse') ||
-        (needs.server-package.result == 'success' &&
-          needs.client.result == 'success' &&
-          needs.dashboard.result == 'success' &&
-          needs.attest.result == 'success'))
+      github.ref == 'refs/heads/main' &&
+      needs.release-plan.outputs.release == 'true' &&
+      needs.version-guard.result == 'success' &&
+      needs.server-package.result == 'success' &&
+      needs.client.result == 'success' &&
+      needs.dashboard.result == 'success' &&
+      needs.attest.result == 'success'
     runs-on: ubuntu-24.04
     steps:
       - run: echo publish
