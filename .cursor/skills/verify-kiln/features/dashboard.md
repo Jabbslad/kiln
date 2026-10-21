@@ -33,7 +33,7 @@ A host body larger than 1 MiB (`kiln_api::MAX_RESPONSE_BYTES`) makes `stamp` ret
 ## Sub-features
 
 - Inventory at `/boxes`: search, state filters, name sort, row links.
-- Box detail at `/boxes/:id` with workspace, exec, checkpoint, and preview tabs.
+- Box detail at `/boxes/:id` with workspace, exec, checkpoint, and preview tabs. The Access panel's SSH section shows copyable `kiln ssh <full box id>` and `kiln ssh-config <full box id>` for the Linux and macOS CLI. HTTP preview and public access stay **Not available yet**.
 - Templates at `/templates`, including the create-box drawer.
 - Operations at `/operations`.
 - Settings at `/settings` and the guide at `/docs`.

@@ -218,6 +218,14 @@ else
   printf 'deploy: skipping the dashboard bundle check because installation failed\n' >&2
 fi
 
+door_rc=1
+if [ "$install_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]; then
+  door_rc=0
+  bash "$dir/check-door-ssh.sh" || door_rc=$?
+else
+  printf 'deploy: skipping the door ssh probe because the API is not healthy\n' >&2
+fi
+
 printf 'kiln-api NRestarts after: %s\n' "$(restarts)"
 after=$(stamp)
 if [ "$before" != "$after" ]; then
@@ -226,4 +234,4 @@ if [ "$before" != "$after" ]; then
   exit 1
 fi
 [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] \
-  && [ "$smoke_rc" -eq 0 ] && [ "$dashboard_rc" -eq 0 ]
+  && [ "$smoke_rc" -eq 0 ] && [ "$dashboard_rc" -eq 0 ] && [ "$door_rc" -eq 0 ]

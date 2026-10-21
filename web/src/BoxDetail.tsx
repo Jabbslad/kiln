@@ -223,7 +223,7 @@ export default function BoxDetail({ data, preview }: PageProps) {
               </div>
             </section>
             <div className="access-column">
-              <Access />
+              <Access boxId={box.id} />
               <ResourceMetrics metrics={box.metrics} />
             </div>
           </div>
@@ -351,7 +351,9 @@ export default function BoxDetail({ data, preview }: PageProps) {
   )
 }
 
-function Access() {
+function Access({ boxId }: { boxId: string }) {
+  const sshCommand = `kiln ssh ${boxId}`
+  const sshConfigCommand = `kiln ssh-config ${boxId}`
   return (
     <section className="panel access-panel">
       <div className="panel-heading">
@@ -359,14 +361,17 @@ function Access() {
         <ArrowUpRight size={15} />
       </div>
       <div className="access-section">
-        <div className="split-line">
-          <span className="eyebrow">SSH</span>
-          <Lock size={14} />
+        <span className="eyebrow">SSH</span>
+        <div className="connection-placeholder">
+          <Terminal size={15} />
+          <span>{sshCommand}</span>
+          <CopyButton value={sshCommand} label="Copy kiln ssh command" />
         </div>
-        <p>Not available yet</p>
-        <button className="button full-width" disabled>
-          Not available yet
-        </button>
+        <div className="connection-placeholder">
+          <span>{sshConfigCommand}</span>
+          <CopyButton value={sshConfigCommand} label="Copy kiln ssh-config command" />
+        </div>
+        <span className="field-hint">Use the Kiln CLI on Linux or macOS.</span>
       </div>
       <div className="access-section">
         <div className="split-line">

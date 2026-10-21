@@ -519,6 +519,77 @@ fn test_deploy_installs_dashboard_and_checks_the_live_bundle() {
     assert!(remote.contains("dashboard inputs"));
 }
 
+fn test_door_ssh_probe_rejects_an_unauthenticated_request() {
+    let deploy = read_repo("deploy/github/deploy.sh");
+    let remote = read_repo("deploy/github/install-remote.sh");
+    let probe = read_repo("deploy/github/check-door-ssh.sh");
+    assert!(deploy.contains("check-door-ssh.sh"));
+    assert!(remote.contains("bash \"$dir/check-door-ssh.sh\""));
+    assert!(remote.contains("\"$door_rc\" -eq 0"));
+    assert!(probe.contains("Upgrade: kiln-ssh"));
+    assert!(!probe.contains("Authorization:"));
+    assert!(!probe.contains("admin.token"));
+
+    let root = std::env::temp_dir().join(format!("kiln-door-ssh-probe-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("bin")).unwrap();
+    fs::write(root.join("ca.crt"), "not-a-certificate\n").unwrap();
+    write_executable(
+        &root.join("bin/curl"),
+        r#"#!/bin/bash
+printf '%s\n' "$*" >> "$CURL_LOG"
+if [ "${CURL_FAIL:-}" = 1 ]; then
+  printf 'curl: (7) Failed to connect\n' >&2
+  exit 7
+fi
+out=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --output) out=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '%s' '{"code":"unauthorized","message":"A valid credential is required."}' > "$out"
+printf '%s' "${CURL_CODE:-401}"
+"#,
+    );
+    let script = repo().join("deploy/github/check-door-ssh.sh");
+    let run = |code: &str, fail: bool, log_name: &str| {
+        let log = root.join(log_name);
+        let mut command = Command::new("bash");
+        command.arg(&script);
+        command.env("PATH", prepend_path(&root.join("bin")));
+        command.env(
+            "KILN_DOOR_SSH_URL",
+            "https://cli.dark-forge.dev:8444/v1/boxes/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ssh",
+        );
+        command.env("KILN_DOOR_RESOLVE", "cli.dark-forge.dev:8444:127.0.0.1");
+        command.env("KILN_DOOR_CA", root.join("ca.crt"));
+        command.env("CURL_LOG", &log);
+        command.env("CURL_CODE", code);
+        if fail {
+            command.env("CURL_FAIL", "1");
+        }
+        let captured = capture(&mut command);
+        let logged = fs::read_to_string(&log).unwrap_or_default();
+        (captured, logged)
+    };
+    let (ok, logged) = run("401", false, "ok.log");
+    assert!(ok.status.success(), "{}{}", ok.stderr, ok.stdout);
+    assert!(ok.stdout.contains("door ssh unauthenticated: 401"));
+    assert!(logged.contains("/v1/boxes/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ssh"));
+    assert!(logged.contains("Upgrade: kiln-ssh"));
+    assert!(!logged.contains("Authorization"));
+    assert!(!logged.contains("Bearer"));
+    let (rejected, _) = run("200", false, "open.log");
+    assert!(!rejected.status.success(), "{}", rejected.stdout);
+    assert!(rejected.stderr.contains("returned 200"));
+    let (down, _) = run("401", true, "down.log");
+    assert!(!down.status.success(), "{}", down.stdout);
+    assert!(down.stderr.contains("not reachable"), "{}", down.stderr);
+    let _ = fs::remove_dir_all(&root);
+}
+
 fn test_smoke_deletes_the_box_when_exec_or_output_fails() {
     let remote = read_repo("deploy/github/install-remote.sh");
     let deploy = read_repo("deploy/github/deploy.sh");
@@ -1188,4 +1259,5 @@ register_cases! {
     test_sqlite3_install_is_exact_and_skipped_when_present,
     test_deploy_installs_dashboard_and_checks_the_live_bundle,
     test_smoke_deletes_the_box_when_exec_or_output_fails,
+    test_door_ssh_probe_rejects_an_unauthenticated_request,
 }
