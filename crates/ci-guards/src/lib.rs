@@ -1937,3 +1937,41 @@ fn one_line(text: &str) -> String {
         flat
     }
 }
+
+/// Required CI jobs must call the same scripts/scripts/check.sh uses locally.
+pub fn local_check_violations(workflow: &str, check_sh: &str) -> Vec<String> {
+    const WORKFLOW_SCRIPTS: &[&str] = &[
+        "bash scripts/ci/run-docs-check.sh",
+        "bash scripts/ci/run-server-check.sh",
+        "bash scripts/ci/ensure-socket-tools.sh",
+        "bash scripts/ci/run-feature-map-guard.sh",
+        "bash scripts/ci/run-client-tests.sh",
+        "bash scripts/ci/run-dashboard-tests.sh",
+        "sh scripts/tag-path-dry-run.sh",
+    ];
+    const CHECK_SCRIPTS: &[&str] = &[
+        "scripts/fmt.sh --check",
+        "scripts/ci/run-docs-check.sh",
+        "scripts/ci/run-server-check.sh",
+        "scripts/ci/ensure-socket-tools.sh",
+        "scripts/ci/run-dashboard-check.sh",
+        "scripts/ci/run-client-check.sh",
+        "scripts/ci/run-feature-map-guard.sh",
+        "scripts/tag-path-dry-run.sh",
+    ];
+    let mut violations = Vec::new();
+    for needle in WORKFLOW_SCRIPTS {
+        if !workflow.contains(needle) {
+            violations.push(format!("build.yml missing {needle}"));
+        }
+    }
+    for needle in CHECK_SCRIPTS {
+        if !check_sh.contains(needle) {
+            violations.push(format!("check.sh missing {needle}"));
+        }
+    }
+    if !check_sh.contains("--release") {
+        violations.push("check.sh missing --release flag".to_string());
+    }
+    violations
+}

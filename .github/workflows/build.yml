@@ -86,35 +86,7 @@ jobs:
       - name: Repository checks
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          cargo xtask test-ci-docs-only
-          cargo xtask test-release-version
-          cargo xtask test-release
-          cargo xtask test-install
-          cargo xtask test-bootstrap
-          cargo xtask test-close-public-door
-          cargo xtask test-caddy-door
-          cargo xtask test-deploy-workflow
-          cargo xtask test-reuse-release
-          cargo xtask test-merge-queue-tested
-          cargo xtask test-repo-guard
-          bash scripts/test-listener-restart.sh
-          bash scripts/test-identity-upgrade.sh
-          sh scripts/test-caddy-endings.sh
-          sh scripts/test-bootstrap-pins.sh
-          sh scripts/test-installer-release.sh
-          sh scripts/test-wait-main-run.sh
-          sh scripts/test-tag-path-dry-run.sh
-          sh scripts/test-check-dashboard-bundle.sh
-          cargo test -p kiln-server --test dashboard_self_check --locked
-          sh scripts/test-releasable.sh
-          sh scripts/test-next-release-tag.sh
-          sh scripts/test-plan-release.sh
-          sh scripts/test-check-stamped-clients.sh
-          sh scripts/test-release-budget.sh
-          sh scripts/test-check-dropped-platform.sh
-          sh scripts/test-feature-map-guard.sh
-          sh scripts/test-fmt.sh
+        run: bash scripts/ci/run-docs-check.sh
 
   feature-map-guard:
     if: github.event_name == 'pull_request'
@@ -129,9 +101,7 @@ jobs:
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: |
-          git diff --name-only --no-renames "$PR_BASE_SHA" HEAD \
-            | sh scripts/check-feature-map.sh
+        run: bash scripts/ci/run-feature-map-guard.sh
 
   # A verified tag reuse already ran this job on main for the same commit.
   # A fallback, a main push, and a heavy pull request still run it.
@@ -183,75 +153,12 @@ jobs:
         run: bash scripts/install-caddy.sh
       - name: Socket activation tools
         if: steps.queue.outputs.skip_tests != 'true'
-        run: |
-          missing=
-          command -v systemd-socket-activate >/dev/null || missing=1
-          command -v ss >/dev/null || missing=1
-          if [ ! -x /lib/systemd/systemd-socket-proxyd ] && [ ! -x /usr/lib/systemd/systemd-socket-proxyd ]; then
-            missing=1
-          fi
-          if [ -n "$missing" ]; then
-            sudo apt-get update
-            sudo apt-get install --no-install-recommends -y systemd iproute2
-          fi
+        run: bash scripts/ci/ensure-socket-tools.sh
       - name: Test and lint
         if: steps.queue.outputs.skip_tests != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-          cargo test --workspace --all-features --locked --exclude xtask
-          cargo xtask test-release-version
-          cargo xtask test-release
-          cargo xtask test-install
-          cargo xtask test-bootstrap
-          cargo xtask test-close-public-door
-          cargo xtask test-caddy-door
-          cargo xtask test-deploy-workflow
-          cargo xtask test-ci-docs-only
-          cargo xtask test-reuse-release
-          cargo xtask test-merge-queue-tested
-          cargo xtask test-repo-guard
-          bash scripts/test-listener-restart.sh
-          bash scripts/test-identity-upgrade.sh
-          sh scripts/test-caddy-endings.sh
-          sh scripts/test-bootstrap-pins.sh
-          sh scripts/test-installer-release.sh
-          sh scripts/test-wait-main-run.sh
-          sh scripts/test-tag-path-dry-run.sh
-          sh scripts/test-check-dashboard-bundle.sh
-          cargo test -p kiln-server --test dashboard_self_check --locked
-          sh scripts/test-releasable.sh
-          sh scripts/test-next-release-tag.sh
-          sh scripts/test-plan-release.sh
-          sh scripts/test-check-stamped-clients.sh
-          sh scripts/test-release-budget.sh
-          sh scripts/test-check-dropped-platform.sh
-          sh scripts/test-feature-map-guard.sh
-          sh scripts/test-fmt.sh
-          shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-bootstrap-pins.sh scripts/test-bootstrap-pins.sh scripts/test-caddy-endings.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
-            deploy/enroll-dark-forge.sh \
-            deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
-            deploy/github/require-release.sh \
-            deploy/github/install-remote.sh deploy/github/install-identity.sh deploy/github/smoke.sh \
-            deploy/github/check-dashboard-bundle.sh \
-            scripts/test-check-dashboard-bundle.sh \
-            deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
-            scripts/test-listener-restart.sh \
-            scripts/test-identity-upgrade.sh \
-            scripts/test-installer-release.sh \
-            scripts/stamp-release-version.sh scripts/stamp-release-dist.sh scripts/reuse-server-check.sh \
-            scripts/wait-main-run.sh scripts/test-wait-main-run.sh \
-            scripts/tag-path-dry-run.sh scripts/test-tag-path-dry-run.sh \
-            scripts/releasable.sh scripts/test-releasable.sh \
-            scripts/next-release-tag.sh scripts/test-next-release-tag.sh \
-            scripts/plan-release.sh scripts/test-plan-release.sh \
-            scripts/check-stamped-clients.sh scripts/test-check-stamped-clients.sh \
-            scripts/check-dropped-platform.sh scripts/test-check-dropped-platform.sh \
-            scripts/test-release-budget.sh \
-            scripts/check-feature-map.sh scripts/test-feature-map-guard.sh \
-            scripts/fmt.sh scripts/test-fmt.sh
+        run: bash scripts/ci/run-server-check.sh
 
   # A manual dry run fetches main's packages. A push builds in this run.
   reuse:
@@ -425,14 +332,12 @@ jobs:
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         with:
           cache-workspace-crates: 'true'
-      - name: Native client TLS and CLI tests
-        if: steps.queue.outputs.skip_tests != 'true'
-        run: cargo test --locked -p kiln-api -p kiln-client --target ${{ matrix.target }}
-      - name: Native shell bootstrap tests
+      - name: Native client tests
         if: steps.queue.outputs.skip_tests != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: cargo xtask test-bootstrap
+          KILN_CI_CLIENT_TARGET: ${{ matrix.target }}
+        run: bash scripts/ci/run-client-tests.sh
       - name: Production binary
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: |
@@ -512,28 +417,21 @@ jobs:
           cache: ${{ !startsWith(github.ref, 'refs/tags/v') && 'npm' || '' }}
           cache-dependency-path: web/package-lock.json
       - name: Install dashboard dependencies
+        if: steps.queue.outputs.skip_tests == 'true'
         working-directory: web
         run: npm ci
-      - name: Test dashboard
-        if: steps.queue.outputs.skip_tests != 'true'
-        working-directory: web
-        run: |
-          npm test
-          npx prettier --check .
-      - name: Build dashboard
-        working-directory: web
-        run: npm run build
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         if: steps.queue.outputs.skip_tests != 'true' && !startsWith(github.ref, 'refs/tags/v')
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('web/package-lock.json') }}
-      - name: Browser tests
+      - name: Dashboard checks
         if: steps.queue.outputs.skip_tests != 'true'
+        run: bash scripts/ci/run-dashboard-tests.sh
+      - name: Build dashboard
+        if: steps.queue.outputs.skip_tests == 'true'
         working-directory: web
-        run: |
-          npx playwright install --with-deps chromium
-          npm run test:browser
+        run: npm run build
       - name: Package static dashboard
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: |

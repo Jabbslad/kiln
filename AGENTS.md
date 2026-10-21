@@ -1,6 +1,6 @@
 # Delivery preference
 
-Run `bash scripts/fmt.sh` before every push.
+Run `bash scripts/fmt.sh` before every push. Run `bash scripts/check.sh` before every push.
 
 After each completed iteration, verify the changes, commit, push, and publish a
 release through the existing GitHub release workflow. This is the

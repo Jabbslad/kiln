@@ -346,7 +346,9 @@ fn test_queue_runs_checks_and_only_push_or_dispatch_packages() {
     assert!(text.contains("github.event_name != 'merge_group'"));
     assert_eq!(text.matches("id: queue").count(), 3);
     assert_eq!(text.matches("cargo xtask merge-queue-tested").count(), 3);
-    assert!(text.contains("cargo xtask test-merge-queue-tested"));
+    assert!(text.contains("bash scripts/ci/run-docs-check.sh"));
+    let docs_check = fs::read_to_string(repo_root().join("scripts/ci/run-docs-check.sh")).unwrap();
+    assert!(docs_check.contains("cargo xtask test-merge-queue-tested"));
     for name in ["deploy.yml", "diagnose.yml"] {
         let other = fs::read_to_string(repo_root().join(".github/workflows").join(name)).unwrap();
         assert!(!other.contains("merge_group"), "{name}");

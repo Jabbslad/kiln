@@ -429,6 +429,15 @@ jobs:
 }
 
 #[test]
+fn local_check_scripts_stay_wired() {
+    let root = repo_root();
+    let workflow = read(&root.join(".github/workflows/build.yml"));
+    let check_sh = read(&root.join("scripts/check.sh"));
+    let violations = ci_guards::local_check_violations(&workflow, &check_sh);
+    assert!(violations.is_empty(), "{violations:?}");
+}
+
+#[test]
 fn downstream_of_a_reuse_skipped_job_guards_its_if() {
     let planted =
         ci_guards::reuse_skip_downstream_violations(&fixture("reuse-skip-downstream.yml"));
