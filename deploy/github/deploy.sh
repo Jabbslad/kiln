@@ -66,6 +66,7 @@ fi
 
 asset="kiln-server-${tag}-x86_64-unknown-linux-gnu.tar.gz"
 identity="kiln-identity-${tag}-x86_64-unknown-linux-gnu.tar.gz"
+dashboard="kiln-dashboard-${tag}.tar.gz"
 base="https://github.com/Jabbslad/kiln/releases/download/${tag}"
 work=$(mktemp -d)
 remote=
@@ -104,7 +105,11 @@ put() {
 if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
   dist=${KILN_DEPLOY_DIST:-}
   [ -n "$dist" ] || fail 'dry run needs KILN_DEPLOY_DIST'
-  for name in "$asset" "${asset}.sha256" "$identity" "${identity}.sha256"; do
+  for name in \
+    "$asset" "${asset}.sha256" \
+    "$identity" "${identity}.sha256" \
+    "$dashboard" "${dashboard}.sha256"
+  do
     [ -f "$dist/$name" ] || fail "missing deploy input ${name}"
     cp -- "$dist/$name" "$work/$name"
   done
@@ -114,12 +119,17 @@ else
   server_pid=$!
   fetch_asset "$identity" &
   identity_pid=$!
+  fetch_asset "$dashboard" &
+  dashboard_pid=$!
   server_rc=0
   identity_rc=0
+  dashboard_rc=0
   wait "$server_pid" || server_rc=$?
   wait "$identity_pid" || identity_rc=$?
+  wait "$dashboard_pid" || dashboard_rc=$?
   [ "$server_rc" -eq 0 ] || fail 'server download failed'
   [ "$identity_rc" -eq 0 ] || fail 'identity download failed'
+  [ "$dashboard_rc" -eq 0 ] || fail 'dashboard download failed'
   remote=$(bash "$ssh_sh" ssh -- mktemp -d /tmp/kiln-deploy.XXXXXX)
 fi
 case "$remote" in
@@ -138,7 +148,10 @@ wait "$identity_pid" || identity_rc=$?
 [ "$identity_rc" -eq 0 ] || fail 'identity upload failed'
 put "$work/${asset}.sha256" "$remote/${asset}.sha256"
 put "$work/${identity}.sha256" "$remote/${identity}.sha256"
+put "$work/$dashboard" "$remote/$dashboard"
+put "$work/${dashboard}.sha256" "$remote/${dashboard}.sha256"
 put "$script_dir/install-identity.sh" "$remote/install-identity.sh"
+put "$script_dir/check-dashboard-bundle.sh" "$remote/check-dashboard-bundle.sh"
 if [ "$tag" = "v0.4.4" ]; then
   put "$repo_root/deploy/install.sh" "$remote/installer.sh"
 fi
@@ -147,6 +160,11 @@ put "$script_dir/smoke.sh" "$remote/smoke.sh"
 if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
   KILN_IDENTITY_CHECK_ONLY=1 bash "$remote/install-identity.sh" "$remote"
   KILN_INSTALL_CHECK_ONLY=1 bash "$remote/install-remote.sh" "$remote"
+  stage=$(mktemp -d)
+  tar -xzf "$work/$dashboard" -C "$stage"
+  KILN_DASHBOARD_LIVE_HTML="$stage/index.html" \
+    bash "$remote/check-dashboard-bundle.sh" "$work/$dashboard"
+  rm -rf -- "$stage"
   printf 'deploy inputs %s\n' "$tag"
   exit 0
 fi

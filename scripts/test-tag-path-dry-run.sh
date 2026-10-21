@@ -96,6 +96,13 @@ printf 'install\n' >"$work/deploy/install.sh"
 mkdir -p "$work/deploy-dist"
 tar -C "$work/deploy" -czf "$work/deploy-dist/kiln-identity-v0.4.18-x86_64-unknown-linux-gnu.tar.gz" release.json bin/kiln-identity
 tar -C "$work/deploy" -czf "$work/deploy-dist/kiln-server-v0.4.18-x86_64-unknown-linux-gnu.tar.gz" install.sh
+mkdir -p "$work/dashboard/assets"
+printf '<script type="module" crossorigin src="/assets/index-dryrun.js"></script>\n' \
+  >"$work/dashboard/index.html"
+printf 'js\n' >"$work/dashboard/assets/index-dryrun.js"
+tar -C "$work/dashboard" -czf "$work/deploy-dist/kiln-dashboard-v0.4.18.tar.gz" \
+  index.html assets/index-dryrun.js
+
 for archive in "$work/deploy-dist"/*.tar.gz; do
   base=$(basename "$archive")
   digest=$(sha256sum "$archive" | awk 'NR == 1 { print $1 }')
@@ -119,4 +126,8 @@ grep -q 'identity inputs 0.4.18' "$work/deploy-out" || fail 'identity inputs wer
 grep -q 'server inputs kiln-server-v0.4.18-x86_64-unknown-linux-gnu.tar.gz' "$work/deploy-out" \
   || fail 'server inputs were not checked'
 grep -q 'deploy inputs v0.4.18' "$work/deploy-out" || fail 'deploy inputs were not reported'
+grep -q 'dashboard inputs kiln-dashboard-v0.4.18.tar.gz' "$work/deploy-out" \
+  || fail 'dashboard inputs were not checked'
+grep -q 'dashboard live index-dryrun.js' "$work/deploy-out" \
+  || fail 'dashboard bundle check did not run'
 [ ! -s "$work/ssh.log" ] || fail 'dry-run called ssh or curl'

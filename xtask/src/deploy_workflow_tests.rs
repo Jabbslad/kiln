@@ -509,6 +509,16 @@ fn test_sqlite3_install_is_exact_and_skipped_when_present() {
     assert!(!failed_out.contains("installer-ran"), "{failed_out}");
 }
 
+fn test_deploy_installs_dashboard_and_checks_the_live_bundle() {
+    let deploy = read_repo("deploy/github/deploy.sh");
+    let remote = read_repo("deploy/github/install-remote.sh");
+    assert!(deploy.contains("kiln-dashboard-"));
+    assert!(deploy.contains("check-dashboard-bundle.sh"));
+    assert!(remote.contains("--dashboard-archive"));
+    assert!(remote.contains("check-dashboard-bundle.sh"));
+    assert!(remote.contains("dashboard inputs"));
+}
+
 fn test_smoke_deletes_the_box_when_exec_or_output_fails() {
     let remote = read_repo("deploy/github/install-remote.sh");
     let deploy = read_repo("deploy/github/deploy.sh");
@@ -674,6 +684,33 @@ fn run_guard(mode: &str, env: &[(&str, &str)]) -> Captured {
     capture(&mut command)
 }
 
+fn write_min_dashboard(remote: &Path, tag: &str) {
+    let name = format!("kiln-dashboard-{tag}.tar.gz");
+    let blob = tar_bytes(&[
+        (
+            "index.html",
+            r#"<script type="module" crossorigin src="/assets/index-remote.js"></script>"#,
+        ),
+        ("assets/index-remote.js", "console.log('ok');\n"),
+    ]);
+    write_release_asset(remote, &name, &blob, false);
+}
+
+fn write_release_asset(dir: &Path, name: &str, blob: &[u8], bad_checksum: bool) {
+    let path = dir.join(name);
+    fs::write(&path, blob).unwrap();
+    let digest = if bad_checksum {
+        "0".repeat(64)
+    } else {
+        sha256_hex(blob)
+    };
+    fs::write(
+        dir.join(format!("{name}.sha256")),
+        format!("{digest}  {name}\n"),
+    )
+    .unwrap();
+}
+
 fn run_deploy(
     tag: &str,
     releases: &str,
@@ -683,28 +720,35 @@ fn run_deploy(
     let tmp = tempfile::tempdir().unwrap_or_else(|error| panic!("tempdir: {error}"));
     let log = tmp.path().join("curl.log");
     let ssh_log = tmp.path().join("ssh.log");
-    let archive_path = tmp.path().join("release.tar.gz");
-    let asset_name = format!("kiln-server-{tag}-x86_64-unknown-linux-gnu.tar.gz");
-    let mut checksum_text = String::new();
+    let assets = tmp.path().join("assets");
     if let Some(installer) = archive_installer {
-        let blob = tar_bytes(&[("install.sh", installer)]);
-        fs::write(&archive_path, &blob).unwrap();
-        let digest = if bad_checksum {
-            "0".repeat(64)
-        } else {
-            sha256_hex(&blob)
-        };
-        checksum_text = format!("{digest}  {asset_name}\n");
+        fs::create_dir_all(&assets).unwrap();
+        let server_name = format!("kiln-server-{tag}-x86_64-unknown-linux-gnu.tar.gz");
+        let server_blob = tar_bytes(&[("install.sh", installer)]);
+        write_release_asset(&assets, &server_name, &server_blob, bad_checksum);
+        let identity_name = format!("kiln-identity-{tag}-x86_64-unknown-linux-gnu.tar.gz");
+        let ver = tag.strip_prefix('v').unwrap_or(tag);
+        let identity_json = format!(r#"{{"target":"x86_64-unknown-linux-gnu","version":"{ver}"}}"#);
+        let identity_script = format!("#!/bin/sh\nprintf 'kiln-identity {ver}\n'\n");
+        let identity_blob = tar_bytes(&[
+            ("release.json", &identity_json),
+            ("bin/kiln-identity", &identity_script),
+        ]);
+        write_release_asset(&assets, &identity_name, &identity_blob, bad_checksum);
+        let dashboard_name = format!("kiln-dashboard-{tag}.tar.gz");
+        let dashboard_blob = tar_bytes(&[
+            (
+                "index.html",
+                r#"<script type="module" crossorigin src="/assets/index-deploytest.js"></script>"#,
+            ),
+            ("assets/index-deploytest.js", "console.log('ok');\n"),
+        ]);
+        write_release_asset(&assets, &dashboard_name, &dashboard_blob, bad_checksum);
         write_executable(&tmp.path().join("ssh.sh"), &ssh_stub(&ssh_log));
     }
-    let archive_for_stub = if archive_installer.is_some() {
-        archive_path.display().to_string()
-    } else {
-        String::new()
-    };
     write_executable(
         &tmp.path().join("curl"),
-        &curl_stub(&log, releases, &archive_for_stub, &checksum_text),
+        &curl_stub(&log, releases, archive_installer.map(|_| assets.as_path())),
     );
     let mut command = Command::new("bash");
     command.arg("deploy/github/deploy.sh");
@@ -726,12 +770,14 @@ fn run_deploy(
     }
 }
 
-fn curl_stub(log: &Path, releases: &str, archive: &str, checksum: &str) -> String {
+fn curl_stub(log: &Path, releases: &str, assets_dir: Option<&Path>) -> String {
+    let assets = assets_dir
+        .map(|path| sh_quote(&path.display().to_string()))
+        .unwrap_or_else(|| "''".to_string());
     format!(
         r#"#!/bin/bash
 log={log}
-archive={archive}
-checksum={checksum}
+assets={assets}
 releases={releases}
 printf '%s\n' "$*" >> "$log"
 out=
@@ -755,27 +801,17 @@ case "$url" in
     esac
     ;;
 esac
-if [ -n "$archive" ] && [ -n "$out" ]; then
-  case "$url" in
-    *.tar.gz)
-      cp -- "$archive" "$out"
-      exit 0
-      ;;
-  esac
-fi
-if [ -n "$checksum" ] && [ -n "$out" ]; then
-  case "$url" in
-    *.sha256)
-      printf '%s' "$checksum" > "$out"
-      exit 0
-      ;;
-  esac
+if [ -n "$assets" ] && [ -n "$out" ]; then
+  base=$(basename "$url")
+  if [ -f "$assets/$base" ]; then
+    cp -- "$assets/$base" "$out"
+    exit 0
+  fi
 fi
 exit 1
 "#,
         log = sh_quote(&log.display().to_string()),
-        archive = sh_quote(archive),
-        checksum = sh_quote(checksum),
+        assets = assets,
         releases = sh_quote(releases),
     )
 }
@@ -830,6 +866,7 @@ fn run_remote(archive_body: &str, overlay: Option<&str>, bad_checksum: bool) -> 
     if let Some(text) = overlay {
         fs::write(remote.join("installer.sh"), text).unwrap();
     }
+    write_min_dashboard(&remote, "v0.4.4");
     write_executable(&fake.path().join("apt-get"), "#!/bin/bash\nexit 0\n");
     let path = prepend_path(fake.path());
     let mut command = Command::new("bash");
@@ -853,6 +890,7 @@ fn apt_lines(hide_sqlite3: bool, existing: bool, apt_fail: &str) -> (Vec<String>
         format!("{digest}  {name}\n"),
     )
     .unwrap();
+    write_min_dashboard(&remote, "v0.4.4");
     let log = fake.path().join("apt.log");
     let apt_body = r#"#!/bin/bash
 umask 022
@@ -1148,5 +1186,6 @@ register_cases! {
     test_v044_uses_this_tree_and_later_tags_use_the_archive,
     test_apt_installs_missing_packages_without_upgrading,
     test_sqlite3_install_is_exact_and_skipped_when_present,
+    test_deploy_installs_dashboard_and_checks_the_live_bundle,
     test_smoke_deletes_the_box_when_exec_or_output_fails,
 }

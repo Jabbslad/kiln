@@ -105,6 +105,7 @@ jobs:
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
           sh scripts/test-tag-path-dry-run.sh
+          sh scripts/test-check-dashboard-bundle.sh
           sh scripts/test-releasable.sh
           sh scripts/test-next-release-tag.sh
           sh scripts/test-plan-release.sh
@@ -198,6 +199,7 @@ jobs:
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
           sh scripts/test-tag-path-dry-run.sh
+          sh scripts/test-check-dashboard-bundle.sh
           sh scripts/test-releasable.sh
           sh scripts/test-next-release-tag.sh
           sh scripts/test-plan-release.sh
@@ -208,6 +210,8 @@ jobs:
             deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
             deploy/github/require-release.sh \
             deploy/github/install-remote.sh deploy/github/install-identity.sh deploy/github/smoke.sh \
+            deploy/github/check-dashboard-bundle.sh \
+            scripts/test-check-dashboard-bundle.sh \
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
             scripts/test-listener-restart.sh \
             scripts/test-identity-upgrade.sh \

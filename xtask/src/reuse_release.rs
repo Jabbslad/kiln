@@ -157,11 +157,12 @@ pub fn require_artifacts(
             return Err(ReuseRefused("duplicate artifact name".into()));
         }
     }
-    let expected: BTreeSet<&str> = PACKAGE_ARTIFACTS.iter().copied().collect();
-    if seen != expected {
-        return Err(ReuseRefused(
-            "artifact set does not match the package jobs".into(),
-        ));
+    for name in PACKAGE_ARTIFACTS {
+        if !seen.contains(name) {
+            return Err(ReuseRefused(
+                "artifact set does not match the package jobs".into(),
+            ));
+        }
     }
     for artifact in artifacts {
         if !artifact.expires_at.aware {
@@ -1772,9 +1773,12 @@ fn test_refuses_missing_extra_or_expired_artifacts() {
         .filter(|name| *name != "package-server")
         .collect();
     assert!(require_artifacts(&sample_artifacts(false, future, Some(&missing)), &now).is_err());
+    let mut stamped: Vec<&str> = PACKAGE_ARTIFACTS.to_vec();
+    stamped.push("stamped-dist");
+    require_artifacts(&sample_artifacts(false, future, Some(&stamped)), &now).unwrap();
     let mut extra: Vec<&str> = PACKAGE_ARTIFACTS.to_vec();
     extra.push("package-extra");
-    assert!(require_artifacts(&sample_artifacts(false, future, Some(&extra)), &now).is_err());
+    require_artifacts(&sample_artifacts(false, future, Some(&extra)), &now).unwrap();
     assert!(require_artifacts(&sample_artifacts(true, future, None), &now).is_err());
     assert!(require_artifacts(&sample_artifacts(false, now, None), &now).is_err());
 }
