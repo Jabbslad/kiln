@@ -110,11 +110,11 @@ cargo test -p kiln-server --test app_listener --locked -- --nocapture \
   a_signed_in_operate_session_reaches_the_host
 ```
 
-Deploy verifies host metrics with `deploy/github/check-dashboard-metrics.sh`, which uses `jq` on `.host.metrics.cpu_percent` and `.host.metrics.memory_bytes` (loopback `kiln-api` re-serializes dashboard JSON with sorted keys, so `boxes` can precede `host` and the first document-level `cpu_percent` may belong to a box).
+Deploy and smoke validate live host metrics with `kiln-api self-check`, which deserializes the same `dashboard::Document` the server publishes and checks only `host.metrics.cpu_percent` and `host.metrics.memory_bytes` (running-box CPU may be null on the first read after restart). No shell JSON parsing on the host.
 
 ```sh
+cargo test -p kiln-server --test dashboard_self_check --locked
 sh scripts/test-check-dashboard-bundle.sh
-sh scripts/test-check-dashboard-metrics.sh
 ```
 
 ## Driving it with Playwright

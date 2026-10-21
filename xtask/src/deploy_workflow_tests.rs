@@ -516,9 +516,9 @@ fn test_deploy_installs_dashboard_and_checks_the_live_bundle() {
     assert!(deploy.contains("check-dashboard-bundle.sh"));
     assert!(remote.contains("--dashboard-archive"));
     assert!(remote.contains("check-dashboard-bundle.sh"));
-    assert!(remote.contains("check-dashboard-metrics.sh"));
+    assert!(remote.contains("kiln-api self-check"));
     assert!(remote.contains("dashboard inputs"));
-    let metrics_at = index_of(&remote, "check-dashboard-metrics.sh");
+    let metrics_at = index_of(&remote, "kiln-api self-check");
     let smoke_at = index_of(&remote, "bash \"$dir/smoke.sh\"");
     assert!(
         metrics_at < smoke_at,
@@ -528,6 +528,10 @@ fn test_deploy_installs_dashboard_and_checks_the_live_bundle() {
         remote.contains("[ \"$metrics_rc\" -eq 0 ]")
             && index_of(&remote, "[ \"$metrics_rc\" -eq 0 ]") < smoke_at,
         "smoke must wait for host metrics"
+    );
+    assert!(
+        !deploy.contains("check-dashboard-metrics.sh"),
+        "deploy must not ship shell JSON metrics scripts"
     );
 }
 
@@ -1024,26 +1028,24 @@ fn run_smoke(extra: &[(&str, &str)]) -> SmokeRun {
     fs::write(&token, "a".repeat(64)).unwrap();
     let ca = tmp.path().join("ca.crt");
     fs::write(&ca, "fixture-ca\n").unwrap();
-    let curl = tmp.path().join("curl");
+    let kiln_api = tmp.path().join("kiln-api");
     write_executable(
-        &curl,
+        &kiln_api,
         r#"#!/bin/sh
-printf '%s' '{"host":{"metrics":{"cpu_percent":1,"memory_bytes":1000}},"boxes":[{"state":"running","metrics":{"cpu_percent":2,"memory_bytes":200}}]}'
+case "$*" in
+  *self-check*) exit 0 ;;
+  *) exit 1 ;;
+esac
 "#,
-    );
-    let path = format!(
-        "{}:{}",
-        tmp.path().display(),
-        std::env::var("PATH").unwrap_or_default()
     );
     let mut command = Command::new("bash");
     command.arg(repo().join("deploy/github/smoke.sh"));
     command.arg("127.0.0.1");
     command.current_dir(repo());
     command.env("KILN_BIN", &kiln);
+    command.env("KILN_API_BIN", &kiln_api);
     command.env("KILN_ADMIN_TOKEN_FILE", &token);
     command.env("KILN_CA_FILE", &ca);
-    command.env("PATH", path);
     for (key, value) in extra {
         command.env(key, value);
     }
