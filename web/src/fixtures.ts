@@ -3,16 +3,23 @@ import type { Dashboard } from './data'
 // Explicit design fixtures. These are never a fallback for a failed live request,
 // never written to localStorage, and never mutated by UI lifecycle actions.
 const GiB = 1024 ** 3
-const unknownMetrics = { cpu_percent: null, memory_bytes: null, disk_bytes: null }
+const unknownMetrics = {
+  cpu_percent: null,
+  memory_bytes: null,
+  disk_bytes: null,
+  disk_total_bytes: null,
+}
 const hostMetrics = {
   cpu_percent: 18.4,
   memory_bytes: 6 * GiB + 512 * 1024 ** 2,
-  disk_bytes: null,
+  disk_bytes: 120 * GiB,
+  disk_total_bytes: 500 * GiB,
 }
 const activeBoxMetrics = {
   cpu_percent: 42.6,
   memory_bytes: 1 * GiB + 256 * 1024 ** 2,
-  disk_bytes: null,
+  disk_bytes: Math.round(0.8 * 20 * GiB),
+  disk_total_bytes: null,
 }
 export const previewDashboard: Dashboard = {
   schema_version: 1,
@@ -39,7 +46,12 @@ export const previewDashboard: Dashboard = {
       state: 'paused',
       image: 'Ubuntu 24.04',
       resources: { vcpus: 2, memory_bytes: 2 * GiB, disk_bytes: 12 * GiB },
-      metrics: { cpu_percent: 0.2, memory_bytes: 900 * 1024 ** 2, disk_bytes: null },
+      metrics: {
+        cpu_percent: 0.2,
+        memory_bytes: 900 * 1024 ** 2,
+        disk_bytes: 400 * 1024 ** 3,
+        disk_total_bytes: null,
+      },
       created_at: '2026-09-30T12:40:00Z',
       last_operation: 'Paused by administrator',
       last_error: null,
@@ -52,7 +64,12 @@ export const previewDashboard: Dashboard = {
       state: 'stopped',
       image: 'Ubuntu 24.04',
       resources: { vcpus: 1, memory_bytes: 2 * GiB, disk_bytes: 10 * GiB },
-      metrics: unknownMetrics,
+      metrics: {
+        cpu_percent: null,
+        memory_bytes: null,
+        disk_bytes: Math.round(0.3 * 10 * GiB),
+        disk_total_bytes: null,
+      },
       created_at: '2026-09-29T08:20:00Z',
       last_operation: 'Stopped by administrator',
       last_error: null,

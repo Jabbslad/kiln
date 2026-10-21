@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ArrowDown, ArrowUp, ArrowUpRight, CircleAlert, Cpu, Search, X } from 'lucide-react'
-import { boxStates, filterBoxes, formatBytes, type BoxState } from './data'
+import { boxStates, filterBoxes, formatBytes, formatDiskUsedOfTotal, type BoxState } from './data'
 import {
   AppLink,
   CreateButton,
@@ -188,7 +188,9 @@ export default function Inventory({ data, preview }: PageProps) {
                       </div>
                       <span className="resource-id">
                         {box.resources
-                          ? `${formatBytes(box.resources.disk_bytes)} disk`
+                          ? box.metrics.disk_bytes !== null
+                            ? `${formatDiskUsedOfTotal(box.metrics.disk_bytes, box.resources.disk_bytes)} disk · host-observed`
+                            : `${formatBytes(box.resources.disk_bytes)} disk`
                           : 'Not allocated'}
                       </span>
                     </td>

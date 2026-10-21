@@ -144,7 +144,8 @@ impl Host {
             });
         }
         let journal = Journal::open(&config.journal_dir.join("operations.sqlite"))?;
-        let mut metrics = crate::metrics::Sampler::new(crate::metrics::Paths::live());
+        let mut metrics =
+            crate::metrics::Sampler::new(crate::metrics::Paths::live(config.runtime_dir.clone()));
         metrics.prime();
         Ok(Arc::new(Self {
             runtime,
@@ -248,11 +249,12 @@ impl Host {
             let Some(created_at) = created.get(&id).copied() else {
                 continue;
             };
-            let disk_bytes = box_disk(&self.runtime_dir, &record).and_then(file_len);
+            let disk_path = box_disk(&self.runtime_dir, &record);
+            let disk_bytes = disk_path.clone().and_then(file_len);
             names.insert(id.clone(), record.name.clone());
             let active = matches!(record.state.as_str(), "running" | "paused");
             let cgroup = self.runtime.box_cgroup(&record.run);
-            let metrics = sampler.box_metrics(cgroup.as_deref(), active);
+            let metrics = sampler.box_metrics(cgroup.as_deref(), disk_path.as_deref(), active);
             boxes.push(crate::dashboard::BoxFacts {
                 id,
                 name: record.name,
@@ -660,6 +662,93 @@ mod tests {
         let value = serde_json::to_value(host.dashboard().unwrap()).unwrap();
         assert!(value["host"]["metrics"]["cpu_percent"].as_f64().is_some());
         assert!(value["host"]["metrics"]["memory_bytes"].as_u64().unwrap() > 0);
+        assert!(value["host"]["metrics"]["disk_bytes"].as_u64().unwrap() > 0);
+        assert!(
+            value["host"]["metrics"]["disk_total_bytes"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+    }
+
+    #[test]
+    fn stopped_box_reports_allocated_disk_image() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = root.path().join("runtime");
+        let journal = root.path().join("journal");
+        let config = Config {
+            runtime_dir: runtime.clone(),
+            journal_dir: journal.clone(),
+            socket: root.path().join("host.sock"),
+            isolation_config: None,
+            allow_unsafe_development: true,
+            templates: Default::default(),
+        };
+        drop(Host::open(&config).unwrap());
+        let id: String = "0123456789abcdef0123456789abcdef".into();
+        let run: String = "0123456789abcdef0123456789abcde0".into();
+        let directory = runtime.join("boxes").join(&id).join(&run);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            runtime.join("boxes").join(&id).join("box.json"),
+            serde_json::to_vec(&BoxRecord {
+                schema_version: 1,
+                id: id.clone(),
+                name: "stopped-disk".into(),
+                state: "stopped".into(),
+                run: run.clone(),
+                process: None,
+                image: kiln_runtime::image::Manifest {
+                    schema_version: 1,
+                    architecture: "x86_64".into(),
+                    kernel_path: "/kernel".into(),
+                    kernel_sha256: "ab".repeat(32),
+                    rootfs_path: "/rootfs".into(),
+                    rootfs_sha256: "cd".repeat(32),
+                    agent_protocol_version: 1,
+                    boot_mode: kiln_runtime::image::BootMode::Init,
+                },
+                host: "fixture-host".into(),
+                memory_mib: 256,
+                vcpus: 1,
+                source: None,
+                operation: None,
+                last_error: None,
+                disk_copy: "Copy".into(),
+                disk_layer: None,
+                jail: None,
+                network: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(directory.join("disk.ext4"), b"stopped-box-disk").unwrap();
+        let host = Host::open(&config).unwrap();
+        let db = rusqlite::Connection::open(journal.join("operations.sqlite")).unwrap();
+        db.execute(
+            "INSERT INTO operations(id, fingerprint, box_id, is_create, running, response, created_at)
+             VALUES (?1, ?2, ?3, 1, 0, ?4, ?5)",
+            rusqlite::params![
+                "0123456789abcdef0123456789abcde1",
+                "fixture",
+                id,
+                r#"{"id":"0123456789abcdef0123456789abcde1","box_id":"0123456789abcdef0123456789abcdef","state":"succeeded","result":{"type":"box","id":"0123456789abcdef0123456789abcdef","name":"stopped-disk","state":"stopped","memory_mib":256,"vcpus":1},"error":null}"#,
+                1_700_000_000_i64,
+            ],
+        )
+        .unwrap();
+        let value = serde_json::to_value(host.dashboard().unwrap()).unwrap();
+        let entry = value["boxes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == id)
+            .expect("stopped box");
+        assert_eq!(entry["state"], "stopped");
+        assert!(entry["metrics"]["cpu_percent"].is_null());
+        assert!(entry["metrics"]["memory_bytes"].is_null());
+        assert!(entry["metrics"]["disk_bytes"].as_u64().unwrap() > 0);
     }
 
     #[tokio::test]
