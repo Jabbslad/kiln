@@ -5,6 +5,7 @@ import {
   createCheckpoint,
   dashboardSchema,
   deleteBox,
+  execCommand,
   fetchDashboard,
   formatBytes,
   formatMetric,
@@ -442,5 +443,111 @@ describe('dashboard boundary', () => {
     })
     await expect(deleteBox(boxId, fetcher, '__Host-kiln_csrf=form-csrf')).rejects.toThrow(/unknown/)
     expect(fetcher.mock.calls.some(([url]) => String(url) === '/api/v1/dashboard')).toBe(false)
+  })
+
+  it('posts one exec and returns the exit code, stdout and stderr', async () => {
+    const boxId = 'a'.repeat(32)
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        expect(posted.id).toMatch(/^[a-f0-9]{32}$/)
+        expect(posted.action).toEqual({
+          type: 'exec',
+          id: boxId,
+          request: { argv: ['/bin/printf', 'hello'], timeout_ms: 1000, cwd: '/tmp' },
+        })
+        expect(init.headers).toMatchObject({ 'x-kiln-csrf': 'form-csrf' })
+        expect(init.credentials).toBe('same-origin')
+        return Response.json(
+          {
+            id: posted.id,
+            box_id: boxId,
+            state: 'succeeded',
+            result: {
+              type: 'exec',
+              stdout: [...'hello'].map((char) => char.charCodeAt(0)),
+              stderr: [...'err'].map((char) => char.charCodeAt(0)),
+              exit_code: 7,
+              truncated: true,
+              timed_out: false,
+            },
+            error: null,
+          },
+          { status: 202 },
+        )
+      }
+      return Response.json(previewDashboard)
+    })
+    const output = await execCommand(
+      boxId,
+      ['/bin/printf', 'hello'],
+      1000,
+      '/tmp',
+      fetcher,
+      '__Host-kiln_csrf=form-csrf',
+    )
+    expect(output).toEqual({
+      exitCode: 7,
+      stdout: 'hello',
+      stderr: 'err',
+      truncated: true,
+      timedOut: false,
+    })
+    expect(fetcher.mock.calls.some(([url]) => String(url) === '/api/v1/dashboard')).toBe(false)
+  })
+
+  it('reports an unknown exec and a timeout without inventing output', async () => {
+    const boxId = 'b'.repeat(32)
+    const unknown = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json({
+          id: posted.id,
+          box_id: boxId,
+          state: 'unknown',
+          result: null,
+          error: null,
+        })
+      }
+      return Response.json({ ...previewDashboard, boxes: [] })
+    })
+    await expect(
+      execCommand(boxId, ['/bin/true'], 1000, undefined, unknown, '__Host-kiln_csrf=form-csrf'),
+    ).rejects.toThrow(/unknown/)
+    expect(unknown.mock.calls.some(([url]) => String(url) === '/api/v1/dashboard')).toBe(false)
+
+    const timedOut = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json({
+          id: posted.id,
+          box_id: boxId,
+          state: 'succeeded',
+          result: {
+            type: 'exec',
+            stdout: [],
+            stderr: [],
+            exit_code: null,
+            truncated: true,
+            timed_out: true,
+          },
+          error: null,
+        })
+      }
+      return Response.json(previewDashboard)
+    })
+    const output = await execCommand(
+      boxId,
+      ['/bin/sleep', '30'],
+      20,
+      undefined,
+      timedOut,
+      '__Host-kiln_csrf=form-csrf',
+    )
+    expect(output.timedOut).toBe(true)
+    expect(output.exitCode).toBeNull()
+    expect(output.stdout).toBe('')
+    expect(timedOut.mock.calls.some(([url]) => String(url) === '/api/v1/dashboard')).toBe(false)
   })
 })

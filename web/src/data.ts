@@ -120,7 +120,17 @@ type OperationReceipt = {
   id: string
   box_id: string
   state: string
-  result?: { type?: string; id?: string; box_id?: string; state?: string } | null
+  result?: {
+    type?: string
+    id?: string
+    box_id?: string
+    state?: string
+    stdout?: number[]
+    stderr?: number[]
+    exit_code?: number | null
+    truncated?: boolean
+    timed_out?: boolean
+  } | null
   error?: { message?: string } | null
 }
 
@@ -131,6 +141,7 @@ export type OperationAction =
   | { type: 'stop'; id: string; force: boolean }
   | { type: 'start'; id: string }
   | { type: 'delete'; id: string }
+  | { type: 'exec'; id: string; request: { argv: string[]; timeout_ms: number; cwd?: string } }
   | { type: 'checkpoint'; id: string }
   | {
       type: 'restore'
@@ -311,6 +322,41 @@ export async function applyLifecycle(
     }
   }
   throw new Error('The control plane has not observed the box state.')
+}
+
+export type ExecOutput = {
+  exitCode: number | null
+  stdout: string
+  stderr: string
+  truncated: boolean
+  timedOut: boolean
+}
+
+export async function execCommand(
+  boxId: string,
+  argv: string[],
+  timeoutMs: number,
+  cwd?: string,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+): Promise<ExecOutput> {
+  const request: { argv: string[]; timeout_ms: number; cwd?: string } = {
+    argv,
+    timeout_ms: timeoutMs,
+  }
+  if (cwd) request.cwd = cwd
+  const receipt = await submitOperation({ type: 'exec', id: boxId, request }, fetcher, cookie)
+  confirmed(receipt)
+  const stdout = receipt.result?.stdout
+  const stderr = receipt.result?.stderr
+  if (receipt.result?.type !== 'exec' || !stdout || !stderr) throw new Error('unknown')
+  return {
+    exitCode: receipt.result.exit_code ?? null,
+    stdout: new TextDecoder().decode(Uint8Array.from(stdout)),
+    stderr: new TextDecoder().decode(Uint8Array.from(stderr)),
+    truncated: receipt.result.truncated === true,
+    timedOut: receipt.result.timed_out === true,
+  }
 }
 
 export async function deleteBox(
