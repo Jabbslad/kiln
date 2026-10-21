@@ -19,6 +19,8 @@ kiln login
 
 The terminal prints `Open URL and enter code CODE`. The browser page is `/device` on the issuer. Sign in with GitHub or Google, then approve. With one enrolled server, login saves a profile and exits 0. With none, it exits with `no active servers are available` and tells you to run `kiln-api enroll`.
 
+The issuer `/login` and `/device` pages use the same dark console tokens as `web/` (`#0e0e0e` surface, `#202020` hairline borders, `#78e772` accent, Geist and Geist Mono). Styles live in `crates/kiln-identity/static/auth.css`; fonts are served from `/static/fonts/` on the identity origin (no third-party font hosts). `crates/kiln-identity/tests/auth_theme.rs` checks those tokens in CI.
+
 `kiln-identity` itself listens on loopback HTTP (`crates/kiln-identity/src/main.rs`, default `127.0.0.1:8091`). The CLI client is HTTPS-only and uses the public root store. A loopback process is not a login target.
 
 ## Driving it with tmux
