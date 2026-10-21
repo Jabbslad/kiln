@@ -1,6 +1,6 @@
 # Guest access
 
-`kiln ssh`, `kiln cp`, and `kiln ssh-config` open a guest shell or copy a file. Traffic is HTTPS to the host and vsock inside the guest. There is no public SSH port. The commands need a matching Ubuntu guest with OpenSSH. Linux and macOS ship the client. Windows builds are management-only.
+`kiln ssh`, `kiln cp`, and `kiln ssh-config` open a guest shell or copy a file. Traffic is HTTPS to the host and vsock inside the guest. There is no public SSH port. The commands need a matching Ubuntu guest with OpenSSH. Linux and macOS ship the client.
 
 On `https://cli.dark-forge.dev` the public door proxies `Upgrade: kiln-ssh` to loopback `GET /v1/boxes/<full id>/ssh` for an operate-scope owner JWT and forwards that JWT. It rejects a missing credential, an invalid JWT, another owner, a read-scope token, and the administrator token before dialing. See `features/public-door.md`.
 

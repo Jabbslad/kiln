@@ -1,7 +1,7 @@
 //! A release tag can differ from Cargo.toml. The packaged binary must report the tag.
 //!
 //! The stamp scripts run on the Ubuntu release runner (GNU tar). Client tests
-//! on macOS and Windows do not execute this proof.
+//! on macOS do not execute this proof.
 
 #![cfg(target_os = "linux")]
 
@@ -131,18 +131,6 @@ fn a_tag_that_differs_from_cargo_toml_is_what_the_binary_reports() {
     assert_ok(&packed, "pack client archive");
     write_sidecar(&client);
 
-    let windows_dir = root.join("windows");
-    fs::create_dir_all(&windows_dir).unwrap();
-    fs::copy(&source, windows_dir.join("kiln.exe")).unwrap();
-    let windows = dist.join(format!("kiln-v{cargo}-x86_64-pc-windows-msvc.zip"));
-    let packed = Command::new("zip")
-        .args(["-X", "-q", windows.to_str().unwrap(), "kiln.exe"])
-        .current_dir(&windows_dir)
-        .output()
-        .unwrap();
-    assert_ok(&packed, "pack windows archive");
-    write_sidecar(&windows);
-
     let dist_stamp = repo_root().join("scripts/stamp-release-dist.sh");
     let output = run(
         "sh",
@@ -160,16 +148,13 @@ fn a_tag_that_differs_from_cargo_toml_is_what_the_binary_reports() {
 
     assert!(!server.exists(), "old server archive name remains");
     assert!(!client.exists(), "old client archive name remains");
-    assert!(!windows.exists(), "old windows archive name remains");
     let server = dist.join(format!(
         "kiln-server-v{tag}-x86_64-unknown-linux-gnu.tar.gz"
     ));
     let client = dist.join(format!("kiln-v{tag}-x86_64-unknown-linux-gnu.tar.gz"));
-    let windows = dist.join(format!("kiln-v{tag}-x86_64-pc-windows-msvc.zip"));
     assert!(server.is_file());
     assert!(client.is_file());
-    assert!(windows.is_file());
-    for archive in [&server, &client, &windows] {
+    for archive in [&server, &client] {
         let sidecar = PathBuf::from(format!("{}.sha256", archive.display()));
         let check = Command::new("sha256sum")
             .arg("--check")
@@ -224,25 +209,6 @@ fn a_tag_that_differs_from_cargo_toml_is_what_the_binary_reports() {
     );
     assert_eq!(
         version_of(&client_out.join("kiln")),
-        format!("kiln {tag}\n")
-    );
-
-    let win_out = root.join("win-out");
-    fs::create_dir_all(&win_out).unwrap();
-    assert_ok(
-        &run(
-            "unzip",
-            &[
-                "-q",
-                windows.to_str().unwrap(),
-                "-d",
-                win_out.to_str().unwrap(),
-            ],
-        ),
-        "extract stamped windows archive",
-    );
-    assert_eq!(
-        version_of(&win_out.join("kiln.exe")),
         format!("kiln {tag}\n")
     );
 

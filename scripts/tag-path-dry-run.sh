@@ -67,7 +67,7 @@ sh scripts/stamp-release-dist.sh "$dist" "$from" "$tag"
 sh scripts/check-stamped-clients.sh "$dist" "$tag"
 
 count=0
-for path in "$dist"/*.tar.gz "$dist"/*.zip; do
+for path in "$dist"/*.tar.gz; do
   [ -f "$path" ] || continue
   name=$(basename "$path")
   case $name in

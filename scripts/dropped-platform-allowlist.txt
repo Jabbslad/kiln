@@ -1,0 +1,17 @@
+# Historical notes for past versions.
+docs/releases.md
+docs/superpowers/
+
+# Transitive crate names recorded by the lockfile.
+Cargo.lock
+
+# This check and the test that plants a reference.
+scripts/check-dropped-platform.sh
+scripts/test-check-dropped-platform.sh
+
+# Tests that name the dropped platform so a regression fails.
+scripts/test-check-stamped-clients.sh
+scripts/test-tag-path-dry-run.sh
+xtask/src/merge_queue.rs
+xtask/src/release.rs
+xtask/src/release_version.rs

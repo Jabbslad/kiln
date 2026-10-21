@@ -32,7 +32,7 @@ version from the latest stable release tag, checks the checksum published with
 that archive, and works without a terminal;
 no GitHub CLI, Python or Rust installation is needed on the laptop. See the
 [installation guide](docs/releases.md) for unattended Ubuntu server setup,
-automatic private-address detection, platform requirements and manual/Windows downloads.
+automatic private-address detection, platform requirements and manual downloads.
 To build from source instead, use
 `cargo install --locked --path crates/kiln-client`.
 It manages templates, create/list/inspect, exec, pause/resume, stop/start and delete
