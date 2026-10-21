@@ -41,23 +41,39 @@ fail() {
 
 rewrite_release() {
   file=$1
-  old="\"version\": \"${from}\""
-  new="\"version\": \"${to}\""
   tmp=$(mktemp)
-  if ! awk -v old="$old" -v new="$new" '
-    BEGIN { count = 0 }
+  # Package jobs write serde_json's compact form ("version":"vX.Y.Z").
+  # A single space after the colon is accepted too.
+  if ! awk -v from="$from" -v to="$to" '
+    BEGIN {
+      olds[0] = "\"version\":\"" from "\""
+      news[0] = "\"version\":\"" to "\""
+      olds[1] = "\"version\": \"" from "\""
+      news[1] = "\"version\": \"" to "\""
+      count = 0
+    }
     {
       rest = $0
       line = ""
       while (1) {
-        i = index(rest, old)
-        if (i == 0) {
+        best = 0
+        bi = 0
+        found = 0
+        for (k = 0; k < 2; k++) {
+          i = index(rest, olds[k])
+          if (i > 0 && (found == 0 || i < bi)) {
+            bi = i
+            best = k
+            found = 1
+          }
+        }
+        if (found == 0) {
           line = line rest
           break
         }
         count++
-        line = line substr(rest, 1, i - 1) new
-        rest = substr(rest, i + length(old))
+        line = line substr(rest, 1, bi - 1) news[best]
+        rest = substr(rest, bi + length(olds[best]))
       }
       print line
     }
