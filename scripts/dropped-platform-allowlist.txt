@@ -9,6 +9,9 @@ Cargo.lock
 scripts/check-dropped-platform.sh
 scripts/test-check-dropped-platform.sh
 
+# Verify-kiln feature map may record platform removals in plain language.
+.cursor/skills/verify-kiln/features/
+
 # Tests that name the dropped platform so a regression fails.
 scripts/test-check-stamped-clients.sh
 scripts/test-tag-path-dry-run.sh

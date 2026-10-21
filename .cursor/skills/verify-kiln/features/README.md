@@ -1,10 +1,11 @@
 # Kiln feature map
 
-User-facing surfaces on current `main`. Each file is one journey. KVM means a real Firecracker guest; the dashboard preview and the installer harness do not boot one.
+User-facing surfaces on current `main`. Each file is one journey. KVM means a real Firecracker guest; the dashboard preview and the installer harness do not boot one. The public client ships for Linux and macOS only; Windows builds were dropped (#110).
 
 | Feature | File | What the user does | KVM |
 | --- | --- | --- | --- |
-| Dashboard | [dashboard.md](dashboard.md) | Open the console, preview inventory, confirm mutations stay off, and read `GET /api/v1/dashboard` | No |
+| Dashboard | [dashboard.md](dashboard.md) | Preview inventory or sign in and drive live mutations, exec, and `GET /api/v1/dashboard` | No for preview; live mutations need an enrolled host |
+| Auto-release | [auto-release.md](auto-release.md) | Follow a green main push through release-plan, publish, and dark-forge deploy | No |
 | Boxes | [boxes.md](boxes.md) | Create, list, inspect, pause, resume, stop, start, delete | Yes for a guest |
 | Exec | [exec.md](exec.md) | Run a command in a box and read its stdout and exit code | Yes |
 | Guest access | [guest-access.md](guest-access.md) | `kiln ssh`, `kiln cp`, `kiln ssh-config` | Yes, plus OpenSSH and an Ubuntu guest |

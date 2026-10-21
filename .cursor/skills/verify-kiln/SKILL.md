@@ -1,6 +1,6 @@
 ---
 name: verify-kiln
-description: Drive Kiln (self-hosted Linux microVMs) the way a user does and keep evidence. Covers kiln-runtime, the kiln laptop client, browser login, the installer, and the read-only web dashboard. Use when checking a Kiln change against a real checkout.
+description: Drive Kiln (self-hosted Linux microVMs) the way a user does and keep evidence. Covers kiln-runtime, the kiln laptop client, browser login, the installer, and the web dashboard (preview or live operate session). Use when checking a Kiln change against a real checkout.
 ---
 
 # Verify Kiln
@@ -10,13 +10,13 @@ Kiln has several user surfaces. Pick the one in the feature file and launch only
 Surfaces:
 
 - `kiln-runtime` on a Linux host with KVM. This is the local box, exec, template, and checkpoint tool.
-- `kiln` over HTTPS to `kiln-host` / `kiln-api`. This is the laptop client, including SSH and a private CA.
+- `kiln` over HTTPS to `kiln-host` / `kiln-api`. This is the laptop client and private CA profiles. Guest SSH (`kiln ssh`) needs a client URL that reaches the gateway SSH routes; the public door does not expose them yet (`features/guest-access.md`, `features/public-door.md`).
 - `kiln login` against the identity service. The client default issuer is `https://dark-forge.dev`.
 - The public door in `features/public-door.md`. A laptop dials `https://cli.dark-forge.dev` on port 443 after identity approval. The door checks the token before it dials loopback `kiln-api`. tcp/8443 is closed.
 - `deploy/bootstrap/install.sh` for client and server install.
 - The dashboard in `web/`. It is a static React app. Preview mode does not call a VM API. `GET /api/v1/dashboard` is served by `kiln-host` and by loopback `kiln-api`. `kiln-door` forwards it for a read-scope owner JWT. The public name is `https://cli.dark-forge.dev` on port 443. The drive is in `features/dashboard.md`.
 
-Workspace version is `0.4.10` (`Cargo.toml`).
+Workspace version is `0.4.17` (`Cargo.toml`).
 
 Build once. Give each drive its own tmux session. Do not run `kiln-runtime` as root.
 
