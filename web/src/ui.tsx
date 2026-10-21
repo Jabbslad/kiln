@@ -3,7 +3,11 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { ArrowUpRight, Box as BoxIcon, Check, Copy, Info, X } from 'lucide-react'
 import { formatBytes, formatMetric, type Dashboard } from './data'
 
-export type PageProps = { data: Dashboard; preview: boolean }
+export type PageProps = {
+  data: Dashboard
+  preview: boolean
+  onObserved?: (data: Dashboard) => void
+}
 
 export function AppLink({ to, ...props }: ComponentProps<typeof Link>) {
   const [params] = useSearchParams()

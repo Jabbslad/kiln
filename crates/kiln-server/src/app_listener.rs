@@ -1,5 +1,6 @@
 //! HTTP listener on 127.0.0.1:8093.
-//! It serves the dashboard archive and proxies one read route to loopback kiln-api.
+//! It serves the dashboard archive, proxies the read dashboard route, and forwards
+//! operation submission and lookup to loopback kiln-api.
 //! The administrator token is not a central JWT and is not forwarded.
 
 use crate::{
@@ -9,7 +10,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use axum::{
     Router,
-    body::Body,
+    body::{Body, to_bytes},
     extract::{ConnectInfo, Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
@@ -72,6 +73,38 @@ struct Session {
     jwt_exp: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuditRecord {
+    pub outcome: &'static str,
+    pub request_id: String,
+}
+
+#[derive(Clone)]
+pub struct AuditLog(Arc<StdMutex<Vec<AuditRecord>>>);
+
+impl AuditLog {
+    fn new() -> Self {
+        Self(Arc::new(StdMutex::new(Vec::new())))
+    }
+
+    pub fn records(&self) -> Vec<AuditRecord> {
+        lock_map(&self.0).clone()
+    }
+}
+
+struct CookieWrite {
+    raw: String,
+    csrf: String,
+    reader: String,
+}
+
+pub struct OperateSession {
+    pub router: Router,
+    pub session: String,
+    pub csrf: String,
+    pub audit: AuditLog,
+}
+
 struct App {
     auth: Authenticator,
     client: reqwest::Client,
@@ -87,6 +120,7 @@ struct App {
     attempts: StdMutex<HashMap<String, Attempt>>,
     sessions: StdMutex<HashMap<String, Session>>,
     status_at: StdMutex<Option<Instant>>,
+    audit: AuditLog,
 }
 
 struct Hit {
@@ -96,6 +130,7 @@ struct Hit {
 
 enum Kind {
     Dashboard,
+    Operation,
     MissingApi,
     Login,
     Callback,
@@ -182,6 +217,7 @@ pub fn router_with(
         attempts: StdMutex::new(HashMap::new()),
         sessions: StdMutex::new(HashMap::new()),
         status_at: StdMutex::new(None),
+        audit: AuditLog::new(),
     });
     Ok(into_router(state))
 }
@@ -199,6 +235,30 @@ pub fn router_with_read_session(
     root: Option<&Path>,
     jwt: &str,
 ) -> Result<(Router, String)> {
+    let session = test_session(auth, upstream, ca_pem, root, jwt)?;
+    Ok((session.router, session.session))
+}
+
+/// Insert one session carrying the caller's JWT. Tests pass an operate-scoped
+/// JWT here. This does not contact identity and does not change login.
+#[doc(hidden)]
+pub fn router_with_operate_session(
+    auth: Authenticator,
+    upstream: &str,
+    ca_pem: &[u8],
+    root: Option<&Path>,
+    jwt: &str,
+) -> Result<OperateSession> {
+    test_session(auth, upstream, ca_pem, root, jwt)
+}
+
+fn test_session(
+    auth: Authenticator,
+    upstream: &str,
+    ca_pem: &[u8],
+    root: Option<&Path>,
+    jwt: &str,
+) -> Result<OperateSession> {
     let upstream_url = loopback_upstream(upstream)?;
     let loopback = loopback_identity("http://127.0.0.1:9")?;
     let client = reqwest::Client::builder()
@@ -219,12 +279,14 @@ pub fn router_with_read_session(
         .timeout(Duration::from_secs(10))
         .build()?;
     let id = random_token();
+    let csrf = random_token();
+    let audit = AuditLog::new();
     let mut sessions = HashMap::new();
     sessions.insert(
         id.clone(),
         Session {
             expires: Instant::now() + Duration::from_secs(SESSION_SECONDS),
-            csrf: random_token(),
+            csrf: csrf.clone(),
             reader: String::new(),
             jwt: jwt.to_owned(),
             jwt_exp: jsonwebtoken::get_current_timestamp().saturating_add(240),
@@ -245,8 +307,14 @@ pub fn router_with_read_session(
         attempts: StdMutex::new(HashMap::new()),
         sessions: StdMutex::new(sessions),
         status_at: StdMutex::new(Some(Instant::now())),
+        audit: audit.clone(),
     });
-    Ok((into_router(state), id))
+    Ok(OperateSession {
+        router: into_router(state),
+        session: id,
+        csrf,
+        audit,
+    })
 }
 
 pub async fn run(options: Options) -> Result<()> {
@@ -328,6 +396,7 @@ async fn dispatch(app: &App, peer: SocketAddr, request: Request) -> Response {
     }
     match kind {
         Kind::Dashboard => proxy(app, request).await,
+        Kind::Operation => operation(app, request).await,
         Kind::Login => start_login(app).await,
         Kind::Callback => finish_login(app, request).await,
         Kind::Logout => logout(app, request).await,
@@ -341,6 +410,8 @@ fn classify(method: &Method, path: &str) -> Kind {
     if path == "/api" || path.starts_with("/api/") || path == "/v1" || path.starts_with("/v1/") {
         if method == Method::GET && path == "/api/v1/dashboard" {
             Kind::Dashboard
+        } else if operation_path(method, path) {
+            Kind::Operation
         } else {
             Kind::MissingApi
         }
@@ -394,6 +465,16 @@ fn charge(hits: &StdMutex<HashMap<IpAddr, Hit>>, ip: IpAddr, limit: u32) -> bool
     true
 }
 
+fn operation_path(method: &Method, path: &str) -> bool {
+    if method == Method::POST && path == "/v1/operations" {
+        return true;
+    }
+    method == Method::GET
+        && path
+            .strip_prefix("/v1/operations/")
+            .is_some_and(kiln_api::valid_id)
+}
+
 async fn proxy(app: &App, request: Request) -> Response {
     if request.uri().query().is_some() {
         return deny(
@@ -402,32 +483,204 @@ async fn proxy(app: &App, request: Request) -> Response {
             "Query parameters are not accepted.",
         );
     }
-    let Some(raw) = cookie_value(request.headers(), "__Host-kiln_app") else {
+    let Ok(authorization) = bearer_from_session(app, request.headers()).await else {
         return unauthorized();
     };
-    refresh_status(app).await;
-    let Some(jwt) = fresh_jwt(app, &raw).await else {
-        return unauthorized();
-    };
-    let Ok(authorization) = HeaderValue::from_str(&format!("Bearer {jwt}")) else {
-        return unauthorized();
-    };
-    match forward(app, authorization).await {
+    match forward(
+        app,
+        Method::GET,
+        "/api/v1/dashboard",
+        authorization,
+        None,
+        None,
+    )
+    .await
+    {
         Ok(response) => response,
         Err(failure) => nostore(failure.into_response()),
     }
 }
 
-async fn forward(app: &App, authorization: HeaderValue) -> Result<Response, Failure> {
+async fn operation(app: &App, request: Request) -> Response {
+    if request.uri().query().is_some() {
+        return deny(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Query parameters are not accepted.",
+        );
+    }
+    refresh_status(app).await;
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    if method == Method::GET {
+        let Ok(authorization) = bearer_from_session(app, request.headers()).await else {
+            audit(app, "unauthorized", "");
+            return unauthorized();
+        };
+        return forwarded(app, method, &path, authorization, None, None, "").await;
+    }
+    let presented = request
+        .headers()
+        .get("x-kiln-csrf")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    let write = match cookie_write(app, request.headers(), "The request was refused.") {
+        Ok(write) => write,
+        Err((outcome, response)) => {
+            audit(app, outcome, "");
+            return *response;
+        }
+    };
+    if presented != write.csrf {
+        audit(app, "invalid_csrf", "");
+        return deny(
+            StatusCode::FORBIDDEN,
+            "invalid_csrf",
+            "The request was refused.",
+        );
+    }
+    let content_type = request.headers().get(header::CONTENT_TYPE).cloned();
+    let body = match to_bytes(request.into_body(), kiln_api::MAX_REQUEST_BYTES).await {
+        Ok(bytes) => bytes.to_vec(),
+        Err(_) => {
+            audit(app, "rejected", "");
+            return deny(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "body_too_large",
+                "Request body exceeds 128 KiB.",
+            );
+        }
+    };
+    let request_id = request_id(&body);
+    let Some(jwt) = fresh_jwt(app, &write.raw).await else {
+        audit(app, "unauthorized", &request_id);
+        return unauthorized();
+    };
+    let Ok(authorization) = HeaderValue::from_str(&format!("Bearer {jwt}")) else {
+        audit(app, "unauthorized", &request_id);
+        return unauthorized();
+    };
+    forwarded(
+        app,
+        method,
+        &path,
+        authorization,
+        content_type,
+        Some(body),
+        &request_id,
+    )
+    .await
+}
+
+async fn bearer_from_session(app: &App, headers: &HeaderMap) -> Result<HeaderValue, ()> {
+    let Some(raw) = cookie_value(headers, "__Host-kiln_app") else {
+        return Err(());
+    };
+    refresh_status(app).await;
+    let Some(jwt) = fresh_jwt(app, &raw).await else {
+        return Err(());
+    };
+    HeaderValue::from_str(&format!("Bearer {jwt}")).map_err(|_| ())
+}
+
+async fn forwarded(
+    app: &App,
+    method: Method,
+    path: &str,
+    authorization: HeaderValue,
+    content_type: Option<HeaderValue>,
+    body: Option<Vec<u8>>,
+    request_id: &str,
+) -> Response {
+    audit(app, "forwarded", request_id);
+    match forward(app, method, path, authorization, content_type, body).await {
+        Ok(response) => response,
+        Err(failure) => nostore(failure.into_response()),
+    }
+}
+
+fn request_id(body: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.get("id")?.as_str().map(str::to_owned))
+        .filter(|id| kiln_api::valid_id(id))
+        .unwrap_or_default()
+}
+
+fn audit(app: &App, outcome: &'static str, request_id: &str) {
+    eprintln!("audit operation outcome={outcome} request_id={request_id}");
+    let mut records = lock_map(&app.audit.0);
+    if records.len() == 64 {
+        records.remove(0);
+    }
+    records.push(AuditRecord {
+        outcome,
+        request_id: request_id.to_owned(),
+    });
+}
+
+fn cookie_write(
+    app: &App,
+    headers: &HeaderMap,
+    refused: &str,
+) -> Result<CookieWrite, (&'static str, Box<Response>)> {
+    let Some(raw) = cookie_value(headers, "__Host-kiln_app") else {
+        return Err(("unauthorized", Box::new(unauthorized())));
+    };
+    if headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        != Some("https://app.dark-forge.dev")
+    {
+        return Err((
+            "invalid_origin",
+            Box::new(deny(StatusCode::FORBIDDEN, "invalid_origin", refused)),
+        ));
+    }
+    let Some(csrf_cookie) = cookie_value(headers, "__Host-kiln_csrf") else {
+        return Err((
+            "invalid_csrf",
+            Box::new(deny(StatusCode::FORBIDDEN, "invalid_csrf", refused)),
+        ));
+    };
+    let sessions = lock_map(&app.sessions);
+    let Some(session) = sessions.get(&raw) else {
+        return Err(("unauthorized", Box::new(unauthorized())));
+    };
+    if session.expires <= Instant::now() || session.csrf != csrf_cookie {
+        return Err((
+            "invalid_csrf",
+            Box::new(deny(StatusCode::FORBIDDEN, "invalid_csrf", refused)),
+        ));
+    }
+    Ok(CookieWrite {
+        raw,
+        csrf: session.csrf.clone(),
+        reader: session.reader.clone(),
+    })
+}
+
+async fn forward(
+    app: &App,
+    method: Method,
+    path: &str,
+    authorization: HeaderValue,
+    content_type: Option<HeaderValue>,
+    body: Option<Vec<u8>>,
+) -> Result<Response, Failure> {
     let mut url = app.upstream.clone();
-    url.set_path("/api/v1/dashboard");
-    let response = app
+    url.set_path(path);
+    let mut upstream = app
         .client
-        .get(url)
-        .header(header::AUTHORIZATION, authorization)
-        .send()
-        .await
-        .map_err(|_| upstream_error())?;
+        .request(method, url)
+        .header(header::AUTHORIZATION, authorization);
+    if let Some(content_type) = content_type {
+        upstream = upstream.header(header::CONTENT_TYPE, content_type);
+    }
+    if let Some(body) = body {
+        upstream = upstream.body(body);
+    }
+    let response = upstream.send().await.map_err(|_| upstream_error())?;
     if response
         .content_length()
         .is_some_and(|len| len > kiln_api::MAX_RESPONSE_BYTES as u64)
@@ -999,48 +1252,26 @@ async fn revoke_reader(app: &App, reader: &str) -> bool {
 }
 
 async fn logout(app: &App, request: Request) -> Response {
-    if request
-        .headers()
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
-        != Some("https://app.dark-forge.dev")
-    {
-        return deny(
-            StatusCode::FORBIDDEN,
-            "invalid_origin",
-            "Logout was refused.",
-        );
-    }
-    let Some(raw) = cookie_value(request.headers(), "__Host-kiln_app") else {
-        return unauthorized();
+    let headers = request.headers().clone();
+    let write = match cookie_write(app, &headers, "Logout was refused.") {
+        Ok(write) => write,
+        Err((_, response)) => return *response,
     };
-    let Some(csrf_cookie) = cookie_value(request.headers(), "__Host-kiln_csrf") else {
-        return deny(StatusCode::FORBIDDEN, "invalid_csrf", "Logout was refused.");
-    };
-    let body = axum::body::to_bytes(request.into_body(), 4096)
+    let body = to_bytes(request.into_body(), 4096)
         .await
         .unwrap_or_default();
-    let body = String::from_utf8_lossy(&body);
-    let posted = form_value(&body, "csrf").unwrap_or_default();
-    let reader = {
-        let sessions = lock_map(&app.sessions);
-        let Some(session) = sessions.get(&raw) else {
-            return unauthorized();
-        };
-        if session.expires <= Instant::now() || session.csrf != csrf_cookie || posted != csrf_cookie
-        {
-            return deny(StatusCode::FORBIDDEN, "invalid_csrf", "Logout was refused.");
-        }
-        session.reader.clone()
-    };
-    if !revoke_reader(app, &reader).await {
+    let posted = form_value(&String::from_utf8_lossy(&body), "csrf").unwrap_or_default();
+    if posted != write.csrf {
+        return deny(StatusCode::FORBIDDEN, "invalid_csrf", "Logout was refused.");
+    }
+    if !revoke_reader(app, &write.reader).await {
         return deny(
             StatusCode::BAD_GATEWAY,
             "upstream",
             "Identity did not complete sign-out.",
         );
     }
-    if lock_map(&app.sessions).remove(&raw).is_none() {
+    if lock_map(&app.sessions).remove(&write.raw).is_none() {
         return unauthorized();
     }
     let mut response = StatusCode::NO_CONTENT.into_response();

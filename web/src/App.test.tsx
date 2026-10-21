@@ -87,6 +87,90 @@ it('shows only same-box checkpoints and keeps restore gated after acknowledgemen
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 })
 
+it('enables create only on a live authenticated console and shows the box once observed', async () => {
+  const boxId = 'c'.repeat(32)
+  const live = {
+    ...previewDashboard,
+    boxes: [],
+    operations: [],
+    checkpoints: [],
+    templates: [{ ...previewDashboard.templates[0], id: 'tpl-ubuntu', name: 'ubuntu' }],
+  }
+  const observed = {
+    ...live,
+    boxes: [{ ...previewDashboard.boxes[0], id: boxId, name: 'api-staging' }],
+  }
+  let releaseObserved: (response: Response) => void = () => {}
+  const observedResponse = new Promise<Response>((resolve) => {
+    releaseObserved = resolve
+  })
+  let posts = 0
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        posts += 1
+        const posted = JSON.parse(String(init.body))
+        return Response.json(
+          { id: posted.id, box_id: boxId, state: 'succeeded', result: null, error: null },
+          { status: 202 },
+        )
+      }
+      if (String(url).startsWith('/v1/operations/')) {
+        return Response.json({
+          id: 'ignored',
+          box_id: boxId,
+          state: 'succeeded',
+          result: null,
+          error: null,
+        })
+      }
+      if (posts === 0) return Response.json(live)
+      return observedResponse
+    }),
+  )
+  document.cookie = '__Host-kiln_csrf=browser-csrf'
+  open('/boxes')
+  const user = userEvent.setup()
+  const [openCreate] = await screen.findAllByRole('button', { name: 'Create box' })
+  await user.click(openCreate)
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Box name' }), 'api-staging')
+  const submit = within(dialog).getByRole('button', { name: 'Create box' })
+  expect(submit).toBeEnabled()
+  await user.click(submit)
+  await waitFor(() => expect(posts).toBe(1))
+  expect(screen.queryByRole('link', { name: 'api-staging' })).not.toBeInTheDocument()
+  releaseObserved(Response.json(observed))
+  expect(await screen.findByRole('link', { name: 'api-staging' })).toBeVisible()
+  expect(posts).toBe(1)
+})
+
+it('keeps create disabled when the live host is offline and keeps other mutations disabled', async () => {
+  const offline = {
+    ...previewDashboard,
+    host: { ...previewDashboard.host, state: 'offline' as const },
+  }
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(offline)))
+  open('/boxes')
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: 'Create box' }))
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Box name' }), 'api-staging')
+  expect(within(dialog).getByRole('button', { name: 'Create box' })).toBeDisabled()
+  expect(within(dialog).getByText(/Read-only console/)).toBeVisible()
+})
+
+it('keeps lifecycle confirmation disabled on a live console', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(previewDashboard)))
+  open('/boxes/box-7f3a2c1e')
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: 'Stop' }))
+  const dialog = screen.getByRole('dialog')
+  expect(within(dialog).getByRole('button', { name: 'Stop' })).toBeDisabled()
+  expect(within(dialog).getByText(/Read-only console/)).toBeVisible()
+})
+
 it('validates a create form but cannot create a fake VM', async () => {
   open('/templates?preview=1')
   const user = userEvent.setup()
