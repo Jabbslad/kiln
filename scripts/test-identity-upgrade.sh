@@ -104,20 +104,8 @@ EOF
     "$var" "$var" "$etc" "$custom" > "$etc/host.json"
   printf '{}\n' > "$etc/isolation.json"
   for name in ca.crt tls.crt tls.key admin.token; do printf 'synthetic-test-only\n' > "$etc/$name"; done
-  sqlite3 "$var/journal/operations.sqlite" <<'SQL'
-PRAGMA journal_mode=DELETE;
-PRAGMA user_version=2;
-CREATE TABLE operations (
-  id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
-  is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
-  created_at INTEGER NOT NULL, finished_at INTEGER,
-  action TEXT NOT NULL DEFAULT 'unknown');
-INSERT INTO operations(
-  id, fingerprint, box_id, is_create, running, response, created_at, finished_at, action
-) VALUES (
-  '0123456789abcdef0123456789abcde1', X'00', '0123456789abcdef0123456789abcdef',
-  1, 0, '{"state":"succeeded"}', 1700000000, 1700000001, 'create');
-SQL
+  sqlite3 "$var/journal/operations.sqlite" \
+    'PRAGMA journal_mode=DELETE; PRAGMA user_version=1; CREATE TABLE operations(running INTEGER); INSERT INTO operations VALUES(0);'
   for name in kiln kiln-runtime kiln-network kiln-host kiln-api; do
     if [ "$name" = kiln ] || [ "$name" = kiln-runtime ] || [ "$name" = kiln-network ]; then
       dest=$opt/bin/$name

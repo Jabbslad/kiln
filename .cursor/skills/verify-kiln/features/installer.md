@@ -74,5 +74,7 @@ See `features/auto-release.md` for the main-push release and deploy chain.
 - A green harness is not an installed server. Fresh-host provisioning and reboot are still described as unverified in `docs/releases.md`.
 - `deploy/bootstrap/install.sh` `main` pins the latest published release when the template pin matches. The harness reads that pin from the script and checks it against the GitHub releases API.
 - Server mode requires `/dev/kvm`, Ubuntu 24.04, Ubuntu 26.04, or Debian 13, systemd, and cgroup controllers `cpu`, `memory`, and `pids`. The harness stubs those checks.
-- CI runs the xtask harnesses, shell fixture tests, and ShellCheck in `.github/workflows/build.yml`. `deploy.yml` and `diagnose.yml` SSH to dark-forge and do not run on pull requests.
+- CI runs the xtask harnesses, shell fixture tests, and ShellCheck in `.github/workflows/build.yml`. Pull-request tag-path dry-run also rehearses a server upgrade over a fixture journal plus reuse-fetched release tarballs.
+- `scripts/test-operations-journal-version-sync.sh` fails when `deploy/operations-journal.max-version` diverges from `crates/kiln-server/src/journal.rs`.
+- Failed server update steps print step name, command, exit code, and trailing output (`install_step_fail` / `report_install_step` in `deploy/install.sh`).
 - Bootstrap server install does not lay down `kiln-identity` or the dashboard archive; those arrive on tagged deploy/auto-release (`deploy/github/install-remote.sh`).
