@@ -33,12 +33,43 @@ A host body larger than 1 MiB (`kiln_api::MAX_RESPONSE_BYTES`) makes `stamp` ret
 ## Sub-features
 
 - Inventory at `/boxes`: search, state filters, name sort, row links.
-- Box detail at `/boxes/:id` with workspace, exec, checkpoint, and preview tabs.
+- Box detail at `/boxes/:id` with terminal, exec, checkpoint, and preview tabs.
 - Templates at `/templates`, including the create-box drawer.
 - Operations at `/operations`.
 - Settings at `/settings` and the guide at `/docs`.
 - Explicit preview versus a disconnected live view.
-- Create, restore, resume, exec, and terminal controls that stay disabled (`web/src/dialogs.tsx`, `web/src/BoxDetail.tsx`).
+- Create, restore, resume, and exec stay disabled in preview (`web/src/dialogs.tsx`, `web/src/BoxDetail.tsx`).
+- A terminal session on a running box, beside copyable `kiln ssh` commands. See below.
+
+## Terminal session
+
+The terminal is a session. It stays out of `kiln_api::Action`, `OPERATION_ACTION_TYPES` in `web/src/operationKinds.ts`, the `satisfies Record<OperationActionType, …>` tables and `setDashboardObserver` in `web/src/data.ts`, and `trackerCases` in `web/src/data.test.ts`. The contract test `dashboard_operation_action_types_match_api_action_tags` in `crates/kiln-api/src/lib.rs` compares those tags with the Rust enum.
+
+`kiln-app` serves `GET /v1/boxes/{id}/terminal` (`crates/kiln-server/src/app_listener.rs`, `crates/kiln-server/src/terminal.rs`). The browser opens a same-origin WebSocket and sends the `__Host-kiln_app` and `__Host-kiln_csrf` cookies. `Origin` must be `https://app.dark-forge.dev`. The session must be operate scope. The server checks ownership by reading the box SSH host key, writes one audit line when the socket upgrades (`audit terminal outcome=opened box_id=…`), and bridges an OpenSSH PTY over the existing SSH upgrade. Idle limit is 15 minutes. Maximum duration is 2 hours. Binary frames are PTY bytes. A text frame `{"type":"resize","cols":N,"rows":M}` resizes the PTY. The server ends the socket with `{"type":"closed",…}`.
+
+Connect in `TerminalPane` (`web/src/BoxDetail.tsx`) is enabled only when the console is live, the host is `online`, and the box is `running`. Preview, a stopped box, and an offline host leave the button disabled and the heading at `Session not connected`. The heading says `Connected` only while the socket is open. xterm.js loads when Connect is used. The Access panel on the same tab copies `kiln ssh {id}` and `kiln ssh-config {id}`. HTTP preview stays labelled **Not available yet**.
+
+The in-repo proof does not boot Firecracker. `openssh-server` must provide `/usr/sbin/sshd`, and `/run/sshd` must exist. CI installs that before server-check.
+
+```sh
+cargo test -p kiln-server --test app_listener --locked -- --nocapture \
+  terminal_rejects_unauthenticated_read_scope_bad_origin_and_other_owner
+cargo test -p kiln-server --test app_listener --locked -- --nocapture \
+  operate_session_gets_a_pty_echo_from_a_running_box
+cargo test -p kiln-api --lib --locked -- --nocapture \
+  dashboard_operation_action_types_match_api_action_tags
+```
+
+A rejection pass is HTTP 401 `unauthorized` with no cookie, HTTP 403 `insufficient_scope` for a read session, HTTP 403 `invalid_origin` for another origin, and HTTP 401 `unauthorized` for another owner. Those four do not dial the host. An operate session for an unknown box is HTTP 404 `not_found` and does not audit `opened`. A shell pass prints `kiln-term-ok` and audits `outcome=opened` with that box id.
+
+```sh
+cd web
+npm test -- src/App.test.tsx src/BoxDetail.test.tsx
+```
+
+`enables Connect terminal only for a running box on a live console` covers the button. `shows copyable kiln ssh commands with the full box id and no SSH gateway placeholder` covers the Access panel. Playwright on `/boxes?preview=1` still expects `Session not connected` and a disabled Connect button. That run does not open a shell.
+
+A browser shell on a deployed console needs `kiln-app`, an operate-scoped `__Host-kiln_app` session, `Origin: https://app.dark-forge.dev`, and a running box. The Vite dev server does not proxy `/v1/boxes/{id}/terminal`. Caddy and the app socket proxy already forward the upgrade, so this journey does not change install or deploy.
 
 ## How to get to it (user POV)
 
@@ -146,7 +177,8 @@ A pass is the preview heading plus zero `/api/` requests, a disabled terminal bu
 ## Gotchas
 
 - Preview data is labelled example data. It is not the local runtime inventory.
-- `Create box` and `Restore checkpoint` stay disabled in preview. `Connect terminal` stays disabled in preview and on a stopped box. A live console enables it when the host is online and the box is running. A green browser run does not create a box.
+- `Create box` and `Restore checkpoint` stay disabled in preview. `Connect terminal` stays disabled in preview, on a stopped box, and while the host is offline. A live console enables it when the host is online and the box is running. A green Playwright run does not create a box and does not open a shell. The PTY echo test is the working-shell proof.
+- The terminal is a session. Leave it out of `OPERATION_ACTION_TYPES` and the operation tracker. Identity still issues the dashboard cookie at read scope, so a signed-in console cannot open the shell until that session can operate.
 - CI runs this surface. `.github/workflows/build.yml` job `dashboard` runs `npm test`, Prettier, `npm run build`, and `npm run test:browser`. It does not boot Firecracker.
 - `README.md` still lists dashboard among outstanding platform work, and its intro still says the dashboard API is not integrated. `web/README.md` still says the CLI API does not implement this endpoint. Those sentences are behind `kiln-api`.
 - The authoring proof used the Vite dev server and Playwright. It did not extract the release tarball or attach the static app to a host. The live document drive above is curl against `kiln-api`, or the contract test.
