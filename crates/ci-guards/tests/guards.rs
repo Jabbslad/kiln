@@ -239,6 +239,42 @@ jobs:
 }
 
 #[test]
+fn downstream_of_a_reuse_skipped_job_guards_its_if() {
+    let planted =
+        ci_guards::reuse_skip_downstream_violations(&fixture("reuse-skip-downstream.yml"));
+    let mut flagged: Vec<&str> = planted
+        .iter()
+        .filter_map(|violation| violation.split_once(' ').map(|(name, _)| name))
+        .collect();
+    flagged.sort();
+    flagged.dedup();
+    assert_eq!(flagged, ["deploy", "publish", "success-fn"], "{planted:?}");
+    assert!(
+        planted.iter().any(|violation| {
+            violation.starts_with("deploy ") && violation.contains("!cancelled()")
+        }),
+        "{planted:?}"
+    );
+    assert!(
+        planted
+            .iter()
+            .any(|violation| violation.starts_with("publish ")
+                && violation.contains("needs.package.result")),
+        "{planted:?}"
+    );
+    assert!(
+        planted
+            .iter()
+            .any(|violation| violation.starts_with("success-fn ") && violation.contains("always()")),
+        "{planted:?}"
+    );
+
+    let workflow = read(&repo_root().join(".github/workflows/build.yml"));
+    let violations = ci_guards::reuse_skip_downstream_violations(&workflow);
+    assert!(violations.is_empty(), "{violations:?}");
+}
+
+#[test]
 fn repin_runs_only_on_version_tags_after_deploy_and_keeps_the_token_in_env() {
     let root = repo_root();
     let workflow = read(&root.join(".github/workflows/build.yml"));
