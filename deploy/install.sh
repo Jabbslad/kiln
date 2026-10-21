@@ -854,12 +854,33 @@ service_argv() {
   printf '%s\n' "$argv"
 }
 
+operations_journal_max_version() {
+  local file line
+  file=$(dirname "$(realpath "$0")")/operations-journal.max-version
+  if [ -f "$file" ]; then
+    line=$(tr -d '[:space:]' <"$file") || return 1
+    case $line in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s\n' "$line"
+    return 0
+  fi
+  # Match kiln-server journal SCHEMA_VERSION until the pin ships in server packages.
+  printf '%s\n' 2
+}
+
+operations_journal_version_supported() {
+  local version=$1 max=$2
+  [ "$version" -ge 1 ] && [ "$version" -le "$max" ]
+}
+
 wait_for_operations() {
-  local journal=$1 count n
+  local journal=$1 count n version max
   regular_file "$journal" || return 1
   have_tool sqlite3 || return 1
-  count=$(sqlite3 -readonly "$journal" 'PRAGMA user_version;' 2>/dev/null) || return 1
-  [ "$count" = 1 ] || return 1
+  max=$(operations_journal_max_version) || return 1
+  version=$(sqlite3 -readonly "$journal" 'PRAGMA user_version;' 2>/dev/null) || return 1
+  operations_journal_version_supported "$version" "$max" || return 1
   n=0
   while [ "$n" -lt 60 ]; do
     count=$(sqlite3 -readonly "$journal" 'SELECT count(*) FROM operations WHERE running=1;' 2>/dev/null) || return 1
