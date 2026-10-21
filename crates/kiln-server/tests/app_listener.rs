@@ -79,6 +79,10 @@ fn auth(dir: &Path) -> (Authenticator, EncodingKey) {
 }
 
 fn token(key: &EncodingKey, sub: &str, scope: Scope) -> String {
+    token_with(key, sub, scope, "device-1")
+}
+
+fn token_with(key: &EncodingKey, sub: &str, scope: Scope, credential_id: &str) -> String {
     let now = jsonwebtoken::get_current_timestamp();
     let claims = ServerClaims {
         iss: "https://identity.example.test".into(),
@@ -87,7 +91,7 @@ fn token(key: &EncodingKey, sub: &str, scope: Scope) -> String {
         iat: now,
         nbf: now,
         exp: now + 300,
-        credential_id: "device-1".into(),
+        credential_id: credential_id.into(),
         scope,
     };
     let mut header = Header::new(Algorithm::ES256);
@@ -839,6 +843,15 @@ struct Loopback {
 }
 
 async fn loopback(jwt: String, status_mode: u8) -> Loopback {
+    scripted_loopback(jwt.clone(), jwt, 300, status_mode).await
+}
+
+async fn scripted_loopback(
+    login_jwt: String,
+    refresh_jwt: String,
+    expires_in: u64,
+    status_mode: u8,
+) -> Loopback {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let token_hits = Arc::new(AtomicUsize::new(0));
@@ -856,7 +869,8 @@ async fn loopback(jwt: String, status_mode: u8) -> Loopback {
             let Ok((mut socket, _)) = listener.accept().await else {
                 break;
             };
-            let jwt = jwt.clone();
+            let login_jwt = login_jwt.clone();
+            let refresh_jwt = refresh_jwt.clone();
             let tokens = tokens.clone();
             let statuses = statuses.clone();
             let revokes = revokes.clone();
@@ -872,12 +886,17 @@ async fn loopback(jwt: String, status_mode: u8) -> Loopback {
                 let line = raw.lines().next().unwrap_or("");
                 if line.contains("POST /oauth/server/token ") {
                     tokens.fetch_add(1, Ordering::SeqCst);
+                    let issued = if body.contains("\"reader\"") {
+                        refresh_jwt
+                    } else {
+                        login_jwt
+                    };
                     seen_bodies.lock().unwrap().push(body);
                     seen_auth.lock().unwrap().push(authorization);
                     let payload = serde_json::json!({
-                        "access_token": jwt,
+                        "access_token": issued,
                         "token_type": "Bearer",
-                        "expires_in": 300,
+                        "expires_in": expires_in,
                         "reader": "fixture-reader",
                     });
                     write_http(&mut socket, "200 OK", &payload.to_string()).await;
@@ -1329,37 +1348,55 @@ async fn unreachable_identity_keeps_an_unexpired_session() {
 }
 
 #[tokio::test]
-async fn an_operate_grant_does_not_become_a_dashboard_session() {
+async fn an_expired_cookie_write_is_refused_before_the_host() {
     let root = tempfile::tempdir().unwrap();
     archive(root.path());
     let up = upstream_json().await;
     let (auth, key) = auth(root.path());
-    let identity = loopback(token(&key, "owner-a", Scope::Operate), 0).await;
-    let router = router_for(auth, &up, root.path(), "fixture-login", identity.port);
-    let (status, headers, _) = text(send(&router, "127.0.0.1:13", get("/login")).await).await;
-    assert_eq!(status, StatusCode::SEE_OTHER);
-    let attempt = cookie_value(named_cookie(&headers, "__Host-kiln_app_attempt"));
-    let state = reqwest::Url::parse(headers.get("location").unwrap().to_str().unwrap())
-        .unwrap()
-        .query_pairs()
-        .find(|(key, _)| key == "state")
-        .unwrap()
-        .1
-        .into_owned();
-    let request = Request::builder()
-        .uri(format!("/oauth/callback?code=fixture-code&state={state}"))
-        .header("cookie", format!("__Host-kiln_app_attempt={attempt}"))
-        .body(Body::empty())
-        .unwrap();
-    let (status, headers, body) = text(send(&router, "127.0.0.1:13", request).await).await;
+    let expired = app_listener::router_with_expired_session(
+        auth,
+        &format!("https://127.0.0.1:{}", up.port),
+        up.ca_pem.as_bytes(),
+        Some(root.path()),
+        &token(&key, "owner-a", Scope::Operate),
+    )
+    .unwrap();
+    let (status, _, _) = text(
+        send(
+            &expired.router,
+            "127.0.0.1:13",
+            Request::builder()
+                .method("POST")
+                .uri("/v1/operations")
+                .header("origin", "https://app.dark-forge.dev")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, body) = text(
+        send(
+            &expired.router,
+            "127.0.0.1:13",
+            create_request(&expired.session, &expired.csrf, &expired.csrf, b"{}"),
+        )
+        .await,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
-    assert!(
-        headers
-            .get_all("set-cookie")
-            .iter()
-            .all(|value| !value.to_str().unwrap().starts_with("__Host-kiln_app="))
-    );
     assert_eq!(up.hits.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        expired
+            .audit
+            .records()
+            .iter()
+            .filter(|record| record.outcome == "unauthorized")
+            .count(),
+        2
+    );
 }
 
 #[tokio::test]
@@ -1657,6 +1694,208 @@ fn create_rows(path: &Path) -> i64 {
         "SELECT count(*) FROM operations WHERE is_create=1",
         [],
         |row| row.get(0),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_signed_in_operate_session_reaches_the_host() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut config = Config {
+        runtime_dir: root.path().join("runtime"),
+        journal_dir: root.path().join("journal"),
+        socket: root.path().join("host.sock"),
+        isolation_config: None,
+        allow_unsafe_development: true,
+        templates: Default::default(),
+    };
+    drop(Host::open(&config).unwrap());
+    let template = new_id();
+    let directory = config.runtime_dir.join("snapshots").join(&template);
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(
+        directory.join("snapshot.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "id": template,
+            "source_box": new_id(),
+            "template": true,
+            "host": "incompatible-test-host",
+            "memory_mib": 384,
+            "vcpus": 2,
+            "hashes": {},
+            "image": {
+                "schema_version": 1,
+                "architecture": "x86_64",
+                "kernel_path": "/private/canary",
+                "kernel_sha256": "unused",
+                "rootfs_path": "/private/canary",
+                "rootfs_sha256": "unused",
+                "agent_protocol_version": 1
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    config.templates.insert("small".into(), template);
+    let host = Host::open(&config).unwrap();
+    let listener = bind_socket(&config.socket).await.unwrap();
+    let host_router = host.router();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, host_router).await.unwrap();
+    });
+    let (auth, key) = auth(root.path());
+    let authorizations = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = authorizations.clone();
+    let gateway = kiln_server::gateway::router_with_auth(&config.socket, central(root.path()))
+        .unwrap()
+        .layer(axum::middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                let recorded = recorded.clone();
+                async move {
+                    if let Some(value) = request
+                        .headers()
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok())
+                    {
+                        recorded.lock().unwrap().push(value.to_owned());
+                    }
+                    next.run(request).await
+                }
+            },
+        ));
+    let (port, ca_pem) = listen_tls(gateway).await;
+    let read_identity = loopback(token(&key, "owner-a", Scope::Read), 0).await;
+    let refresh = token_with(&key, "owner-a", Scope::Operate, "app_server-b");
+    let operate_identity = scripted_loopback(
+        token(&key, "owner-a", Scope::Operate),
+        refresh.clone(),
+        30,
+        0,
+    )
+    .await;
+    let read_router = signed_in_router(auth, root.path(), &ca_pem, port, read_identity.port);
+    let operate_router = signed_in_router(
+        central(root.path()),
+        root.path(),
+        &ca_pem,
+        port,
+        operate_identity.port,
+    );
+    let (read_session, read_csrf) = browser_login(&read_router, "127.0.0.1:30").await;
+    let id = new_id();
+    let body = serde_json::to_vec(&Submit {
+        id: id.clone(),
+        action: Action::Create {
+            template: "small".into(),
+            name: "first".into(),
+        },
+    })
+    .unwrap();
+    let journal = config.journal_dir.join("operations.sqlite");
+    let (status, _, scoped) = text(
+        send(
+            &read_router,
+            "127.0.0.1:30",
+            create_request(&read_session, &read_csrf, &read_csrf, &body),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{scoped}");
+    assert!(scoped.contains("insufficient_scope"), "{scoped}");
+    assert_eq!(create_rows(&journal), 0);
+    let (operate_session, operate_csrf) = browser_login(&operate_router, "127.0.0.1:31").await;
+    let (status, _, _) = text(
+        send(
+            &operate_router,
+            "127.0.0.1:31",
+            Request::builder()
+                .method("POST")
+                .uri("/v1/operations")
+                .header("origin", "https://app.dark-forge.dev")
+                .header("content-type", "application/json")
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, refused) = text(
+        send(
+            &operate_router,
+            "127.0.0.1:31",
+            Request::builder()
+                .method("POST")
+                .uri("/v1/operations")
+                .header("origin", "https://evil.example")
+                .header(
+                    "cookie",
+                    format!("__Host-kiln_app={operate_session}; __Host-kiln_csrf={operate_csrf}"),
+                )
+                .header("x-kiln-csrf", &operate_csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert!(refused.contains("invalid_origin"), "{refused}");
+    let (status, _, refused) = text(
+        send(
+            &operate_router,
+            "127.0.0.1:31",
+            create_request(&operate_session, &operate_csrf, "nope", &body),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert!(refused.contains("invalid_csrf"), "{refused}");
+    assert_eq!(create_rows(&journal), 0);
+    let forwarded_before = authorizations.lock().unwrap().len();
+    let (status, _, created) = text(
+        send(
+            &operate_router,
+            "127.0.0.1:31",
+            create_request(&operate_session, &operate_csrf, &operate_csrf, &body),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{created}");
+    assert_eq!(create_rows(&journal), 1);
+    let seen = authorizations.lock().unwrap();
+    let expected = format!("Bearer {refresh}");
+    assert_eq!(seen.last().map(String::as_str), Some(expected.as_str()));
+    assert_eq!(seen.len(), forwarded_before + 1);
+    server.abort();
+}
+
+fn signed_in_router(
+    auth: Authenticator,
+    root: &Path,
+    ca_pem: &str,
+    port: u16,
+    identity_port: u16,
+) -> axum::Router {
+    app_listener::router_with(
+        auth,
+        &format!("https://127.0.0.1:{port}"),
+        ca_pem.as_bytes(),
+        Some(root),
+        app_listener::SignIn {
+            authorize_origin: "https://dark-forge.dev".into(),
+            loopback: format!("http://127.0.0.1:{identity_port}"),
+            login_secret: "fixture-login".into(),
+            server_id: "server-b".into(),
+        },
     )
     .unwrap()
 }
