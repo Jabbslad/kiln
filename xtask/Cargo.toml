@@ -12,7 +12,6 @@ tempfile.workspace = true
 toml = "0.8"
 tar = "0.4"
 flate2 = "1"
-zip = { version = "2", default-features = false, features = ["deflate"] }
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 

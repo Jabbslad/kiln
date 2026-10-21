@@ -153,10 +153,8 @@ never point development builds at production identity state.
 
 GitHub and Google subjects are distinct identities even when emails match.
 Cross-provider account linking, teams, invitations and hosted tenant isolation
-are not implemented. Windows central credential storage uses a protected ACL
-allowing only the current user and LocalSystem; native execution passed CI.
-Unix storage enforces owner-only files/directories. Unsafe existing ACLs or
-permissions are rejected rather than silently modified.
+are not implemented. Unix storage enforces owner-only files and directories.
+Unsafe existing permissions are rejected rather than silently modified.
 
 ## Verification and remaining acceptance
 

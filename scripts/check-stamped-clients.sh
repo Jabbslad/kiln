@@ -1,6 +1,6 @@
 #!/bin/sh
 # Confirm every shipped client archive carries TAG.
-# Linux is executed. macOS and Windows are checked by the version slot,
+# Linux is executed. macOS is checked by the version slot,
 # because the release runner cannot execute those binaries.
 set -eu
 
@@ -45,7 +45,6 @@ check_one() {
   mkdir -p "$work/pkg"
   case $archive in
     *.tar.gz) tar -xzf "$dist/$archive" -C "$work/pkg" "$member" ;;
-    *.zip) unzip -q "$dist/$archive" "$member" -d "$work/pkg" ;;
     *) fail "unexpected archive ${archive}" ;;
   esac
   [ -f "$work/pkg/$member" ] || fail "${archive} is missing ${member}"
@@ -62,4 +61,3 @@ check_one() {
 check_one "kiln-${tag}-x86_64-unknown-linux-gnu.tar.gz" kiln 1
 check_one "kiln-${tag}-aarch64-apple-darwin.tar.gz" kiln 0
 check_one "kiln-${tag}-x86_64-apple-darwin.tar.gz" kiln 0
-check_one "kiln-${tag}-x86_64-pc-windows-msvc.zip" kiln.exe 0

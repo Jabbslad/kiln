@@ -859,8 +859,6 @@ fn release_json(path: &Path) -> Result<Option<serde_json::Value>, String> {
     let name = file_name(path);
     let read = if name.ends_with(".tar.gz") {
         tar_release_json(path, &name)
-    } else if name.ends_with(".zip") {
-        zip_release_json(path, &name)
     } else {
         return Err(format!("unexpected archive {name}"));
     };
@@ -892,34 +890,6 @@ fn tar_release_json(
         }
         let kind = entry.header().entry_type();
         if kind.is_symlink() || kind == tar::EntryType::Link || !kind.is_file() {
-            return Err(ArchiveRead::Invalid(format!(
-                "{archive_name} release.json is not a regular file"
-            )));
-        }
-        let mut data = Vec::new();
-        entry
-            .read_to_end(&mut data)
-            .map_err(|_| ArchiveRead::Unreadable)?;
-        let payload = serde_json::from_slice(&data).map_err(|_| ArchiveRead::Unreadable)?;
-        return Ok(Some(payload));
-    }
-    Ok(None)
-}
-
-fn zip_release_json(
-    path: &Path,
-    archive_name: &str,
-) -> Result<Option<serde_json::Value>, ArchiveRead> {
-    let file = File::open(path).map_err(|_| ArchiveRead::Unreadable)?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|_| ArchiveRead::Unreadable)?;
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|_| ArchiveRead::Unreadable)?;
-        if entry.name() != "release.json" {
-            continue;
-        }
-        if entry.is_dir() {
             return Err(ArchiveRead::Invalid(format!(
                 "{archive_name} release.json is not a regular file"
             )));
@@ -1046,7 +1016,7 @@ fn atomic_write(path: &Path, data: &[u8], mode: Option<u32>) -> Result<(), Strin
 fn dist_pattern(version: &ReleaseVersion) -> Result<Regex, String> {
     let tag = regex::escape(&version.tag());
     Regex::new(&format!(
-        r"^kiln(-[A-Za-z0-9]+)*-{tag}(-[A-Za-z0-9_]+)*\.(tar\.gz|zip)(\.sha256)?$"
+        r"^kiln(-[A-Za-z0-9]+)*-{tag}(-[A-Za-z0-9_]+)*\.tar\.gz(\.sha256)?$"
     ))
     .map_err(|err| err.to_string())
 }
@@ -1764,7 +1734,7 @@ fn test_packaged_names_round_trip_through_check_archives() {
     fs::create_dir(&repo).unwrap();
     fs::create_dir(&bins).unwrap();
     fs::create_dir(&image).unwrap();
-    for name in ["kiln", "kiln.exe", "kiln-runtime", "kiln-host", "kiln-api"] {
+    for name in ["kiln", "kiln-runtime", "kiln-host", "kiln-api"] {
         fs::write(bins.join(name), format!("binary-{name}")).unwrap();
     }
     write_named(&repo, PACKAGE_FILES);
@@ -1772,26 +1742,13 @@ fn test_packaged_names_round_trip_through_check_archives() {
         fs::write(image.join(name), name).unwrap();
     }
     let version = parse_release_tag("v9.9.9").unwrap();
-    crate::release::package(
-        &repo,
-        &bins,
-        &dist,
-        "v9.9.9",
+    for target in [
         "x86_64-unknown-linux-gnu",
-        "client",
-        None,
-    )
-    .unwrap();
-    crate::release::package(
-        &repo,
-        &bins,
-        &dist,
-        "v9.9.9",
-        "x86_64-pc-windows-msvc",
-        "client",
-        None,
-    )
-    .unwrap();
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+    ] {
+        crate::release::package(&repo, &bins, &dist, "v9.9.9", target, "client", None).unwrap();
+    }
     let server = crate::release::package(
         &repo,
         &bins,

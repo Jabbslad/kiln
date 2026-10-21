@@ -11,7 +11,6 @@ const TARGETS: &[&str] = &[
     "x86_64-unknown-linux-gnu",
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
-    "x86_64-pc-windows-msvc",
 ];
 
 const KINDS: &[&str] = &["client", "server", "identity", "dashboard"];
@@ -55,9 +54,8 @@ pub fn package(
             "unsupported target or package kind".into(),
         ));
     }
-    let windows = target.ends_with("windows-msvc");
     let (files, name) = match kind {
-        "client" => client_files(&version, target, bins, windows)?,
+        "client" => client_files(&version, target, bins)?,
         "dashboard" => dashboard_files(&version, bins)?,
         "identity" => identity_files(&version, target, repo, bins)?,
         "server" => server_files(&version, target, repo, bins, image)?,
@@ -72,10 +70,7 @@ pub fn package(
         }
     }
     fs::create_dir_all(output).map_err(io_invalid)?;
-    let dest = output.join(format!(
-        "{name}{}",
-        if windows { ".zip" } else { ".tar.gz" }
-    ));
+    let dest = output.join(format!("{name}.tar.gz"));
     let checksum = PathBuf::from(format!("{}.sha256", dest.display()));
     if dest.exists() || checksum.exists() {
         return Err(PackageError::Exists(format!(
@@ -88,11 +83,7 @@ pub fn package(
         .create_new(true)
         .open(&dest)
         .map_err(io_invalid)?;
-    if windows {
-        write_zip(archive, &files)?;
-    } else {
-        write_tar(archive, &files, kind, &version, target)?;
-    }
+    write_tar(archive, &files, kind, &version, target)?;
     let digest = sha256_file(&dest)?;
     let mut sidecar = OpenOptions::new()
         .write(true)
@@ -115,11 +106,9 @@ fn client_files(
     version: &str,
     target: &str,
     bins: &Path,
-    windows: bool,
 ) -> Result<(Vec<(String, PathBuf)>, String), PackageError> {
-    let binary = if windows { "kiln.exe" } else { "kiln" };
     Ok((
-        vec![(binary.to_string(), bins.join(binary))],
+        vec![("kiln".to_string(), bins.join("kiln"))],
         format!("kiln-{version}-{target}"),
     ))
 }
@@ -247,19 +236,6 @@ fn server_files(
         files.push((format!("image/{name}"), image.join(name)));
     }
     Ok((files, format!("kiln-server-{version}-{target}")))
-}
-
-fn write_zip(file: File, files: &[(String, PathBuf)]) -> Result<(), PackageError> {
-    let mut archive = zip::ZipWriter::new(file);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    for (relative, path) in files {
-        archive.start_file(relative, options).map_err(io_invalid)?;
-        let mut source = File::open(path).map_err(io_invalid)?;
-        io::copy(&mut source, &mut archive).map_err(io_invalid)?;
-    }
-    archive.finish().map_err(io_invalid)?;
-    Ok(())
 }
 
 fn write_tar(
@@ -455,7 +431,7 @@ fn fixture() -> Fixture {
     let bins = root.join("bin");
     fs::create_dir(&repo).unwrap();
     fs::create_dir(&bins).unwrap();
-    for name in ["kiln", "kiln.exe", "kiln-runtime", "kiln-host", "kiln-api"] {
+    for name in ["kiln", "kiln-runtime", "kiln-host", "kiln-api"] {
         fs::write(bins.join(name), format!("binary-{name}")).unwrap();
     }
     Fixture {
@@ -482,42 +458,51 @@ impl Fixture {
 fn test_client_allowlist_permissions_checksum_and_no_overwrite() {
     let fix = fixture();
     fs::write(fix.bins.join("admin.token"), "secret").unwrap();
-    let path = fix
-        .package("client", "x86_64-unknown-linux-gnu", None)
-        .unwrap();
-    assert_eq!(
-        path.file_name().unwrap().to_string_lossy(),
-        "kiln-v0.1.0-x86_64-unknown-linux-gnu.tar.gz"
-    );
-    assert_eq!(tar_names(&path), vec!["kiln".to_string()]);
-    assert_eq!(tar_mode(&path, "kiln") & 0o777, 0o755);
-    assert_eq!(tar_bytes(&path, "kiln"), b"binary-kiln");
-    let expected = sha256_file(&path).unwrap();
-    let sidecar = fs::read_to_string(format!("{}.sha256", path.display())).unwrap();
-    assert_eq!(
-        sidecar,
-        format!(
-            "{expected}  {}\n",
-            path.file_name().unwrap().to_string_lossy()
-        )
-    );
+    for target in [
+        "x86_64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+    ] {
+        let path = fix.package("client", target, None).unwrap();
+        assert_eq!(
+            path.file_name().unwrap().to_string_lossy(),
+            format!("kiln-v0.1.0-{target}.tar.gz")
+        );
+        assert_eq!(tar_names(&path), vec!["kiln".to_string()]);
+        assert_eq!(tar_mode(&path, "kiln") & 0o777, 0o755);
+        assert_eq!(tar_bytes(&path, "kiln"), b"binary-kiln");
+        let expected = sha256_file(&path).unwrap();
+        let sidecar = fs::read_to_string(format!("{}.sha256", path.display())).unwrap();
+        assert_eq!(
+            sidecar,
+            format!(
+                "{expected}  {}\n",
+                path.file_name().unwrap().to_string_lossy()
+            )
+        );
+    }
     assert!(matches!(
         fix.package("client", "x86_64-unknown-linux-gnu", None),
         Err(PackageError::Exists(_))
     ));
 }
 
-fn test_windows_zip_contains_only_exe() {
+fn test_windows_target_is_not_packaged() {
     let fix = fixture();
-    let path = fix
-        .package("client", "x86_64-pc-windows-msvc", None)
-        .unwrap();
-    let mut archive = zip::ZipArchive::new(File::open(path).unwrap()).unwrap();
-    assert_eq!(archive.len(), 1);
-    assert_eq!(archive.by_index(0).unwrap().name(), "kiln.exe");
-    let mut stored = Vec::new();
-    io::copy(&mut archive.by_index(0).unwrap(), &mut stored).unwrap();
-    assert_eq!(stored, b"binary-kiln.exe");
+    assert!(matches!(
+        fix.package("client", "x86_64-pc-windows-msvc", None),
+        Err(PackageError::Invalid(_))
+    ));
+    assert!(
+        !fix.out
+            .join("kiln-v0.1.0-x86_64-pc-windows-msvc.zip")
+            .exists()
+    );
+    assert!(
+        !fix.out
+            .join("kiln-v0.1.0-x86_64-pc-windows-msvc.tar.gz")
+            .exists()
+    );
 }
 
 fn test_dashboard_contains_only_static_assets() {
@@ -938,7 +923,7 @@ fn tar_modes(path: &Path) -> Vec<u32> {
 
 register_cases! {
     test_client_allowlist_permissions_checksum_and_no_overwrite,
-    test_windows_zip_contains_only_exe,
+    test_windows_target_is_not_packaged,
     test_dashboard_contains_only_static_assets,
     test_identity_allowlist_excludes_vm_and_private_state,
     test_invalid_version_target_and_missing_binary_make_no_archive,

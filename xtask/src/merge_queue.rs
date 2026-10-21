@@ -318,8 +318,12 @@ fn test_queue_runs_checks_and_only_push_or_dispatch_packages() {
         "(github.event_name == 'push' || github.event_name == 'workflow_dispatch') && matrix.target == 'aarch64-apple-darwin'"
     ));
     assert!(text.contains(
-        "if: runner.os == 'Windows' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'\n        run: cargo xtask test-release\n"
+        "if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'\n        run: cargo xtask test-release\n"
     ));
+    assert!(!text.contains("windows-2025"));
+    assert!(!text.contains("x86_64-pc-windows-msvc"));
+    assert!(!text.contains("runner.os == 'Windows'"));
+    assert!(!text.contains("runner.os != 'Windows'"));
     let package = text
         .split("      - name: Package client\n")
         .nth(1)
