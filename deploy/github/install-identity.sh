@@ -303,7 +303,7 @@ slot_equal() {
 }
 
 stamp_version_slot() {
-  local file=$1 want=$2 matches count offset marker_len payload tmp
+  local file=$1 want=$2 matches count offset marker_len tmp
   marker_len=12
   matches=$(LC_ALL=C grep -a -o -b -F 'KILNRELSLOT=' "$file" || true)
   [ -n "$matches" ] || fail 'identity binary has no version slot'

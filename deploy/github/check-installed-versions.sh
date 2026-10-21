@@ -16,7 +16,7 @@ read_version() {
   line=$("$path" --version) || fail "${path} --version failed"
   printf '%s\n' "$line" | grep -Eq "^${name} [0-9]+\\.[0-9]+\\.[0-9]+$" \
     || fail "${path} --version printed ${line}"
-  printf '%s\n' "${line#${name} }"
+  printf '%s\n' "${line#"${name}" }"
 }
 
 check_path() {
