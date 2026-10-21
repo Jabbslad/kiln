@@ -116,7 +116,7 @@ export function readCsrf(cookie: string) {
   return value ? value.slice(prefix.length) : ''
 }
 
-type OperationReceipt = {
+export type OperationReceipt = {
   id: string
   box_id: string
   state: string
@@ -132,6 +132,107 @@ type OperationReceipt = {
     timed_out?: boolean
   } | null
   error?: { message?: string } | null
+}
+
+export type OperationTrackKind =
+  'create' | 'lifecycle' | 'checkpoint' | 'restore' | 'delete' | 'exec'
+
+const OPERATION_POLL_START_MS = 50
+const OPERATION_POLL_MAX_MS = 2_000
+const OPERATION_POLL_GROWTH = 1.5
+
+const OPERATION_WAIT_MS: Record<OperationTrackKind, number> = {
+  create: 300_000,
+  lifecycle: 120_000,
+  checkpoint: 180_000,
+  restore: 300_000,
+  delete: 120_000,
+  exec: 60_000,
+}
+
+function operationTrackKind(action: OperationAction): OperationTrackKind {
+  switch (action.type) {
+    case 'create':
+      return 'create'
+    case 'pause':
+    case 'resume':
+    case 'stop':
+    case 'start':
+      return 'lifecycle'
+    case 'checkpoint':
+      return 'checkpoint'
+    case 'restore':
+      return 'restore'
+    case 'delete':
+      return 'delete'
+    case 'exec':
+      return 'exec'
+  }
+}
+
+function operationWaitMs(action: OperationAction) {
+  if (action.type === 'exec') return action.request.timeout_ms + 30_000
+  return OPERATION_WAIT_MS[operationTrackKind(action)]
+}
+
+export function operationPendingLabel(action: OperationAction) {
+  switch (action.type) {
+    case 'create':
+      return 'Creating…'
+    case 'pause':
+      return 'Pausing…'
+    case 'resume':
+      return 'Resuming…'
+    case 'stop':
+      return 'Stopping…'
+    case 'start':
+      return 'Starting…'
+    case 'checkpoint':
+      return 'Creating checkpoint…'
+    case 'restore':
+      return 'Restoring…'
+    case 'delete':
+      return 'Deleting…'
+    case 'exec':
+      return 'Running…'
+  }
+}
+
+function operationInProgressMessage(action: OperationAction) {
+  switch (operationTrackKind(action)) {
+    case 'create':
+      return 'Create is still in progress. Refresh the dashboard to see the box once the control plane records it.'
+    case 'lifecycle':
+      return 'This box change is still in progress. Refresh the dashboard to see updated state.'
+    case 'checkpoint':
+      return 'Checkpoint creation is still in progress. Refresh the dashboard to see it once recorded.'
+    case 'restore':
+      return 'Restore is still in progress. Refresh the dashboard to see updated state.'
+    case 'delete':
+      return 'Delete is still in progress. Refresh the dashboard to confirm removal.'
+    case 'exec':
+      return 'The command is still running. Refresh or retry later if output does not appear.'
+  }
+}
+
+function operationFailureFallback(action: OperationAction) {
+  switch (operationTrackKind(action)) {
+    case 'create':
+      return 'Create did not succeed. The box is shown only after the control plane records it.'
+    default:
+      return 'The operation did not succeed. Inventory updates only after the control plane records them.'
+  }
+}
+
+function settleOperationReceipt(receipt: OperationReceipt, action: OperationAction) {
+  if (receipt.state === 'succeeded') return receipt
+  if (receipt.state === 'failed') {
+    throw new Error(receipt.error?.message || operationFailureFallback(action))
+  }
+  if (receipt.state === 'running' || receipt.state === 'unknown') {
+    throw new Error(operationInProgressMessage(action))
+  }
+  throw new Error(receipt.error?.message || operationFailureFallback(action))
 }
 
 export type OperationAction =
@@ -171,11 +272,18 @@ async function rejected(response: Response) {
   )
 }
 
-export async function submitOperation(
+function pause(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+export async function trackOperation(
   action: OperationAction,
   fetcher: typeof fetch = fetch,
   cookie = globalThis.document?.cookie ?? '',
   id = requestId(),
+  waitMs?: number,
 ): Promise<OperationReceipt> {
   const response = await fetcher('/v1/operations', {
     method: 'POST',
@@ -190,7 +298,11 @@ export async function submitOperation(
   })
   if (response.status !== 200 && response.status !== 202) throw await rejected(response)
   let receipt = (await response.json()) as OperationReceipt
-  for (let attempt = 0; attempt < 20 && receipt.state === 'running'; attempt += 1) {
+  let interval = OPERATION_POLL_START_MS
+  const deadline = Date.now() + (waitMs ?? operationWaitMs(action))
+  while (receipt.state === 'running' && Date.now() < deadline) {
+    await pause(interval)
+    interval = Math.min(OPERATION_POLL_MAX_MS, Math.round(interval * OPERATION_POLL_GROWTH))
     const polled = await fetcher(`/v1/operations/${receipt.id}`, {
       credentials: 'same-origin',
       cache: 'no-store',
@@ -202,15 +314,11 @@ export async function submitOperation(
     }
     receipt = (await polled.json()) as OperationReceipt
   }
-  return receipt
+  return settleOperationReceipt(receipt, action)
 }
 
-function confirmed(receipt: OperationReceipt) {
-  if (receipt.state === 'unknown' || receipt.state === 'running') throw new Error('unknown')
-  if (receipt.state !== 'succeeded') {
-    throw new Error(receipt.error?.message || 'The operation did not succeed.')
-  }
-}
+/** @deprecated Use trackOperation */
+export const submitOperation = trackOperation
 
 async function awaitDashboard(
   fetcher: typeof fetch,
@@ -230,13 +338,8 @@ export async function createBox(
   fetcher: typeof fetch = fetch,
   cookie = globalThis.document?.cookie ?? '',
 ): Promise<Dashboard> {
-  const receipt = await submitOperation({ type: 'create', template, name }, fetcher, cookie)
-  if (receipt.state !== 'succeeded') {
-    throw new Error(
-      receipt.error?.message ||
-        'Create did not succeed. The box is shown only after the control plane records it.',
-    )
-  }
+  const action = { type: 'create', template, name } as const
+  const receipt = await trackOperation(action, fetcher, cookie)
   return awaitDashboard(
     fetcher,
     (dashboard) => dashboard.boxes.some((box) => box.id === receipt.box_id),
@@ -250,8 +353,7 @@ export async function createCheckpoint(
   cookie = globalThis.document?.cookie ?? '',
   id = requestId(),
 ): Promise<Dashboard> {
-  const receipt = await submitOperation({ type: 'checkpoint', id: boxId }, fetcher, cookie, id)
-  confirmed(receipt)
+  const receipt = await trackOperation({ type: 'checkpoint', id: boxId }, fetcher, cookie, id)
   const checkpointId = receipt.result?.type === 'checkpoint' ? receipt.result.id : undefined
   if (!checkpointId || (receipt.result?.box_id && receipt.result.box_id !== boxId)) {
     throw new Error('unknown')
@@ -273,7 +375,7 @@ export async function restoreCheckpoint(
   cookie = globalThis.document?.cookie ?? '',
   id = requestId(),
 ): Promise<Dashboard> {
-  const receipt = await submitOperation(
+  const receipt = await trackOperation(
     {
       type: 'restore',
       id: boxId,
@@ -284,7 +386,6 @@ export async function restoreCheckpoint(
     cookie,
     id,
   )
-  confirmed(receipt)
   if (receipt.box_id !== boxId) throw new Error('unknown')
   return awaitDashboard(
     fetcher,
@@ -301,27 +402,19 @@ export async function applyLifecycle(
   fetcher: typeof fetch = fetch,
   cookie = globalThis.document?.cookie ?? '',
 ): Promise<Dashboard> {
-  const receipt = await submitOperation(
-    action === 'stop' ? { type: 'stop', id: boxId, force } : { type: action, id: boxId },
-    fetcher,
-    cookie,
-  )
-  if (receipt.state === 'unknown') throw new Error('The outcome is unknown.')
-  if (receipt.state !== 'succeeded') {
-    throw new Error(
-      receipt.error?.message ||
-        'The operation did not succeed. The box state is shown only after the control plane reports it.',
-    )
-  }
+  const operation =
+    action === 'stop'
+      ? ({ type: 'stop', id: boxId, force } as const)
+      : ({ type: action, id: boxId } as const)
+  const receipt = await trackOperation(operation, fetcher, cookie)
   const observed = receipt.result?.state
   if (!observed) throw new Error('The control plane has not observed the box state.')
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const dashboard = await fetchDashboard(undefined, fetcher)
-    if (dashboard.boxes.some((box) => box.id === receipt.box_id && box.state === observed)) {
-      return dashboard
-    }
-  }
-  throw new Error('The control plane has not observed the box state.')
+  return awaitDashboard(
+    fetcher,
+    (dashboard) =>
+      dashboard.boxes.some((box) => box.id === receipt.box_id && box.state === observed),
+    'The control plane has not observed the box state.',
+  )
 }
 
 export type ExecOutput = {
@@ -345,8 +438,7 @@ export async function execCommand(
     timeout_ms: timeoutMs,
   }
   if (cwd) request.cwd = cwd
-  const receipt = await submitOperation({ type: 'exec', id: boxId, request }, fetcher, cookie)
-  confirmed(receipt)
+  const receipt = await trackOperation({ type: 'exec', id: boxId, request }, fetcher, cookie)
   const stdout = receipt.result?.stdout
   const stderr = receipt.result?.stderr
   if (receipt.result?.type !== 'exec' || !stdout || !stderr) throw new Error('unknown')
@@ -364,8 +456,7 @@ export async function deleteBox(
   fetcher: typeof fetch = fetch,
   cookie = globalThis.document?.cookie ?? '',
 ): Promise<Dashboard> {
-  const receipt = await submitOperation({ type: 'delete', id: boxId }, fetcher, cookie)
-  confirmed(receipt)
+  const receipt = await trackOperation({ type: 'delete', id: boxId }, fetcher, cookie)
   return awaitDashboard(
     fetcher,
     (dashboard) => !dashboard.boxes.some((box) => box.id === receipt.box_id),

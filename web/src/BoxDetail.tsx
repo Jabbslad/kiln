@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import {
   execCommand,
+  operationPendingLabel,
   formatBytes,
   formatMetric,
   timestamp,
@@ -420,6 +421,11 @@ function Exec({
   const cwdValid = cwd === '' || (cwd.startsWith('/') && !cwd.includes('\0'))
   const ready =
     authenticated && box.state === 'running' && valid && timeoutValid && cwdValid && !pending
+  const execAction = {
+    type: 'exec',
+    id: box.id,
+    request: { argv: command, timeout_ms: timeoutMs, cwd: cwd || undefined },
+  } as const
   return (
     <section className="panel exec-panel">
       <div className="panel-heading">
@@ -490,6 +496,11 @@ function Exec({
         ) : (
           <Unavailable preview={preview} />
         )}
+        {pending && (
+          <p className="field-hint" role="status">
+            {operationPendingLabel(execAction)} Waiting for the command result.
+          </p>
+        )}
         {error && (
           <p className="field-hint error-text" role="alert">
             {error}
@@ -506,8 +517,14 @@ function Exec({
             <pre aria-label="stderr">{output.stderr}</pre>
           </>
         )}
-        <button className="button primary" disabled={!ready}>
-          Execute command <ArrowUpRight size={15} />
+        <button className="button primary" disabled={!ready} aria-busy={pending}>
+          {pending ? (
+            operationPendingLabel(execAction)
+          ) : (
+            <>
+              Execute command <ArrowUpRight size={15} />
+            </>
+          )}
         </button>
       </form>
     </section>

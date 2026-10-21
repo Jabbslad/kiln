@@ -2,6 +2,10 @@ import { render, screen, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, expect, it, vi } from 'vitest'
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 import App from './App'
 import { previewDashboard } from './fixtures'
 
@@ -142,8 +146,103 @@ it('enables create only on a live authenticated console and shows the box once o
   await waitFor(() => expect(posts).toBe(1))
   expect(screen.queryByRole('link', { name: 'api-staging' })).not.toBeInTheDocument()
   releaseObserved(Response.json(observed))
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   expect(await screen.findByRole('link', { name: 'api-staging' })).toBeVisible()
   expect(posts).toBe(1)
+})
+
+it('shows Creating… while create polls and closes with the new box once observed', async () => {
+  const boxId = 'd'.repeat(32)
+  const live = {
+    ...previewDashboard,
+    boxes: [],
+    operations: [],
+    checkpoints: [],
+    templates: [{ ...previewDashboard.templates[0], id: 'tpl-ubuntu', name: 'ubuntu' }],
+  }
+  const observed = {
+    ...live,
+    boxes: [{ ...previewDashboard.boxes[0], id: boxId, name: 'jamie' }],
+  }
+  let pollCount = 0
+  let createFinished = false
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json(
+          { id: posted.id, box_id: boxId, state: 'running', result: null, error: null },
+          { status: 202 },
+        )
+      }
+      if (String(url).startsWith('/v1/operations/')) {
+        pollCount += 1
+        const id = String(url).slice('/v1/operations/'.length)
+        if (pollCount < 8) {
+          return Response.json({ id, box_id: boxId, state: 'running', result: null, error: null })
+        }
+        createFinished = true
+        return Response.json({ id, box_id: boxId, state: 'succeeded', result: null, error: null })
+      }
+      return Response.json(createFinished ? observed : live)
+    }),
+  )
+  document.cookie = '__Host-kiln_csrf=browser-csrf'
+  open('/boxes')
+  const user = userEvent.setup()
+  const [openCreate] = await screen.findAllByRole('button', { name: 'Create box' })
+  await user.click(openCreate)
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Box name' }), 'jamie')
+  await user.click(within(dialog).getByRole('button', { name: 'Create box' }))
+  expect(await within(dialog).findByRole('button', { name: 'Creating…' })).toBeVisible()
+  expect(within(dialog).getByRole('status')).toHaveTextContent(/Creating…/)
+  expect(await screen.findByRole('link', { name: 'jamie' }, { timeout: 5000 })).toBeVisible()
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  expect(pollCount).toBeGreaterThanOrEqual(8)
+})
+
+it('shows the host failure message when create returns failed', async () => {
+  const live = {
+    ...previewDashboard,
+    boxes: [],
+    operations: [],
+    checkpoints: [],
+    templates: [{ ...previewDashboard.templates[0], id: 'tpl-ubuntu', name: 'ubuntu' }],
+  }
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json(
+          {
+            id: posted.id,
+            box_id: 'f'.repeat(32),
+            state: 'failed',
+            result: null,
+            error: { message: 'Template disk is unavailable.' },
+          },
+          { status: 202 },
+        )
+      }
+      return Response.json(live)
+    }),
+  )
+  document.cookie = '__Host-kiln_csrf=browser-csrf'
+  open('/boxes')
+  const user = userEvent.setup()
+  const [openCreate] = await screen.findAllByRole('button', { name: 'Create box' })
+  await user.click(openCreate)
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Box name' }), 'jamie')
+  await user.click(within(dialog).getByRole('button', { name: 'Create box' }))
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    'Template disk is unavailable.',
+  )
+  expect(within(dialog).queryByText(/still in progress/i)).not.toBeInTheDocument()
+  expect(screen.getByRole('dialog')).toBeInTheDocument()
 })
 
 it('keeps create disabled when the live host is offline and keeps other mutations disabled', async () => {
@@ -283,7 +382,7 @@ it('submits stop with force only when that option is chosen', async () => {
   await waitFor(() => expect(force).toBe(true))
 })
 
-it('shows an unknown lifecycle outcome and leaves the box state unchanged', async () => {
+it('shows lifecycle still in progress and leaves the box state unchanged', async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
@@ -304,7 +403,7 @@ it('shows an unknown lifecycle outcome and leaves the box state unchanged', asyn
   const user = userEvent.setup()
   await user.click(await screen.findByRole('button', { name: 'Pause' }))
   await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Pause' }))
-  expect(await screen.findByRole('alert')).toHaveTextContent(/unknown/i)
+  expect(await screen.findByRole('alert')).toHaveTextContent(/still in progress/i)
   expect(screen.getByText('running', { selector: '.status' })).toBeVisible()
 })
 
@@ -395,7 +494,7 @@ it('submits delete and removes the box only after the server observes it gone', 
   expect(posts).toBe(1)
 })
 
-it('shows an unknown delete outcome and leaves the box in the inventory', async () => {
+it('shows delete still in progress and leaves the box in the inventory', async () => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
@@ -418,7 +517,7 @@ it('shows an unknown delete outcome and leaves the box in the inventory', async 
   const dialog = screen.getByRole('dialog')
   await user.type(within(dialog).getByRole('textbox', { name: 'Type the box name' }), 'api-dev')
   await user.click(within(dialog).getByRole('button', { name: 'Delete box' }))
-  expect(await screen.findByRole('alert')).toHaveTextContent(/unknown/i)
+  expect(await screen.findByRole('alert')).toHaveTextContent(/still in progress/i)
   expect(screen.getByRole('heading', { name: 'api-dev' })).toBeVisible()
   expect(screen.queryByText('Box not found')).not.toBeInTheDocument()
 })
