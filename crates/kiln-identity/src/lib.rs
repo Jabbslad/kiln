@@ -108,6 +108,14 @@ pub fn router(mut cfg: Config, store: Store) -> anyhow::Result<Router> {
         .route("/login", get(login))
         .route("/logout", post(logout))
         .route("/static/auth.css", get(auth_css))
+        .route(
+            "/static/fonts/geist-latin-400-normal.woff2",
+            get(auth_font_geist),
+        )
+        .route(
+            "/static/fonts/geist-mono-latin-400-normal.woff2",
+            get(auth_font_geist_mono),
+        )
         .route("/device", get(device_page))
         .route("/device/approve", post(approve))
         .route("/oauth/server", get(oauth_server))
@@ -148,7 +156,7 @@ pub fn router(mut cfg: Config, store: Store) -> anyhow::Result<Router> {
 }
 fn page(body: &str) -> Html<String> {
     Html(format!(
-        r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width"><title>Kiln identity</title><link rel=stylesheet href=/static/auth.css></head><body><main class=card><div class=mark>Kiln identity</div>{body}</main></body></html>"#
+        r#"<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><meta name=theme-color content=#0e0e0e><title>Kiln identity</title><link rel=stylesheet href=/static/auth.css></head><body><main class=card><div class=mark>Kiln identity</div>{body}</main></body></html>"#
     ))
 }
 async fn auth_css() -> Response {
@@ -156,6 +164,24 @@ async fn auth_css() -> Response {
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         "text/css; charset=utf-8".parse().expect("static header"),
+    );
+    secure(response)
+}
+async fn auth_font_geist() -> Response {
+    static_font(include_bytes!(
+        "../static/fonts/geist-latin-400-normal.woff2"
+    ))
+}
+async fn auth_font_geist_mono() -> Response {
+    static_font(include_bytes!(
+        "../static/fonts/geist-mono-latin-400-normal.woff2"
+    ))
+}
+fn static_font(body: &'static [u8]) -> Response {
+    let mut response = body.into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        "font/woff2".parse().expect("static header"),
     );
     secure(response)
 }
