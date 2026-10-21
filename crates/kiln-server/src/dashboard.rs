@@ -170,6 +170,20 @@ impl Document {
                     .is_some_and(|timing| timing.total_ms.is_none())
         })
     }
+
+    pub(crate) fn named_box_missing_launch_total_ms(&self, identifier: &str) -> Option<bool> {
+        let box_body = self
+            .boxes
+            .iter()
+            .find(|box_body| box_body.id == identifier || box_body.name == identifier)?;
+        Some(
+            box_body
+                .timing
+                .as_ref()
+                .and_then(|timing| timing.total_ms)
+                .is_none(),
+        )
+    }
 }
 
 pub(crate) fn document(

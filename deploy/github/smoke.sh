@@ -84,7 +84,8 @@ token_file=${KILN_ADMIN_TOKEN_FILE:-/etc/kiln/admin.token}
 ca_file=${KILN_CA_FILE:-/etc/kiln/ca.crt}
 if [ -n "$box_id" ] && [ -r "$token_file" ] && [ -r "$ca_file" ]; then
   kiln_api=${KILN_API_BIN:-/usr/local/libexec/kiln-api}
-  "$kiln_api" self-check --address "$address" || metrics_rc=$?
+  "$kiln_api" self-check --address "$address" \
+    --require-launch-timing kiln-smoke || metrics_rc=$?
 fi
 
 delete_box || true

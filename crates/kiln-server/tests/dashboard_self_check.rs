@@ -66,6 +66,28 @@ fn passes_when_no_boxes_are_running() {
 }
 
 #[test]
+fn require_launch_timing_rejects_named_box_with_null_timing() {
+    let error =
+        dashboard_check::require_launch_timing(RUNNING_BOX_LEGACY_LAUNCH.as_bytes(), "smoke")
+            .unwrap_err();
+    assert!(matches!(error, CheckError::RequireLaunchTimingMissing));
+}
+
+#[test]
+fn require_launch_timing_passes_when_named_box_has_total_ms() {
+    dashboard_check::require_launch_timing(CAPTURE_HOST_DISK.as_bytes(), "running-box")
+        .expect("capture running-box reports total_ms");
+}
+
+#[test]
+fn require_launch_timing_rejects_missing_box_name() {
+    let error =
+        dashboard_check::require_launch_timing(RUNNING_BOX_LEGACY_LAUNCH.as_bytes(), "kiln-smoke")
+            .unwrap_err();
+    assert!(matches!(error, CheckError::RequireLaunchTimingBoxNotFound));
+}
+
+#[test]
 fn rejects_null_host_disk() {
     let body = br#"{"schema_version":1,"version":"0.4.17","observed_at":"2026-10-21T12:00:01Z","workspace":"local","host":{"name":"local","state":"online","metrics":{"cpu_percent":1.0,"memory_bytes":5000,"disk_bytes":null,"disk_total_bytes":8000}},"boxes":[],"templates":[],"checkpoints":[],"operations":[]}"#;
     let error = dashboard_check::parse_and_validate(body).unwrap_err();
