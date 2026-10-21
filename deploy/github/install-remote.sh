@@ -49,6 +49,19 @@ stamp() {
     -p LoadState -p ActiveState -p ActiveEnterTimestamp -p NRestarts -p MainPID \
     --no-pager
 }
+# Identity is a separate archive. Upgrade it before the stamp so an intentional
+# restart is not the same event as a surprise restart during the server install.
+run_identity() {
+  local found=0 archive
+  for archive in kiln-identity-*.tar.gz; do
+    [ -f "$archive" ] || continue
+    found=$((found + 1))
+  done
+  [ "$found" -eq 0 ] && return 0
+  [ "$found" -eq 1 ] || fail 'more than one identity archive'
+  [ -f "$dir/install-identity.sh" ] || fail 'missing install-identity.sh'
+  bash "$dir/install-identity.sh" "$dir"
+}
 restarts() {
   if [ ! -d /run/systemd/system ]; then
     printf 'unavailable\n'
@@ -56,6 +69,7 @@ restarts() {
   fi
   systemctl show kiln-api.service -p NRestarts --value --no-pager
 }
+run_identity
 before=$(stamp)
 printf 'kiln-api NRestarts before: %s\n' "$(restarts)"
 
@@ -170,4 +184,6 @@ if [ "$before" != "$after" ]; then
   printf 'before:\n%s\nafter:\n%s\n' "$before" "$after" >&2
   exit 1
 fi
-[ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] && [ "$smoke_rc" -eq 0 ]
+identity_rc=0
+run_identity || identity_rc=$?
+[ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] && [ "$smoke_rc" -eq 0 ] && [ "$identity_rc" -eq 0 ]
