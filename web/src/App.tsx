@@ -28,6 +28,7 @@ import { Docs, Settings } from './Settings'
 import { AppLink, Empty } from './ui'
 import Landing from './Landing'
 import { kilnVersionLabel } from './kiln-version'
+import { ReleaseNotesDialog } from './ReleaseNotesDialog'
 
 type Connection =
   | { state: 'loading' }
@@ -61,6 +62,7 @@ function Dashboard() {
   const preview = params.get('preview') === '1'
   const [connection, setConnection] = useState<Connection>({ state: 'loading' })
   const [attempt, setAttempt] = useState(0)
+  const [releaseNotesOpen, setReleaseNotesOpen] = useState(false)
   useEffect(() => {
     if (preview) return
     setConnection({ state: 'loading' })
@@ -150,7 +152,14 @@ function Dashboard() {
                   ? 'Connecting'
                   : 'Not connected'}
           </span>
-          <span className="topbar-version">{kilnVersionLabel(data?.version)}</span>
+          <button
+            type="button"
+            className="topbar-version"
+            aria-label={`Release notes for ${kilnVersionLabel(data?.version)}`}
+            onClick={() => setReleaseNotesOpen(true)}
+          >
+            {kilnVersionLabel(data?.version)}
+          </button>
           {data && !preview && (
             <button className="button" type="button" onClick={() => void signOut()}>
               Sign out
@@ -312,6 +321,12 @@ function Dashboard() {
           </span>
         </footer>
       </div>
+      {releaseNotesOpen ? (
+        <ReleaseNotesDialog
+          displayVersion={data?.version}
+          onClose={() => setReleaseNotesOpen(false)}
+        />
+      ) : null}
     </div>
   )
 }

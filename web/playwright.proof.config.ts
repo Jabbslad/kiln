@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test'
 
 export default defineConfig({
   testDir: './tests',
-  testMatch: ['proof.spec.ts', 'network-unreachable-proof.spec.ts'],
+  testMatch: ['proof.spec.ts', 'network-unreachable-proof.spec.ts', 'release-notes-proof.spec.ts'],
   fullyParallel: false,
   workers: 1,
   retries: 0,
