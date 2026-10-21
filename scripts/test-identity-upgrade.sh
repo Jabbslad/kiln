@@ -555,4 +555,8 @@ if [ -s "$work/ssh.log" ]; then fail "missing identity asset reached ssh"; fi
 
 rm -rf "$work"
 trap - EXIT
+printf 'journal v1 upgrade checks\n'
+cargo test -p kiln-server --lib v1_upgrade_leaves_legacy_finished_at_null --locked
+cargo test -p kiln-server --lib v1_running_box_upgrade_keeps_null_timing_and_passes_self_check --locked
+cargo test -p kiln-server --lib v2_finish_records_measured_launch_duration --locked
 printf 'identity upgrade checks passed\n'

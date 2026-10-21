@@ -24,6 +24,19 @@ impl Drop for Phase {
     }
 }
 
+pub(super) fn take_phases() -> std::collections::BTreeMap<&'static str, f64> {
+    PHASES
+        .try_with(|phases| std::mem::take(&mut *phases.borrow_mut()))
+        .unwrap_or_default()
+}
+
+pub(super) async fn scoped<Fut, T>(launch: Fut) -> T
+where
+    Fut: std::future::Future<Output = T>,
+{
+    PHASES.scope(RefCell::new(BTreeMap::new()), launch).await
+}
+
 fn summarize(values: &[Option<f64>]) -> Value {
     let mut successful: Vec<_> = values.iter().flatten().copied().collect();
     successful.sort_by(f64::total_cmp);

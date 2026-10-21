@@ -9,7 +9,7 @@ export const capabilities = {
   ssh: 'not-yet',
   httpPreview: 'not-yet',
   publicUrl: 'not-yet',
-  launchTiming: 'not-yet',
+  launchTiming: 'available',
 } as const satisfies Record<Capability, CapabilityStatus>
 
 export function capabilityAvailable(capability: Capability): boolean {

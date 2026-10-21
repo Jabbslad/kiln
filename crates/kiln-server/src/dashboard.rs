@@ -1,4 +1,5 @@
 use kiln_api::{Operation, OperationState};
+use kiln_runtime::launch_timing::LaunchTiming;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -30,6 +31,7 @@ pub(crate) struct BoxFacts {
     pub last_error: Option<String>,
     pub restored_from: Option<String>,
     pub metrics: crate::metrics::Snapshot,
+    pub timing: Option<LaunchTiming>,
 }
 
 pub(crate) struct TemplateFacts {
@@ -89,7 +91,7 @@ struct BoxBody {
     last_operation: Option<String>,
     last_error: Option<String>,
     restored_from: Option<String>,
-    timing: Option<Value>,
+    timing: Option<LaunchTiming>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -157,6 +159,16 @@ fn published_workspace(name: &str) -> &str {
 impl Document {
     pub(crate) fn host_metrics(&self) -> crate::metrics::Snapshot {
         self.host.metrics
+    }
+
+    pub(crate) fn running_without_launch_timing(&self) -> bool {
+        self.boxes.iter().any(|box_body| {
+            box_body.state == "running"
+                && box_body
+                    .timing
+                    .as_ref()
+                    .is_some_and(|timing| timing.total_ms.is_none())
+        })
     }
 }
 
@@ -234,7 +246,7 @@ fn box_body(facts: &BoxFacts) -> BoxBody {
         last_operation: facts.last_operation.clone(),
         last_error: public_error(facts.last_error.as_deref()),
         restored_from: facts.restored_from.clone(),
-        timing: None,
+        timing: facts.timing.clone(),
     }
 }
 
