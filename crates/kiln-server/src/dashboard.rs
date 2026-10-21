@@ -164,10 +164,10 @@ impl Document {
     pub(crate) fn running_without_launch_timing(&self) -> bool {
         self.boxes.iter().any(|box_body| {
             box_body.state == "running"
-                && !box_body
+                && box_body
                     .timing
                     .as_ref()
-                    .is_some_and(|timing| timing.total_ms.is_some())
+                    .is_none_or(|timing| timing.total_ms.is_none())
         })
     }
 }
