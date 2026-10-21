@@ -22,6 +22,14 @@ sh scripts/proof.sh dashboard-unreachable
 
 (Writes under `artifacts/proof/dashboard-unreachable/`; same driver as `scripts/capture-dashboard-unreachable-proof.sh`.)
 
+For the header version label opening embedded release notes on the built bundle:
+
+```sh
+sh scripts/proof.sh dashboard-release-notes
+```
+
+(Writes `artifacts/proof/before-dashboard-release-notes.png` and `after-dashboard-release-notes.png`; driver `scripts/capture-dashboard-release-notes-proof.sh`, spec `web/tests/release-notes-proof.spec.ts`.)
+
 CI smoke (no kiln-api build): `KILN_PROOF_SKIP_KILN_APP=1 sh scripts/test-proof.sh`.
 
 ## CLI output

@@ -9,6 +9,7 @@ usage() {
   cat <<'EOF' >&2
 usage: sh scripts/proof.sh dashboard [--phase before|after|smoke]
        sh scripts/proof.sh dashboard-unreachable
+       sh scripts/proof.sh dashboard-release-notes
        sh scripts/proof.sh cli [--phase before|after] [-- kiln-args...]
        sh scripts/proof.sh cli-create-wait
 EOF
@@ -27,7 +28,7 @@ cli_args=
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    dashboard|dashboard-unreachable|cli|cli-create-wait)
+    dashboard|dashboard-unreachable|dashboard-release-notes|cli|cli-create-wait)
       mode=$1
       shift
       ;;
@@ -53,7 +54,8 @@ done
 
 [ -n "$mode" ] || usage
 
-if [ "$mode" != dashboard-unreachable ] && [ "$mode" != cli-create-wait ]; then
+if [ "$mode" != dashboard-unreachable ] && [ "$mode" != dashboard-release-notes ] \
+  && [ "$mode" != cli-create-wait ]; then
   case "$phase" in
     before|after|smoke) ;;
     *) fail "phase must be before, after, or smoke" ;;
@@ -142,6 +144,10 @@ dashboard_unreachable_proof() {
   sh "$root/scripts/capture-dashboard-unreachable-proof.sh" "$proof_dir/dashboard-unreachable"
 }
 
+dashboard_release_notes_proof() {
+  sh "$root/scripts/capture-dashboard-release-notes-proof.sh" "$proof_dir"
+}
+
 cli_create_wait_proof() {
   out=$proof_dir/cli/create-wait-transcript.txt
   mkdir -p "$(dirname "$out")"
@@ -151,6 +157,7 @@ cli_create_wait_proof() {
 case "$mode" in
   dashboard) dashboard_proof ;;
   dashboard-unreachable) dashboard_unreachable_proof ;;
+  dashboard-release-notes) dashboard_release_notes_proof ;;
   cli) cli_proof ;;
   cli-create-wait) cli_create_wait_proof ;;
 esac
