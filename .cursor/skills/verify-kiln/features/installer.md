@@ -2,7 +2,7 @@
 
 `deploy/bootstrap/install.sh` is the public one-command installer. `client` (the default) downloads a pinned `kiln` binary into `~/.local/bin`. `server` downloads the server package and runs `deploy/install.sh` under passwordless sudo. Installing and deploying Kiln is shell scripts only. The bootstrap pins the latest published release and runs `install.sh`. An archive whose installer is `install.py` is rejected.
 
-Tagged deploy and auto-release also ship `kiln-identity-*.tar.gz` and `kiln-dashboard-*.tar.gz`. `deploy/github/install-remote.sh` runs `deploy/github/install-identity.sh` before server install, passes `--dashboard-archive` into `deploy/install.sh`, runs `deploy/github/check-dashboard-metrics.sh` immediately after `--healthcheck` (before guest smoke), then `deploy/github/smoke.sh`, then `deploy/github/check-dashboard-bundle.sh` against the live app HTML.
+Tagged deploy and auto-release also ship `kiln-identity-*.tar.gz` and `kiln-dashboard-*.tar.gz`. `deploy/github/install-remote.sh` runs `deploy/github/install-identity.sh` before server install, passes `--dashboard-archive` into `deploy/install.sh`, runs `kiln-api self-check` immediately after `--healthcheck` (before guest smoke), then `deploy/github/smoke.sh`, then `deploy/github/check-dashboard-bundle.sh` against the live app HTML.
 
 ## Sub-features
 

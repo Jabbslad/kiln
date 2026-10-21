@@ -152,7 +152,6 @@ put "$work/$dashboard" "$remote/$dashboard"
 put "$work/${dashboard}.sha256" "$remote/${dashboard}.sha256"
 put "$script_dir/install-identity.sh" "$remote/install-identity.sh"
 put "$script_dir/check-dashboard-bundle.sh" "$remote/check-dashboard-bundle.sh"
-put "$script_dir/check-dashboard-metrics.sh" "$remote/check-dashboard-metrics.sh"
 if [ "$tag" = "v0.4.4" ]; then
   put "$repo_root/deploy/install.sh" "$remote/installer.sh"
 fi

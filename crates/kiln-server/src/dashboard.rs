@@ -1,5 +1,5 @@
 use kiln_api::{Operation, OperationState};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 #[derive(Default)]
@@ -50,7 +50,7 @@ pub(crate) struct OperationFacts {
     pub operation: Operation,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct Document {
     schema_version: u32,
     version: String,
@@ -63,26 +63,26 @@ pub(crate) struct Document {
     operations: Vec<OperationBody>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct HostBody {
     name: String,
-    state: &'static str,
+    state: String,
     metrics: crate::metrics::Snapshot,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Resources {
     vcpus: u32,
     memory_bytes: u64,
     disk_bytes: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct BoxBody {
     id: String,
     name: String,
-    state: &'static str,
-    image: &'static str,
+    state: String,
+    image: String,
     resources: Option<Resources>,
     metrics: crate::metrics::Snapshot,
     created_at: String,
@@ -92,18 +92,18 @@ struct BoxBody {
     timing: Option<Value>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct TemplateBody {
     id: String,
     name: String,
-    version: &'static str,
-    description: &'static str,
+    version: String,
+    description: String,
     compatible: bool,
     development_only: bool,
     resources: Resources,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct CheckpointBody {
     id: String,
     box_id: String,
@@ -113,13 +113,13 @@ struct CheckpointBody {
     compatible: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct OperationBody {
     id: String,
     box_id: String,
     box_name: String,
-    kind: &'static str,
-    state: &'static str,
+    kind: String,
+    state: String,
     created_at: String,
     detail: String,
     steps: Vec<Value>,
@@ -154,6 +154,12 @@ fn published_workspace(name: &str) -> &str {
     }
 }
 
+impl Document {
+    pub(crate) fn host_metrics(&self) -> crate::metrics::Snapshot {
+        self.host.metrics
+    }
+}
+
 pub(crate) fn document(
     workspace: &str,
     observed_at: &str,
@@ -171,8 +177,12 @@ pub(crate) fn document(
             id: row.id.clone(),
             box_id: row.box_id.clone(),
             box_name: row.box_name.clone(),
-            kind: if row.is_create { "create" } else { "unknown" },
-            state,
+            kind: if row.is_create {
+                "create".to_string()
+            } else {
+                "unknown".to_string()
+            },
+            state: state.to_string(),
             created_at: utc_timestamp(row.created_at),
             detail: client_detail(&row.operation),
             steps: Vec::new(),
@@ -185,7 +195,7 @@ pub(crate) fn document(
         workspace: workspace.clone(),
         host: HostBody {
             name: workspace,
-            state: host_state,
+            state: host_state.to_string(),
             metrics: host_metrics,
         },
         boxes: inventory.boxes.iter().map(box_body).collect(),
@@ -216,8 +226,8 @@ fn box_body(facts: &BoxFacts) -> BoxBody {
     BoxBody {
         id: facts.id.clone(),
         name: facts.name.clone(),
-        state: box_state(&facts.state),
-        image: "",
+        state: box_state(&facts.state).to_string(),
+        image: String::new(),
         resources: resources(facts.vcpus, facts.memory_mib, facts.disk_bytes),
         metrics: facts.metrics,
         created_at: utc_timestamp(facts.created_at),
@@ -243,8 +253,8 @@ fn template_body(facts: &TemplateFacts) -> Option<TemplateBody> {
     Some(TemplateBody {
         id: facts.id.clone(),
         name: facts.name.clone(),
-        version: "",
-        description: "",
+        version: String::new(),
+        description: String::new(),
         compatible: true,
         development_only: facts.development_only,
         resources: resources(facts.vcpus, facts.memory_mib, facts.disk_bytes)?,
