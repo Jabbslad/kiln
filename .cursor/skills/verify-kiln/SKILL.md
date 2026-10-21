@@ -10,7 +10,7 @@ Kiln has several user surfaces. Pick the one in the feature file and launch only
 Surfaces:
 
 - `kiln-runtime` on a Linux host with KVM. This is the local box, exec, template, and checkpoint tool.
-- `kiln` over HTTPS to `kiln-host` / `kiln-api`. This is the laptop client, including SSH and a private CA.
+- `kiln` over HTTPS to `kiln-host` / `kiln-api`. This is the laptop client and private CA profiles. Guest SSH (`kiln ssh`) needs a client URL that reaches the gateway SSH routes; the public door does not expose them yet (`features/guest-access.md`, `features/public-door.md`).
 - `kiln login` against the identity service. The client default issuer is `https://dark-forge.dev`.
 - The public door in `features/public-door.md`. A laptop dials `https://cli.dark-forge.dev` on port 443 after identity approval. The door checks the token before it dials loopback `kiln-api`. tcp/8443 is closed.
 - `deploy/bootstrap/install.sh` for client and server install.

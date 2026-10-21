@@ -16,9 +16,13 @@ A missing credential or a bogus bearer is HTTP 401, code `unauthorized`. A query
 
 Mutations require a signed-in operate session: cookies `__Host-kiln_app` and `__Host-kiln_csrf`, plus header `x-kiln-csrf` on `POST /v1/operations`. The app listener mints that session after OAuth against the enrolled identity origin. `POST /logout` with form field `csrf` clears it (`web/src/App.tsx` **Sign out**).
 
-Live mutations (not preview, host `online`): create box, pause, resume, stop (optional force), start, delete, checkpoint, same-box restore, and one-shot exec (`web/src/dialogs.tsx`, `web/src/BoxDetail.tsx`). Preview, a disconnected live view, or host offline/unknown keeps controls disabled. Terminal connect, HTTP preview routing, and in-browser SSH stay unavailable; the Access panel shows copyable `kiln ssh` / `kiln ssh-config` hints and labels HTTP preview **Not available yet** (`web/src/BoxDetail.tsx`).
+Live mutations (not preview, host `online`): create box, pause, resume, stop (optional force), start, delete, checkpoint, same-box restore, and one-shot exec (`web/src/dialogs.tsx`, `web/src/BoxDetail.tsx`). Preview, a disconnected live view, or host offline/unknown keeps controls disabled. The in-browser terminal tab stays disabled; do not document terminal transport here.
 
-Shared client logic is `trackOperation` in `web/src/data.ts`: POST `/v1/operations` with a client-generated id, poll `/v1/operations/{id}`, then refresh `GET /api/v1/dashboard` until inventory reflects the action (except exec, which returns stdout/stderr on the receipt).
+**Shared operation tracker (`trackOperation`, #104/#105).** All console mutations funnel through `trackOperation` in `web/src/data.ts` (formerly `submitOperation`). It POSTs `/v1/operations` with a random 32-hex `id`, sends `x-kiln-csrf` from `__Host-kiln_csrf`, polls `/v1/operations/{id}` with exponential backoff until the receipt leaves `running`, then either returns exec stdout/stderr on the receipt or re-fetches `GET /api/v1/dashboard` until `dashboardReflectsOperation` sees the expected box, checkpoint, or deletion. Inventory never updates optimistically. `web/src/data.test.ts` covers create, lifecycle, checkpoint, restore, delete, exec, CSRF or session rejection, and pending-dashboard messaging. `web/src/operationKinds.ts` lists the nine action tags kept in sync with `kiln_api::Action` by `dashboard_operation_action_types_match_api_action_tags`.
+
+**Access panel (#107, corrected in #109).** On the Terminal tab, `Access` labels SSH, HTTP preview, and public access **Not available yet** with disabled buttons. It does not show `kiln ssh` or `kiln ssh-config` copy hints. `web/src/BoxDetail.test.tsx` asserts the SSH section has no `kiln ssh` text.
+
+**Why laptops still cannot `kiln ssh`.** SSH upgrade routes live on loopback `kiln-api` (`/v1/boxes/{id}/ssh`, `/v1/boxes/{id}/ssh-key` in `crates/kiln-server/src/gateway.rs`). The public door (`kiln-door`) forwards read and operate JSON routes only; it does not proxy SSH. A laptop profile aimed at `https://cli.dark-forge.dev` therefore cannot complete `kiln ssh` today even when boxes run on the host. Guest SSH remains a separate journey in `features/guest-access.md` for profiles that reach a gateway exposing those routes. Do not expand door SSH in this file; that belongs in its own PR.
 
 ## Document
 
@@ -47,6 +51,8 @@ A host body larger than 1 MiB makes the gateway return HTTP 502 with code `host_
 - Settings at `/settings` and the guide at `/docs`.
 - Explicit preview versus live authenticated console.
 - Sign out for the operate session.
+- Access panel (SSH, HTTP preview, public access labelled unavailable).
+- Shared `trackOperation` polling and dashboard refresh after mutations.
 
 ## How to get to it (user POV)
 
@@ -118,7 +124,12 @@ cd web
 KILN_SCREENSHOT_DIR="$VERIFY_EVIDENCE/dashboard" npm run test:browser
 ```
 
-Preview tests keep mutations disabled and make no `/api/` requests. Live-route tests mock `GET /api/v1/dashboard` for loading, empty, and error states. Without preview on the dev server (no proxy), `/boxes` shows **Connect your control plane**.
+Preview tests keep mutations disabled and make no `/api/` requests. Live-route tests mock `GET /api/v1/dashboard` for loading, empty, and error states. Without preview on the dev server (no proxy), `/boxes` shows **Connect your control plane**. Unit tests include `web/src/BoxDetail.test.tsx` for the Access panel SSH wording.
+
+```sh
+cd web
+npm test -- BoxDetail.test.tsx
+```
 
 ## Gotchas
 

@@ -1,6 +1,6 @@
 # Kiln feature map
 
-User-facing surfaces on current `main`. Each file is one journey. KVM means a real Firecracker guest; the dashboard preview and the installer harness do not boot one.
+User-facing surfaces on current `main`. Each file is one journey. KVM means a real Firecracker guest; the dashboard preview and the installer harness do not boot one. A separate PR removes Windows client support; until it lands, `guest-access.md` still mentions Windows in one sentence — do not edit that line in docs PRs.
 
 | Feature | File | What the user does | KVM |
 | --- | --- | --- | --- |
