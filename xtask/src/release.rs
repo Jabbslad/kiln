@@ -789,7 +789,7 @@ fn test_server_contains_prebuilt_image_not_host_snapshots_or_secrets() {
     );
 }
 
-fn test_bootstrap_accepts_windows_crlf_checkout() {
+fn test_bootstrap_accepts_crlf_checkout() {
     let on_disk =
         fs::read_to_string(crate::repo_root().join("deploy/bootstrap/install.sh")).unwrap();
     let lf = on_disk.replace('\r', "");
@@ -928,5 +928,5 @@ register_cases! {
     test_identity_allowlist_excludes_vm_and_private_state,
     test_invalid_version_target_and_missing_binary_make_no_archive,
     test_server_contains_prebuilt_image_not_host_snapshots_or_secrets,
-    test_bootstrap_accepts_windows_crlf_checkout,
+    test_bootstrap_accepts_crlf_checkout,
 }

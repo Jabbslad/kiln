@@ -163,10 +163,9 @@ pub fn resolve(repo: &Path, ref_type: &str, ref_name: &str) -> Result<ReleaseVer
 
 pub fn clap_line(binary: &Path, version: &ReleaseVersion) -> Result<String, String> {
     let name = file_name(binary);
-    let stem = name.strip_suffix(".exe").unwrap_or(&name);
     let command = CLAP_COMMANDS
         .iter()
-        .find(|(key, _)| *key == stem)
+        .find(|(key, _)| *key == name)
         .map(|(_, command)| *command)
         .ok_or_else(|| format!("unknown binary {name}"))?;
     Ok(format!("{command} {}", version.cargo()))
