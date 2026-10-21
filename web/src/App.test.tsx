@@ -327,6 +327,128 @@ it('disables lifecycle confirmation when the console is not live or not authenti
   expect(within(screen.getByRole('dialog')).getByText(/Read-only console/)).toBeVisible()
 })
 
+it('does not submit delete until the typed name matches', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(previewDashboard)))
+  open('/boxes/box-7f3a2c1e')
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
+  const dialog = screen.getByRole('dialog')
+  const confirm = within(dialog).getByRole('button', { name: 'Delete box' })
+  const name = within(dialog).getByRole('textbox', { name: 'Type the box name' })
+  expect(confirm).toBeDisabled()
+  await user.type(name, 'API-DEV')
+  expect(confirm).toBeDisabled()
+  await user.clear(name)
+  await user.type(name, 'api-de')
+  expect(confirm).toBeDisabled()
+  await user.type(name, 'v')
+  expect(confirm).toBeEnabled()
+})
+
+it('submits delete and removes the box only after the server observes it gone', async () => {
+  const boxId = 'box-7f3a2c1e'
+  let releaseObserved: (response: Response) => void = () => {}
+  const observedResponse = new Promise<Response>((resolve) => {
+    releaseObserved = resolve
+  })
+  let posts = 0
+  let observations = 0
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        posts += 1
+        const posted = JSON.parse(String(init.body))
+        expect(posted.action).toEqual({ type: 'delete', id: boxId })
+        expect(init.credentials).toBe('same-origin')
+        return Response.json(
+          {
+            id: posted.id,
+            box_id: boxId,
+            state: 'succeeded',
+            result: { type: 'deleted', id: boxId },
+            error: null,
+          },
+          { status: 202 },
+        )
+      }
+      if (posts === 0) return Response.json(previewDashboard)
+      observations += 1
+      if (observations === 1) return Response.json(previewDashboard)
+      return observedResponse
+    }),
+  )
+  document.cookie = '__Host-kiln_csrf=browser-csrf'
+  open(`/boxes/${boxId}`)
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Type the box name' }), 'api-dev')
+  await user.click(within(dialog).getByRole('button', { name: 'Delete box' }))
+  await waitFor(() => expect(posts).toBe(1))
+  expect(screen.getByRole('heading', { name: 'api-dev' })).toBeVisible()
+  expect(screen.queryByText('Box not found')).not.toBeInTheDocument()
+  const gone = structuredClone(previewDashboard)
+  gone.boxes = gone.boxes.filter((box) => box.id !== boxId)
+  releaseObserved(Response.json(gone))
+  expect(await screen.findByText('Box not found')).toBeVisible()
+  expect(posts).toBe(1)
+})
+
+it('shows an unknown delete outcome and leaves the box in the inventory', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json({
+          id: posted.id,
+          box_id: 'box-7f3a2c1e',
+          state: 'unknown',
+          result: null,
+          error: null,
+        })
+      }
+      return Response.json(previewDashboard)
+    }),
+  )
+  open('/boxes/box-7f3a2c1e')
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Type the box name' }), 'api-dev')
+  await user.click(within(dialog).getByRole('button', { name: 'Delete box' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent(/unknown/i)
+  expect(screen.getByRole('heading', { name: 'api-dev' })).toBeVisible()
+  expect(screen.queryByText('Box not found')).not.toBeInTheDocument()
+})
+
+it('disables delete when the console is not live or not authenticated', async () => {
+  const user = userEvent.setup()
+  const { unmount } = open('/boxes/box-7f3a2c1e?preview=1')
+  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
+  const previewDialog = screen.getByRole('dialog')
+  await user.type(
+    within(previewDialog).getByRole('textbox', { name: 'Type the box name' }),
+    'api-dev',
+  )
+  expect(within(previewDialog).getByRole('button', { name: 'Delete box' })).toBeDisabled()
+  expect(within(previewDialog).getByText(/Read-only preview/)).toBeVisible()
+  unmount()
+
+  const offline = {
+    ...previewDashboard,
+    host: { ...previewDashboard.host, state: 'offline' as const },
+  }
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(offline)))
+  open('/boxes/box-7f3a2c1e')
+  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Type the box name' }), 'api-dev')
+  expect(within(dialog).getByRole('button', { name: 'Delete box' })).toBeDisabled()
+  expect(within(dialog).getByText(/Read-only console/)).toBeVisible()
+})
+
 it('validates a create form but cannot create a fake VM', async () => {
   open('/templates?preview=1')
   const user = userEvent.setup()

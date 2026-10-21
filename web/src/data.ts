@@ -130,6 +130,7 @@ export type OperationAction =
   | { type: 'resume'; id: string }
   | { type: 'stop'; id: string; force: boolean }
   | { type: 'start'; id: string }
+  | { type: 'delete'; id: string }
   | { type: 'checkpoint'; id: string }
   | {
       type: 'restore'
@@ -310,6 +311,20 @@ export async function applyLifecycle(
     }
   }
   throw new Error('The control plane has not observed the box state.')
+}
+
+export async function deleteBox(
+  boxId: string,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+): Promise<Dashboard> {
+  const receipt = await submitOperation({ type: 'delete', id: boxId }, fetcher, cookie)
+  confirmed(receipt)
+  return awaitDashboard(
+    fetcher,
+    (dashboard) => !dashboard.boxes.some((box) => box.id === receipt.box_id),
+    'The control plane has not observed the deletion.',
+  )
 }
 
 export async function fetchDashboard(
