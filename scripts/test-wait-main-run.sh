@@ -144,7 +144,7 @@ decide=$(awk '
 printf '%s\n' "$decide" | grep -q 'sh scripts/wait-main-run.sh' || fail 'decide step does not wait'
 printf '%s\n' "$decide" | grep -q 'mode=fallback' || fail 'decide step does not skip a fallback'
 wait_line=$(printf '%s\n' "$decide" | grep -n 'wait-main-run.sh' | head -n 1 | cut -d: -f1)
-fetch_line=$(printf '%s\n' "$decide" | grep -n 'reuse_release.py fetch' | head -n 1 | cut -d: -f1)
+fetch_line=$(printf '%s\n' "$decide" | grep -n 'cargo xtask reuse-release fetch' | head -n 1 | cut -d: -f1)
 if [ -z "$wait_line" ] || [ -z "$fetch_line" ] || [ "$wait_line" -ge "$fetch_line" ]; then
   fail 'fetch runs before the wait'
 fi

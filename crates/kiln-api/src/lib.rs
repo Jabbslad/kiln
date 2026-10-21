@@ -1,6 +1,6 @@
 //! Portable, public management contract. No runtime records or host paths.
 pub mod auth;
-pub use kiln_protocol::{ExecRequest, ExecResult, SshReady, valid_ssh_public_key};
+pub use kiln_protocol::{ExecRequest, ExecResult, SshReady, release_version, valid_ssh_public_key};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_REQUEST_BYTES: usize = 128 * 1024;

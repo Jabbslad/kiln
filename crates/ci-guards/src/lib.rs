@@ -932,17 +932,16 @@ pub fn reuse_lookup_violations(workflow: &str) -> Vec<String> {
         violations.push("draft-release job is missing".to_string());
         return violations;
     };
-    if !draft.contains("needs.reuse.outputs.version") || draft.contains("finish --version \"$TAG\"")
-    {
+    if draft.contains("needs.reuse.outputs.version") || !draft.contains("github.ref_name") {
         violations.push(
-            "draft-release finish checks the git tag against main's archive names".to_string(),
+            "draft-release finish checks main's archive names instead of the git tag".to_string(),
         );
     }
     violations
 }
 
-/// A v* publish must refuse a tag that is not the Cargo.toml version, and it
-/// must check the reused Linux binary before draft-release runs.
+/// A v* publish stamps reused packages onto the tag when that tag is not the
+/// version main built, then checks the Linux binary before draft-release runs.
 pub fn version_guard_violations(workflow: &str) -> Vec<String> {
     let jobs = job_blocks(workflow);
     let mut violations = Vec::new();
@@ -955,10 +954,18 @@ pub fn version_guard_violations(workflow: &str) -> Vec<String> {
             {
                 violations.push("version-guard does not run on v* tag pushes".to_string());
             }
-            if !guard.contains("scripts/check-tag-version.sh") || !guard.contains("Cargo.toml") {
+            if guard.contains("scripts/check-tag-version.sh") || guard.contains("Cargo.toml") {
                 violations.push(
-                    "version-guard does not compare the tag to the Cargo.toml version".to_string(),
+                    "version-guard still requires the tag to equal the Cargo.toml version"
+                        .to_string(),
                 );
+            }
+            if !guard.contains("scripts/stamp-release-dist.sh") {
+                violations
+                    .push("version-guard does not stamp reused packages onto the tag".to_string());
+            }
+            if !guard.contains("actions/attest-build-provenance") {
+                violations.push("version-guard does not attest packages it stamps".to_string());
             }
             if !guard.contains("check-binary")
                 || !guard.contains("x86_64-unknown-linux-gnu")

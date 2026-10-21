@@ -1,10 +1,10 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use kiln_runtime::{Error, Result, runtime::Runtime};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Parser)]
-#[command(version, about = "Persistent Linux microVMs — local runtime")]
+#[command(about = "Persistent Linux microVMs — local runtime")]
 struct Cli {
     #[arg(long, global = true, default_value = ".kiln")]
     state_dir: PathBuf,
@@ -308,9 +308,16 @@ fn launch_profile(runtime: &Runtime, profile: &str, allowed: bool) -> Result<()>
     Ok(())
 }
 
+fn parse_cli() -> Cli {
+    let matches = Cli::command()
+        .version(kiln_protocol::release_version())
+        .get_matches();
+    Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
 #[tokio::main]
 async fn main() {
-    match run(Cli::parse()).await {
+    match run(parse_cli()).await {
         Ok((value, exit)) => {
             println!(
                 "{}",

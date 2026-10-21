@@ -1,6 +1,6 @@
 mod ssh;
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use kiln_api::{Action, BoxView, ExecRequest, Operation, OperationState, Outcome, Submit, new_id};
 use kiln_client::Client;
 use kiln_client::auth::{IdentityClient, LoginPoll, Session, credential_from_login};
@@ -15,11 +15,7 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(
-    name = "kiln",
-    version,
-    about = "Manage Kiln microVMs over authenticated HTTPS"
-)]
+#[command(name = "kiln", about = "Manage Kiln microVMs over authenticated HTTPS")]
 struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -1106,9 +1102,16 @@ async fn ssh_details(path: &Path, profile: &str, id: &str, client: &Client) -> R
     })
 }
 
+fn parse_cli() -> Cli {
+    let matches = Cli::command()
+        .version(kiln_api::release_version())
+        .get_matches();
+    Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    let cli = parse_cli();
     let as_json = cli.json;
     match run(cli).await {
         Ok(exit) => std::process::exit(exit),
