@@ -7,6 +7,8 @@ const BOXES_FIRST_HOST_CPU_NULL: &str = include_str!("fixtures/boxes_first_host_
 const RUNNING_BOX_CPU_NULL: &str = include_str!("fixtures/running_box_cpu_null_host_ok.json");
 const RUNNING_BOX_MISSING_LAUNCH: &str =
     include_str!("fixtures/running_box_missing_launch_timing.json");
+const RUNNING_BOX_LEGACY_LAUNCH: &str =
+    include_str!("fixtures/running_box_legacy_launch_timing.json");
 
 #[test]
 fn rejects_realistic_capture_fixture_without_host_disk() {
@@ -42,6 +44,12 @@ fn rejects_null_host_cpu_when_box_cpu_is_present() {
 fn passes_when_running_box_cpu_is_null_and_host_metrics_are_numeric() {
     dashboard_check::parse_and_validate(RUNNING_BOX_CPU_NULL.as_bytes())
         .expect("deploy gate is host-only");
+}
+
+#[test]
+fn passes_when_legacy_running_box_has_null_timing() {
+    dashboard_check::parse_and_validate(RUNNING_BOX_LEGACY_LAUNCH.as_bytes())
+        .expect("legacy running boxes stay exempt until a v2 launch is recorded");
 }
 
 #[test]

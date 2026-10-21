@@ -770,6 +770,193 @@ mod tests {
         assert!(entry["metrics"]["disk_bytes"].as_u64().unwrap() > 0);
     }
 
+    #[test]
+    fn v1_running_box_upgrade_keeps_null_timing_and_passes_self_check() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = root.path().join("runtime");
+        let journal = root.path().join("journal");
+        fs::create_dir_all(&journal).unwrap();
+        fs::set_permissions(&journal, fs::Permissions::from_mode(0o700)).unwrap();
+        let id: String = "0123456789abcdef0123456789abcdef".into();
+        let run: String = "0123456789abcdef0123456789abcde0".into();
+        let response = serde_json::json!({
+            "id": "0123456789abcdef0123456789abcde1",
+            "box_id": id,
+            "state": "succeeded",
+            "result": {
+                "type": "box",
+                "id": id,
+                "name": "legacy-running",
+                "state": "running",
+                "memory_mib": 256,
+                "vcpus": 1
+            },
+            "error": null
+        });
+        let config = Config {
+            runtime_dir: runtime.clone(),
+            journal_dir: journal.clone(),
+            socket: root.path().join("host.sock"),
+            isolation_config: None,
+            allow_unsafe_development: true,
+            templates: Default::default(),
+        };
+        let conn = rusqlite::Connection::open(journal.join("operations.sqlite")).unwrap();
+        conn.execute_batch(
+            "PRAGMA user_version=1;
+             CREATE TABLE operations (
+               id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
+               is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
+               created_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,created_at)
+             VALUES (?1,?2,?3,1,0,?4,?5)",
+            rusqlite::params![
+                "0123456789abcdef0123456789abcde1",
+                b"fingerprint-bytes",
+                id,
+                response.to_string(),
+                1_700_000_000_i64,
+            ],
+        )
+        .unwrap();
+        drop(conn);
+        let directory = runtime.join("boxes").join(&id).join(&run);
+        fs::create_dir_all(&directory).unwrap();
+        for path in [
+            &runtime,
+            &runtime.join("boxes"),
+            &runtime.join("boxes").join(&id),
+        ] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        fs::write(
+            runtime.join("boxes").join(&id).join("box.json"),
+            serde_json::to_vec(&BoxRecord {
+                schema_version: 1,
+                id: id.clone(),
+                name: "legacy-running".into(),
+                state: "running".into(),
+                run: run.clone(),
+                process: None,
+                image: kiln_runtime::image::Manifest {
+                    schema_version: 1,
+                    architecture: "x86_64".into(),
+                    kernel_path: "/kernel".into(),
+                    kernel_sha256: "ab".repeat(32),
+                    rootfs_path: "/rootfs".into(),
+                    rootfs_sha256: "cd".repeat(32),
+                    agent_protocol_version: 1,
+                    boot_mode: kiln_runtime::image::BootMode::Init,
+                },
+                host: "fixture-host".into(),
+                memory_mib: 256,
+                vcpus: 1,
+                source: None,
+                operation: None,
+                last_error: None,
+                disk_copy: "Copy".into(),
+                disk_layer: None,
+                jail: None,
+                network: None,
+                last_launch: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let host = Host::open(&config).unwrap();
+        let value = serde_json::to_value(host.dashboard().unwrap()).unwrap();
+        assert!(value["boxes"][0]["timing"].is_null());
+        crate::dashboard_check::parse_and_validate(&serde_json::to_vec(&value).unwrap())
+            .expect("legacy running box stays exempt from the launch gate");
+    }
+
+    #[test]
+    fn measured_launch_on_box_record_satisfies_self_check() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = root.path().join("runtime");
+        let journal = root.path().join("journal");
+        let config = Config {
+            runtime_dir: runtime.clone(),
+            journal_dir: journal.clone(),
+            socket: root.path().join("host.sock"),
+            isolation_config: None,
+            allow_unsafe_development: true,
+            templates: Default::default(),
+        };
+        drop(Host::open(&config).unwrap());
+        let id: String = "0123456789abcdef0123456789abcdef".into();
+        let run: String = "0123456789abcdef0123456789abcde0".into();
+        fs::create_dir_all(runtime.join("boxes").join(&id).join(&run)).unwrap();
+        fs::write(
+            runtime.join("boxes").join(&id).join("box.json"),
+            serde_json::to_vec(&BoxRecord {
+                schema_version: 1,
+                id: id.clone(),
+                name: "measured".into(),
+                state: "running".into(),
+                run: run.clone(),
+                process: None,
+                image: kiln_runtime::image::Manifest {
+                    schema_version: 1,
+                    architecture: "x86_64".into(),
+                    kernel_path: "/kernel".into(),
+                    kernel_sha256: "ab".repeat(32),
+                    rootfs_path: "/rootfs".into(),
+                    rootfs_sha256: "cd".repeat(32),
+                    agent_protocol_version: 1,
+                    boot_mode: kiln_runtime::image::BootMode::Init,
+                },
+                host: "fixture-host".into(),
+                memory_mib: 256,
+                vcpus: 1,
+                source: None,
+                operation: None,
+                last_error: None,
+                disk_copy: "Copy".into(),
+                disk_layer: None,
+                jail: None,
+                network: None,
+                last_launch: Some(kiln_runtime::launch_timing::LaunchTiming {
+                    method: "create".into(),
+                    cache: "uncontrolled".into(),
+                    disk_copy: "Copy".into(),
+                    storage_ms: Some(10.),
+                    vmm_ms: Some(5.),
+                    restore_ms: None,
+                    agent_ms: None,
+                    init_ms: None,
+                    first_command_ms: None,
+                    total_ms: Some(42.),
+                }),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let db = rusqlite::Connection::open(journal.join("operations.sqlite")).unwrap();
+        db.execute(
+            "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,created_at,action)
+             VALUES (?1,?2,?3,1,0,?4,?5,'create')",
+            rusqlite::params![
+                "0123456789abcdef0123456789abcde1",
+                b"fingerprint-bytes",
+                id,
+                r#"{"id":"0123456789abcdef0123456789abcde1","box_id":"0123456789abcdef0123456789abcdef","state":"succeeded","result":{"type":"box","id":"0123456789abcdef0123456789abcdef","name":"measured","state":"running","memory_mib":256,"vcpus":1},"error":null}"#,
+                1_700_000_000_i64,
+            ],
+        )
+        .unwrap();
+        let host = Host::open(&config).unwrap();
+        let value = serde_json::to_value(host.dashboard().unwrap()).unwrap();
+        assert_eq!(value["boxes"][0]["timing"]["total_ms"].as_f64(), Some(42.));
+        crate::dashboard_check::parse_and_validate(&serde_json::to_vec(&value).unwrap())
+            .expect("measured launch must satisfy the gate");
+    }
+
     #[tokio::test]
     async fn ssh_key_lookup_does_not_consume_a_tunnel_permit() {
         let root = tempfile::tempdir().unwrap();

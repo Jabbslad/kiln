@@ -111,7 +111,7 @@ cargo test -p kiln-server --test app_listener --locked -- --nocapture \
   a_signed_in_operate_session_reaches_the_host
 ```
 
-Deploy and smoke validate live host metrics with `kiln-api self-check`, which deserializes the same `dashboard::Document` the server publishes and checks `host.metrics.cpu_percent`, `host.metrics.memory_bytes`, `host.metrics.disk_bytes`, and `host.metrics.disk_total_bytes` (running-box CPU may be null on the first read after restart; box disk is not gated). Every **running** box must publish `timing.total_ms` from the last create, start, or restore (measured phases when the runtime recorded them, otherwise journal duration). Stopped boxes may show their last launch or `timing: null`; with zero running boxes the gate passes before smoke creates a box. No shell JSON parsing on the host.
+Deploy and smoke validate live host metrics with `kiln-api self-check`, which deserializes the same `dashboard::Document` the server publishes and checks `host.metrics.cpu_percent`, `host.metrics.memory_bytes`, `host.metrics.disk_bytes`, and `host.metrics.disk_total_bytes` (running-box CPU may be null on the first read after restart; box disk is not gated). For launch timing, a **running** box with `timing: null` is a legacy box (no v2 journal finish and no stored measurement) and passes the gate. Once the dashboard publishes a `timing` object for a running box, `timing.total_ms` must be set (from runtime phases, a v2 journal finish, or honest timestamps already present in an old operation JSON). Stopped boxes may show their last launch or `timing: null`; with zero running boxes the gate passes before smoke creates a box. No shell JSON parsing on the host.
 
 ```sh
 cargo test -p kiln-server --test dashboard_self_check --locked

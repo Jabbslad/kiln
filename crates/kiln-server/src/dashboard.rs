@@ -167,7 +167,7 @@ impl Document {
                 && box_body
                     .timing
                     .as_ref()
-                    .is_none_or(|timing| timing.total_ms.is_none())
+                    .is_some_and(|timing| timing.total_ms.is_none())
         })
     }
 }
