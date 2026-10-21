@@ -39,7 +39,7 @@ A host body larger than 1 MiB (`kiln_api::MAX_RESPONSE_BYTES`) makes `stamp` ret
 - Settings at `/settings` and the guide at `/docs`.
 - Explicit preview versus a disconnected live view.
 - Create, restore, resume, and exec stay disabled in preview (`web/src/dialogs.tsx`, `web/src/BoxDetail.tsx`).
-- A terminal session on a running box, beside copyable `kiln ssh` commands. See below.
+- A terminal session on a running box. The Access panel labels SSH **Not available yet**. See below.
 
 ## Terminal session
 
@@ -47,7 +47,7 @@ The terminal is a session. It stays out of `kiln_api::Action`, `OPERATION_ACTION
 
 `kiln-app` serves `GET /v1/boxes/{id}/terminal` (`crates/kiln-server/src/app_listener.rs`, `crates/kiln-server/src/terminal.rs`). The browser opens a same-origin WebSocket and sends the `__Host-kiln_app` and `__Host-kiln_csrf` cookies. `Origin` must be `https://app.dark-forge.dev`. The session must be operate scope. The server checks ownership by reading the box SSH host key, writes one audit line when the socket upgrades (`audit terminal outcome=opened box_id=…`), and bridges an OpenSSH PTY over the existing SSH upgrade. Idle limit is 15 minutes. Maximum duration is 2 hours. Binary frames are PTY bytes. A text frame `{"type":"resize","cols":N,"rows":M}` resizes the PTY. The server ends the socket with `{"type":"closed",…}`.
 
-Connect in `TerminalPane` (`web/src/BoxDetail.tsx`) is enabled only when the console is live, the host is `online`, and the box is `running`. Preview, a stopped box, and an offline host leave the button disabled and the heading at `Session not connected`. The heading says `Connected` only while the socket is open. xterm.js loads when Connect is used. The Access panel on the same tab copies `kiln ssh {id}` and `kiln ssh-config {id}`. HTTP preview stays labelled **Not available yet**.
+Connect in `TerminalPane` (`web/src/BoxDetail.tsx`) is enabled only when the console is live, the host is `online`, and the box is `running`. Preview, a stopped box, and an offline host leave the button disabled and the heading at `Session not connected`. The heading says `Connected` only while the socket is open. xterm.js loads when Connect is used. The Access panel on the same tab labels SSH, HTTP preview, and public access **Not available yet**. The public door does not serve SSH, and this journey does not add a public SSH proxy.
 
 The in-repo proof does not boot Firecracker. `openssh-server` must provide `/usr/sbin/sshd`, and `/run/sshd` must exist. CI installs that before server-check.
 
@@ -67,7 +67,7 @@ cd web
 npm test -- src/App.test.tsx src/BoxDetail.test.tsx
 ```
 
-`enables Connect terminal only for a running box on a live console` covers the button. `shows copyable kiln ssh commands with the full box id and no SSH gateway placeholder` covers the Access panel. Playwright on `/boxes?preview=1` still expects `Session not connected` and a disabled Connect button. That run does not open a shell.
+`enables Connect terminal only for a running box on a live console` covers the button. `labels SSH access as not available yet without kiln ssh command hints` covers the Access panel. Playwright on `/boxes?preview=1` still expects `Session not connected` and a disabled Connect button. That run does not open a shell.
 
 A browser shell on a deployed console needs `kiln-app`, an operate-scoped `__Host-kiln_app` session, `Origin: https://app.dark-forge.dev`, and a running box. The Vite dev server does not proxy `/v1/boxes/{id}/terminal`. Caddy and the app socket proxy already forward the upgrade, so this journey does not change install or deploy.
 
