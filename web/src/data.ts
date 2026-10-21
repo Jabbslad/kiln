@@ -101,7 +101,7 @@ export type Checkpoint = Dashboard['checkpoints'][number]
 export type Operation = Dashboard['operations'][number]
 export type BoxState = Box['state']
 
-function requestId() {
+export function requestId() {
   const bytes = new Uint8Array(16)
   crypto.getRandomValues(bytes)
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
@@ -120,16 +120,47 @@ type OperationReceipt = {
   id: string
   box_id: string
   state: string
+  result?: { type?: string; id?: string; box_id?: string } | null
   error?: { message?: string } | null
 }
 
-export async function createBox(
-  template: string,
-  name: string,
+export type OperationAction =
+  | { type: 'create'; template: string; name: string }
+  | { type: 'checkpoint'; id: string }
+  | {
+      type: 'restore'
+      id: string
+      checkpoint: string
+      acknowledge_external_state_replay: true
+    }
+
+async function rejected(response: Response) {
+  let code = ''
+  try {
+    code = ((await response.json()) as { code?: string }).code ?? ''
+  } catch {
+    code = ''
+  }
+  if (response.status === 401 || code === 'unauthorized') {
+    return new Error('Unauthenticated (HTTP 401). No operation was accepted.')
+  }
+  if (code === 'invalid_origin') {
+    return new Error('The origin was rejected. No operation was accepted.')
+  }
+  if (code === 'invalid_csrf' || response.status === 403) {
+    return new Error('The CSRF check was rejected. No operation was accepted.')
+  }
+  return new Error(
+    `The operation was not accepted (HTTP ${response.status}). No change was recorded.`,
+  )
+}
+
+export async function submitOperation(
+  action: OperationAction,
   fetcher: typeof fetch = fetch,
   cookie = globalThis.document?.cookie ?? '',
-): Promise<Dashboard> {
-  const id = requestId()
+  id = requestId(),
+): Promise<OperationReceipt> {
   const response = await fetcher('/v1/operations', {
     method: 'POST',
     credentials: 'same-origin',
@@ -139,11 +170,9 @@ export async function createBox(
       'Content-Type': 'application/json',
       'x-kiln-csrf': readCsrf(cookie),
     },
-    body: JSON.stringify({ id, action: { type: 'create', template, name } }),
+    body: JSON.stringify({ id, action }),
   })
-  if (response.status !== 200 && response.status !== 202) {
-    throw new Error(`Create was not accepted (HTTP ${response.status}). No box was added.`)
-  }
+  if (response.status !== 200 && response.status !== 202) throw await rejected(response)
   let receipt = (await response.json()) as OperationReceipt
   for (let attempt = 0; attempt < 20 && receipt.state === 'running'; attempt += 1) {
     const polled = await fetcher(`/v1/operations/${receipt.id}`, {
@@ -152,21 +181,101 @@ export async function createBox(
       headers: { Accept: 'application/json' },
     })
     if (!polled.ok) {
-      throw new Error(`Operation status returned HTTP ${polled.status}. The box is unchanged.`)
+      if (polled.status === 401 || polled.status === 403) throw await rejected(polled)
+      throw new Error('unknown')
     }
     receipt = (await polled.json()) as OperationReceipt
   }
+  return receipt
+}
+
+function confirmed(receipt: OperationReceipt) {
+  if (receipt.state === 'unknown' || receipt.state === 'running') throw new Error('unknown')
+  if (receipt.state !== 'succeeded') {
+    throw new Error(receipt.error?.message || 'The operation did not succeed.')
+  }
+}
+
+async function awaitDashboard(
+  fetcher: typeof fetch,
+  seen: (dashboard: Dashboard) => boolean,
+  pending: string,
+) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const dashboard = await fetchDashboard(undefined, fetcher)
+    if (seen(dashboard)) return dashboard
+  }
+  throw new Error(pending)
+}
+
+export async function createBox(
+  template: string,
+  name: string,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+): Promise<Dashboard> {
+  const receipt = await submitOperation({ type: 'create', template, name }, fetcher, cookie)
   if (receipt.state !== 'succeeded') {
     throw new Error(
       receipt.error?.message ||
         'Create did not succeed. The box is shown only after the control plane records it.',
     )
   }
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const dashboard = await fetchDashboard(undefined, fetcher)
-    if (dashboard.boxes.some((box) => box.id === receipt.box_id)) return dashboard
+  return awaitDashboard(
+    fetcher,
+    (dashboard) => dashboard.boxes.some((box) => box.id === receipt.box_id),
+    'The control plane has not observed the new box.',
+  )
+}
+
+export async function createCheckpoint(
+  boxId: string,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+  id = requestId(),
+): Promise<Dashboard> {
+  const receipt = await submitOperation({ type: 'checkpoint', id: boxId }, fetcher, cookie, id)
+  confirmed(receipt)
+  const checkpointId = receipt.result?.type === 'checkpoint' ? receipt.result.id : undefined
+  if (!checkpointId || (receipt.result?.box_id && receipt.result.box_id !== boxId)) {
+    throw new Error('unknown')
   }
-  throw new Error('The control plane has not observed the new box.')
+  return awaitDashboard(
+    fetcher,
+    (dashboard) =>
+      dashboard.checkpoints.some(
+        (checkpoint) => checkpoint.id === checkpointId && checkpoint.box_id === boxId,
+      ),
+    'The control plane has not observed the checkpoint.',
+  )
+}
+
+export async function restoreCheckpoint(
+  boxId: string,
+  checkpointId: string,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+  id = requestId(),
+): Promise<Dashboard> {
+  const receipt = await submitOperation(
+    {
+      type: 'restore',
+      id: boxId,
+      checkpoint: checkpointId,
+      acknowledge_external_state_replay: true,
+    },
+    fetcher,
+    cookie,
+    id,
+  )
+  confirmed(receipt)
+  if (receipt.box_id !== boxId) throw new Error('unknown')
+  return awaitDashboard(
+    fetcher,
+    (dashboard) =>
+      dashboard.boxes.some((box) => box.id === boxId && box.restored_from === checkpointId),
+    'The control plane has not observed the restore.',
+  )
 }
 
 export async function fetchDashboard(

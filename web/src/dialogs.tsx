@@ -2,7 +2,10 @@ import { useState } from 'react'
 import { AlertTriangle, ArrowUpRight, Check, Lock, ShieldCheck } from 'lucide-react'
 import {
   createBox,
+  createCheckpoint,
   formatBytes,
+  requestId,
+  restoreCheckpoint,
   type Box,
   type Checkpoint,
   type Dashboard,
@@ -207,14 +210,23 @@ export function RestoreDialog({
   box,
   checkpoint,
   preview,
+  authenticated = false,
+  onObserved,
   onClose,
 }: {
   box: Box
   checkpoint: Checkpoint
   preview: boolean
+  authenticated?: boolean
+  onObserved?: (data: Dashboard) => void
   onClose: () => void
 }) {
   const [acknowledged, setAcknowledged] = useState(false)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+  const [operationId] = useState(() => requestId())
+  const sameBox = checkpoint.box_id === box.id
+  const ready = authenticated && acknowledged && sameBox && !pending
   return (
     <Modal title="Restore checkpoint?" onClose={onClose}>
       <div className="modal-body">
@@ -247,22 +259,51 @@ export function RestoreDialog({
             checked={acknowledged}
             onChange={(event) => setAcknowledged(event.target.checked)}
           />
-          I understand the rollback risks.
+          I understand external state may replay.
         </label>
-        <Unavailable preview={preview} />
+        {authenticated ? (
+          <p className="field-hint">
+            This box updates after the control plane observes the restore.
+          </p>
+        ) : (
+          <Unavailable preview={preview} />
+        )}
+        {error && (
+          <p className="field-hint error-text" role="alert">
+            {error}
+          </p>
+        )}
       </div>
       <footer className="modal-footer">
         <button className="button" onClick={onClose}>
           Cancel
         </button>
-        <button className="button primary" disabled aria-describedby="restore-gate">
+        <button
+          className="button primary"
+          disabled={!ready}
+          aria-describedby="restore-gate"
+          onClick={() => {
+            if (!ready) return
+            setPending(true)
+            setError('')
+            void restoreCheckpoint(box.id, checkpoint.id, fetch, document.cookie, operationId)
+              .then((observed) => {
+                onObserved?.(observed)
+                onClose()
+              })
+              .catch((reason: unknown) => {
+                setError(reason instanceof Error ? reason.message : 'unknown')
+                setPending(false)
+              })
+          }}
+        >
           Restore checkpoint
         </button>
       </footer>
       <p id="restore-gate" className="dialog-footnote">
-        {acknowledged
-          ? 'Acknowledged. Restore remains unavailable without the authenticated service.'
-          : 'Acknowledge the risks before restoring through the authenticated service.'}
+        {authenticated && acknowledged
+          ? 'Same-box restore. External state may replay.'
+          : 'Acknowledge that external state may replay before restoring.'}
       </p>
     </Modal>
   )
@@ -272,13 +313,22 @@ export function LifecycleDialog({
   action,
   box,
   preview,
+  authenticated = false,
+  onObserved,
   onClose,
 }: {
   action: string
   box: Box
   preview: boolean
+  authenticated?: boolean
+  onObserved?: (data: Dashboard) => void
   onClose: () => void
 }) {
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
+  const [operationId] = useState(() => requestId())
+  const checkpoint = action === 'Create checkpoint'
+  const ready = checkpoint && authenticated && !pending
   const explanations: Record<string, string> = {
     Pause:
       'Freeze vCPUs while keeping the VMM process, RAM and disk. Pausing does not release memory.',
@@ -294,13 +344,39 @@ export function LifecycleDialog({
       <div className="modal-body">
         <div className="restore-target">{box.name}</div>
         <p className="body-copy">{explanations[action]}</p>
-        <Unavailable preview={preview} />
+        {checkpoint && authenticated ? (
+          <p className="field-hint">The checkpoint appears after the control plane observes it.</p>
+        ) : (
+          <Unavailable preview={preview} />
+        )}
+        {error && (
+          <p className="field-hint error-text" role="alert">
+            {error}
+          </p>
+        )}
       </div>
       <footer className="modal-footer">
         <button className="button" onClick={onClose}>
           Cancel
         </button>
-        <button className="button primary" disabled>
+        <button
+          className="button primary"
+          disabled={!ready}
+          onClick={() => {
+            if (!ready || action !== 'Create checkpoint') return
+            setPending(true)
+            setError('')
+            void createCheckpoint(box.id, fetch, document.cookie, operationId)
+              .then((observed) => {
+                onObserved?.(observed)
+                onClose()
+              })
+              .catch((reason: unknown) => {
+                setError(reason instanceof Error ? reason.message : 'unknown')
+                setPending(false)
+              })
+          }}
+        >
           {action}
         </button>
       </footer>

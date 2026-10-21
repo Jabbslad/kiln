@@ -80,7 +80,7 @@ it('shows only same-box checkpoints and keeps restore gated after acknowledgemen
   const restore = within(dialog).getByRole('button', { name: 'Restore checkpoint' })
   expect(restore).toBeDisabled()
   await user.click(
-    within(dialog).getByRole('checkbox', { name: 'I understand the rollback risks.' }),
+    within(dialog).getByRole('checkbox', { name: /I understand external state may replay/ }),
   )
   expect(restore).toBeDisabled()
   await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
