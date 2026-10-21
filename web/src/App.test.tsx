@@ -640,11 +640,13 @@ it('validates a create form but cannot create a fake VM', async () => {
   expect(previewDashboard.boxes).toHaveLength(4)
 })
 
-it('does not present an interactive terminal session as connected', async () => {
+it('labels the terminal capability as not available yet', async () => {
   open('/boxes/box-7f3a2c1e?preview=1')
-  expect(await screen.findByText('Session not connected')).toBeVisible()
-  expect(screen.queryByText('Connected', { exact: true })).not.toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Connect terminal' })).toBeDisabled()
+  const terminal = await screen.findByTestId('capability-terminal')
+  expect(terminal).toHaveAttribute('data-capability-state', 'not-yet')
+  expect(within(terminal).getByText('Not available yet')).toBeVisible()
+  expect(screen.queryByText('Session not connected')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Connect terminal' })).not.toBeInTheDocument()
 })
 
 it('posts sign-out to /logout with the CSRF value', async () => {
