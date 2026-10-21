@@ -198,6 +198,10 @@ fn server_files(
         files.push((format!("bin/{name}"), bins.join(name)));
     }
     files.push(("install.sh".into(), repo.join("deploy/install.sh")));
+    files.push((
+        "operations-journal.max-version".into(),
+        repo.join("deploy/operations-journal.max-version"),
+    ));
     files.push(("bin/kiln-network".into(), repo.join("deploy/kiln-network")));
     files.push((
         "fetch-firecracker.sh".into(),

@@ -100,4 +100,31 @@ grep -q 'dashboard live ' "$output.deploy" || fail 'deploy dry-run did not check
 
 remote_tags=$(git ls-remote --tags origin "refs/tags/${dry_tag}") || fail 'could not list tags'
 [ -z "$remote_tags" ] || fail "${dry_tag} exists on the remote"
+
+if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
+  prev_archive=
+  for path in "$dist/kiln-server-${from}"*.tar.gz; do
+    [ -f "$path" ] || continue
+    prev_archive=$path
+    break
+  done
+  [ -n "$prev_archive" ] || fail 'reuse dist missing the previous server archive'
+  cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client
+  image_root=$(mktemp -d)
+  tar -xzf "$prev_archive" -C "$image_root" image
+  pr_dist=$(mktemp -d)
+  cargo xtask release server --version "$tag" --target x86_64-unknown-linux-gnu \
+    --bin-dir target/release --image-dir "$image_root/image" --output "$pr_dist"
+  next_archive=
+  for path in "$pr_dist/kiln-server-${tag}"*.tar.gz; do
+    [ -f "$path" ] || continue
+    next_archive=$path
+    break
+  done
+  [ -n "$next_archive" ] || fail 'PR server package was not assembled'
+  KILN_SERVER_UPGRADE_PREV_TAR=$prev_archive \
+    KILN_SERVER_UPGRADE_TO_TAR=$next_archive \
+    bash scripts/test-identity-upgrade.sh
+fi
+
 printf 'tag path dry-run ok %s\n' "$dry_tag"

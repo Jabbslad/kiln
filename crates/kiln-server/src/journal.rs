@@ -15,7 +15,34 @@ impl std::error::Error for Conflict {}
 
 pub struct Journal(Connection);
 
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = operations_journal_max_version();
+
+const fn operations_journal_max_version() -> u32 {
+    const RAW: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../deploy/operations-journal.max-version"
+    ));
+    let bytes = RAW.as_bytes();
+    let mut value = 0u32;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'\n' || byte == b'\r' {
+            break;
+        }
+        if byte.is_ascii_digit() {
+            value = value * 10 + (byte - b'0') as u32;
+        } else if byte.is_ascii_whitespace() {
+            index += 1;
+            continue;
+        } else {
+            panic!("operations-journal.max-version must contain a decimal version");
+        }
+        index += 1;
+    }
+    assert!(value > 0, "operations-journal.max-version must be positive");
+    value
+}
 
 fn table_has_column(connection: &Connection, column: &str) -> Result<bool> {
     let mut statement = connection.prepare("PRAGMA table_info(operations)")?;
