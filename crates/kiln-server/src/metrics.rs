@@ -2,7 +2,8 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    time::Instant,
+    thread,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
@@ -81,17 +82,30 @@ impl Sampler {
     }
 
     fn host_cpu_percent(&mut self) -> Option<f64> {
-        let sample = read_host_cpu(&self.paths.proc)?;
-        let now = Instant::now();
-        let (previous_at, previous) = self.host_cpu.replace((now, sample))?;
-        cpu_percent(
-            previous.total,
-            previous.idle,
-            sample.total,
-            sample.idle,
-            previous_at,
-            now,
-        )
+        const WAIT: Duration = Duration::from_millis(10);
+        const TRIES: usize = 10;
+
+        for _ in 0..TRIES {
+            let sample = read_host_cpu(&self.paths.proc)?;
+            let now = Instant::now();
+            let Some((previous_at, previous)) = self.host_cpu else {
+                self.host_cpu = Some((now, sample));
+                return None;
+            };
+            if let Some(pct) = cpu_percent(
+                previous.total,
+                previous.idle,
+                sample.total,
+                sample.idle,
+                previous_at,
+                now,
+            ) {
+                self.host_cpu = Some((now, sample));
+                return Some(pct);
+            }
+            thread::sleep(WAIT);
+        }
+        None
     }
 
     fn box_cpu_percent(&mut self, cgroup: &Path) -> Option<f64> {
@@ -209,6 +223,31 @@ mod tests {
         )
         .unwrap();
         fs::write(root.join("cgroup/kiln/run1/memory.current"), "52428800\n").unwrap();
+    }
+
+    #[test]
+    fn first_host_snapshot_after_prime_has_cpu() {
+        let mut sampler = Sampler::new(Paths::live());
+        sampler.prime();
+        assert!(sampler.host().cpu_percent.is_some());
+    }
+
+    #[test]
+    fn host_cpu_waits_for_proc_stat_delta() {
+        let root = tempfile::tempdir().unwrap();
+        write_fixture(root.path());
+        let stat_path = root.path().join("proc/stat");
+        let delayed = stat_path.clone();
+        let waiter = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(15));
+            fs::write(&delayed, "cpu  200 0 200 1100 0 0 0 0 0 0\n").unwrap();
+        });
+        let paths = Paths::fixture(root.path().join("proc"));
+        let mut sampler = Sampler::new(paths);
+        sampler.prime();
+        let host = sampler.host();
+        waiter.join().unwrap();
+        assert!(host.cpu_percent.is_some(), "{host:?}");
     }
 
     #[test]

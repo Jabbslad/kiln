@@ -644,6 +644,24 @@ mod tests {
     use super::*;
     use axum::response::IntoResponse;
 
+    #[test]
+    fn first_dashboard_read_reports_host_cpu() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let host = Host::open(&Config {
+            runtime_dir: root.path().join("runtime"),
+            journal_dir: root.path().join("journal"),
+            socket: root.path().join("host.sock"),
+            isolation_config: None,
+            allow_unsafe_development: true,
+            templates: Default::default(),
+        })
+        .unwrap();
+        let value = serde_json::to_value(host.dashboard().unwrap()).unwrap();
+        assert!(value["host"]["metrics"]["cpu_percent"].as_f64().is_some());
+        assert!(value["host"]["metrics"]["memory_bytes"].as_u64().unwrap() > 0);
+    }
+
     #[tokio::test]
     async fn ssh_key_lookup_does_not_consume_a_tunnel_permit() {
         let root = tempfile::tempdir().unwrap();
