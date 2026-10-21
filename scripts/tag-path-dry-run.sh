@@ -65,6 +65,7 @@ printf 'dry-run release %s\n' "$tag"
 
 sh scripts/stamp-release-dist.sh "$dist" "$from" "$tag"
 sh scripts/check-stamped-clients.sh "$dist" "$tag"
+KILN_VERSION_CHECK_DIST="$dist" bash deploy/github/check-installed-versions.sh "$tag"
 
 count=0
 for path in "$dist"/*.tar.gz; do

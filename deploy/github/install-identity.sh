@@ -302,7 +302,35 @@ slot_equal() {
   return 1
 }
 
+stamp_version_slot() {
+  local file=$1 want=$2 matches count offset marker_len payload tmp
+  marker_len=12
+  matches=$(LC_ALL=C grep -a -o -b -F 'KILNRELSLOT=' "$file" || true)
+  [ -n "$matches" ] || fail 'identity binary has no version slot'
+  count=$(printf '%s\n' "$matches" | wc -l | awk '{ print $1 }')
+  [ "$count" = 1 ] || fail 'identity version slot is ambiguous'
+  offset=${matches%%:*}
+  case $offset in
+    ''|*[!0-9]*) fail 'identity version slot offset is invalid' ;;
+  esac
+  tmp=$(mktemp)
+  {
+    printf '%s' "$want"
+    dd if=/dev/zero bs=1 count=$((32 - ${#want})) status=none
+  } >"$tmp"
+  dd if="$tmp" of="$file" bs=1 seek=$((offset + marker_len)) conv=notrunc status=none
+  rm -f "$tmp"
+  sync "$file"
+}
+
 if slot_equal "$package" "$live"; then
+  if [ "$installed" != "$version" ]; then
+    stamp_version_slot "$live" "$version"
+    installed=$(read_version "$live") || fail 'installed identity version failed after stamp'
+    [ "$installed" = "$version" ] || fail "stamped identity reports $installed, want $version"
+    printf 'identity version %s\n' "$version"
+    exit 0
+  fi
   if ! process_matches; then
     systemctl restart kiln-identity.service
     probe_ok || fail 'identity probe failed'

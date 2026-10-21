@@ -517,6 +517,8 @@ fn test_deploy_installs_dashboard_and_checks_the_live_bundle() {
     assert!(remote.contains("--dashboard-archive"));
     assert!(remote.contains("check-dashboard-bundle.sh"));
     assert!(remote.contains("check-dashboard-metrics.sh"));
+    assert!(deploy.contains("check-installed-versions.sh"));
+    assert!(remote.contains("check-installed-versions.sh"));
     assert!(remote.contains("dashboard inputs"));
 }
 
