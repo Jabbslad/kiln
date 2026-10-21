@@ -26,13 +26,13 @@ Live mutations (not preview, host `online`): create box, pause, resume, stop (op
 
 ## Document
 
-`schema_version` is `1`. `observed_at` is UTC `YYYY-MM-DDTHH:MM:SSZ`. The gateway stamps `observed_at` and `workspace` after authentication. `Content-Type` contains `application/json`. `Cache-Control` is `no-store`.
+`schema_version` is `1`. Top-level `version` is the stamped server release (for example `0.4.17`); the gateway adds it when stamping the dashboard document. The web header shows `v` plus that value, or the build-stamped dashboard version when the field is absent. `observed_at` is UTC `YYYY-MM-DDTHH:MM:SSZ`. The gateway stamps `observed_at` and `workspace` after authentication. `Content-Type` contains `application/json`. `Cache-Control` is `no-store`.
 
 `workspace` is the enrollment server id on an enrolled server, else `local`. `host.name` matches.
 
 `host.state` is `online` when the host socket answers. When the dial fails, the gateway still returns HTTP 200 with `host.state` `offline` and empty `boxes`, `templates`, `checkpoints`, and `operations`.
 
-When online, `checkpoints` lists snapshot metadata from the runtime store (`crates/kiln-server/src/host.rs`). Box `state` includes `running`, `paused`, `stopped`, `failed`, `creating`, `restoring`, and `unknown` (`web/src/data.ts` `boxStates`; host mapping in `crates/kiln-server/src/dashboard.rs`).
+When online, `checkpoints` lists snapshot metadata from the runtime store (`crates/kiln-server/src/host.rs`). `host.metrics.cpu_percent` and `host.metrics.memory_bytes` come from `/proc/stat` deltas and `/proc/meminfo` while `kiln-host` is online. `host.metrics.disk_bytes` and `host.metrics.disk_total_bytes` come from `statvfs` on the runtime store directory (the filesystem that holds box storage). `kiln-host` primes a baseline `/proc/stat` sample at startup (`metrics::Sampler::prime`) and retries briefly on each host read until jiffies move, so the first dashboard GET after a restart still returns a numeric `cpu_percent`. A running or paused isolated box reads its jailer cgroup `cpu.stat` (`usage_usec` deltas) and `memory.current`; stopped or inactive boxes keep null CPU and memory metrics. Every box with a disk image reports `metrics.disk_bytes` as the allocated on-host size of that image (`st_blocks` × 512); the console pairs it with `resources.disk_bytes` for a **host-observed** used-of-total label (image blocks, not guest filesystem use). The dashboard marks `metrics` as `available` in `web/src/capabilities.ts`; stopped or inactive boxes show **Stopped** or **Not available yet** for CPU and memory instead of em dashes. A box is listed only when the journal has its create row. Box `state` includes `running`, `paused`, `stopped`, `failed`, `creating`, `restoring`, and `unknown` (`web/src/data.ts` `boxStates`; host mapping in `crates/kiln-server/src/dashboard.rs`).
 
 Operations are recent journal rows (100 newest by `created_at`, then `id`). Corrupt JSON rows are skipped after the read. Rows whose operation state is unknown are omitted. Published `kind` is `create` for a create row and `unknown` for other journal rows today (`crates/kiln-server/src/dashboard.rs`). The web schema accepts any string for `kind`; `web/src/operationKinds.ts` lists the nine `kiln_api::Action` tags the console submits. Contract test `dashboard_operation_action_types_match_api_action_tags` in `crates/kiln-api/src/lib.rs` keeps that list aligned with the API. Operation `state` in the document is `running`, `completed`, or `failed`; the web schema also allows `queued` and step arrays for forward compatibility.
 
@@ -46,12 +46,13 @@ A host body larger than 1 MiB makes the gateway return HTTP 502 with code `host_
 
 - Inventory at `/boxes`: search, state filters, name sort, row links.
 - Box detail at `/boxes/:id` with Terminal, Exec, Previews, Checkpoints, Metrics, and Activity tabs.
-- Capability map in `web/src/capabilities.ts` (#113): `metrics`, `terminal`, `ssh`, `httpPreview`, `publicUrl`, and `launchTiming` are each `available` or `not-yet`. `CapabilitySurface` in `web/src/ui.tsx` renders **Not available yet** for `not-yet` entries (Access, terminal body, previews, launch timing). `web/src/capabilities.test.tsx` fails if an `available` capability shows placeholder dashes or empty values, or if a `not-yet` capability shows fake connected UI. Today every key is `not-yet`.
+- Capability map in `web/src/capabilities.ts` (#113): `metrics`, `terminal`, `ssh`, `httpPreview`, `publicUrl`, and `launchTiming` are each `available` or `not-yet`. `CapabilitySurface` in `web/src/ui.tsx` renders **Not available yet** for `not-yet` entries (Access, terminal body, previews). `launchTiming` is `available`: the Metrics tab shows end-to-end milliseconds plus phase rows when the host measured them, or **Not reported** when `timing.total_ms` is null. `web/src/capabilities.test.tsx` fails if an `available` capability shows placeholder dashes or empty values, or if a `not-yet` capability shows fake connected UI. `metrics` is `available` and reads live host and box telemetry from the dashboard document.
 - Templates at `/templates`, including the create-box drawer.
 - Operations at `/operations`.
 - Settings at `/settings` and the guide at `/docs`.
 - Explicit preview versus live authenticated console.
 - Sign out for the operate session.
+- Release version label in the console header (`web/src/kiln-version.ts`, `web/src/App.test.tsx`).
 - Access panel (SSH, HTTP preview, public access labelled unavailable).
 - Shared `trackOperation` polling and dashboard refresh after mutations.
 
@@ -110,9 +111,10 @@ cargo test -p kiln-server --test app_listener --locked -- --nocapture \
   a_signed_in_operate_session_reaches_the_host
 ```
 
-Deploy verifies the published dashboard bundle against live HTML:
+Deploy and smoke validate live host metrics with `kiln-api self-check`, which deserializes the same `dashboard::Document` the server publishes and checks `host.metrics.cpu_percent`, `host.metrics.memory_bytes`, `host.metrics.disk_bytes`, and `host.metrics.disk_total_bytes` (running-box CPU may be null on the first read after restart; box disk is not gated). For launch timing, a **running** box with `timing: null` is a legacy box (no v2 journal finish and no stored measurement) and passes the general gate. Once the dashboard publishes a `timing` object for a running box, `timing.total_ms` must be set (from runtime phases, a v2 journal finish, or honest timestamps already present in an old operation JSON). Stopped boxes may show their last launch or `timing: null`; with zero running boxes the general gate passes before smoke creates a box. After `deploy/github/smoke.sh` creates the `kiln-smoke` box, smoke also runs `kiln-api self-check --require-launch-timing kiln-smoke`, which requires that named box (by id or name) to publish `timing.total_ms` even when legacy boxes elsewhere still have `timing: null`. No shell JSON parsing on the host.
 
 ```sh
+cargo test -p kiln-server --test dashboard_self_check --locked
 sh scripts/test-check-dashboard-bundle.sh
 ```
 

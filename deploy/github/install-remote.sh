@@ -201,8 +201,17 @@ else
   printf 'deploy: skipping the health check because installation failed\n' >&2
 fi
 
-smoke_rc=1
+metrics_rc=1
 if [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]; then
+  metrics_rc=0
+  /usr/local/libexec/kiln-api self-check --address "$address" || metrics_rc=$?
+else
+  printf 'deploy: skipping the dashboard metrics check because installation failed\n' >&2
+fi
+
+smoke_rc=1
+if [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] \
+  && [ "$metrics_rc" -eq 0 ]; then
   smoke_rc=0
   bash "$dir/smoke.sh" "$address" || smoke_rc=$?
 else
@@ -211,7 +220,7 @@ fi
 
 dashboard_rc=1
 if [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] \
-  && [ "$smoke_rc" -eq 0 ] && [ "$dashboard_found" -eq 1 ]; then
+  && [ "$metrics_rc" -eq 0 ] && [ "$smoke_rc" -eq 0 ] && [ "$dashboard_found" -eq 1 ]; then
   dashboard_rc=0
   bash "$dir/check-dashboard-bundle.sh" "$dir/$dashboard_archive" || dashboard_rc=$?
 else
@@ -226,4 +235,4 @@ if [ "$before" != "$after" ]; then
   exit 1
 fi
 [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] \
-  && [ "$smoke_rc" -eq 0 ] && [ "$dashboard_rc" -eq 0 ]
+  && [ "$metrics_rc" -eq 0 ] && [ "$smoke_rc" -eq 0 ] && [ "$dashboard_rc" -eq 0 ]

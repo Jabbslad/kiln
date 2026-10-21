@@ -516,7 +516,23 @@ fn test_deploy_installs_dashboard_and_checks_the_live_bundle() {
     assert!(deploy.contains("check-dashboard-bundle.sh"));
     assert!(remote.contains("--dashboard-archive"));
     assert!(remote.contains("check-dashboard-bundle.sh"));
+    assert!(remote.contains("kiln-api self-check"));
     assert!(remote.contains("dashboard inputs"));
+    let metrics_at = index_of(&remote, "kiln-api self-check");
+    let smoke_at = index_of(&remote, "bash \"$dir/smoke.sh\"");
+    assert!(
+        metrics_at < smoke_at,
+        "metrics must run right after restart, before guest smoke"
+    );
+    assert!(
+        remote.contains("[ \"$metrics_rc\" -eq 0 ]")
+            && index_of(&remote, "[ \"$metrics_rc\" -eq 0 ]") < smoke_at,
+        "smoke must wait for host metrics"
+    );
+    assert!(
+        !deploy.contains("check-dashboard-metrics.sh"),
+        "deploy must not ship shell JSON metrics scripts"
+    );
 }
 
 fn test_smoke_deletes_the_box_when_exec_or_output_fails() {
@@ -1008,11 +1024,28 @@ fn run_smoke(extra: &[(&str, &str)]) -> SmokeRun {
     let log = tmp.path().join("kiln.log");
     let kiln = tmp.path().join("kiln");
     write_executable(&kiln, &kiln_stub(&log));
+    let token = tmp.path().join("admin.token");
+    fs::write(&token, "a".repeat(64)).unwrap();
+    let ca = tmp.path().join("ca.crt");
+    fs::write(&ca, "fixture-ca\n").unwrap();
+    let kiln_api = tmp.path().join("kiln-api");
+    write_executable(
+        &kiln_api,
+        r#"#!/bin/sh
+case "$*" in
+  *self-check*) exit 0 ;;
+  *) exit 1 ;;
+esac
+"#,
+    );
     let mut command = Command::new("bash");
     command.arg(repo().join("deploy/github/smoke.sh"));
     command.arg("127.0.0.1");
     command.current_dir(repo());
     command.env("KILN_BIN", &kiln);
+    command.env("KILN_API_BIN", &kiln_api);
+    command.env("KILN_ADMIN_TOKEN_FILE", &token);
+    command.env("KILN_CA_FILE", &ca);
     for (key, value) in extra {
         command.env(key, value);
     }

@@ -79,6 +79,15 @@ if [ -n "$box_id" ]; then
   ) || exec_rc=$?
 fi
 
+metrics_rc=0
+token_file=${KILN_ADMIN_TOKEN_FILE:-/etc/kiln/admin.token}
+ca_file=${KILN_CA_FILE:-/etc/kiln/ca.crt}
+if [ -n "$box_id" ] && [ -r "$token_file" ] && [ -r "$ca_file" ]; then
+  kiln_api=${KILN_API_BIN:-/usr/local/libexec/kiln-api}
+  "$kiln_api" self-check --address "$address" \
+    --require-launch-timing kiln-smoke || metrics_rc=$?
+fi
+
 delete_box || true
 
 status=0
@@ -96,6 +105,10 @@ if [ -n "$box_id" ] && [ "$exec_rc" -eq 0 ] && [ "$exec_out" != "kiln-smoke-ok" 
 fi
 if [ "$delete_rc" -ne 0 ]; then
   printf 'smoke: box delete failed\n' >&2
+  status=1
+fi
+if [ "$metrics_rc" -ne 0 ]; then
+  printf 'smoke: dashboard metrics check failed\n' >&2
   status=1
 fi
 exit "$status"

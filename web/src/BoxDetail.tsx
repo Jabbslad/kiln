@@ -218,7 +218,12 @@ export default function BoxDetail({ data, preview }: PageProps) {
             </section>
             <div className="access-column">
               <Access />
-              <ResourceMetrics metrics={box.metrics} />
+              <ResourceMetrics
+                metrics={box.metrics}
+                boxState={box.state}
+                diskTotalBytes={box.resources?.disk_bytes ?? null}
+                hostObservedDisk
+              />
             </div>
           </div>
           <LaunchTiming box={box} />
@@ -301,7 +306,12 @@ export default function BoxDetail({ data, preview }: PageProps) {
       )}
       {activeTab === 'metrics' && (
         <>
-          <ResourceMetrics metrics={box.metrics} />
+          <ResourceMetrics
+            metrics={box.metrics}
+            boxState={box.state}
+            diskTotalBytes={box.resources?.disk_bytes ?? null}
+            hostObservedDisk
+          />
           <LaunchTiming box={box} />
           {capabilityAvailable('metrics') && (
             <p className="section-note">
@@ -528,7 +538,16 @@ function Exec({
 }
 
 function LaunchTiming({ box }: { box: Box }) {
-  const phases = ['storage', 'vmm', 'restore', 'agent', 'init', 'first_command'] as const
+  const phase = (label: string, value: number | null | undefined) =>
+    typeof value === 'number' ? { label, value } : null
+  const phases = [
+    phase('storage', box.timing?.storage_ms),
+    phase('vmm', box.timing?.vmm_ms),
+    phase('restore', box.timing?.restore_ms),
+    phase('agent', box.timing?.agent_ms),
+    phase('init', box.timing?.init_ms),
+    phase('first command', box.timing?.first_command_ms),
+  ].filter((row): row is { label: string; value: number } => row !== null)
   return (
     <section className="panel timing-panel">
       <div className="panel-heading">
@@ -539,20 +558,24 @@ function LaunchTiming({ box }: { box: Box }) {
         {capabilityAvailable('launchTiming') && (
           <span className="micro">
             {box.timing?.total_ms == null
-              ? 'No measurement available'
+              ? 'Not reported'
               : `${formatMetric(box.timing.total_ms, ' ms')} end to end`}
           </span>
         )}
       </div>
       <CapabilitySurface capability="launchTiming">
         <div className="timing-grid">
-          {phases.map((phase) => (
-            <div key={phase}>
-              <span className="eyebrow">{phase.replace('_', ' ')}</span>
-              <strong>{formatMetric(box.timing?.[`${phase}_ms`] ?? null, ' ms')}</strong>
-              <span className="timing-tick" />
-            </div>
-          ))}
+          {phases.length === 0 ? (
+            <p className="micro">Phase breakdown not reported for this launch.</p>
+          ) : (
+            phases.map(({ label, value }) => (
+              <div key={label}>
+                <span className="eyebrow">{label}</span>
+                <strong>{formatMetric(value, ' ms')}</strong>
+                <span className="timing-tick" />
+              </div>
+            ))
+          )}
         </div>
         <div className="timing-footer">
           <span>Request → first successful guest command</span>

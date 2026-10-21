@@ -10,7 +10,7 @@ A green push to `main` can publish the next patch release and deploy it to dark-
 - `attest`: build provenance on `dist/*.tar.gz` and `dist/*.zip` for main pushes.
 - `draft-release`: verifies checksums and attestations, then `gh release create` for the planned tag.
 - `deploy`: reusable `deploy.yml` with `tag: ${{ needs.release-plan.outputs.tag }}`.
-- Post-checks on the host (`deploy/github/install-remote.sh`): `install.sh --healthcheck`, `smoke.sh`, `check-dashboard-bundle.sh` against live `kiln-app` HTML, and a kiln-identity stamp guard.
+- Post-checks on the host (`deploy/github/install-remote.sh`): `install.sh --healthcheck`, `kiln-api self-check` (typed dashboard metrics right after restart), `smoke.sh`, `check-dashboard-bundle.sh` against live `kiln-app` HTML, and a kiln-identity stamp guard.
 
 ## How to get to it (operator POV)
 
