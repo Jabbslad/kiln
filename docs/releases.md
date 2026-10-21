@@ -542,7 +542,9 @@ a fork.
 
 The `dark-forge` environment is the approval gate. The API stays on the installer
 default, a private address at port 8443 with the private CA. The deploy does not
-open port 443, install the dashboard, or restart `kiln-identity`. Guest NAT stays
+open port 443 or install the dashboard. It installs the release's
+`kiln-identity` archive, checks its checksum, and restarts `kiln-identity`
+before the server installer restarts `kiln-app`. Guest NAT stays
 off. When `address` is empty, the deploy detects one private source address.
 The deploy stops if the host's default address is public. A manual run can
 set the `address` input.

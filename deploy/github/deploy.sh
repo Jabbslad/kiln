@@ -62,6 +62,7 @@ if [ "$major" -lt 0 ] \
 fi
 
 asset="kiln-server-${tag}-x86_64-unknown-linux-gnu.tar.gz"
+identity="kiln-identity-${tag}-x86_64-unknown-linux-gnu.tar.gz"
 base="https://github.com/Jabbslad/kiln/releases/download/${tag}"
 work=$(mktemp -d)
 remote=
@@ -73,14 +74,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-  --retry 3 --output "$work/$asset" "${base}/${asset}"
-curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-  --retry 3 --output "$work/${asset}.sha256" "${base}/${asset}.sha256"
-(
-  cd "$work"
-  sha256sum -c "${asset}.sha256"
-)
+fetch_asset() {
+  local name=$1
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    --retry 3 --output "$work/$name" "${base}/${name}"
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    --retry 3 --output "$work/${name}.sha256" "${base}/${name}.sha256"
+  (
+    cd "$work"
+    sha256sum -c "${name}.sha256"
+  )
+}
+fetch_asset "$asset"
+fetch_asset "$identity"
 
 remote=$(bash "$ssh_sh" ssh -- mktemp -d /tmp/kiln-deploy.XXXXXX)
 case "$remote" in
@@ -89,6 +95,9 @@ case "$remote" in
 esac
 bash "$ssh_sh" scp "$work/$asset" "$remote/$asset"
 bash "$ssh_sh" scp "$work/${asset}.sha256" "$remote/${asset}.sha256"
+bash "$ssh_sh" scp "$work/$identity" "$remote/$identity"
+bash "$ssh_sh" scp "$work/${identity}.sha256" "$remote/${identity}.sha256"
+bash "$ssh_sh" scp "$script_dir/install-identity.sh" "$remote/install-identity.sh"
 if [ "$tag" = "v0.4.4" ]; then
   bash "$ssh_sh" scp "$repo_root/deploy/install.sh" "$remote/installer.sh"
 fi
