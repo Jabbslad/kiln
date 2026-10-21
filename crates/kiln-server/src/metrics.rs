@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Snapshot {
     pub cpu_percent: Option<f64>,
     pub memory_bytes: Option<u64>,
