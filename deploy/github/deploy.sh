@@ -152,6 +152,7 @@ put "$work/$dashboard" "$remote/$dashboard"
 put "$work/${dashboard}.sha256" "$remote/${dashboard}.sha256"
 put "$script_dir/install-identity.sh" "$remote/install-identity.sh"
 put "$script_dir/check-dashboard-bundle.sh" "$remote/check-dashboard-bundle.sh"
+put "$script_dir/fetch-dashboard-metrics.sh" "$remote/fetch-dashboard-metrics.sh"
 put "$script_dir/check-dashboard-metrics.sh" "$remote/check-dashboard-metrics.sh"
 if [ "$tag" = "v0.4.4" ]; then
   put "$repo_root/deploy/install.sh" "$remote/installer.sh"
@@ -174,4 +175,19 @@ if [ -n "$address" ]; then
 else
   bash "$ssh_sh" ssh -- bash "$remote/install-remote.sh" "$remote"
 fi
+metrics_address=$address
+if [ -z "$metrics_address" ]; then
+  metrics_address=$(bash "$ssh_sh" ssh -- awk '
+    match($0, /--listen [0-9.]+:8443/) {
+      value = substr($0, RSTART, RLENGTH)
+      sub(/^--listen /, "", value)
+      sub(/:8443$/, "", value)
+      print value
+      found = 1
+    }
+    END { exit !found }
+  ' /etc/systemd/system/kiln-api.service.d/installer.conf)
+fi
+metrics_body=$(bash "$ssh_sh" ssh -- bash "$remote/fetch-dashboard-metrics.sh" "$metrics_address")
+printf '%s' "$metrics_body" | bash "$script_dir/verify-dashboard-host-metrics.sh"
 printf 'deployed %s\n' "$tag"

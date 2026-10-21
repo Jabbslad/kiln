@@ -512,22 +512,24 @@ fn test_sqlite3_install_is_exact_and_skipped_when_present() {
 fn test_deploy_installs_dashboard_and_checks_the_live_bundle() {
     let deploy = read_repo("deploy/github/deploy.sh");
     let remote = read_repo("deploy/github/install-remote.sh");
+    let smoke = read_repo("deploy/github/smoke.sh");
     assert!(deploy.contains("kiln-dashboard-"));
     assert!(deploy.contains("check-dashboard-bundle.sh"));
+    assert!(deploy.contains("fetch-dashboard-metrics.sh"));
+    assert!(deploy.contains("verify-dashboard-host-metrics.sh"));
     assert!(remote.contains("--dashboard-archive"));
     assert!(remote.contains("check-dashboard-bundle.sh"));
-    assert!(remote.contains("check-dashboard-metrics.sh"));
+    assert!(!remote.contains("check-dashboard-metrics.sh"));
     assert!(remote.contains("dashboard inputs"));
-    let metrics_at = index_of(&remote, "check-dashboard-metrics.sh");
-    let smoke_at = index_of(&remote, "bash \"$dir/smoke.sh\"");
+    let install_at = index_of(&deploy, "install-remote.sh");
+    let verify_at = index_of(&deploy, "verify-dashboard-host-metrics.sh");
     assert!(
-        metrics_at < smoke_at,
-        "metrics must run right after restart, before guest smoke"
+        verify_at > install_at,
+        "deploy must jq-verify host metrics on the runner after install-remote"
     );
     assert!(
-        remote.contains("[ \"$metrics_rc\" -eq 0 ]")
-            && index_of(&remote, "[ \"$metrics_rc\" -eq 0 ]") < smoke_at,
-        "smoke must wait for host metrics"
+        smoke.contains("check-dashboard-metrics.sh"),
+        "guest smoke still checks live metrics on the host with awk"
     );
 }
 
@@ -851,6 +853,20 @@ if [ "$1" = ssh ]; then
     rm "$@"
     exit 0
   fi
+  cmd="$*"
+  case "$cmd" in
+    *fetch-dashboard-metrics.sh*)
+      printf '%s' '{"host":{"metrics":{"cpu_percent":1,"memory_bytes":1000}}}'
+      exit 0
+      ;;
+    *kiln-api.service.d/installer.conf*)
+      printf '127.0.0.1\n'
+      exit 0
+      ;;
+    *install-remote.sh*)
+      exit 0
+      ;;
+  esac
   exit 0
 fi
 exit 1

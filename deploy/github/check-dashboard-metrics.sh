@@ -1,34 +1,40 @@
 #!/bin/bash
-# Require live host metrics and non-null metrics on any running box.
+# Host-side dashboard metrics check for smoke (fetch + POSIX awk). Deploy uses
+# fetch-dashboard-metrics.sh on the host and verify-dashboard-host-metrics.sh on the runner.
 set -euo pipefail
 umask 077
 
 fail() { printf 'dashboard-metrics: %s\n' "$*" >&2; exit 1; }
 
 address=${1:?usage: check-dashboard-metrics.sh ADDRESS}
-printf '%s\n' "$address" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' \
-  || fail 'address must be an IPv4 literal'
-token_file=${KILN_ADMIN_TOKEN_FILE:-/etc/kiln/admin.token}
-ca_file=${KILN_CA_FILE:-/etc/kiln/ca.crt}
-[ -r "$token_file" ] || fail "missing admin token: ${token_file}"
-[ -r "$ca_file" ] || fail "missing CA file: ${ca_file}"
-token=$(tr -d '[:space:]' <"$token_file")
-[ "${#token}" -eq 64 ] || fail 'admin token must be 64 hex characters'
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
-url="https://${address}:8443/api/v1/dashboard"
-fetch() {
-  curl --fail --silent --show-error \
-    --cacert "$ca_file" \
-    -H "Authorization: Bearer ${token}" \
-    "$url"
+host_metric() {
+  local body=$1 field=$2
+  printf '%s' "$body" | tr -d '\n' | awk -v field="$field" '
+  {
+    host = index($0, "\"host\":")
+    if (host == 0) exit 1
+    rest = substr($0, host)
+    metrics = index(rest, "\"metrics\":")
+    if (metrics == 0) exit 1
+    rest = substr(rest, metrics)
+    key = "\"" field "\":"
+    at = index(rest, key)
+    if (at == 0) exit 1
+    rest = substr(rest, at + length(key))
+    sub(/^[[:space:]]*/, "", rest)
+    if (rest !~ /^[0-9]/) exit 1
+    match(rest, /^[0-9]+(\.[0-9]+)?/)
+    print substr(rest, RSTART, RLENGTH)
+  }'
 }
 
-body=$(fetch)
-command -v jq >/dev/null 2>&1 || fail 'jq is required'
-host_cpu=$(printf '%s' "$body" | jq -er '.host.metrics.cpu_percent | select(type == "number")') \
-  || fail 'host cpu_percent is missing or null'
-host_mem=$(printf '%s' "$body" | jq -er '.host.metrics.memory_bytes | select(type == "number")') \
-  || fail 'host memory_bytes is missing or null'
+body=$(bash "$script_dir/fetch-dashboard-metrics.sh" "$address")
+host_cpu=$(host_metric "$body" cpu_percent)
+[ -n "$host_cpu" ] || fail 'host cpu_percent is missing or null'
+host_mem=$(host_metric "$body" memory_bytes)
+[ -n "$host_mem" ] || fail 'host memory_bytes is missing or null'
 [ "$host_mem" -gt 0 ] || fail 'host memory_bytes must be positive'
 
 running=$(printf '%s' "$body" | tr -d '\n' | awk '
@@ -45,10 +51,9 @@ if [ "$running" = "0" ]; then
   exit 0
 fi
 
-body=$(fetch)
+body=$(bash "$script_dir/fetch-dashboard-metrics.sh" "$address")
 box_mem=$(printf '%s' "$body" | tr -d '\n' | awk '
   {
-    in_box = 0
     while (match($0, /"state":"running"/)) {
       rest = substr($0, RSTART)
       cpu_key = "\"cpu_percent\":"

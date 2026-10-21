@@ -9,6 +9,20 @@ fail() {
   exit 1
 }
 
+run_check() {
+  local run_path
+  if [ -n "${DEPLOY_HOST_PATH:-}" ]; then
+    if [ "${DEPLOY_HOST_PATH_FORBID_JQ:-}" = 1 ] && \
+      PATH="$work:$DEPLOY_HOST_PATH" command -v jq >/dev/null 2>&1; then
+      fail 'deploy-host PATH must not expose jq'
+    fi
+    run_path="$work:$DEPLOY_HOST_PATH"
+  else
+    run_path="$work:$PATH"
+  fi
+  env PATH="$run_path" bash "$check" 127.0.0.1
+}
+
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 check=$root/deploy/github/check-dashboard-metrics.sh
@@ -22,7 +36,6 @@ EOF
 chmod +x "$dashboard_fetch"
 
 host_only='{"host":{"metrics":{"cpu_percent":1.5,"memory_bytes":1000,"disk_bytes":null}},"boxes":[]}'
-PATH="$work:$PATH"
 export KILN_ADMIN_TOKEN_FILE="$work/token"
 export KILN_CA_FILE="$work/ca"
 printf '%064d' 0 >"$KILN_ADMIN_TOKEN_FILE"
@@ -38,28 +51,26 @@ EOF
 chmod +x "$work/curl"
 
 printf '%s' "$host_only" >"$work/body"
-PATH="$work:$PATH" bash "$check" 127.0.0.1 >/dev/null \
-  || fail 'host-only dashboard should pass'
+run_check >/dev/null || fail 'host-only dashboard should pass'
 
 printf '{"host":{"metrics":{"cpu_percent":null,"memory_bytes":1000}},"boxes":[]}' >"$work/body"
-if PATH="$work:$PATH" bash "$check" 127.0.0.1 >/dev/null 2>&1; then
+if run_check >/dev/null 2>&1; then
   fail 'null host cpu must fail'
 fi
 
 gateway_stamped='{"boxes":[{"state":"stopped","metrics":{"cpu_percent":null,"memory_bytes":1}}],"checkpoints":[],"host":{"metrics":{"cpu_percent":0.42,"memory_bytes":5000,"disk_bytes":null},"name":"local","state":"online"},"observed_at":"2026-10-21T00:00:00Z","operations":[],"schema_version":1,"templates":[],"workspace":"local"}'
 printf '%s' "$gateway_stamped" >"$work/body"
-PATH="$work:$PATH" bash "$check" 127.0.0.1 >/dev/null \
+run_check >/dev/null \
   || fail 'gateway-stamped body must read host.metrics when boxes precede host'
 
 running='{"host":{"metrics":{"cpu_percent":2,"memory_bytes":2000}},"boxes":[{"state":"running","metrics":{"cpu_percent":null,"memory_bytes":100}}]}'
 printf '%s' "$running" >"$work/body"
-if PATH="$work:$PATH" bash "$check" 127.0.0.1 >/dev/null 2>&1; then
+if run_check >/dev/null 2>&1; then
   fail 'first fetch with running box and null metrics must fail before second fetch'
 fi
 
 running_ok='{"host":{"metrics":{"cpu_percent":2,"memory_bytes":2000}},"boxes":[{"state":"running","metrics":{"cpu_percent":3.5,"memory_bytes":100}}]}'
 printf '%s' "$running_ok" >"$work/body"
-PATH="$work:$PATH" bash "$check" 127.0.0.1 >/dev/null \
-  || fail 'running box with metrics should pass on second fetch'
+run_check >/dev/null || fail 'running box with metrics should pass on second fetch'
 
 printf 'check-dashboard-metrics tests ok\n'
