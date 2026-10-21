@@ -115,6 +115,14 @@ remote_tags=$(git ls-remote --tags origin "refs/tags/${dry_tag}") || fail 'could
 if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
   prev_archive=$prev_server
   cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client
+  VERSION=${tag#v}
+  export VERSION
+  cargo xtask release-version resolve --ref-type tag --ref-name "$tag"
+  cargo xtask release-version check-binary --version "$VERSION" -- \
+    target/release/kiln \
+    target/release/kiln-runtime \
+    target/release/kiln-host \
+    target/release/kiln-api
   image_root=$(mktemp -d)
   tar -xzf "$prev_archive" -C "$image_root" image
   pr_dist=$(mktemp -d)
