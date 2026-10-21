@@ -16,11 +16,12 @@ use axum::{
 };
 use futures_util::stream;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{Scope, ServerClaims};
+use kiln_api::{Action, Submit, auth::Scope, auth::ServerClaims, new_id};
 use kiln_server::{
     app_listener::{self, BIND},
     auth::{Authenticator, Enrollment},
     door,
+    host::{Config, Host, bind_socket},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tower::ServiceExt;
@@ -1359,4 +1360,303 @@ async fn an_operate_grant_does_not_become_a_dashboard_session() {
             .all(|value| !value.to_str().unwrap().starts_with("__Host-kiln_app="))
     );
     assert_eq!(up.hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn create_box_checks_session_and_csrf_and_reserves_one_box() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut config = Config {
+        runtime_dir: root.path().join("runtime"),
+        journal_dir: root.path().join("journal"),
+        socket: root.path().join("host.sock"),
+        isolation_config: None,
+        allow_unsafe_development: true,
+        templates: Default::default(),
+    };
+    drop(Host::open(&config).unwrap());
+    let template = new_id();
+    let directory = config.runtime_dir.join("snapshots").join(&template);
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(
+        directory.join("snapshot.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "id": template,
+            "source_box": new_id(),
+            "template": true,
+            "host": "incompatible-test-host",
+            "memory_mib": 384,
+            "vcpus": 2,
+            "hashes": {},
+            "image": {
+                "schema_version": 1,
+                "architecture": "x86_64",
+                "kernel_path": "/private/canary",
+                "kernel_sha256": "unused",
+                "rootfs_path": "/private/canary",
+                "rootfs_sha256": "unused",
+                "agent_protocol_version": 1
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    config.templates.insert("small".into(), template);
+    let host = Host::open(&config).unwrap();
+    let listener = bind_socket(&config.socket).await.unwrap();
+    let host_router = host.router();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, host_router).await.unwrap();
+    });
+    let (auth, key) = auth(root.path());
+    let hits = Arc::new(AtomicUsize::new(0));
+    let seen = hits.clone();
+    let gateway = kiln_server::gateway::router_with_auth(&config.socket, central(root.path()))
+        .unwrap()
+        .layer(axum::middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                let seen = seen.clone();
+                async move {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    next.run(request).await
+                }
+            },
+        ));
+    let (port, ca_pem) = listen_tls(gateway).await;
+    let operate = app_listener::router_with_operate_session(
+        auth,
+        &format!("https://127.0.0.1:{port}"),
+        ca_pem.as_bytes(),
+        Some(root.path()),
+        &token(&key, "owner-a", Scope::Operate),
+    )
+    .unwrap();
+    let read = app_listener::router_with_operate_session(
+        central(root.path()),
+        &format!("https://127.0.0.1:{port}"),
+        ca_pem.as_bytes(),
+        Some(root.path()),
+        &token(&key, "owner-a", Scope::Read),
+    )
+    .unwrap();
+    let journal = config.journal_dir.join("operations.sqlite");
+    let id = new_id();
+    let body = serde_json::to_vec(&Submit {
+        id: id.clone(),
+        action: Action::Create {
+            template: "small".into(),
+            name: "first".into(),
+        },
+    })
+    .unwrap();
+    let peer = "127.0.0.1:9";
+    let (status, _, denied) = text(
+        send(
+            &operate.router,
+            peer,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/operations")
+                .header("content-type", "application/json")
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{denied}");
+    let (status, _, _) = text(
+        send(
+            &operate.router,
+            peer,
+            Request::builder()
+                .uri(format!("/v1/operations/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+    assert_eq!(create_rows(&journal), 0);
+    let (status, _, refused) = text(
+        send(
+            &operate.router,
+            peer,
+            create_request(&operate.session, &operate.csrf, "nope", &body),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert!(refused.contains("invalid_csrf"), "{refused}");
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+    assert_eq!(create_rows(&journal), 0);
+    let (status, _, scoped) = text(
+        send(
+            &read.router,
+            peer,
+            create_request(&read.session, &read.csrf, &read.csrf, &body),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{scoped}");
+    assert!(scoped.contains("insufficient_scope"), "{scoped}");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        create_rows(&journal),
+        0,
+        "a read session must not reserve a box"
+    );
+    let (status, _, created) = text(
+        send(
+            &operate.router,
+            peer,
+            create_request(&operate.session, &operate.csrf, &operate.csrf, &body),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{created}");
+    let created: serde_json::Value = serde_json::from_str(&created).unwrap();
+    let box_id = created["box_id"].as_str().unwrap().to_owned();
+    assert_eq!(box_id.len(), 32);
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+    assert_eq!(create_rows(&journal), 1);
+    let (status, _, replay) = text(
+        send(
+            &operate.router,
+            peer,
+            create_request(&operate.session, &operate.csrf, &operate.csrf, &body),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    let replay: serde_json::Value = serde_json::from_str(&replay).unwrap();
+    assert_eq!(replay["box_id"], box_id);
+    assert_eq!(create_rows(&journal), 1, "same request id reserves one box");
+    let mut terminal = String::new();
+    for _ in 0..100 {
+        let (status, _, polled) = text(
+            send(
+                &operate.router,
+                peer,
+                Request::builder()
+                    .uri(format!("/v1/operations/{id}"))
+                    .header(
+                        "cookie",
+                        format!(
+                            "__Host-kiln_app={}; __Host-kiln_csrf={}",
+                            operate.session, operate.csrf
+                        ),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{polled}");
+        terminal = serde_json::from_str::<serde_json::Value>(&polled).unwrap()["state"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        if terminal != "running" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        terminal, "failed",
+        "incompatible template fails after one reservation"
+    );
+    assert_eq!(create_rows(&journal), 1);
+    let changed = serde_json::to_vec(&Submit {
+        id: id.clone(),
+        action: Action::Create {
+            template: "small".into(),
+            name: "changed".into(),
+        },
+    })
+    .unwrap();
+    let (status, _, conflict) = text(
+        send(
+            &operate.router,
+            peer,
+            create_request(&operate.session, &operate.csrf, &operate.csrf, &changed),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+    assert_eq!(create_rows(&journal), 1);
+    let outcomes: Vec<_> = operate
+        .audit
+        .records()
+        .into_iter()
+        .map(|record| record.outcome)
+        .collect();
+    assert!(outcomes.contains(&"unauthorized"), "{outcomes:?}");
+    assert!(outcomes.contains(&"invalid_csrf"), "{outcomes:?}");
+    assert_eq!(
+        operate
+            .audit
+            .records()
+            .into_iter()
+            .filter(|record| record.outcome == "forwarded" && record.request_id == id)
+            .count(),
+        3,
+        "create, replay, and the conflicting retry are audited"
+    );
+    assert!(
+        read.audit
+            .records()
+            .iter()
+            .any(|record| record.outcome == "forwarded" && record.request_id == id)
+    );
+    server.abort();
+}
+
+fn central(dir: &Path) -> Authenticator {
+    Authenticator::central_only(
+        Enrollment {
+            version: 1,
+            issuer: "https://identity.example.test".into(),
+            owner_id: "owner-a".into(),
+            server_id: "server-b".into(),
+        },
+        dir.join("jwks.json"),
+    )
+    .unwrap()
+}
+
+fn create_request(session: &str, csrf: &str, presented: &str, body: &[u8]) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/v1/operations")
+        .header("origin", "https://app.dark-forge.dev")
+        .header(
+            "cookie",
+            format!("__Host-kiln_app={session}; __Host-kiln_csrf={csrf}"),
+        )
+        .header("x-kiln-csrf", presented)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_vec()))
+        .unwrap()
+}
+
+fn create_rows(path: &Path) -> i64 {
+    let db = rusqlite::Connection::open(path).unwrap();
+    db.query_row(
+        "SELECT count(*) FROM operations WHERE is_create=1",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap()
 }

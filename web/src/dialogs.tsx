@@ -1,17 +1,28 @@
 import { useState } from 'react'
 import { AlertTriangle, ArrowUpRight, Check, Lock, ShieldCheck } from 'lucide-react'
-import { formatBytes, type Box, type Checkpoint, type Dashboard, type Template } from './data'
+import {
+  createBox,
+  formatBytes,
+  type Box,
+  type Checkpoint,
+  type Dashboard,
+  type Template,
+} from './data'
 import { Modal, Unavailable } from './ui'
 
 export function CreateDrawer({
   data,
   preview,
+  authenticated,
   initialTemplate,
+  onObserved,
   onClose,
 }: {
   data: Dashboard
   preview: boolean
+  authenticated: boolean
   initialTemplate?: Template
+  onObserved?: (data: Dashboard) => void
   onClose: () => void
 }) {
   const [templateId, setTemplateId] = useState(
@@ -19,12 +30,37 @@ export function CreateDrawer({
   )
   const [name, setName] = useState('')
   const [egress, setEgress] = useState(false)
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState('')
   const template = data.templates.find((item) => item.id === templateId)
   const invalidName = name.length > 0 && !/^[a-z][a-z0-9-]{0,62}$/.test(name)
   const duplicateName = data.boxes.some((box) => box.name === name)
+  const ready =
+    authenticated &&
+    !pending &&
+    Boolean(template?.compatible) &&
+    name.length > 0 &&
+    !invalidName &&
+    !duplicateName
   return (
     <Modal title="Create box" drawer onClose={onClose}>
-      <form onSubmit={(event) => event.preventDefault()}>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (!ready || !template) return
+          setPending(true)
+          setError('')
+          void createBox(template.name, name)
+            .then((observed) => {
+              onObserved?.(observed)
+              onClose()
+            })
+            .catch((reason: unknown) => {
+              setError(reason instanceof Error ? reason.message : 'Create did not finish.')
+              setPending(false)
+            })
+        }}
+      >
         <div className="modal-body">
           <p className="form-intro">
             A fresh environment. An independent disk.
@@ -143,13 +179,22 @@ export function CreateDrawer({
               <span>Trusted test fixture. Not an environment for untrusted workloads.</span>
             </div>
           )}
-          <Unavailable preview={preview} />
+          {authenticated ? (
+            <p className="field-hint">The box appears after the control plane observes it.</p>
+          ) : (
+            <Unavailable preview={preview} />
+          )}
+          {error && (
+            <p className="field-hint error-text" role="alert">
+              {error}
+            </p>
+          )}
         </div>
         <footer className="modal-footer">
           <button type="button" className="button" onClick={onClose}>
             Cancel
           </button>
-          <button className="button primary" disabled>
+          <button className="button primary" disabled={!ready}>
             Create box <ArrowUpRight size={16} />
           </button>
         </footer>

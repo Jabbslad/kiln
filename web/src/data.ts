@@ -101,6 +101,74 @@ export type Checkpoint = Dashboard['checkpoints'][number]
 export type Operation = Dashboard['operations'][number]
 export type BoxState = Box['state']
 
+function requestId() {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+export function readCsrf(cookie: string) {
+  const prefix = '__Host-kiln_csrf='
+  const value = cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix))
+  return value ? value.slice(prefix.length) : ''
+}
+
+type OperationReceipt = {
+  id: string
+  box_id: string
+  state: string
+  error?: { message?: string } | null
+}
+
+export async function createBox(
+  template: string,
+  name: string,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+): Promise<Dashboard> {
+  const id = requestId()
+  const response = await fetcher('/v1/operations', {
+    method: 'POST',
+    credentials: 'same-origin',
+    cache: 'no-store',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'x-kiln-csrf': readCsrf(cookie),
+    },
+    body: JSON.stringify({ id, action: { type: 'create', template, name } }),
+  })
+  if (response.status !== 200 && response.status !== 202) {
+    throw new Error(`Create was not accepted (HTTP ${response.status}). No box was added.`)
+  }
+  let receipt = (await response.json()) as OperationReceipt
+  for (let attempt = 0; attempt < 20 && receipt.state === 'running'; attempt += 1) {
+    const polled = await fetcher(`/v1/operations/${receipt.id}`, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+    })
+    if (!polled.ok) {
+      throw new Error(`Operation status returned HTTP ${polled.status}. The box is unchanged.`)
+    }
+    receipt = (await polled.json()) as OperationReceipt
+  }
+  if (receipt.state !== 'succeeded') {
+    throw new Error(
+      receipt.error?.message ||
+        'Create did not succeed. The box is shown only after the control plane records it.',
+    )
+  }
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const dashboard = await fetchDashboard(undefined, fetcher)
+    if (dashboard.boxes.some((box) => box.id === receipt.box_id)) return dashboard
+  }
+  throw new Error('The control plane has not observed the new box.')
+}
+
 export async function fetchDashboard(
   signal?: AbortSignal,
   fetcher: typeof fetch = fetch,

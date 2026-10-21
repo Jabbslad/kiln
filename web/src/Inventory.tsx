@@ -12,7 +12,7 @@ import {
 } from './ui'
 import { CreateDrawer } from './dialogs'
 
-export default function Inventory({ data, preview }: PageProps) {
+export default function Inventory({ data, preview, onObserved }: PageProps) {
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<BoxState | 'all'>('all')
   const [descending, setDescending] = useState(false)
@@ -255,7 +255,13 @@ export default function Inventory({ data, preview }: PageProps) {
         <p>Isolated environments. Persistent disks. Your infrastructure.</p>
       </div>
       {creating && (
-        <CreateDrawer data={data} preview={preview} onClose={() => setCreating(false)} />
+        <CreateDrawer
+          data={data}
+          preview={preview}
+          authenticated={!preview && data.host.state === 'online'}
+          onObserved={onObserved}
+          onClose={() => setCreating(false)}
+        />
       )}
     </>
   )
