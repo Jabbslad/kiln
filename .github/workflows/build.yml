@@ -116,6 +116,7 @@ jobs:
           sh scripts/test-release-budget.sh
           sh scripts/test-check-dropped-platform.sh
           sh scripts/test-feature-map-guard.sh
+          sh scripts/test-check-pr-proof.sh
           sh scripts/test-operations-journal-version-sync.sh
           sh scripts/test-fmt.sh
 
@@ -135,6 +136,23 @@ jobs:
         run: |
           git diff --name-only --no-renames "$PR_BASE_SHA" HEAD \
             | sh scripts/check-feature-map.sh
+
+  pr-proof-guard:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: PR proof rule
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          git diff --name-only --no-renames "$PR_BASE_SHA" HEAD \
+            | sh scripts/check-pr-proof.sh
 
   # A verified tag reuse already ran this job on main for the same commit.
   # A fallback, a main push, and a heavy pull request still run it.
@@ -543,6 +561,11 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
           npm run test:browser
+      - name: Proof smoke
+        if: steps.queue.outputs.skip_tests != 'true'
+        env:
+          KILN_PROOF_SKIP_KILN_APP: 1
+        run: sh scripts/test-proof.sh
       - name: Package static dashboard
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: |
