@@ -329,22 +329,14 @@ mod tests {
                 template: "ubuntu".into(),
                 name: "box".into(),
             },
-            Action::Pause {
-                id: "a".repeat(32),
-            },
-            Action::Resume {
-                id: "a".repeat(32),
-            },
+            Action::Pause { id: "a".repeat(32) },
+            Action::Resume { id: "a".repeat(32) },
             Action::Stop {
                 id: "a".repeat(32),
                 force: false,
             },
-            Action::Start {
-                id: "a".repeat(32),
-            },
-            Action::Delete {
-                id: "a".repeat(32),
-            },
+            Action::Start { id: "a".repeat(32) },
+            Action::Delete { id: "a".repeat(32) },
             Action::Exec {
                 id: "a".repeat(32),
                 request: ExecRequest {
@@ -354,9 +346,7 @@ mod tests {
                     timeout_ms: 1_000,
                 },
             },
-            Action::Checkpoint {
-                id: "a".repeat(32),
-            },
+            Action::Checkpoint { id: "a".repeat(32) },
             Action::Restore {
                 id: "a".repeat(32),
                 checkpoint: "b".repeat(32),
@@ -375,7 +365,10 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(web, api, "web OPERATION_ACTION_TYPES must match kiln_api::Action tags");
+        assert_eq!(
+            web, api,
+            "web OPERATION_ACTION_TYPES must match kiln_api::Action tags"
+        );
     }
 
     #[cfg(unix)]
