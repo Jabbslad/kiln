@@ -95,7 +95,11 @@ fi
 KILN_DEPLOY_DRY_RUN=1 \
   KILN_RELEASE_TAG="$tag" \
   KILN_DEPLOY_DIST="$dist" \
-  bash deploy/github/deploy.sh
+  bash deploy/github/deploy.sh >"$output.deploy" 2>&1
+grep -q "deploy inputs ${tag}" "$output.deploy" || fail 'deploy dry-run did not finish'
+grep -q "dashboard inputs kiln-dashboard-${tag}.tar.gz" "$output.deploy" \
+  || fail 'deploy dry-run did not check the dashboard archive'
+grep -q 'dashboard live ' "$output.deploy" || fail 'deploy dry-run did not check the bundle'
 
 remote_tags=$(git ls-remote --tags origin "refs/tags/${dry_tag}") || fail 'could not list tags'
 [ -z "$remote_tags" ] || fail "${dry_tag} exists on the remote"
