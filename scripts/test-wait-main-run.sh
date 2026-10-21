@@ -152,22 +152,27 @@ if ! grep -q '!cancelled()' "$workflow"; then
   fail 'workflow lost !cancelled()'
 fi
 
-command -v gh >/dev/null 2>&1 || fail 'gh is not installed'
-real_gh=$(command -v gh)
-public() {
-  env -u GH_TOKEN -u GITHUB_TOKEN "$real_gh" "$@"
+command -v curl >/dev/null 2>&1 || fail 'curl is not installed'
+command -v jq >/dev/null 2>&1 || fail 'jq is not installed'
+read_run() {
+  curl -fsS \
+    -H 'Accept: application/vnd.github+json' \
+    -H 'User-Agent: kiln-wait-test' \
+    "$1"
 }
 
-tag_sha=$(public api repos/Jabbslad/kiln/actions/runs/39523146863 --jq .head_sha)
-main_id=$(public api repos/Jabbslad/kiln/actions/runs/39523085432 --jq .id)
-main_sha=$(public api repos/Jabbslad/kiln/actions/runs/39523085432 --jq .head_sha)
-main_branch=$(public api repos/Jabbslad/kiln/actions/runs/39523085432 --jq .head_branch)
-main_event=$(public api repos/Jabbslad/kiln/actions/runs/39523085432 --jq .event)
-main_path=$(public api repos/Jabbslad/kiln/actions/runs/39523085432 --jq .path)
-main_status=$(public api repos/Jabbslad/kiln/actions/runs/39523085432 --jq .status)
-main_conclusion=$(public api repos/Jabbslad/kiln/actions/runs/39523085432 --jq .conclusion)
-main_started=$(public api repos/Jabbslad/kiln/actions/runs/39523085432 --jq .run_started_at)
-main_finished=$(public api repos/Jabbslad/kiln/actions/runs/39523085432 --jq .updated_at)
+tag=$(read_run https://api.github.com/repos/Jabbslad/kiln/actions/runs/39523146863)
+main=$(read_run https://api.github.com/repos/Jabbslad/kiln/actions/runs/39523085432)
+tag_sha=$(printf '%s\n' "$tag" | jq -r .head_sha)
+main_id=$(printf '%s\n' "$main" | jq -r .id)
+main_sha=$(printf '%s\n' "$main" | jq -r .head_sha)
+main_branch=$(printf '%s\n' "$main" | jq -r .head_branch)
+main_event=$(printf '%s\n' "$main" | jq -r .event)
+main_path=$(printf '%s\n' "$main" | jq -r .path)
+main_status=$(printf '%s\n' "$main" | jq -r .status)
+main_conclusion=$(printf '%s\n' "$main" | jq -r .conclusion)
+main_started=$(printf '%s\n' "$main" | jq -r .run_started_at)
+main_finished=$(printf '%s\n' "$main" | jq -r .updated_at)
 [ "$tag_sha" = "$sha" ] || fail "tag run is $tag_sha"
 [ "$main_id" = 39523085432 ] || fail "main run is $main_id"
 [ "$main_sha" = "$sha" ] || fail 'main run is a different commit'
@@ -177,8 +182,10 @@ main_finished=$(public api repos/Jabbslad/kiln/actions/runs/39523085432 --jq .up
 [ "$main_status" = completed ] || fail 'main run did not complete'
 [ "$main_conclusion" = success ] || fail 'main run did not succeed'
 
-decided=$(public api 'repos/Jabbslad/kiln/actions/runs/39523146863/jobs?per_page=100' --jq '.jobs[] | select(.name == "reuse") | .completed_at')
-server=$(public api 'repos/Jabbslad/kiln/actions/runs/39523085432/jobs?per_page=100' --jq '.jobs[] | select(.name == "server-check") | .conclusion')
+tag_jobs=$(read_run 'https://api.github.com/repos/Jabbslad/kiln/actions/runs/39523146863/jobs?per_page=100')
+main_jobs=$(read_run 'https://api.github.com/repos/Jabbslad/kiln/actions/runs/39523085432/jobs?per_page=100')
+decided=$(printf '%s\n' "$tag_jobs" | jq -r '.jobs[] | select(.name == "reuse") | .completed_at')
+server=$(printf '%s\n' "$main_jobs" | jq -r '.jobs[] | select(.name == "server-check") | .conclusion')
 [ "$server" = success ] || fail 'server-check did not succeed'
 [ -n "$decided" ] || fail 'tag reuse job has no completion time'
 if [ "$main_started" = "$decided" ] || [ "$decided" = "$main_finished" ]; then
