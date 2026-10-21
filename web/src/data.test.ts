@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   applyLifecycle,
   createBox,
@@ -12,8 +12,45 @@ import {
   filterBoxes,
   restoreCheckpoint,
   submitOperation,
+  trackOperation,
+  type Dashboard,
 } from './data'
 import { previewDashboard } from './fixtures'
+
+function slowRunningFetcher(
+  boxId: string,
+  pollsBeforeSuccess: number,
+  succeeded: Record<string, unknown>,
+  dashboardDone: Dashboard,
+  dashboardPending: Dashboard = previewDashboard,
+) {
+  let pollCount = 0
+  let finished = false
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url === '/v1/operations' && init?.method === 'POST') {
+      const posted = JSON.parse(String(init.body))
+      return Response.json(
+        { id: posted.id, box_id: boxId, state: 'running', result: null, error: null },
+        { status: 202 },
+      )
+    }
+    if (url.startsWith('/v1/operations/')) {
+      pollCount += 1
+      const id = url.slice('/v1/operations/'.length)
+      if (pollCount < pollsBeforeSuccess) {
+        return Response.json({ id, box_id: boxId, state: 'running', result: null, error: null })
+      }
+      finished = true
+      return Response.json({ id, box_id: boxId, ...succeeded, error: null })
+    }
+    return Response.json(finished ? dashboardDone : dashboardPending)
+  })
+}
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('dashboard boundary', () => {
   it('validates preview fixtures against the same contract as the backend', () => {
@@ -139,7 +176,7 @@ describe('dashboard boundary', () => {
       if (url.startsWith('/v1/operations/')) {
         pollCount += 1
         const id = url.slice('/v1/operations/'.length)
-        if (pollCount < 25) {
+        if (pollCount < 8) {
           return Response.json({ id, box_id: boxId, state: 'running', result: null, error: null })
         }
         return Response.json({ id, box_id: boxId, state: 'succeeded', result: null, error: null })
@@ -151,12 +188,11 @@ describe('dashboard boundary', () => {
       return Response.json(seen)
     })
     const dashboard = await createBox('ubuntu', 'slow-boot', fetcher, '__Host-kiln_csrf=form-csrf')
-    expect(pollCount).toBeGreaterThanOrEqual(25)
+    expect(pollCount).toBeGreaterThanOrEqual(8)
     expect(dashboard.boxes.map((box) => box.id)).toEqual([boxId])
   })
 
   it('reports a create still running after the wait budget expires', async () => {
-    vi.useFakeTimers()
     const boxId = 'c'.repeat(32)
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
@@ -173,11 +209,15 @@ describe('dashboard boundary', () => {
       }
       return Response.json(previewDashboard)
     })
-    const pending = createBox('ubuntu', 'never-finishes', fetcher, '__Host-kiln_csrf=form-csrf')
-    const outcome = expect(pending).rejects.toThrow(/still in progress/i)
-    await vi.advanceTimersByTimeAsync(300_050)
-    await outcome
-    vi.useRealTimers()
+    await expect(
+      trackOperation(
+        { type: 'create', template: 'ubuntu', name: 'never-finishes' },
+        fetcher,
+        '__Host-kiln_csrf=form-csrf',
+        'd'.repeat(32),
+        120,
+      ),
+    ).rejects.toThrow(/still in progress/i)
   })
 
   it('surfaces the host error when create returns failed', async () => {
@@ -319,7 +359,7 @@ describe('dashboard boundary', () => {
     expect(first.checkpoints.some((item) => item.box_id !== box)).toBe(false)
   })
 
-  it('reports an unconfirmed checkpoint as unknown and does not invent one', async () => {
+  it('reports an unconfirmed checkpoint as still in progress and does not invent one', async () => {
     const fetcher = vi.fn(async (_input: RequestInfo | URL) =>
       Response.json({
         id: 'd'.repeat(32),
@@ -331,7 +371,7 @@ describe('dashboard boundary', () => {
     )
     await expect(
       createCheckpoint('c'.repeat(32), fetcher, '__Host-kiln_csrf=form-csrf', 'd'.repeat(32)),
-    ).rejects.toThrow(/^unknown$/)
+    ).rejects.toThrow(/still in progress/)
     expect(fetcher.mock.calls.map(([url]) => String(url))).not.toContain('/api/v1/dashboard')
   })
 
@@ -455,7 +495,7 @@ describe('dashboard boundary', () => {
     }
   })
 
-  it('reports an unknown lifecycle outcome without inventing a box state', async () => {
+  it('reports a lifecycle still running at timeout without inventing a box state', async () => {
     const boxId = 'e'.repeat(32)
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
@@ -485,7 +525,7 @@ describe('dashboard boundary', () => {
     })
     await expect(
       applyLifecycle('pause', boxId, false, fetcher, '__Host-kiln_csrf=form-csrf'),
-    ).rejects.toThrow(/unknown/)
+    ).rejects.toThrow(/still in progress/)
     expect(fetcher.mock.calls.some(([url]) => String(url) === '/api/v1/dashboard')).toBe(false)
   })
 
@@ -529,7 +569,7 @@ describe('dashboard boundary', () => {
     expect(fetcher.mock.calls.filter(([url]) => String(url) === '/api/v1/dashboard').length).toBe(2)
   })
 
-  it('reports an unknown delete outcome without removing the box', async () => {
+  it('reports delete still in progress without removing the box', async () => {
     const boxId = 'f'.repeat(32)
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
@@ -548,7 +588,9 @@ describe('dashboard boundary', () => {
         boxes: [],
       })
     })
-    await expect(deleteBox(boxId, fetcher, '__Host-kiln_csrf=form-csrf')).rejects.toThrow(/unknown/)
+    await expect(deleteBox(boxId, fetcher, '__Host-kiln_csrf=form-csrf')).rejects.toThrow(
+      /still in progress/,
+    )
     expect(fetcher.mock.calls.some(([url]) => String(url) === '/api/v1/dashboard')).toBe(false)
   })
 
@@ -604,7 +646,7 @@ describe('dashboard boundary', () => {
     expect(fetcher.mock.calls.some(([url]) => String(url) === '/api/v1/dashboard')).toBe(false)
   })
 
-  it('reports an unknown exec and a timeout without inventing output', async () => {
+  it('reports exec still in progress and a timeout without inventing output', async () => {
     const boxId = 'b'.repeat(32)
     const unknown = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input) === '/v1/operations' && init?.method === 'POST') {
@@ -621,7 +663,7 @@ describe('dashboard boundary', () => {
     })
     await expect(
       execCommand(boxId, ['/bin/true'], 1000, undefined, unknown, '__Host-kiln_csrf=form-csrf'),
-    ).rejects.toThrow(/unknown/)
+    ).rejects.toThrow(/still running|still in progress/)
     expect(unknown.mock.calls.some(([url]) => String(url) === '/api/v1/dashboard')).toBe(false)
 
     const timedOut = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -656,5 +698,257 @@ describe('dashboard boundary', () => {
     expect(output.exitCode).toBeNull()
     expect(output.stdout).toBe('')
     expect(timedOut.mock.calls.some(([url]) => String(url) === '/api/v1/dashboard')).toBe(false)
+  })
+})
+
+describe('operation tracker', () => {
+  it('tracks lifecycle through slow running polls and refreshes box state', async () => {
+    const boxId = 'a'.repeat(32)
+    const seen = structuredClone(previewDashboard)
+    seen.boxes = [{ ...previewDashboard.boxes[0], id: boxId, state: 'paused' }]
+    const fetcher = slowRunningFetcher(
+      boxId,
+      8,
+      { state: 'succeeded', result: { type: 'box', state: 'paused' } },
+      seen,
+      {
+        ...previewDashboard,
+        boxes: [{ ...previewDashboard.boxes[0], id: boxId, state: 'running' }],
+      },
+    )
+    const dashboard = await applyLifecycle(
+      'pause',
+      boxId,
+      false,
+      fetcher,
+      '__Host-kiln_csrf=form-csrf',
+    )
+    expect(dashboard.boxes.find((box) => box.id === boxId)?.state).toBe('paused')
+  })
+
+  it('surfaces lifecycle failure from the host', async () => {
+    const boxId = 'a'.repeat(32)
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json({
+          id: posted.id,
+          box_id: boxId,
+          state: 'failed',
+          result: null,
+          error: { message: 'The box is not running.' },
+        })
+      }
+      return Response.json(previewDashboard)
+    })
+    await expect(
+      applyLifecycle('pause', boxId, false, fetcher, '__Host-kiln_csrf=form-csrf'),
+    ).rejects.toThrow('The box is not running.')
+  })
+
+  it('tracks checkpoint through slow running polls and refreshes the list', async () => {
+    const boxId = 'b'.repeat(32)
+    const checkpointId = 'c'.repeat(32)
+    const seen = structuredClone(previewDashboard)
+    seen.checkpoints = [
+      {
+        id: checkpointId,
+        box_id: boxId,
+        name: 'snap',
+        created_at: previewDashboard.observed_at,
+        size_bytes: 4096,
+        compatible: true,
+      },
+    ]
+    const fetcher = slowRunningFetcher(
+      boxId,
+      8,
+      {
+        state: 'succeeded',
+        result: { type: 'checkpoint', id: checkpointId, box_id: boxId },
+      },
+      seen,
+      { ...previewDashboard, checkpoints: [] },
+    )
+    const dashboard = await createCheckpoint(boxId, fetcher, '__Host-kiln_csrf=form-csrf')
+    expect(dashboard.checkpoints.some((item) => item.id === checkpointId)).toBe(true)
+  })
+
+  it('surfaces checkpoint failure from the host', async () => {
+    const boxId = 'b'.repeat(32)
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json({
+          id: posted.id,
+          box_id: boxId,
+          state: 'failed',
+          result: null,
+          error: { message: 'Checkpoint storage is full.' },
+        })
+      }
+      return Response.json(previewDashboard)
+    })
+    await expect(createCheckpoint(boxId, fetcher, '__Host-kiln_csrf=form-csrf')).rejects.toThrow(
+      'Checkpoint storage is full.',
+    )
+  })
+
+  it('tracks restore through slow running polls and refreshes the box', async () => {
+    const boxId = 'c'.repeat(32)
+    const checkpointId = 'd'.repeat(32)
+    const seen = structuredClone(previewDashboard)
+    seen.boxes = [{ ...previewDashboard.boxes[0], id: boxId, restored_from: checkpointId }]
+    const fetcher = slowRunningFetcher(
+      boxId,
+      8,
+      { state: 'succeeded', result: { type: 'box', id: boxId } },
+      seen,
+      {
+        ...previewDashboard,
+        boxes: [{ ...previewDashboard.boxes[0], id: boxId, restored_from: null }],
+      },
+    )
+    const dashboard = await restoreCheckpoint(
+      boxId,
+      checkpointId,
+      fetcher,
+      '__Host-kiln_csrf=form-csrf',
+    )
+    expect(dashboard.boxes.find((box) => box.id === boxId)?.restored_from).toBe(checkpointId)
+  })
+
+  it('surfaces restore failure from the host', async () => {
+    const boxId = 'c'.repeat(32)
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json({
+          id: posted.id,
+          box_id: boxId,
+          state: 'failed',
+          result: null,
+          error: { message: 'Checkpoint is incompatible.' },
+        })
+      }
+      return Response.json(previewDashboard)
+    })
+    await expect(
+      restoreCheckpoint(boxId, 'd'.repeat(32), fetcher, '__Host-kiln_csrf=form-csrf'),
+    ).rejects.toThrow('Checkpoint is incompatible.')
+  })
+
+  it('tracks delete through slow running polls and refreshes the list', async () => {
+    const boxId = 'e'.repeat(32)
+    const kept = structuredClone(previewDashboard)
+    kept.boxes = [{ ...previewDashboard.boxes[0], id: boxId }]
+    const gone = structuredClone(previewDashboard)
+    gone.boxes = []
+    const fetcher = slowRunningFetcher(
+      boxId,
+      8,
+      { state: 'succeeded', result: { type: 'deleted', id: boxId } },
+      gone,
+      kept,
+    )
+    const dashboard = await deleteBox(boxId, fetcher, '__Host-kiln_csrf=form-csrf')
+    expect(dashboard.boxes.some((box) => box.id === boxId)).toBe(false)
+  })
+
+  it('surfaces delete failure from the host', async () => {
+    const boxId = 'e'.repeat(32)
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json({
+          id: posted.id,
+          box_id: boxId,
+          state: 'failed',
+          result: null,
+          error: { message: 'Delete rejected while a session is attached.' },
+        })
+      }
+      return Response.json(previewDashboard)
+    })
+    await expect(deleteBox(boxId, fetcher, '__Host-kiln_csrf=form-csrf')).rejects.toThrow(
+      'Delete rejected while a session is attached.',
+    )
+  })
+
+  it('tracks exec through slow running polls and returns output', async () => {
+    const boxId = 'f'.repeat(32)
+    let pollCount = 0
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json(
+          { id: posted.id, box_id: boxId, state: 'running', result: null, error: null },
+          { status: 202 },
+        )
+      }
+      if (url.startsWith('/v1/operations/')) {
+        pollCount += 1
+        const id = url.slice('/v1/operations/'.length)
+        if (pollCount < 8) {
+          return Response.json({ id, box_id: boxId, state: 'running', result: null, error: null })
+        }
+        return Response.json({
+          id,
+          box_id: boxId,
+          state: 'succeeded',
+          result: {
+            type: 'exec',
+            stdout: [...'ok'].map((char) => char.charCodeAt(0)),
+            stderr: [],
+            exit_code: 0,
+            truncated: false,
+            timed_out: false,
+          },
+          error: null,
+        })
+      }
+      return Response.json(previewDashboard)
+    })
+    const output = await execCommand(
+      boxId,
+      ['/bin/true'],
+      1000,
+      undefined,
+      fetcher,
+      '__Host-kiln_csrf=form-csrf',
+    )
+    expect(output.stdout).toBe('ok')
+    expect(pollCount).toBeGreaterThanOrEqual(8)
+  })
+
+  it('surfaces exec failure from the host', async () => {
+    const boxId = 'f'.repeat(32)
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json({
+          id: posted.id,
+          box_id: boxId,
+          state: 'failed',
+          result: null,
+          error: { message: 'Guest agent is unavailable.' },
+        })
+      }
+      return Response.json(previewDashboard)
+    })
+    await expect(
+      execCommand(boxId, ['/bin/true'], 1000, undefined, fetcher, '__Host-kiln_csrf=form-csrf'),
+    ).rejects.toThrow('Guest agent is unavailable.')
+  })
+
+  it('uses trackOperation for CSRF and session rejection on submit', async () => {
+    const fetcher = vi.fn(async () =>
+      Response.json({ code: 'invalid_csrf', message: 'The request was refused.' }, { status: 403 }),
+    )
+    await expect(
+      trackOperation({ type: 'delete', id: 'a'.repeat(32) }, fetcher, '__Host-kiln_csrf=form-csrf'),
+    ).rejects.toThrow(/csrf/i)
+    expect(fetcher).toHaveBeenCalledTimes(1)
   })
 })

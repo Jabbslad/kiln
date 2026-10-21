@@ -97,7 +97,7 @@ it('keeps checkpoint and restore disabled when the console is not live or not au
   }
 })
 
-it('submits one same-box checkpoint, shows unknown, and retries that request id', async () => {
+it('submits one same-box checkpoint, shows still in progress, and retries that request id', async () => {
   const boxId = 'box-9c4d8e7b'
   const checkpointId = 'c'.repeat(32)
   const base = {
@@ -167,7 +167,7 @@ it('submits one same-box checkpoint, shows unknown, and retries that request id'
   const submit = within(dialog).getByRole('button', { name: 'Create checkpoint' })
   expect(submit).toBeEnabled()
   await user.click(submit)
-  expect(await within(dialog).findByRole('alert')).toHaveTextContent(/^unknown$/)
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(/still in progress/)
   expect(screen.queryByText('shift-snapshot')).not.toBeInTheDocument()
   await user.click(submit)
   await waitFor(() => expect(posts).toHaveLength(2))

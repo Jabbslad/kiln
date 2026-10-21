@@ -6,11 +6,13 @@ import {
   createCheckpoint,
   deleteBox,
   formatBytes,
+  operationPendingLabel,
   requestId,
   restoreCheckpoint,
   type Box,
   type Checkpoint,
   type Dashboard,
+  type OperationAction,
   type Template,
 } from './data'
 import { Modal, Unavailable } from './ui'
@@ -40,6 +42,7 @@ export function CreateDrawer({
   const template = data.templates.find((item) => item.id === templateId)
   const invalidName = name.length > 0 && !/^[a-z][a-z0-9-]{0,62}$/.test(name)
   const duplicateName = data.boxes.some((box) => box.name === name)
+  const createAction = { type: 'create', template: template?.name ?? '', name } as const
   const ready =
     authenticated &&
     !pending &&
@@ -191,7 +194,8 @@ export function CreateDrawer({
           )}
           {pending && (
             <p className="field-hint" role="status">
-              Creating… Waiting for the control plane to finish booting the box.
+              {operationPendingLabel(createAction)} Waiting for the control plane to finish booting
+              the box.
             </p>
           )}
           {error && (
@@ -206,7 +210,7 @@ export function CreateDrawer({
           </button>
           <button className="button primary" disabled={!ready} aria-busy={pending}>
             {pending ? (
-              'Creating…'
+              operationPendingLabel(createAction)
             ) : (
               <>
                 Create box <ArrowUpRight size={16} />
@@ -240,6 +244,12 @@ export function RestoreDialog({
   const [operationId] = useState(() => requestId())
   const sameBox = checkpoint.box_id === box.id
   const ready = authenticated && acknowledged && sameBox && !pending
+  const restoreAction = {
+    type: 'restore',
+    id: box.id,
+    checkpoint: checkpoint.id,
+    acknowledge_external_state_replay: true,
+  } as const
   return (
     <Modal title="Restore checkpoint?" onClose={onClose}>
       <div className="modal-body">
@@ -281,6 +291,12 @@ export function RestoreDialog({
         ) : (
           <Unavailable preview={preview} />
         )}
+        {pending && (
+          <p className="field-hint" role="status">
+            {operationPendingLabel(restoreAction)} Waiting for the control plane to observe the
+            restore.
+          </p>
+        )}
         {error && (
           <p className="field-hint error-text" role="alert">
             {error}
@@ -288,12 +304,13 @@ export function RestoreDialog({
         )}
       </div>
       <footer className="modal-footer">
-        <button className="button" onClick={onClose}>
+        <button className="button" onClick={onClose} disabled={pending}>
           Cancel
         </button>
         <button
           className="button primary"
           disabled={!ready}
+          aria-busy={pending}
           aria-describedby="restore-gate"
           onClick={() => {
             if (!ready) return
@@ -310,7 +327,7 @@ export function RestoreDialog({
               })
           }}
         >
-          Restore checkpoint
+          {pending ? operationPendingLabel(restoreAction) : 'Restore checkpoint'}
         </button>
       </footer>
       <p id="restore-gate" className="dialog-footnote">
@@ -345,6 +362,11 @@ export function LifecycleDialog({
   const lifecycle =
     action === 'Pause' || action === 'Resume' || action === 'Stop' || action === 'Start'
   const ready = authenticated && (checkpoint || lifecycle) && !pending
+  const lifecycleAction = checkpoint
+    ? ({ type: 'checkpoint', id: box.id } as const)
+    : action === 'Stop'
+      ? ({ type: 'stop', id: box.id, force } as const)
+      : ({ type: action.toLowerCase(), id: box.id } as OperationAction)
   const explanations: Record<string, string> = {
     Pause:
       'Freeze vCPUs while keeping the VMM process, RAM and disk. Pausing does not release memory.',
@@ -380,6 +402,12 @@ export function LifecycleDialog({
         ) : (
           <Unavailable preview={preview} />
         )}
+        {pending && (
+          <p className="field-hint" role="status">
+            {operationPendingLabel(lifecycleAction)} Waiting for the control plane to observe the
+            change.
+          </p>
+        )}
         {error && (
           <p className="field-hint error-text" role="alert">
             {error}
@@ -387,12 +415,13 @@ export function LifecycleDialog({
         )}
       </div>
       <footer className="modal-footer">
-        <button className="button" onClick={onClose}>
+        <button className="button" onClick={onClose} disabled={pending}>
           Cancel
         </button>
         <button
           className="button primary"
           disabled={!ready}
+          aria-busy={pending}
           onClick={() => {
             if (!ready) return
             setPending(true)
@@ -415,7 +444,7 @@ export function LifecycleDialog({
               })
           }}
         >
-          {action}
+          {pending ? operationPendingLabel(lifecycleAction) : action}
         </button>
       </footer>
     </Modal>
@@ -439,6 +468,7 @@ export function DeleteDialog({
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
   const ready = authenticated && typed === box.name && !pending
+  const deleteAction = { type: 'delete', id: box.id } as const
   return (
     <Modal title="Delete box?" onClose={onClose}>
       <div className="modal-body">
@@ -463,6 +493,11 @@ export function DeleteDialog({
         ) : (
           <Unavailable preview={preview} />
         )}
+        {pending && (
+          <p className="field-hint" role="status">
+            {operationPendingLabel(deleteAction)} Waiting for the control plane to observe removal.
+          </p>
+        )}
         {error && (
           <p className="field-hint error-text" role="alert">
             {error}
@@ -470,12 +505,13 @@ export function DeleteDialog({
         )}
       </div>
       <footer className="modal-footer">
-        <button className="button" onClick={onClose}>
+        <button className="button" onClick={onClose} disabled={pending}>
           Cancel
         </button>
         <button
           className="button primary"
           disabled={!ready}
+          aria-busy={pending}
           onClick={() => {
             if (!ready) return
             setPending(true)
@@ -491,7 +527,7 @@ export function DeleteDialog({
               })
           }}
         >
-          Delete box
+          {pending ? operationPendingLabel(deleteAction) : 'Delete box'}
         </button>
       </footer>
     </Modal>
