@@ -804,10 +804,33 @@ fn test_server_contains_prebuilt_image_not_host_snapshots_or_secrets() {
     );
 }
 
+fn test_bootstrap_accepts_windows_crlf_checkout() {
+    let text = fs::read_to_string(crate::repo_root().join("deploy/bootstrap/install.sh")).unwrap();
+    assert!(
+        text.contains('\n') && !text.contains('\r'),
+        "git stores deploy/bootstrap/install.sh with LF"
+    );
+    let archive = std::collections::BTreeSet::new();
+    let expected = bootstrap_accepts_text(&text, &archive);
+    let crlf = text.replace('\n', "\r\n");
+    assert_eq!(bootstrap_accepts_text(&crlf, &archive), expected);
+    assert!(expected.iter().all(|name| !name.contains('\r')));
+}
+
 fn bootstrap_accepts(
     archive_names: &std::collections::BTreeSet<String>,
 ) -> std::collections::BTreeSet<String> {
     let text = fs::read_to_string(crate::repo_root().join("deploy/bootstrap/install.sh")).unwrap();
+    bootstrap_accepts_text(&text, archive_names)
+}
+
+fn bootstrap_accepts_text(
+    text: &str,
+    archive_names: &std::collections::BTreeSet<String>,
+) -> std::collections::BTreeSet<String> {
+    // Git for Windows checks the script out with CRLF. The heredoc markers
+    // are LF in the repository.
+    let text = text.replace('\r', "");
     let marker = "cat > \"$work/expected\" <<FILES\n";
     let start = text.find(marker).unwrap() + marker.len();
     let end = text[start..].find("\nFILES\n").unwrap();
@@ -921,4 +944,5 @@ register_cases! {
     test_identity_allowlist_excludes_vm_and_private_state,
     test_invalid_version_target_and_missing_binary_make_no_archive,
     test_server_contains_prebuilt_image_not_host_snapshots_or_secrets,
+    test_bootstrap_accepts_windows_crlf_checkout,
 }
