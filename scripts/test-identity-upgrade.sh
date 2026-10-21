@@ -24,9 +24,20 @@ run_server_upgrade_rehearsal() {
   mkdir -p "$work/prev" "$work/next"
   tar -xzf "$prev_tar" -C "$work/prev"
   tar -xzf "$next_tar" -C "$work/next"
-  installed=$(awk -F\" '/"version"/ { print $4; exit }' "$work/prev/release.json" | sed 's/^v//')
-  target=$(awk -F\" '/"version"/ { print $4; exit }' "$work/next/release.json" | sed 's/^v//')
-  [ -n "$installed" ] && [ -n "$target" ] || fail "could not read release.json versions"
+  read_release_version() {
+    awk -F\" '
+      $2 == "version" {
+        sub(/^v/, "", $4)
+        print $4
+        exit
+      }
+    ' "$1/release.json"
+  }
+  installed=$(read_release_version "$work/prev")
+  target=$(read_release_version "$work/next")
+  if [ -z "$installed" ] || [ -z "$target" ]; then
+    fail "could not read release.json versions"
+  fi
   mkdir -p "$state" "$package/bin" "$etc" "$opt/bin" "$var/runtime" "$var/journal" "$var/image" \
     "$libexec" "$work/run/systemd/system" "$work/sys/fs/cgroup" "$work/dev" \
     "$work/etc/systemd/system" "$work/proc" "$work/stubs"

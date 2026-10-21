@@ -31,12 +31,10 @@ grep -q 'found operation journal schema version' "$install" \
 
 grep -q 'deploy/operations-journal.max-version' "$journal" \
   || fail 'journal.rs must include deploy/operations-journal.max-version'
-rust_max=$(
-  awk '
-    /^const SCHEMA_VERSION: u32 = operations_journal_max_version\(\);$/ { saw = 1 }
-    END { exit !saw }
-  ' "$journal"
-) || fail 'journal.rs must set SCHEMA_VERSION from operations_journal_max_version()'
+awk '
+  /^const SCHEMA_VERSION: u32 = operations_journal_max_version\(\);$/ { saw = 1 }
+  END { exit !saw }
+' "$journal" || fail 'journal.rs must set SCHEMA_VERSION from operations_journal_max_version()'
 
 grep -q "operations-journal.max-version" "$root/xtask/src/release.rs" \
   || fail 'server release must ship operations-journal.max-version'
