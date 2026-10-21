@@ -1148,6 +1148,260 @@ pub fn deploy_caller_violations(workflow: &str) -> Vec<String> {
     violations
 }
 
+/// `DARK_FORGE_*` values are secrets on the `dark-forge` environment.
+/// A job that reads one must set `environment: dark-forge`.
+/// A reusable workflow only receives them when the caller passes
+/// `secrets: inherit` or names each secret. Otherwise GitHub sets the
+/// value to an empty string and the job still runs.
+pub fn dark_forge_secret_violations(workflows: &[(&str, &str)]) -> Vec<String> {
+    let mut present: BTreeSet<&str> = BTreeSet::new();
+    let mut reads: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+    let mut violations = Vec::new();
+    for (name, text) in workflows {
+        present.insert(*name);
+        for (job, body) in job_blocks(text) {
+            let secrets = dark_forge_names(&strip_job_secrets_block(&body));
+            if secrets.is_empty() {
+                continue;
+            }
+            reads
+                .entry(*name)
+                .or_default()
+                .extend(secrets.iter().cloned());
+            if job_environment(&body).as_deref() != Some("dark-forge") {
+                let listed = secrets.into_iter().collect::<Vec<_>>().join(", ");
+                violations.push(format!(
+                    "{name} job {job} reads {listed} without environment: dark-forge"
+                ));
+            }
+        }
+    }
+    for (name, text) in workflows {
+        for (job, body) in job_blocks(text) {
+            let Some(called) = called_local_workflow(&body) else {
+                continue;
+            };
+            let Some(needed) = reads.get(called.as_str()) else {
+                if !present.contains(called.as_str()) {
+                    violations.push(format!(
+                        "{name} job {job} calls {called}, which was not provided"
+                    ));
+                }
+                continue;
+            };
+            match passed_secrets(&body) {
+                PassedSecrets::All => {}
+                PassedSecrets::Named(passed) => {
+                    for secret in needed {
+                        if !passed.contains(secret) {
+                            violations.push(format!(
+                                "{name} job {job} calls {called} without passing {secret}"
+                            ));
+                        }
+                    }
+                }
+                PassedSecrets::None => violations.push(format!(
+                    "{name} job {job} calls {called} without passing secrets"
+                )),
+            }
+        }
+    }
+    violations
+}
+
+enum PassedSecrets {
+    None,
+    All,
+    Named(BTreeSet<String>),
+}
+
+fn dark_forge_names(text: &str) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index..].starts_with(b"secrets.DARK_FORGE_") {
+            let start = index + "secrets.".len();
+            let mut end = start;
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                end += 1;
+            }
+            if end > start
+                && let Ok(name) = std::str::from_utf8(&bytes[start..end])
+            {
+                names.insert(name.to_string());
+            }
+            index = end;
+            continue;
+        }
+        if bytes[index..].starts_with(b"secrets[") {
+            let mut cursor = index + "secrets[".len();
+            if bytes
+                .get(cursor)
+                .is_some_and(|byte| *byte == b'\'' || *byte == b'"')
+            {
+                let quote = bytes[cursor];
+                cursor += 1;
+                let start = cursor;
+                while cursor < bytes.len() && bytes[cursor] != quote {
+                    cursor += 1;
+                }
+                if let Ok(name) = std::str::from_utf8(&bytes[start..cursor])
+                    && name.starts_with("DARK_FORGE_")
+                    && name.len() > "DARK_FORGE_".len()
+                {
+                    names.insert(name.to_string());
+                }
+            }
+            index = cursor.max(index + 1);
+            continue;
+        }
+        index += 1;
+    }
+    names
+}
+
+fn job_environment(body: &str) -> Option<String> {
+    let lines: Vec<&str> = body.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if line.len() - trimmed.len() != 4 {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("environment:") else {
+            continue;
+        };
+        let rest = rest.trim();
+        if rest.is_empty() || is_yaml_fold(rest) {
+            for next in &lines[index + 1..] {
+                if next.trim().is_empty() || next.trim_start().starts_with('#') {
+                    continue;
+                }
+                if next.len() - next.trim_start().len() <= 4 {
+                    break;
+                }
+                let Some(value) = next.trim().strip_prefix("name:") else {
+                    continue;
+                };
+                let value = value.trim().trim_matches(|ch| ch == '"' || ch == '\'');
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+            return None;
+        }
+        let name = rest
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_matches(|ch| ch == '"' || ch == '\'');
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn strip_job_secrets_block(body: &str) -> String {
+    let lines: Vec<&str> = body.lines().collect();
+    let mut kept = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        let trimmed = line.trim_start();
+        if line.len() - trimmed.len() == 4 && trimmed.starts_with("secrets:") {
+            let rest = trimmed["secrets:".len()..].trim();
+            index += 1;
+            if rest.is_empty() || is_yaml_fold(rest) {
+                while index < lines.len() {
+                    let next = lines[index];
+                    if next.trim().is_empty() || next.trim_start().starts_with('#') {
+                        index += 1;
+                        continue;
+                    }
+                    if next.len() - next.trim_start().len() <= 4 {
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            continue;
+        }
+        kept.push(line);
+        index += 1;
+    }
+    kept.join("\n")
+}
+
+fn called_local_workflow(body: &str) -> Option<String> {
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if line.len() - trimmed.len() != 4 {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("uses:") else {
+            continue;
+        };
+        let path = rest
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_matches(|ch| ch == '"' || ch == '\'');
+        for prefix in ["./.github/workflows/", "$/.github/workflows/"] {
+            if let Some(name) = path.strip_prefix(prefix)
+                && !name.is_empty()
+                && !name.contains('/')
+            {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn passed_secrets(body: &str) -> PassedSecrets {
+    let lines: Vec<&str> = body.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if line.len() - trimmed.len() != 4 {
+            continue;
+        }
+        let Some(rest) = trimmed.strip_prefix("secrets:") else {
+            continue;
+        };
+        let rest = rest.trim();
+        if rest.trim_matches(|ch| ch == '"' || ch == '\'') == "inherit" {
+            return PassedSecrets::All;
+        }
+        if !rest.is_empty() && !is_yaml_fold(rest) {
+            return PassedSecrets::None;
+        }
+        let mut names = BTreeSet::new();
+        for next in &lines[index + 1..] {
+            if next.trim().is_empty() || next.trim_start().starts_with('#') {
+                continue;
+            }
+            let indent = next.len() - next.trim_start().len();
+            if indent <= 4 {
+                break;
+            }
+            if indent == 6 {
+                let key = next
+                    .trim()
+                    .split_once(':')
+                    .map(|(key, _)| key.trim())
+                    .unwrap_or("")
+                    .trim_matches(|ch| ch == '"' || ch == '\'');
+                if !key.is_empty() {
+                    names.insert(key.to_string());
+                }
+            }
+        }
+        return PassedSecrets::Named(names);
+    }
+    PassedSecrets::None
+}
+
 pub fn release_event_violations(workflow: &str) -> Vec<String> {
     let lines: Vec<&str> = workflow
         .lines()

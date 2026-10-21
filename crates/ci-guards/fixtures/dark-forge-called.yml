@@ -1,0 +1,16 @@
+name: Called deploy
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    environment: dark-forge
+    steps:
+      - name: Install the release
+        env:
+          DARK_FORGE_SSH_KEY: ${{ secrets.DARK_FORGE_SSH_KEY }}
+          DARK_FORGE_KNOWN_HOSTS: ${{ secrets.DARK_FORGE_KNOWN_HOSTS }}
+        run: bash deploy/github/deploy.sh

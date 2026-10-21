@@ -196,6 +196,7 @@ jobs:
           shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-bootstrap-pins.sh scripts/test-bootstrap-pins.sh scripts/test-caddy-endings.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/enroll-dark-forge.sh \
             deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
+            deploy/github/require-release.sh \
             deploy/github/install-remote.sh deploy/github/smoke.sh \
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
             scripts/test-listener-restart.sh \
@@ -687,6 +688,7 @@ jobs:
     uses: ./.github/workflows/deploy.yml
     with:
       tag: ${{ github.ref_name }}
+    secrets: inherit
 
   dry-run-assets:
     needs: [reuse]
