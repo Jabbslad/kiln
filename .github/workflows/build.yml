@@ -111,6 +111,24 @@ jobs:
           sh scripts/test-plan-release.sh
           sh scripts/test-check-stamped-clients.sh
           sh scripts/test-release-budget.sh
+          sh scripts/test-feature-map-guard.sh
+
+  feature-map-guard:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Feature map rule
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          git diff --name-only --no-renames "$PR_BASE_SHA" HEAD \
+            | sh scripts/check-feature-map.sh
 
   # A verified tag reuse already ran this job on main for the same commit.
   # A fallback, a main push, and a heavy pull request still run it.
@@ -205,6 +223,7 @@ jobs:
           sh scripts/test-plan-release.sh
           sh scripts/test-check-stamped-clients.sh
           sh scripts/test-release-budget.sh
+          sh scripts/test-feature-map-guard.sh
           shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-bootstrap-pins.sh scripts/test-bootstrap-pins.sh scripts/test-caddy-endings.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/enroll-dark-forge.sh \
             deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
@@ -223,7 +242,8 @@ jobs:
             scripts/next-release-tag.sh scripts/test-next-release-tag.sh \
             scripts/plan-release.sh scripts/test-plan-release.sh \
             scripts/check-stamped-clients.sh scripts/test-check-stamped-clients.sh \
-            scripts/test-release-budget.sh
+            scripts/test-release-budget.sh \
+            scripts/check-feature-map.sh scripts/test-feature-map-guard.sh
 
   # A manual dry run fetches main's packages. A push builds in this run.
   reuse:
@@ -677,7 +697,7 @@ jobs:
   # always() still runs when a dependency fails or is skipped. Without it,
   # GitHub skips this job and the check never reports.
   required:
-    needs: [changes, docs-check, server-check, client, dashboard]
+    needs: [changes, docs-check, feature-map-guard, server-check, client, dashboard]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
