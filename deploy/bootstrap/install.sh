@@ -198,7 +198,6 @@ bin/kiln
 bin/kiln-host
 bin/kiln-api
 install.sh
-operations-journal.max-version
 fetch-firecracker.sh
 README.md
 docs/releases.md
@@ -221,6 +220,9 @@ FILES
         # packages remain installable, but cannot opt in to networking.
         if grep -qx 'bin/kiln-network' "$work/names"; then
             printf 'bin/kiln-network\n' >> "$work/expected"
+        fi
+        if grep -qx 'operations-journal.max-version' "$work/names"; then
+            printf '%s\n' operations-journal.max-version >> "$work/expected"
         fi
         # Door proxy units and their runbook ship together. An archive that
         # has any of these files must include the private unit and the

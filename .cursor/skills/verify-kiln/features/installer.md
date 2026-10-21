@@ -11,7 +11,7 @@ Tagged deploy and auto-release also ship `kiln-identity-*.tar.gz` and `kiln-dash
 - `sh install.sh server --address PRIVATE_IP` selects the address.
 - `sh install.sh server --network` or `--network-uplink INTERFACE` opts into guest egress.
 - `bash deploy/install.sh --address IP --apply [--dashboard-archive PATH]` is the provisioner the shell calls. Without `--apply` it only preflights. `--apply` requires root outside the test fixture.
-- Checksums are pinned in the `assets` function of `install.sh`. The version variable is set in `main`. Server archives must include `operations-journal.max-version` beside `install.sh`; bootstrap rejects archives that omit it.
+- Checksums are pinned in the `assets` function of `install.sh`. The version variable is set in `main`. Current server packages ship `operations-journal.max-version` beside `install.sh`; bootstrap accepts older archives that omit it and requires the file when present.
 - Binary updates call `wait_for_operations` on `/var/lib/kiln/journal/operations.sqlite` before stopping `kiln-host`. The max supported schema version is pinned in `deploy/operations-journal.max-version` (also shipped beside `install.sh` and included by `crates/kiln-server/src/journal.rs`). The installer accepts versions `1` through that max; anything else fails with the sqlite command, the found version, and the accepted range. Any failed update step prints its name, command, exit code, and the last twenty output lines.
 - Identity upgrade on deploy: `deploy/github/install-identity.sh` replaces `/usr/local/libexec/kiln-identity` from the release tarball with rollback probes.
 

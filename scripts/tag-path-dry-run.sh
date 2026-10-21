@@ -63,6 +63,14 @@ printf '%s\n' "$dry_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-dryrun$' || fail "
 printf 'dry-run tag %s sha %s\n' "$tag" "$sha"
 printf 'dry-run release %s\n' "$tag"
 
+prev_server=
+for path in "$dist/kiln-server-${from}"*.tar.gz; do
+  [ -f "$path" ] || continue
+  prev_server=$path
+  break
+done
+[ -n "$prev_server" ] || fail "reuse dist missing server archive for ${from}"
+
 sh scripts/stamp-release-dist.sh "$dist" "$from" "$tag"
 sh scripts/check-stamped-clients.sh "$dist" "$tag"
 
@@ -102,13 +110,7 @@ remote_tags=$(git ls-remote --tags origin "refs/tags/${dry_tag}") || fail 'could
 [ -z "$remote_tags" ] || fail "${dry_tag} exists on the remote"
 
 if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
-  prev_archive=
-  for path in "$dist/kiln-server-${from}"*.tar.gz; do
-    [ -f "$path" ] || continue
-    prev_archive=$path
-    break
-  done
-  [ -n "$prev_archive" ] || fail 'reuse dist missing the previous server archive'
+  prev_archive=$prev_server
   cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client
   image_root=$(mktemp -d)
   tar -xzf "$prev_archive" -C "$image_root" image
