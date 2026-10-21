@@ -88,8 +88,11 @@ test('inventory, search, sorting, navigation and actual rendered design', async 
   await page.getByRole('button', { name: 'Name' }).click()
   await expect(page.locator('tbody tr').first()).toContainText('worker-test')
   await page.getByRole('link', { name: 'api-dev', exact: true }).click()
-  await expect(page.getByText('Session not connected')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Connect terminal' })).toBeDisabled()
+  await expect(page.getByTestId('capability-terminal')).toHaveAttribute(
+    'data-capability-state',
+    'not-yet',
+  )
+  await expect(page.getByTestId('capability-terminal')).toContainText('Not available yet')
   await capture(page, 'box-workspace-desktop')
   await page.getByRole('button', { name: 'Exec', exact: true }).click()
   await page.getByLabel('Arguments (JSON array)').fill('[42]')
@@ -163,8 +166,11 @@ test('live loading, empty, zero metrics and service failure are distinct', async
   await capture(page, 'loading-desktop')
   release()
   await expect(page.getByText('No boxes yet')).toBeVisible()
-  await expect(page.getByText('0%', { exact: true })).toBeVisible()
-  await expect(page.getByText('0 B', { exact: true })).toBeVisible()
+  await expect(page.getByTestId('capability-metrics')).toHaveAttribute(
+    'data-capability-state',
+    'not-yet',
+  )
+  await expect(page.getByTestId('capability-metrics')).toContainText('Not available yet')
   await capture(page, 'empty-desktop')
   await page.unroute('**/api/v1/dashboard')
   await page.route('**/api/v1/dashboard', (route) =>

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type ComponentProps } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { ArrowUpRight, Box as BoxIcon, Check, Copy, Info, X } from 'lucide-react'
+import { capabilities, capabilityAvailable, type Capability } from './capabilities'
 import { formatBytes, formatMetric, type Dashboard } from './data'
 
 export type PageProps = {
@@ -68,6 +69,32 @@ export function Empty({
   )
 }
 
+export function NotAvailableYet() {
+  return <p className="capability-unavailable">Not available yet</p>
+}
+
+export function CapabilitySurface({
+  capability,
+  children,
+  className,
+}: {
+  capability: Capability
+  children: ReactNode
+  className?: string
+}) {
+  const status = capabilities[capability]
+  return (
+    <div
+      className={className}
+      data-capability={capability}
+      data-capability-state={status}
+      data-testid={`capability-${capability}`}
+    >
+      {status === 'not-yet' ? <NotAvailableYet /> : children}
+    </div>
+  )
+}
+
 export function Unavailable({ preview }: { preview: boolean }) {
   return (
     <div className="notice muted-notice">
@@ -93,21 +120,25 @@ export function ResourceMetrics({
     <section className="panel metrics-panel" aria-label={title}>
       <div className="panel-heading">
         <h2>{title}</h2>
-        <span className="micro">{missing ? 'Awaiting host telemetry' : 'Reported by host'}</span>
+        {capabilityAvailable('metrics') && (
+          <span className="micro">{missing ? 'Awaiting host telemetry' : 'Reported by host'}</span>
+        )}
       </div>
-      <div className="metric-grid">
-        {[
-          ['CPU', formatMetric(metrics.cpu_percent, '%')],
-          ['Memory', formatBytes(metrics.memory_bytes)],
-          ['Disk', formatBytes(metrics.disk_bytes)],
-        ].map(([label, value]) => (
-          <div className="metric" key={label}>
-            <span className="eyebrow">{label}</span>
-            <strong>{value}</strong>
-            <span className="micro">{value === '—' ? 'Not reported' : 'Observed use'}</span>
-          </div>
-        ))}
-      </div>
+      <CapabilitySurface capability="metrics">
+        <div className="metric-grid">
+          {[
+            ['CPU', formatMetric(metrics.cpu_percent, '%')],
+            ['Memory', formatBytes(metrics.memory_bytes)],
+            ['Disk', formatBytes(metrics.disk_bytes)],
+          ].map(([label, value]) => (
+            <div className="metric" key={label}>
+              <span className="eyebrow">{label}</span>
+              <strong>{value}</strong>
+              <span className="micro">{value === '—' ? 'Not reported' : 'Observed use'}</span>
+            </div>
+          ))}
+        </div>
+      </CapabilitySurface>
     </section>
   )
 }
