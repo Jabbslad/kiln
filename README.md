@@ -27,8 +27,9 @@ curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap
 kiln login
 ```
 
-Rerun the same command to update; no upgrade flag is needed. The script verifies
-pinned public release packages and works without a terminal;
+Rerun the same command to update; no upgrade flag is needed. The script takes its
+version from the latest stable release tag, checks the checksum published with
+that archive, and works without a terminal;
 no GitHub CLI, Python or Rust installation is needed on the laptop. See the
 [installation guide](docs/releases.md) for unattended Ubuntu server setup,
 automatic private-address detection, platform requirements and manual/Windows downloads.

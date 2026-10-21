@@ -26,17 +26,6 @@ def pinned_version():
     return match.group(1)
 
 
-def recorded_bootstrap_version():
-    text = (ROOT / "docs/releases.md").read_text()
-    matches = re.findall(
-        r"(?m)^The published bootstrap pin is v([0-9]+\.[0-9]+\.[0-9]+)\.$",
-        text,
-    )
-    if len(matches) != 1:
-        raise AssertionError("releases.md needs exactly one published bootstrap pin")
-    return matches[0]
-
-
 def pinned_digests():
     text = (ROOT / "deploy/bootstrap/install.sh").read_text()
     rows = re.findall(r"(?m)^(client|server):(\S+) ([0-9a-f]{64})$", text)
@@ -331,7 +320,6 @@ if args[0] == 'env' and 'apt-get' in args:
 
     def test_pinned_version_matches_published_release(self):
         version = pinned_version()
-        self.assertEqual(version, recorded_bootstrap_version())
         headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "kiln-bootstrap-test",
