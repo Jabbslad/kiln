@@ -13,6 +13,7 @@ const PAGE: u32 = 20;
 const NEEDED: &[&str] = &[
     "changes",
     "docs-check",
+    "feature-map-guard",
     "server-check",
     "client",
     "dashboard",
@@ -372,10 +373,10 @@ fn test_required_is_the_only_stable_check() {
 
 fn test_docs_only_and_heavy_success_pass() {
     let docs = job_needs(
-        "success", "success", "skipped", "skipped", "skipped", "false",
+        "success", "success", "success", "skipped", "skipped", "skipped", "false",
     );
     let heavy = job_needs(
-        "success", "skipped", "success", "success", "success", "true",
+        "success", "skipped", "success", "success", "success", "success", "true",
     );
     assert!(required_gate::evaluate(&docs).ok());
     assert!(required_gate::evaluate(&docs).blockers.is_empty());
@@ -386,7 +387,7 @@ fn test_failure_and_cancelled_block_each_job() {
     for job_id in NEEDED {
         for result in ["failure", "cancelled"] {
             let mut payload = job_needs(
-                "success", "skipped", "success", "success", "success", "true",
+                "success", "skipped", "success", "success", "success", "success", "true",
             );
             payload[job_id]["result"] = Value::String(result.into());
             let decision = required_gate::evaluate(&payload);
@@ -405,7 +406,7 @@ fn test_failure_and_cancelled_block_each_job() {
 
 fn test_unknown_result_blocks_and_outputs_are_ignored() {
     let mut payload = job_needs(
-        "success", "skipped", "success", "success", "success", "true",
+        "success", "skipped", "success", "success", "success", "success", "true",
     );
     payload["server-check"]["outputs"] = serde_json::json!({"note": "failure"});
     assert!(required_gate::evaluate(&payload).ok());
@@ -443,6 +444,7 @@ fn test_process_exits_with_the_blocker() {
         "success",
         "skipped",
         "success",
+        "success",
         "failure",
         "cancelled",
         "true",
@@ -458,6 +460,7 @@ fn test_process_exits_with_the_blocker() {
 fn job_needs(
     changes: &str,
     docs_check: &str,
+    feature_map_guard: &str,
     server_check: &str,
     client: &str,
     dashboard: &str,
@@ -466,6 +469,7 @@ fn job_needs(
     serde_json::json!({
         "changes": {"result": changes, "outputs": {"heavy": heavy}},
         "docs-check": {"result": docs_check, "outputs": {}},
+        "feature-map-guard": {"result": feature_map_guard, "outputs": {}},
         "server-check": {"result": server_check, "outputs": {}},
         "client": {"result": client, "outputs": {}},
         "dashboard": {"result": dashboard, "outputs": {}},
