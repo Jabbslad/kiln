@@ -207,9 +207,16 @@ fn published_v0_4_14_linux_binary_fails_the_tag_version_check() {
         "extract kiln from the v0.4.14 Linux archive"
     );
     let binary = dir.join("kiln");
-    let output = Command::new("python3")
-        .arg(root.join("scripts/release_version.py"))
-        .args(["check-binary", "--version", "v0.4.14", "--"])
+    let output = Command::new("cargo")
+        .current_dir(&root)
+        .args([
+            "xtask",
+            "release-version",
+            "check-binary",
+            "--version",
+            "v0.4.14",
+            "--",
+        ])
         .arg(&binary)
         .output()
         .unwrap_or_else(|error| panic!("check-binary: {error}"));

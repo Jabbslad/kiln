@@ -150,14 +150,14 @@ This skill ships no extra script. Repo scripts:
 | `scripts/fetch-firecracker.sh` | `bash scripts/fetch-firecracker.sh .tools/firecracker-1.17.0` |
 | `images/build-fixture.sh` | `bash images/build-fixture.sh images/output/fixture /usr/bin/busybox` |
 | `images/build-ubuntu.sh` | `bash images/build-ubuntu.sh images/output/ubuntu` |
-| `scripts/test-bootstrap.py` | `python3 scripts/test-bootstrap.py` |
-| `scripts/test-install.py` | `python3 scripts/test-install.py` |
-| `scripts/test-release.py` | `python3 scripts/test-release.py` |
+| `cargo xtask test-bootstrap` | `cargo xtask test-bootstrap` |
+| `cargo xtask test-install` | `cargo xtask test-install` |
+| `cargo xtask test-release` | `cargo xtask test-release` |
 | `scripts/test-network.sh` | `sudo sh scripts/test-network.sh` |
 | `scripts/test-network-kvm.sh` | see the script header; needs a built Ubuntu image |
-| `scripts/test-ssh-pty.py` | `python3 scripts/test-ssh-pty.py SSH_CONFIG HOST` on an already running guest |
-| `scripts/test-warm-guest.py` | `python3 scripts/test-warm-guest.py IMAGE_JSON FIRECRACKER OUTPUT_DIR` |
-| `scripts/test-central-login.py` | after a real enrolled host and a disposable running box; it does not log in |
+| `cargo xtask ssh-pty` | `cargo xtask ssh-pty SSH_CONFIG HOST` on an already running guest |
+| `cargo xtask warm-guest` | `cargo xtask warm-guest IMAGE_JSON FIRECRACKER OUTPUT_DIR` |
+| `cargo xtask central-login` | after a real enrolled host and a disposable running box; it does not log in |
 
 ## Maintenance
 

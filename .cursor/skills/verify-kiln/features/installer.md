@@ -33,14 +33,14 @@ That command changes the host: accounts, systemd units, `/var/lib/kiln`, a priva
 The harness runs the real `install.sh` with stub `curl`, `sudo`, `uname`, `ip`, and `getconf`. It does not download a release and does not provision this host.
 
 ```sh
-python3 scripts/test-bootstrap.py
-python3 scripts/test-install.py
-python3 scripts/test-release.py
+cargo xtask test-bootstrap
+cargo xtask test-install
+cargo xtask test-release
 ```
 
-A pass is all three unittest modules exiting 0. Save the combined stdout in `$VERIFY_EVIDENCE/installer-harness.txt`.
+A pass is all three commands exiting 0. Save the combined stdout in `$VERIFY_EVIDENCE/installer-harness.txt`.
 
-`test-bootstrap.py` checks the pinned version and the SHA-256 lines inside `install.sh`, refuses a non-private detected address, and checks that `curl` is invoked with `--proto '=https'`. `test-install.py` runs `deploy/install.sh` with `KILN_INSTALL_FIXTURE` so destinations stay in a temp directory. `test-release.py` packages tiny stand-in binaries.
+`test-bootstrap` checks the pinned version and the SHA-256 lines inside `install.sh`, refuses a non-private detected address, and checks that `curl` is invoked with `--proto '=https'`. `test-install` runs `deploy/install.sh` with `KILN_INSTALL_FIXTURE` so destinations stay in a temp directory. `test-release` packages tiny stand-in binaries.
 
 ShellCheck, as in CI:
 

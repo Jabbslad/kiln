@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kiln-runtime", "crates/kiln-protocol", "crates/kiln-guest", "crates/kiln-api", "crates/kiln-server", "crates/kiln-client", "crates/kiln-identity", "crates/ci-guards"]
+members = ["crates/kiln-runtime", "crates/kiln-protocol", "crates/kiln-guest", "crates/kiln-api", "crates/kiln-server", "crates/kiln-client", "crates/kiln-identity", "crates/ci-guards", "xtask"]
 resolver = "3"
 
 [workspace.package]

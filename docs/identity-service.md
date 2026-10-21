@@ -170,7 +170,7 @@ change nor testing disables CSRF or TLS validation.
 
 These checks do not establish real GitHub/Google consent or central-authenticated
 VM access. After approved provider setup and disposable host enrollment,
-`scripts/test-central-login.py --config PRIVATE_PROFILE --box DISPOSABLE_BOX_ID`
+`cargo xtask central-login --config PRIVATE_PROFILE --box DISPOSABLE_BOX_ID`
 checks real central status, inventory, binary exec and SSH without changing host
 configuration. It has not yet run against a deployed central service. SFTP/PTY,
 multi-process renewal, revocation and identity-outage acceptance remain required

@@ -32,7 +32,7 @@ echo $? | tee "$VERIFY_EVIDENCE/exec-exit.txt"
 
 Runtime JSON is on stdout, so the shell redirect captures the JSON, not a raw `hello`. The field `stdout` must be `hello`, `exit_code` 0, `timed_out` false. The process exit status is 0.
 
-A non-zero guest status is the client contract in `scripts/test-central-login.py`: Python writes four stdout bytes, `guest-error\n` on stderr, and exits 23. That script needs a real enrolled host. Do not point it at a fixture profile.
+A non-zero guest status is the client contract in `cargo xtask central-login`: the guest writes four stdout bytes, `guest-error\n` on stderr, and exits 23. That command needs a real enrolled host. Do not point it at a fixture profile.
 
 ## Gotchas
 
