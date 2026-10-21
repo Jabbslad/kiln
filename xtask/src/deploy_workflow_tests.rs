@@ -520,6 +520,17 @@ fn test_deploy_installs_dashboard_and_checks_the_live_bundle() {
     assert!(deploy.contains("check-installed-versions.sh"));
     assert!(remote.contains("check-installed-versions.sh"));
     assert!(remote.contains("dashboard inputs"));
+    let metrics_at = index_of(&remote, "check-dashboard-metrics.sh");
+    let smoke_at = index_of(&remote, "bash \"$dir/smoke.sh\"");
+    assert!(
+        metrics_at < smoke_at,
+        "metrics must run right after restart, before guest smoke"
+    );
+    assert!(
+        remote.contains("[ \"$metrics_rc\" -eq 0 ]")
+            && index_of(&remote, "[ \"$metrics_rc\" -eq 0 ]") < smoke_at,
+        "smoke must wait for host metrics"
+    );
 }
 
 fn test_smoke_deletes_the_box_when_exec_or_output_fails() {
