@@ -7,6 +7,78 @@ umask 077
 
 fail() { printf 'identity: %s\n' "$*" >&2; exit 1; }
 
+identity_step_fail() {
+  local name=$1 log rc
+  shift
+  log=$(mktemp)
+  set +e
+  "$@" >"$log" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    rm -f -- "$log"
+    return 0
+  fi
+  {
+    printf 'identity step failed: %s\n' "$name"
+    printf 'command: %s\n' "$*"
+    printf 'exit code: %d\n' "$rc"
+    printf 'last output lines:\n'
+    tail -n 20 "$log"
+  } >&2
+  rm -f -- "$log"
+  return "$rc"
+}
+
+identity_step_detail() {
+  local name=$1 command=$2 rc=$3 detail=$4
+  {
+    printf 'identity step failed: %s\n' "$name"
+    printf 'command: %s\n' "$command"
+    printf 'exit code: %d\n' "$rc"
+    printf 'last output lines:\n'
+    printf '%s\n' "$detail"
+  } >&2
+  return "$rc"
+}
+
+identity_nrestarts() {
+  local value
+  value=$(show_prop NRestarts | tr -d '[:space:]')
+  case "$value" in
+    ''|*[!0-9]*)
+      printf 'unknown\n' >&2
+      return 1
+      ;;
+  esac
+  printf '%s\n' "$value"
+}
+
+loopback_login_step() {
+  loopback_ok
+}
+
+verify_signin_after_restart() {
+  local restarts_before restarts_after
+  restarts_before=$(identity_nrestarts) || restarts_before=unknown
+  identity_step_fail "kiln-identity active after restart" \
+    systemctl is-active --quiet kiln-identity.service || return 1
+  identity_step_fail "kiln-identity login after restart" \
+    loopback_login_step || return 1
+  sleep 2
+  restarts_after=$(identity_nrestarts) || restarts_after=unknown
+  if [ "$restarts_before" != "$restarts_after" ]; then
+    identity_step_detail "kiln-identity stable after restart" \
+      "compare NRestarts (settle after restart)" 1 \
+      "NRestarts before=${restarts_before} after=${restarts_after}" || return 1
+  fi
+}
+
+restart_identity_service() {
+  systemctl restart kiln-identity.service
+  verify_signin_after_restart
+}
+
 dir=${1:?usage: install-identity.sh DIRECTORY}
 if [ "${KILN_IDENTITY_CHECK_ONLY:-}" = 1 ]; then
   case "$dir" in
@@ -217,7 +289,7 @@ probe_ok() {
   else
     printf 'identity probe version: mismatch have=%s want=%s\n' "${have:-unknown}" "$version"
   fi
-  loopback_ok log && public_login_ok && app_login_ok
+  public_login_ok && app_login_ok
 }
 
 retire_marker() {
@@ -235,7 +307,7 @@ restore_marker() {
   old=$(read_version "$marker/kiln-identity") || old=unknown
   atomic_copy "$marker/kiln-identity" "$live" || fail 'could not restore the previous identity binary'
   systemctl restart kiln-identity.service
-  if loopback_ok; then
+  if verify_signin_after_restart; then
     dest=$(retire_marker)
     printf 'identity: restored %s; previous %s\n' "$old" "$dest" >&2
   else
@@ -304,7 +376,7 @@ slot_equal() {
 
 if slot_equal "$package" "$live"; then
   if ! process_matches; then
-    systemctl restart kiln-identity.service
+    restart_identity_service || fail 'identity sign-in check failed after restart'
     probe_ok || fail 'identity probe failed'
   fi
   printf 'identity unchanged %s\n' "$version"
@@ -325,8 +397,7 @@ atomic_copy "$package" "$live" || {
   restore_marker
   exit 1
 }
-systemctl restart kiln-identity.service
-if ! probe_ok; then
+if ! restart_identity_service || ! probe_ok; then
   restore_marker
   exit 1
 fi
