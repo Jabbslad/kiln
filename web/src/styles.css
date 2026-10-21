@@ -1566,6 +1566,8 @@ tbody tr:hover {
   overflow-y: auto;
 }
 .modal::backdrop {
+  position: fixed;
+  inset: 0;
   background: #000a;
   backdrop-filter: blur(3px);
 }

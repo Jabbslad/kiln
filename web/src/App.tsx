@@ -160,12 +160,6 @@ function Dashboard() {
           >
             {kilnVersionLabel(data?.version)}
           </button>
-          {releaseNotesOpen ? (
-            <ReleaseNotesDialog
-              displayVersion={data?.version}
-              onClose={() => setReleaseNotesOpen(false)}
-            />
-          ) : null}
           {data && !preview && (
             <button className="button" type="button" onClick={() => void signOut()}>
               Sign out
@@ -327,6 +321,12 @@ function Dashboard() {
           </span>
         </footer>
       </div>
+      {releaseNotesOpen ? (
+        <ReleaseNotesDialog
+          displayVersion={data?.version}
+          onClose={() => setReleaseNotesOpen(false)}
+        />
+      ) : null}
     </div>
   )
 }
