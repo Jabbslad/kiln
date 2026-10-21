@@ -14,7 +14,7 @@ fail() {
 [ -f "$script" ] || fail 'missing tag-path-dry-run.sh'
 
 resolve_line=$(
-  grep -n 'cargo xtask release-version resolve --ref-type tag --ref-name "$tag"' "$script" \
+  grep -n "cargo xtask release-version resolve --ref-type tag --ref-name \"\$tag\"" "$script" \
     | awk -F: 'NR == 1 { print $1 }'
 )
 build_line=$(
@@ -22,7 +22,7 @@ build_line=$(
     | awk -F: 'NR == 1 { print $1 }'
 )
 check_line=$(
-  grep -n 'cargo xtask release-version check-binary --version "$tag"' "$script" \
+  grep -n "cargo xtask release-version check-binary --version \"\$tag\"" "$script" \
     | awk -F: 'NR == 1 { print $1 }'
 )
 
@@ -37,10 +37,10 @@ if [ "$build_line" -ge "$check_line" ]; then
   fail 'cargo build must run before check-binary in PR rehearsal'
 fi
 
-if grep -q 'check-binary --version "${tag#v}"' "$script"; then
+if grep -q "check-binary --version \"\${tag#v}\"" "$script"; then
   fail 'check-binary must not strip the v prefix from the tag'
 fi
-if grep -q 'check-binary --version "$VERSION"' "$script"; then
+if grep -q "check-binary --version \"\$VERSION\"" "$script"; then
   fail 'check-binary must use the v-prefixed tag, not bare VERSION'
 fi
 
