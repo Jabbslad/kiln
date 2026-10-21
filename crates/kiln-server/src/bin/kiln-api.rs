@@ -52,6 +52,15 @@ enum Command {
         #[arg(long, default_value = "/var/lib/kiln-api/dashboard-session")]
         session_dir: PathBuf,
     },
+    /// Validate live host dashboard metrics over loopback kiln-api.
+    SelfCheck {
+        #[arg(long)]
+        address: String,
+        #[arg(long, default_value = "/etc/kiln/admin.token")]
+        token_file: PathBuf,
+        #[arg(long, default_value = "/etc/kiln/ca.crt")]
+        ca_file: PathBuf,
+    },
     /// Serve the dashboard archive and the read API on 127.0.0.1:8093.
     App {
         #[arg(long, default_value = "127.0.0.1:8093")]
@@ -128,6 +137,25 @@ async fn main() -> Result<()> {
                     dashboard_root,
                 })
                 .await
+            }
+            Command::SelfCheck {
+                address,
+                token_file,
+                ca_file,
+            } => {
+                if let Err(error) = kiln_server::dashboard_check::run_self_check(
+                    kiln_server::dashboard_check::SelfCheckOptions {
+                        address,
+                        token_file,
+                        ca_file,
+                    },
+                )
+                .await
+                {
+                    eprintln!("dashboard-metrics: {error:#}");
+                    std::process::exit(1);
+                }
+                Ok(())
             }
         };
     }

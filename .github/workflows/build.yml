@@ -106,7 +106,7 @@ jobs:
           sh scripts/test-wait-main-run.sh
           sh scripts/test-tag-path-dry-run.sh
           sh scripts/test-check-dashboard-bundle.sh
-          sh scripts/test-check-dashboard-metrics.sh
+          cargo test -p kiln-server --test dashboard_self_check --locked
           sh scripts/test-releasable.sh
           sh scripts/test-next-release-tag.sh
           sh scripts/test-plan-release.sh
@@ -220,7 +220,7 @@ jobs:
           sh scripts/test-wait-main-run.sh
           sh scripts/test-tag-path-dry-run.sh
           sh scripts/test-check-dashboard-bundle.sh
-          sh scripts/test-check-dashboard-metrics.sh
+          cargo test -p kiln-server --test dashboard_self_check --locked
           sh scripts/test-releasable.sh
           sh scripts/test-next-release-tag.sh
           sh scripts/test-plan-release.sh
@@ -234,9 +234,7 @@ jobs:
             deploy/github/require-release.sh \
             deploy/github/install-remote.sh deploy/github/install-identity.sh deploy/github/smoke.sh \
             deploy/github/check-dashboard-bundle.sh \
-            deploy/github/check-dashboard-metrics.sh \
             scripts/test-check-dashboard-bundle.sh \
-            scripts/test-check-dashboard-metrics.sh \
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
             scripts/test-listener-restart.sh \
             scripts/test-identity-upgrade.sh \
