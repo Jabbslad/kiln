@@ -246,11 +246,12 @@ impl Runtime {
         record.state = "restoring".into();
         self.save(&record)?;
         let started = std::time::Instant::now();
-        let result = super::benchmark::scoped(async {
-            self.boot(&mut record, Some(&snapshot), false).await
+        let (result, phases) = super::benchmark::scoped(async {
+            let result = self.boot(&mut record, Some(&snapshot), false).await;
+            (result, super::benchmark::take_phases())
         })
         .await;
-        self.finish_launch(&mut record, started, "restore", result)?;
+        self.finish_launch(&mut record, started, "restore", result, phases)?;
         fs::remove_dir_all(self.directory(box_id)?.join(previous.run))?;
         self.cleanup_disk_layers(&record, record.disk_layer.as_deref())?;
         fs::remove_file(self.directory(box_id)?.join("restore.previous.json"))?;
@@ -346,17 +347,21 @@ impl Runtime {
         drop(allocation);
         drop(phase);
         let started = std::time::Instant::now();
-        let result = super::benchmark::scoped(async {
-            self.verify_snapshot(&snapshot)?;
-            let phase = Phase::start("disk_copy");
-            self.prepare_snapshot_disk(&mut record, &snapshot)?;
-            self.save(&record)?;
-            failpoint("after-layer-publication");
-            drop(phase);
-            self.boot(&mut record, Some(&snapshot), true).await
+        let (result, phases) = super::benchmark::scoped(async {
+            let result = async {
+                self.verify_snapshot(&snapshot)?;
+                let phase = Phase::start("disk_copy");
+                self.prepare_snapshot_disk(&mut record, &snapshot)?;
+                self.save(&record)?;
+                failpoint("after-layer-publication");
+                drop(phase);
+                self.boot(&mut record, Some(&snapshot), true).await
+            }
+            .await;
+            (result, super::benchmark::take_phases())
         })
         .await;
-        self.finish_launch(&mut record, started, "create", result)?;
+        self.finish_launch(&mut record, started, "create", result, phases)?;
         Ok(record)
     }
 }
