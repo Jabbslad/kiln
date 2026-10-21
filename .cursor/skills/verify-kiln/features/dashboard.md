@@ -34,6 +34,7 @@ A host body larger than 1 MiB (`kiln_api::MAX_RESPONSE_BYTES`) makes `stamp` ret
 
 - Inventory at `/boxes`: search, state filters, name sort, row links.
 - Box detail at `/boxes/:id` with terminal, exec, checkpoint, and preview tabs.
+- Capability guard in `web/src/capabilities.ts`: metrics, terminal, SSH, HTTP preview, public URL, and launch timing each declare `available` or `not-yet`. Panels read that map and render the shared **Not available yet** state instead of blank placeholders or fake broken controls. Vitest in `web/src/capabilities.test.tsx` fails if an `available` capability shows `—`, `-`, `N/A`, or empty values, or if a `not-yet` capability renders anything else. The terminal is `available`. Metrics, SSH, HTTP preview, public URL, and launch timing stay `not-yet`.
 - Templates at `/templates`, including the create-box drawer.
 - Operations at `/operations`.
 - Settings at `/settings` and the guide at `/docs`.
@@ -47,7 +48,7 @@ The terminal is a session. It stays out of `kiln_api::Action`, `OPERATION_ACTION
 
 `kiln-app` serves `GET /v1/boxes/{id}/terminal` (`crates/kiln-server/src/app_listener.rs`, `crates/kiln-server/src/terminal.rs`). The browser opens a same-origin WebSocket and sends the `__Host-kiln_app` and `__Host-kiln_csrf` cookies. `Origin` must be `https://app.dark-forge.dev`. The session must be operate scope. The server checks ownership by reading the box SSH host key, writes one audit line when the socket upgrades (`audit terminal outcome=opened box_id=…`), and bridges an OpenSSH PTY over the existing SSH upgrade. Idle limit is 15 minutes. Maximum duration is 2 hours. Binary frames are PTY bytes. A text frame `{"type":"resize","cols":N,"rows":M}` resizes the PTY. The server ends the socket with `{"type":"closed",…}`.
 
-Connect in `TerminalPane` (`web/src/BoxDetail.tsx`) is enabled only when the console is live, the host is `online`, and the box is `running`. Preview, a stopped box, and an offline host leave the button disabled and the heading at `Session not connected`. The heading says `Connected` only while the socket is open. xterm.js loads when Connect is used. The Access panel on the same tab labels SSH, HTTP preview, and public access **Not available yet**. The public door does not serve SSH, and this journey does not add a public SSH proxy.
+`capabilities.terminal` is `available`, so `TerminalPane` (`web/src/BoxDetail.tsx`) renders inside `CapabilitySurface`. Connect is enabled only when the console is live, the host is `online`, and the box is `running`. Preview, a stopped box, and an offline host leave the button disabled and the heading at `Session not connected`. The heading says `Connected` only while the socket is open. xterm.js loads when Connect is used. The Access panel on the same tab labels SSH, HTTP preview, and public access **Not available yet**. The public door does not serve SSH, and this journey does not add a public SSH proxy.
 
 The in-repo proof does not boot Firecracker. `openssh-server` must provide `/usr/sbin/sshd`, and `/run/sshd` must exist. CI installs that before server-check.
 

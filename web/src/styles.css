@@ -1099,6 +1099,11 @@ tbody tr:hover {
   padding: 17px;
   border-bottom: 1px solid var(--line);
 }
+.capability-unavailable {
+  margin: 0;
+  color: var(--muted);
+}
+
 .connection-placeholder {
   display: flex;
   gap: 8px;

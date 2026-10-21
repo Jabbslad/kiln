@@ -640,11 +640,13 @@ it('validates a create form but cannot create a fake VM', async () => {
   expect(previewDashboard.boxes).toHaveLength(4)
 })
 
-it('does not present an interactive terminal session as connected', async () => {
+it('marks the terminal capability available and keeps preview disconnected', async () => {
   open('/boxes/box-7f3a2c1e?preview=1')
-  expect(await screen.findByText('Session not connected')).toBeVisible()
-  expect(screen.queryByText('Connected', { exact: true })).not.toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Connect terminal' })).toBeDisabled()
+  const terminal = await screen.findByTestId('capability-terminal')
+  expect(terminal).toHaveAttribute('data-capability-state', 'available')
+  expect(within(terminal).queryByText('Not available yet')).not.toBeInTheDocument()
+  expect(within(terminal).getByText('Session not connected')).toBeVisible()
+  expect(within(terminal).getByRole('button', { name: 'Connect terminal' })).toBeDisabled()
 })
 
 it('enables Connect terminal only for a running box on a live console', async () => {

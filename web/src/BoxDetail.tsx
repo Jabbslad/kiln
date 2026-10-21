@@ -30,6 +30,7 @@ import { DeleteDialog, LifecycleDialog, RestoreDialog } from './dialogs'
 import { OperationList } from './Operations'
 import {
   AppLink,
+  CapabilitySurface,
   CopyButton,
   Empty,
   ResourceMetrics,
@@ -37,6 +38,7 @@ import {
   Unavailable,
   type PageProps,
 } from './ui'
+import { capabilityAvailable } from './capabilities'
 
 const tabs = ['Terminal', 'Exec', 'Previews', 'Checkpoints', 'Metrics', 'Activity']
 
@@ -200,21 +202,21 @@ export default function BoxDetail({ data, preview }: PageProps) {
             <h2>HTTP previews</h2>
             <Lock size={15} />
           </div>
-          <div className="preview-content">
+          <CapabilitySurface capability="httpPreview" className="preview-content">
             <Lock size={30} strokeWidth={1} />
             <h2>Private until you say otherwise.</h2>
             <p>
               Preview routes require the authenticated gateway. No ports are exposed by this
               dashboard.
             </p>
-            <div className="form-row">
+            <CapabilitySurface capability="publicUrl" className="form-row">
               <span>Public access</span>
-              <span className="tag">Not available yet</span>
-            </div>
+              <span className="tag">Enabled</span>
+            </CapabilitySurface>
             <button className="button" disabled>
               Add preview <Plus size={14} />
             </button>
-          </div>
+          </CapabilitySurface>
         </section>
       )}
       {activeTab === 'checkpoints' && (
@@ -272,10 +274,12 @@ export default function BoxDetail({ data, preview }: PageProps) {
         <>
           <ResourceMetrics metrics={box.metrics} />
           <LaunchTiming box={box} />
-          <p className="section-note">
-            Only host-reported measurements are shown. Missing data is never interpreted as zero
-            usage.
-          </p>
+          {capabilityAvailable('metrics') && (
+            <p className="section-note">
+              Only host-reported measurements are shown. Missing data is never interpreted as zero
+              usage.
+            </p>
+          )}
         </>
       )}
       {activeTab === 'activity' && (
@@ -326,25 +330,27 @@ function Access() {
           <span className="eyebrow">SSH</span>
           <Lock size={14} />
         </div>
-        <p>Not available yet</p>
-        <button className="button full-width" disabled>
-          Not available yet
-        </button>
+        <CapabilitySurface capability="ssh">
+          <button className="button full-width" disabled>
+            Connect
+          </button>
+        </CapabilitySurface>
       </div>
       <div className="access-section">
         <div className="split-line">
           <span className="eyebrow">HTTP preview</span>
           <Lock size={14} />
         </div>
-        <p>Not available yet</p>
-        <button className="button full-width" disabled>
-          Not available yet
-        </button>
+        <CapabilitySurface capability="httpPreview">
+          <button className="button full-width" disabled>
+            Add preview
+          </button>
+        </CapabilitySurface>
       </div>
-      <div className="access-bottom">
+      <CapabilitySurface capability="publicUrl" className="access-bottom">
         <span className="micro">Public access</span>
-        <span className="tag">Not available yet</span>
-      </div>
+        <span className="tag">Enabled</span>
+      </CapabilitySurface>
     </section>
   )
 }
@@ -600,7 +606,7 @@ function TerminalPane({
     }
   }, [attempt, box.id])
   return (
-    <section className="terminal-panel">
+    <CapabilitySurface capability="terminal" className="terminal-panel">
       <div className="terminal-heading">
         <span>
           <Terminal size={16} />
@@ -664,7 +670,7 @@ function TerminalPane({
         <span>UTF-8</span>
         <span>{status === 'open' ? 'Session active' : 'No session active'}</span>
       </div>
-    </section>
+    </CapabilitySurface>
   )
 }
 
@@ -677,29 +683,33 @@ function LaunchTiming({ box }: { box: Box }) {
           <Clock3 size={15} />
           Launch timing
         </h2>
-        <span className="micro">
-          {box.timing?.total_ms == null
-            ? 'No measurement available'
-            : `${formatMetric(box.timing.total_ms, ' ms')} end to end`}
-        </span>
+        {capabilityAvailable('launchTiming') && (
+          <span className="micro">
+            {box.timing?.total_ms == null
+              ? 'No measurement available'
+              : `${formatMetric(box.timing.total_ms, ' ms')} end to end`}
+          </span>
+        )}
       </div>
-      <div className="timing-grid">
-        {phases.map((phase) => (
-          <div key={phase}>
-            <span className="eyebrow">{phase.replace('_', ' ')}</span>
-            <strong>{formatMetric(box.timing?.[`${phase}_ms`] ?? null, ' ms')}</strong>
-            <span className="timing-tick" />
-          </div>
-        ))}
-      </div>
-      <div className="timing-footer">
-        <span>Request → first successful guest command</span>
-        <span>
-          {box.timing
-            ? `${box.timing.method} / Cache: ${box.timing.cache} / Copy: ${box.timing.disk_copy}`
-            : 'Cache and copy method not reported'}
-        </span>
-      </div>
+      <CapabilitySurface capability="launchTiming">
+        <div className="timing-grid">
+          {phases.map((phase) => (
+            <div key={phase}>
+              <span className="eyebrow">{phase.replace('_', ' ')}</span>
+              <strong>{formatMetric(box.timing?.[`${phase}_ms`] ?? null, ' ms')}</strong>
+              <span className="timing-tick" />
+            </div>
+          ))}
+        </div>
+        <div className="timing-footer">
+          <span>Request → first successful guest command</span>
+          <span>
+            {box.timing
+              ? `${box.timing.method} / Cache: ${box.timing.cache} / Copy: ${box.timing.disk_copy}`
+              : 'Cache and copy method not reported'}
+          </span>
+        </div>
+      </CapabilitySurface>
     </section>
   )
 }
