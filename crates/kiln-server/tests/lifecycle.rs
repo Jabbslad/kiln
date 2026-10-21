@@ -229,6 +229,48 @@ async fn https_lifecycle_and_crashed_host_never_replay_exec() {
         let output = tokio::process::Command::new(&binary)
             .arg("--config")
             .arg(&profile)
+            .args([
+                "--json",
+                "create",
+                "--wait",
+                "--template",
+                "test",
+                "--name",
+                "wait-exec",
+            ])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let created: Operation = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(created.state, OperationState::Succeeded);
+        let exec_output = tokio::process::Command::new(&binary)
+            .arg("--config")
+            .arg(&profile)
+            .args([
+                "exec",
+                &created.box_id,
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf wait-ready",
+            ])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            exec_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&exec_output.stderr)
+        );
+        assert_eq!(exec_output.stdout, b"wait-ready");
+        let output = tokio::process::Command::new(&binary)
+            .arg("--config")
+            .arg(&profile)
             .args(["ssh", &id, "--", "printf ssh-connected; exit 37"])
             .output()
             .await

@@ -1,6 +1,7 @@
 use anyhow::{Result, bail, ensure};
 use kiln_api::{
-    ApiError, BoxView, Operation, Submit, TemplateView, valid_id, valid_ssh_public_key,
+    ApiError, BoxView, Operation, OperationSubmitQuery, Submit, TemplateView, valid_id,
+    valid_ssh_public_key,
 };
 use reqwest::{Method, Url, header};
 use serde::de::DeserializeOwned;
@@ -90,8 +91,12 @@ impl Client {
         method: Method,
         path: &str,
         body: Option<&Submit>,
+        timeout: Option<Duration>,
     ) -> Result<T> {
         let mut request = self.http.request(method, self.base.join(path)?);
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
+        }
         if let Some(session) = &self.session {
             request = request.bearer_auth(session.server_token().await?);
         }
@@ -139,32 +144,52 @@ impl Client {
     }
 
     pub async fn templates(&self) -> Result<Vec<TemplateView>> {
-        self.request(Method::GET, "v1/templates", None).await
+        self.request(Method::GET, "v1/templates", None, None).await
     }
     pub async fn list(&self) -> Result<Vec<BoxView>> {
-        self.request(Method::GET, "v1/boxes", None).await
+        self.request(Method::GET, "v1/boxes", None, None).await
     }
     pub async fn inspect(&self, id: &str) -> Result<BoxView> {
         ensure!(valid_id(id), "invalid box ID");
-        self.request(Method::GET, &format!("v1/boxes/{id}"), None)
+        self.request(Method::GET, &format!("v1/boxes/{id}"), None, None)
             .await
     }
     pub async fn operation(&self, id: &str) -> Result<Operation> {
         ensure!(valid_id(id), "invalid request ID");
-        self.request(Method::GET, &format!("v1/operations/{id}"), None)
+        self.request(Method::GET, &format!("v1/operations/{id}"), None, None)
             .await
     }
     pub async fn submit(&self, request: &Submit) -> Result<Operation> {
+        self.submit_with_wait(request, false, kiln_api::DEFAULT_OPERATION_WAIT_SECONDS)
+            .await
+    }
+
+    pub async fn submit_with_wait(
+        &self,
+        request: &Submit,
+        wait: bool,
+        wait_seconds: u64,
+    ) -> Result<Operation> {
         ensure!(valid_id(&request.id), "invalid request ID");
         request.action.validate().map_err(anyhow::Error::msg)?;
-        self.request(Method::POST, "v1/operations", Some(request))
+        let query = OperationSubmitQuery { wait, wait_seconds };
+        query
+            .validate_for_action(&request.action)
+            .map_err(anyhow::Error::msg)?;
+        let path = if wait {
+            format!("v1/operations?wait=true&wait_seconds={wait_seconds}")
+        } else {
+            "v1/operations".into()
+        };
+        let timeout = wait.then(|| Duration::from_secs(wait_seconds.saturating_add(30)));
+        self.request(Method::POST, &path, Some(request), timeout)
             .await
     }
 
     pub async fn ssh_host_key(&self, id: &str) -> Result<String> {
         ensure!(valid_id(id), "invalid box ID");
         let ready: kiln_api::SshReady = self
-            .request(Method::GET, &format!("v1/boxes/{id}/ssh-key"), None)
+            .request(Method::GET, &format!("v1/boxes/{id}/ssh-key"), None, None)
             .await?;
         ensure!(
             valid_ssh_public_key(&ready.public_key),
