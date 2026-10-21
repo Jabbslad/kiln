@@ -1,10 +1,9 @@
 use anyhow::{Context, Result, ensure};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Parser)]
 #[command(
-    version,
     about = "Unprivileged HTTPS gateway for kiln",
     subcommand_negates_reqs = true
 )]
@@ -73,7 +72,10 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let matches = Args::command()
+        .version(kiln_api::release_version())
+        .get_matches();
+    let args = Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     if let Some(command) = args.command {
         return match command {
             Command::Enroll(options) => kiln_server::enrollment::run(options).await,

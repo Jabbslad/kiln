@@ -1,9 +1,9 @@
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches, Parser};
 use kiln_identity::{Config, Store, router, unix_now};
 use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Parser)]
-#[command(version, about = "Kiln central identity service")]
+#[command(about = "Kiln central identity service")]
 struct Args {
     #[arg(long, default_value = "127.0.0.1:8091")]
     listen: SocketAddr,
@@ -66,9 +66,16 @@ fn provider_fields(_x: &Args) -> anyhow::Result<(String, String, String, Option<
     ))
 }
 
+fn parse_args() -> Args {
+    let matches = Args::command()
+        .version(kiln_api::release_version())
+        .get_matches();
+    Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let x = Args::parse();
+    let x = parse_args();
     anyhow::ensure!(
         x.listen.ip().is_loopback(),
         "identity service must bind to loopback"

@@ -115,41 +115,25 @@ fn downloaded_tools_are_checksummed_before_use() {
     );
 }
 
-fn tag_guard(tag: &str, cargo: &str) -> std::process::Output {
-    Command::new("sh")
-        .arg(repo_root().join("scripts/check-tag-version.sh"))
-        .arg(tag)
-        .arg(cargo)
-        .output()
-        .unwrap_or_else(|error| panic!("run check-tag-version.sh: {error}"))
-}
-
 #[test]
-fn a_tag_that_differs_from_cargo_toml_cannot_publish() {
-    let mismatch = tag_guard("v0.4.14", "0.4.10");
-    let mismatch_err = String::from_utf8_lossy(&mismatch.stderr);
-    assert!(
-        !mismatch.status.success(),
-        "v0.4.14 against Cargo.toml 0.4.10 must be rejected: {mismatch_err}"
-    );
-    assert!(mismatch_err.contains("0.4.10"), "{mismatch_err}");
-
-    let matched = tag_guard("v0.4.15", "0.4.15");
-    assert!(
-        matched.status.success(),
-        "a matching tag and Cargo.toml version must be accepted: {}",
-        String::from_utf8_lossy(&matched.stderr)
-    );
-
+fn a_tag_that_differs_from_cargo_toml_is_stamped_before_publish() {
     let root = repo_root();
+    assert!(
+        !root.join("scripts/check-tag-version.sh").exists(),
+        "the tag must not be refused for differing from Cargo.toml"
+    );
     let workflow = read(&root.join(".github/workflows/build.yml"));
     let violations = ci_guards::version_guard_violations(&workflow);
     assert!(violations.is_empty(), "{violations:?}");
+    assert!(
+        workflow.contains("scripts/stamp-release-dist.sh"),
+        "publish must stamp reused packages onto the tag"
+    );
 
     let manifest = read(&root.join("Cargo.toml"));
     assert!(
         manifest.contains("version = \"0.4.15\""),
-        "workspace version must be 0.4.15 so a v0.4.15 tag reuses main's archives"
+        "main still packages the committed workspace version"
     );
 
     let missing = "\
@@ -166,6 +150,26 @@ jobs:
             .iter()
             .any(|violation| violation.contains("does not depend on version-guard")),
         "{missing_hits:?}"
+    );
+
+    let equal = "\
+jobs:
+  version-guard:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - run: sh scripts/check-tag-version.sh
+  draft-release:
+    needs: [version-guard]
+    if: needs.version-guard.result == 'success'
+    steps:
+      - run: echo publish
+";
+    let equal_hits = ci_guards::version_guard_violations(equal);
+    assert!(
+        equal_hits
+            .iter()
+            .any(|violation| violation.contains("Cargo.toml")),
+        "{equal_hits:?}"
     );
 }
 
@@ -274,11 +278,24 @@ fn reuse_looks_up_main_archives_by_the_committed_version() {
             .any(|violation| violation.contains("empty reuse_sha")),
         "{violations:?}"
     );
+    let cargo_names = "\
+jobs:
+  reuse:
+    steps:
+      - id: decide
+        env:
+          REUSE_SHA_INPUT: ${{ inputs.reuse_sha }}
+        run: gh api repos/${GH_REPO}/commits/main
+  draft-release:
+    steps:
+      - run: python3 scripts/reuse_release.py finish --version \"${{ needs.reuse.outputs.version }}\" --dist dist
+";
+    let named = ci_guards::reuse_lookup_violations(cargo_names);
     assert!(
-        violations
+        named
             .iter()
             .any(|violation| violation.contains("draft-release finish")),
-        "{violations:?}"
+        "{named:?}"
     );
 }
 
