@@ -26,10 +26,16 @@ fetch() {
 body=$(fetch)
 host_cpu=$(printf '%s' "$body" | tr -d '\n' | awk '
   {
+    host = index($0, "\"host\":")
+    if (host == 0) exit 1
+    rest = substr($0, host)
+    metrics = index(rest, "\"metrics\":")
+    if (metrics == 0) exit 1
+    rest = substr(rest, metrics)
     key = "\"cpu_percent\":"
-    at = index($0, key)
+    at = index(rest, key)
     if (at == 0) exit 1
-    rest = substr($0, at + length(key))
+    rest = substr(rest, at + length(key))
     sub(/^[[:space:]]*/, "", rest)
     if (rest !~ /^[0-9]/) exit 1
     match(rest, /^[0-9]+(\.[0-9]+)?/)
@@ -38,10 +44,16 @@ host_cpu=$(printf '%s' "$body" | tr -d '\n' | awk '
 ') || fail 'host cpu_percent is missing or null'
 host_mem=$(printf '%s' "$body" | tr -d '\n' | awk '
   {
+    host = index($0, "\"host\":")
+    if (host == 0) exit 1
+    rest = substr($0, host)
+    metrics = index(rest, "\"metrics\":")
+    if (metrics == 0) exit 1
+    rest = substr(rest, metrics)
     key = "\"memory_bytes\":"
-    at = index($0, key)
+    at = index(rest, key)
     if (at == 0) exit 1
-    rest = substr($0, at + length(key))
+    rest = substr(rest, at + length(key))
     sub(/^[[:space:]]*/, "", rest)
     if (rest !~ /^[0-9]/) exit 1
     match(rest, /^[0-9]+/)

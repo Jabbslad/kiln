@@ -46,10 +46,15 @@ if PATH="$work:$PATH" bash "$check" 127.0.0.1 >/dev/null 2>&1; then
   fail 'null host cpu must fail'
 fi
 
-running='{"host":{"metrics":{"cpu_percent":2,"memory_bytes":2000}},"boxes":[{"state":"running","metrics":{"cpu_percent":null,"memory_bytes":100}}]}'
-printf '%s' "$running" >"$work/body"
+boxes_first_host='{"boxes":[{"state":"stopped","metrics":{"cpu_percent":null,"memory_bytes":1}}],"host":{"metrics":{"cpu_percent":1.5,"memory_bytes":1000}}}'
+printf '%s' "$boxes_first_host" >"$work/body"
+PATH="$work:$PATH" bash "$check" 127.0.0.1 >/dev/null \
+  || fail 'host metrics must be read from host.metrics when boxes precede host'
+
+running_boxes_first='{"boxes":[{"state":"running","metrics":{"cpu_percent":null,"memory_bytes":100}}],"host":{"metrics":{"cpu_percent":2,"memory_bytes":2000}}}'
+printf '%s' "$running_boxes_first" >"$work/body"
 if PATH="$work:$PATH" bash "$check" 127.0.0.1 >/dev/null 2>&1; then
-  fail 'first fetch with running box and null metrics must fail before second fetch'
+  fail 'running box with null metrics must fail after the host metrics check'
 fi
 
 running_ok='{"host":{"metrics":{"cpu_percent":2,"memory_bytes":2000}},"boxes":[{"state":"running","metrics":{"cpu_percent":3.5,"memory_bytes":100}}]}'
