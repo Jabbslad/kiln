@@ -218,7 +218,7 @@ export default function BoxDetail({ data, preview }: PageProps) {
             </section>
             <div className="access-column">
               <Access />
-              <ResourceMetrics metrics={box.metrics} />
+              <ResourceMetrics metrics={box.metrics} boxState={box.state} />
             </div>
           </div>
           <LaunchTiming box={box} />
@@ -301,7 +301,7 @@ export default function BoxDetail({ data, preview }: PageProps) {
       )}
       {activeTab === 'metrics' && (
         <>
-          <ResourceMetrics metrics={box.metrics} />
+          <ResourceMetrics metrics={box.metrics} boxState={box.state} />
           <LaunchTiming box={box} />
           {capabilityAvailable('metrics') && (
             <p className="section-note">
