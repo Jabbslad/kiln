@@ -235,7 +235,7 @@ pub fn router_with_read_session(
     root: Option<&Path>,
     jwt: &str,
 ) -> Result<(Router, String)> {
-    let session = test_session(auth, upstream, ca_pem, root, jwt)?;
+    let session = test_session(auth, upstream, ca_pem, root, jwt, true)?;
     Ok((session.router, session.session))
 }
 
@@ -249,7 +249,19 @@ pub fn router_with_operate_session(
     root: Option<&Path>,
     jwt: &str,
 ) -> Result<OperateSession> {
-    test_session(auth, upstream, ca_pem, root, jwt)
+    test_session(auth, upstream, ca_pem, root, jwt, true)
+}
+
+/// Insert one already-expired session. Cookie writes refuse it before the host.
+#[doc(hidden)]
+pub fn router_with_expired_session(
+    auth: Authenticator,
+    upstream: &str,
+    ca_pem: &[u8],
+    root: Option<&Path>,
+    jwt: &str,
+) -> Result<OperateSession> {
+    test_session(auth, upstream, ca_pem, root, jwt, false)
 }
 
 fn test_session(
@@ -258,6 +270,7 @@ fn test_session(
     ca_pem: &[u8],
     root: Option<&Path>,
     jwt: &str,
+    live: bool,
 ) -> Result<OperateSession> {
     let upstream_url = loopback_upstream(upstream)?;
     let loopback = loopback_identity("http://127.0.0.1:9")?;
@@ -285,7 +298,13 @@ fn test_session(
     sessions.insert(
         id.clone(),
         Session {
-            expires: Instant::now() + Duration::from_secs(SESSION_SECONDS),
+            expires: if live {
+                Instant::now() + Duration::from_secs(SESSION_SECONDS)
+            } else {
+                Instant::now()
+                    .checked_sub(Duration::from_secs(1))
+                    .unwrap_or_else(Instant::now)
+            },
             csrf: csrf.clone(),
             reader: String::new(),
             jwt: jwt.to_owned(),
@@ -619,6 +638,10 @@ fn audit(app: &App, outcome: &'static str, request_id: &str) {
     });
 }
 
+fn dashboard_grant(scope: Scope) -> bool {
+    matches!(scope, Scope::Read | Scope::Operate)
+}
+
 fn cookie_write(
     app: &App,
     headers: &HeaderMap,
@@ -647,7 +670,10 @@ fn cookie_write(
     let Some(session) = sessions.get(&raw) else {
         return Err(("unauthorized", Box::new(unauthorized())));
     };
-    if session.expires <= Instant::now() || session.csrf != csrf_cookie {
+    if session.expires <= Instant::now() {
+        return Err(("unauthorized", Box::new(unauthorized())));
+    }
+    if session.csrf != csrf_cookie {
         return Err((
             "invalid_csrf",
             Box::new(deny(StatusCode::FORBIDDEN, "invalid_csrf", refused)),
@@ -1072,11 +1098,18 @@ async fn finish_login(app: &App, request: Request) -> Response {
             "Identity did not complete sign-in.",
         );
     };
-    if !matches!(app.auth.authenticate_central(&jwt).await, Ok(Scope::Read)) {
+    if app
+        .auth
+        .authenticate_central(&jwt)
+        .await
+        .ok()
+        .filter(|scope| dashboard_grant(*scope))
+        .is_none()
+    {
         return deny(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
-            "Identity did not grant a read session.",
+            "Identity did not grant a dashboard session.",
         );
     }
     let id = random_token();
@@ -1190,8 +1223,15 @@ async fn refresh_reader(app: &App, reader: &str) -> Result<(String, u64)> {
         .to_owned();
     let expires_in = body["expires_in"].as_u64().unwrap_or(300);
     ensure!((1..=300).contains(&expires_in), "invalid identity grant");
-    if !matches!(app.auth.authenticate_central(&jwt).await, Ok(Scope::Read)) {
-        anyhow::bail!("refreshed token was not a read grant");
+    if app
+        .auth
+        .authenticate_central(&jwt)
+        .await
+        .ok()
+        .filter(|scope| dashboard_grant(*scope))
+        .is_none()
+    {
+        anyhow::bail!("refreshed token was not a dashboard grant");
     }
     Ok((jwt, expires_in))
 }
