@@ -20,7 +20,7 @@ A missing credential or a bogus bearer is HTTP 401, code `unauthorized`, on the 
 
 `host.state` is `online` when the host socket answers. When the dial fails, the gateway still returns HTTP 200, `host.state` is `offline`, and `boxes`, `templates`, `checkpoints`, and `operations` are empty. The socket path is absent from the body.
 
-`checkpoints` is an empty array. Metric fields are null. A box is listed only when the journal has its create row. Box `state` is `running`, `paused`, `stopped`, `failed`, `creating`, or `unknown`.
+`checkpoints` is an empty array. `host.metrics.cpu_percent` and `host.metrics.memory_bytes` come from `/proc/stat` deltas and `/proc/meminfo` while `kiln-host` is online. A running or paused isolated box reads its jailer cgroup `cpu.stat` (`usage_usec` deltas) and `memory.current`; other boxes keep null metrics. `disk_bytes` in metrics stays null. A box is listed only when the journal has its create row. Box `state` is `running`, `paused`, `stopped`, `failed`, `creating`, or `unknown`.
 
 Operations are the newest journal rows. `kiln-host` reads 100 rows ordered by `created_at` descending, then `id` (`crates/kiln-server/src/journal.rs`, `recent`). A row whose stored JSON does not parse is skipped. That skip happens after the 100-row read, so a corrupt row still uses a slot. An operation whose state is unknown is omitted. `kind` is `create` for a create row and `unknown` otherwise. `state` is `running`, `completed`, or `failed`. `detail` is the operation error text. Exec stdout and stderr are not copied into the document.
 

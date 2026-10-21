@@ -146,6 +146,7 @@ async fn dashboard(
                 &state.workspace,
                 &observed_at,
                 "offline",
+                crate::metrics::Snapshot::default(),
                 &crate::dashboard::Inventory::default(),
             ),
         )),

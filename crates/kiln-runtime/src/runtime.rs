@@ -159,6 +159,12 @@ impl Runtime {
         self.isolation.is_some()
     }
 
+    pub fn box_cgroup(&self, run: &str) -> Option<PathBuf> {
+        self.isolation
+            .as_ref()
+            .and_then(|config| config.cgroup(run).ok())
+    }
+
     fn allocate_identity(&self, records: &[BoxRecord]) -> Result<Option<JailIdentity>> {
         self.isolation
             .as_ref()
