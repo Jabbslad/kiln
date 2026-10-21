@@ -96,6 +96,11 @@ describe('dashboard boundary', () => {
     expect(fetcher).toHaveBeenCalledTimes(1)
   })
 
+  it('reports unreachable servers without surfacing raw fetch errors', async () => {
+    const fetcher = vi.fn().mockRejectedValue(new TypeError('Load failed'))
+    await expect(fetchDashboard(undefined, fetcher)).rejects.toThrow("Couldn't reach the server")
+  })
+
   it('rejects the SPA HTML fallback rather than presenting a connected empty workspace', async () => {
     const fetcher = vi
       .fn()

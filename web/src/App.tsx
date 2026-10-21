@@ -18,6 +18,7 @@ import {
   UserRound,
 } from 'lucide-react'
 import { fetchDashboard, readCsrf, setDashboardObserver, timestamp, type Dashboard } from './data'
+import { isUnreachableError } from './kilnFetch'
 import { previewDashboard } from './fixtures'
 import Inventory from './Inventory'
 import BoxDetail from './BoxDetail'
@@ -30,7 +31,9 @@ import { kilnVersionLabel } from './kiln-version'
 import { ReleaseNotesDialog } from './ReleaseNotesDialog'
 
 type Connection =
-  { state: 'loading' } | { state: 'error'; message: string } | { state: 'ready'; data: Dashboard }
+  | { state: 'loading' }
+  | { state: 'error'; message: string; unreachable: boolean }
+  | { state: 'ready'; data: Dashboard }
 async function signOut() {
   const response = await fetch('/logout', {
     method: 'POST',
@@ -66,15 +69,7 @@ function Dashboard() {
     const controller = new AbortController()
     let active = true
     const timeout = window.setTimeout(() => {
-      if (active) {
-        active = false
-        controller.abort()
-        setConnection({
-          state: 'error',
-          message:
-            'The dashboard API did not respond within 10 seconds. No box state has been inferred.',
-        })
-      }
+      if (active) controller.abort()
     }, 10000)
     fetchDashboard(controller.signal)
       .then((data) => {
@@ -84,7 +79,8 @@ function Dashboard() {
         if (active)
           setConnection({
             state: 'error',
-            message: error instanceof Error ? error.message : 'Unable to reach the dashboard API.',
+            message: error instanceof Error ? error.message : "Couldn't reach the server",
+            unreachable: isUnreachableError(error),
           })
       })
       .finally(() => window.clearTimeout(timeout))
@@ -94,6 +90,31 @@ function Dashboard() {
       window.clearTimeout(timeout)
     }
   }, [preview, attempt])
+  useEffect(() => {
+    if (preview || connection.state !== 'error' || !connection.unreachable) return
+    const retry = () => setAttempt((value) => value + 1)
+    window.addEventListener('online', retry)
+    return () => window.removeEventListener('online', retry)
+  }, [preview, connection])
+  useEffect(() => {
+    if (preview || connection.state !== 'error' || !connection.unreachable) return
+    let cancelled = false
+    let delayMs = 2_000
+    let timer = 0
+    const schedule = () => {
+      timer = window.setTimeout(() => {
+        if (cancelled) return
+        setAttempt((value) => value + 1)
+        delayMs = Math.min(Math.round(delayMs * 1.5), 30_000)
+        schedule()
+      }, delayMs)
+    }
+    schedule()
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [preview, connection])
   const data = preview ? previewDashboard : connection.state === 'ready' ? connection.data : null
   useEffect(() => {
     if (preview) return
