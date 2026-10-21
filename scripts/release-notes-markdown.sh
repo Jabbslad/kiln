@@ -32,7 +32,7 @@ if [ "${KILN_FETCH_RELEASE_TAGS:-1}" = 1 ]; then
   git fetch --tags origin >/dev/null 2>&1 || true
 fi
 from=
-if from=$(git tag -l 'v*' | sh "$root/scripts/previous-release-tag.sh" "$tag" 2>/dev/null); then
+if from=$(sh "$root/scripts/previous-release-notes-from.sh" "$tag" 2>/dev/null); then
   :
 else
   from=

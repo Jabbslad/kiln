@@ -287,7 +287,8 @@ jobs:
             scripts/test-release-budget.sh \
             scripts/check-feature-map.sh             scripts/test-feature-map-guard.sh \
             scripts/test-operations-journal-version-sync.sh \
-            scripts/previous-release-tag.sh scripts/release-notes-mode.sh \
+            scripts/previous-release-tag.sh scripts/previous-release-notes-from.sh \
+            scripts/published-release-tags.sh scripts/release-notes-mode.sh \
             scripts/release-notes-json.sh scripts/release-notes-markdown.sh scripts/write-release-notes.sh \
             scripts/check-embedded-release-notes.sh scripts/test-release-notes.sh \
             scripts/test-embedded-release-notes.sh \
@@ -566,6 +567,10 @@ jobs:
         run: npm run build
       - name: Check embedded release notes
         if: steps.queue.outputs.skip_tests != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          KILN_RELEASE_NOTES_PUBLISHED_BASE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
         run: sh scripts/check-embedded-release-notes.sh "$VERSION"
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         if: steps.queue.outputs.skip_tests != 'true' && !startsWith(github.ref, 'refs/tags/v')
@@ -806,6 +811,7 @@ jobs:
           TAG: ${{ needs.release-plan.outputs.tag }}
           VERSION: ${{ needs.release-plan.outputs.tag }}
           KILN_RELEASE_NOTES_STRICT: "1"
+          KILN_RELEASE_NOTES_PUBLISHED_BASE: "1"
         run: |
           started=$(date +%s)
           cargo xtask reuse-release finish --version "$VERSION" --dist dist
