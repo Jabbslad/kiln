@@ -72,6 +72,23 @@ pack_slotted() {
   rm -rf "$stage"
 }
 
+pack_dashboard() {
+  local dest=$1 version=$2
+  local stage archive
+  stage=$(mktemp -d)
+  mkdir -p "$stage/assets"
+  printf '<script type="module" crossorigin src="/assets/index-test.js"></script>\n' \
+    > "$stage/index.html"
+  printf 'js\n' > "$stage/assets/index-test.js"
+  archive=$dest/kiln-dashboard-v${version}.tar.gz
+  tar -C "$stage" -czf "$archive" index.html assets/index-test.js
+  (
+    cd "$dest"
+    sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256"
+  )
+  rm -rf "$stage"
+}
+
 pack_identity() {
   local dest=$1 version=$2 bytes=$3
   local stage archive
@@ -430,6 +447,10 @@ case "$deploy_text" in
   *kiln-identity-*) ;;
   *) fail "deploy.sh does not fetch the identity archive" ;;
 esac
+case "$deploy_text" in
+  *kiln-dashboard-*) ;;
+  *) fail "deploy.sh does not fetch the dashboard archive" ;;
+esac
 for banned in service.env github.secret google.secret signing.pem identity.json identity.db; do
   if grep -q "$banned" "$script" || grep -q "$banned" "$root/deploy/github/deploy.sh"; then
     fail "deploy path names $banned"
@@ -448,6 +469,7 @@ prepare_deploy() {
   write_bin "$work/server-bin" 0.4.16
   tar -C "$work" -czf "$files/kiln-server-v0.4.16-x86_64-unknown-linux-gnu.tar.gz" server-bin
   pack_identity "$files" 0.4.16 'pkg'
+  pack_dashboard "$files" 0.4.16
   (
     cd "$files"
     sha256sum kiln-server-v0.4.16-x86_64-unknown-linux-gnu.tar.gz > kiln-server-v0.4.16-x86_64-unknown-linux-gnu.tar.gz.sha256
