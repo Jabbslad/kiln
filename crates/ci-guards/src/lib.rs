@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 const ATTEST_CASES: &[(&str, &str, bool)] = &[
@@ -952,6 +953,130 @@ fn step_from(job: &str, marker: &str) -> String {
         body.push(*line);
     }
     body.join("\n")
+}
+
+const REUSE_PATH_SKIPPED: &[&str] = &["server-package", "client", "dashboard", "attest"];
+
+/// Jobs that sit downstream of a reuse-path skip must not rely on GitHub's
+/// implicit `success()`. That function is false when an ancestor was skipped,
+/// so a later job whose direct need succeeded still does not run.
+/// `!cancelled()` or `always()` blocks the rewrite. A `!cancelled()` if also
+/// names every direct need's result (`success`, or `skipped` where that need
+/// is allowed to be skipped). `always()` is that allowance for a gate which
+/// still runs when a need is skipped and judges the result in the job.
+pub fn reuse_skip_downstream_violations(workflow: &str) -> Vec<String> {
+    let jobs = job_blocks(workflow);
+    let mut needs_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut if_of: BTreeMap<String, String> = BTreeMap::new();
+    for (name, body) in &jobs {
+        needs_of.insert(name.clone(), needs_items(body));
+        if_of.insert(name.clone(), job_if(workflow, name).unwrap_or_default());
+    }
+
+    let mut ancestors = BTreeSet::new();
+    for name in REUSE_PATH_SKIPPED {
+        if needs_of.contains_key(*name) {
+            ancestors.insert((*name).to_string());
+        }
+    }
+    for (name, expr) in &if_of {
+        if gated_on_reuse_mode(expr) {
+            ancestors.insert(name.clone());
+        }
+    }
+
+    let mut violations = Vec::new();
+    for name in jobs_downstream_of(&needs_of, &ancestors) {
+        let normalized = normalize_if(if_of.get(&name).map(String::as_str).unwrap_or(""));
+        let always = normalized.contains("always()");
+        if !normalized.starts_with("!cancelled()") && !always {
+            violations.push(format!(
+                "{name} is downstream of a reuse-skipped job and its if does not start with !cancelled() or use always()"
+            ));
+        }
+        if always {
+            continue;
+        }
+        for need in needs_of.get(&name).map(Vec::as_slice).unwrap_or(&[]) {
+            if !need_result_is_checked(&normalized, need) {
+                violations.push(format!(
+                    "{name} does not check needs.{need}.result == 'success' or allow needs.{need}.result == 'skipped'"
+                ));
+            }
+        }
+    }
+    violations
+}
+
+fn gated_on_reuse_mode(expr: &str) -> bool {
+    normalize_if(expr).contains("needs.reuse.outputs.mode")
+}
+
+fn jobs_downstream_of(
+    needs_of: &BTreeMap<String, Vec<String>>,
+    ancestors: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut dependents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (name, needs) in needs_of {
+        for need in needs {
+            dependents
+                .entry(need.as_str())
+                .or_default()
+                .push(name.as_str());
+        }
+    }
+    let mut downstream = BTreeSet::new();
+    let mut stack: Vec<&str> = ancestors.iter().map(String::as_str).collect();
+    while let Some(job) = stack.pop() {
+        let Some(children) = dependents.get(job) else {
+            continue;
+        };
+        for child in children {
+            if downstream.insert((*child).to_string()) {
+                stack.push(child);
+            }
+        }
+    }
+    downstream
+}
+
+fn normalize_if(expr: &str) -> String {
+    let mut text = expr.trim().to_string();
+    if let Some(inner) = strip_quotes(&text) {
+        text = inner;
+    }
+    if let Some(rest) = text.trim().strip_prefix("${{")
+        && let Some(inner) = rest.trim().strip_suffix("}}")
+    {
+        text = inner.trim().to_string();
+        if let Some(inner) = strip_quotes(&text) {
+            text = inner;
+        }
+    }
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn strip_quotes(text: &str) -> Option<String> {
+    let text = text.trim();
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2
+        && ((bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[bytes.len() - 1] == b'\''))
+    {
+        return Some(text[1..text.len() - 1].trim().to_string());
+    }
+    None
+}
+
+fn need_result_is_checked(expr: &str, need: &str) -> bool {
+    for result in ["success", "skipped"] {
+        if expr.contains(&format!("needs.{need}.result == '{result}'"))
+            || expr.contains(&format!("needs.{need}.result == \"{result}\""))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn deploy_caller_violations(workflow: &str) -> Vec<String> {
