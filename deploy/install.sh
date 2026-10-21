@@ -896,12 +896,16 @@ report_install_step() {
 operations_journal_max_version() {
   local file line
   file=$(dirname "$(realpath "$0")")/operations-journal.max-version
-  [ -f "$file" ] || die "missing release input: operations-journal.max-version"
-  line=$(tr -d '[:space:]' <"$file") || die "operations-journal.max-version is unreadable"
-  case $line in
-    ''|*[!0-9]*) die "operations-journal.max-version must contain a decimal version" ;;
-  esac
-  printf '%s\n' "$line"
+  if [ -f "$file" ]; then
+    line=$(tr -d '[:space:]' <"$file") || die "operations-journal.max-version is unreadable"
+    case $line in
+      ''|*[!0-9]*) die "operations-journal.max-version must contain a decimal version" ;;
+    esac
+    printf '%s\n' "$line"
+    return 0
+  fi
+  # Match kiln-server SCHEMA_VERSION when the pin is not yet beside install.sh.
+  printf '%s\n' 2
 }
 
 operations_journal_version_supported() {
