@@ -23,8 +23,8 @@ chmod +x "$dashboard_fetch"
 
 host_only='{"host":{"metrics":{"cpu_percent":1.5,"memory_bytes":1000,"disk_bytes":null}},"boxes":[]}'
 PATH="$work:$PATH"
-export KILN_ADMIN_TOKEN_FILE=$work/token
-export KILN_CA_FILE=$work/ca
+export KILN_ADMIN_TOKEN_FILE="$work/token"
+export KILN_CA_FILE="$work/ca"
 printf '%064d' 0 >"$KILN_ADMIN_TOKEN_FILE"
 printf 'cert\n' >"$KILN_CA_FILE"
 
