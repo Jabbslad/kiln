@@ -242,21 +242,27 @@ export async function createBox(
   cookie = globalThis.document?.cookie ?? '',
 ): Promise<Dashboard> {
   const receipt = await submitOperation({ type: 'create', template, name }, fetcher, cookie)
-  if (receipt.state === 'running') {
-    throw new Error(
-      'Create is still in progress. Refresh the dashboard to see the box once the control plane records it.',
+  if (receipt.state === 'succeeded') {
+    return awaitDashboard(
+      fetcher,
+      (dashboard) => dashboard.boxes.some((box) => box.id === receipt.box_id),
+      'The control plane has not observed the new box.',
     )
   }
-  if (receipt.state !== 'succeeded') {
+  if (receipt.state === 'failed') {
     throw new Error(
       receipt.error?.message ||
         'Create did not succeed. The box is shown only after the control plane records it.',
     )
   }
-  return awaitDashboard(
-    fetcher,
-    (dashboard) => dashboard.boxes.some((box) => box.id === receipt.box_id),
-    'The control plane has not observed the new box.',
+  if (receipt.state === 'running' || receipt.state === 'unknown') {
+    throw new Error(
+      'Create is still in progress. Refresh the dashboard to see the box once the control plane records it.',
+    )
+  }
+  throw new Error(
+    receipt.error?.message ||
+      'Create did not succeed. The box is shown only after the control plane records it.',
   )
 }
 

@@ -142,8 +142,101 @@ it('enables create only on a live authenticated console and shows the box once o
   await waitFor(() => expect(posts).toBe(1))
   expect(screen.queryByRole('link', { name: 'api-staging' })).not.toBeInTheDocument()
   releaseObserved(Response.json(observed))
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   expect(await screen.findByRole('link', { name: 'api-staging' })).toBeVisible()
   expect(posts).toBe(1)
+})
+
+it('shows Creating… while create polls and closes with the new box once observed', async () => {
+  const boxId = 'd'.repeat(32)
+  const live = {
+    ...previewDashboard,
+    boxes: [],
+    operations: [],
+    checkpoints: [],
+    templates: [{ ...previewDashboard.templates[0], id: 'tpl-ubuntu', name: 'ubuntu' }],
+  }
+  const observed = {
+    ...live,
+    boxes: [{ ...previewDashboard.boxes[0], id: boxId, name: 'jamie' }],
+  }
+  let pollCount = 0
+  let createFinished = false
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json(
+          { id: posted.id, box_id: boxId, state: 'running', result: null, error: null },
+          { status: 202 },
+        )
+      }
+      if (String(url).startsWith('/v1/operations/')) {
+        pollCount += 1
+        const id = String(url).slice('/v1/operations/'.length)
+        if (pollCount < 25) {
+          return Response.json({ id, box_id: boxId, state: 'running', result: null, error: null })
+        }
+        createFinished = true
+        return Response.json({ id, box_id: boxId, state: 'succeeded', result: null, error: null })
+      }
+      return Response.json(createFinished ? observed : live)
+    }),
+  )
+  document.cookie = '__Host-kiln_csrf=browser-csrf'
+  open('/boxes')
+  const user = userEvent.setup()
+  const [openCreate] = await screen.findAllByRole('button', { name: 'Create box' })
+  await user.click(openCreate)
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Box name' }), 'jamie')
+  await user.click(within(dialog).getByRole('button', { name: 'Create box' }))
+  expect(await within(dialog).findByRole('button', { name: 'Creating…' })).toBeVisible()
+  expect(within(dialog).getByRole('status')).toHaveTextContent(/Creating…/)
+  expect(await screen.findByRole('link', { name: 'jamie' }, { timeout: 5000 })).toBeVisible()
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  expect(pollCount).toBeGreaterThanOrEqual(25)
+})
+
+it('shows the host failure message when create returns failed', async () => {
+  const live = {
+    ...previewDashboard,
+    boxes: [],
+    operations: [],
+    checkpoints: [],
+    templates: [{ ...previewDashboard.templates[0], id: 'tpl-ubuntu', name: 'ubuntu' }],
+  }
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json(
+          {
+            id: posted.id,
+            box_id: 'f'.repeat(32),
+            state: 'failed',
+            result: null,
+            error: { message: 'Template disk is unavailable.' },
+          },
+          { status: 202 },
+        )
+      }
+      return Response.json(live)
+    }),
+  )
+  document.cookie = '__Host-kiln_csrf=browser-csrf'
+  open('/boxes')
+  const user = userEvent.setup()
+  const [openCreate] = await screen.findAllByRole('button', { name: 'Create box' })
+  await user.click(openCreate)
+  const dialog = screen.getByRole('dialog')
+  await user.type(within(dialog).getByRole('textbox', { name: 'Box name' }), 'jamie')
+  await user.click(within(dialog).getByRole('button', { name: 'Create box' }))
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent('Template disk is unavailable.')
+  expect(within(dialog).queryByText(/still in progress/i)).not.toBeInTheDocument()
+  expect(screen.getByRole('dialog')).toBeInTheDocument()
 })
 
 it('keeps create disabled when the live host is offline and keeps other mutations disabled', async () => {

@@ -180,6 +180,54 @@ describe('dashboard boundary', () => {
     vi.useRealTimers()
   })
 
+  it('surfaces the host error when create returns failed', async () => {
+    const boxId = 'd'.repeat(32)
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json(
+          {
+            id: posted.id,
+            box_id: boxId,
+            state: 'failed',
+            result: null,
+            error: { message: 'No free box slot on this host.' },
+          },
+          { status: 202 },
+        )
+      }
+      return Response.json(previewDashboard)
+    })
+    await expect(
+      createBox('ubuntu', 'jamie', fetcher, '__Host-kiln_csrf=form-csrf'),
+    ).rejects.toThrow('No free box slot on this host.')
+  })
+
+  it('treats unknown create receipts as still in progress, not failure', async () => {
+    const boxId = 'e'.repeat(32)
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json(
+          {
+            id: posted.id,
+            box_id: boxId,
+            state: 'unknown',
+            result: null,
+            error: { message: 'Operation did not return a confirmed result.' },
+          },
+          { status: 202 },
+        )
+      }
+      return Response.json(previewDashboard)
+    })
+    await expect(
+      createBox('ubuntu', 'jamie', fetcher, '__Host-kiln_csrf=form-csrf'),
+    ).rejects.toThrow(/still in progress/i)
+  })
+
   it('rejects a checkpoint when CSRF, Origin, or the session fails', async () => {
     const cases = [
       {

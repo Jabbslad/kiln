@@ -189,6 +189,11 @@ export function CreateDrawer({
           ) : (
             <Unavailable preview={preview} />
           )}
+          {pending && (
+            <p className="field-hint" role="status">
+              Creating… Waiting for the control plane to finish booting the box.
+            </p>
+          )}
           {error && (
             <p className="field-hint error-text" role="alert">
               {error}
@@ -196,11 +201,17 @@ export function CreateDrawer({
           )}
         </div>
         <footer className="modal-footer">
-          <button type="button" className="button" onClick={onClose}>
+          <button type="button" className="button" onClick={onClose} disabled={pending}>
             Cancel
           </button>
-          <button className="button primary" disabled={!ready}>
-            Create box <ArrowUpRight size={16} />
+          <button className="button primary" disabled={!ready} aria-busy={pending}>
+            {pending ? (
+              'Creating…'
+            ) : (
+              <>
+                Create box <ArrowUpRight size={16} />
+              </>
+            )}
           </button>
         </footer>
       </form>
