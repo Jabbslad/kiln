@@ -20,7 +20,7 @@ A missing credential or a bogus bearer is HTTP 401, code `unauthorized`, on the 
 
 `host.state` is `online` when the host socket answers. When the dial fails, the gateway still returns HTTP 200, `host.state` is `offline`, and `boxes`, `templates`, `checkpoints`, and `operations` are empty. The socket path is absent from the body.
 
-`checkpoints` is an empty array. `host.metrics.cpu_percent` and `host.metrics.memory_bytes` come from `/proc/stat` deltas and `/proc/meminfo` while `kiln-host` is online. A running or paused isolated box reads its jailer cgroup `cpu.stat` (`usage_usec` deltas) and `memory.current`; other boxes keep null metrics. `disk_bytes` in metrics stays null. A box is listed only when the journal has its create row. Box `state` is `running`, `paused`, `stopped`, `failed`, `creating`, or `unknown`.
+`checkpoints` is an empty array. `host.metrics.cpu_percent` and `host.metrics.memory_bytes` come from `/proc/stat` deltas and `/proc/meminfo` while `kiln-host` is online. A running or paused isolated box reads its jailer cgroup `cpu.stat` (`usage_usec` deltas) and `memory.current`; other boxes keep null metrics. `disk_bytes` in metrics stays null. The dashboard marks `metrics` as `available` in `web/src/capabilities.ts`; stopped or inactive boxes show **Stopped** or **Not available yet** instead of em dashes. A box is listed only when the journal has its create row. Box `state` is `running`, `paused`, `stopped`, `failed`, `creating`, or `unknown`.
 
 Operations are the newest journal rows. `kiln-host` reads 100 rows ordered by `created_at` descending, then `id` (`crates/kiln-server/src/journal.rs`, `recent`). A row whose stored JSON does not parse is skipped. That skip happens after the 100-row read, so a corrupt row still uses a slot. An operation whose state is unknown is omitted. `kind` is `create` for a create row and `unknown` otherwise. `state` is `running`, `completed`, or `failed`. `detail` is the operation error text. Exec stdout and stderr are not copied into the document.
 
@@ -34,7 +34,7 @@ A host body larger than 1 MiB (`kiln_api::MAX_RESPONSE_BYTES`) makes `stamp` ret
 
 - Inventory at `/boxes`: search, state filters, name sort, row links.
 - Box detail at `/boxes/:id` with workspace, exec, checkpoint, and preview tabs.
-- Capability guard in `web/src/capabilities.ts`: metrics, terminal, SSH, HTTP preview, public URL, and launch timing each declare `available` or `not-yet`. Panels read that map and render the shared **Not available yet** state instead of blank placeholders or fake broken controls. Vitest in `web/src/capabilities.test.tsx` fails if an `available` capability shows `—`, `-`, `N/A`, or empty values, or if a `not-yet` capability renders anything else. Metrics is `not-yet` until host telemetry is wired in the dashboard.
+- Capability guard in `web/src/capabilities.ts`: metrics, terminal, SSH, HTTP preview, public URL, and launch timing each declare `available` or `not-yet`. Panels read that map and render the shared **Not available yet** state instead of blank placeholders or fake broken controls. Vitest in `web/src/capabilities.test.tsx` fails if an `available` capability shows `—`, `-`, `N/A`, or empty values, or if a `not-yet` capability renders anything else. Metrics is `available` and reads live host and box telemetry from the dashboard document.
 - Templates at `/templates`, including the create-box drawer.
 - Operations at `/operations`.
 - Settings at `/settings` and the guide at `/docs`.
