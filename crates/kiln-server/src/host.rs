@@ -5,13 +5,13 @@ use crate::{
 use anyhow::{Result, ensure};
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, RawQuery, State},
     http::StatusCode,
     routing::{get, post},
 };
 use kiln_api::{
-    Action, ApiError, BoxView, CheckpointView, Operation, OperationState, Outcome, Submit,
-    TemplateView, valid_alias, valid_id,
+    Action, ApiError, BoxView, CheckpointView, Operation, OperationState, OperationSubmitQuery,
+    Outcome, Submit, TemplateView, valid_alias, valid_id,
 };
 use kiln_runtime::{
     isolation,
@@ -25,6 +25,7 @@ use std::{
     os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path as FsPath, PathBuf},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 use tokio::{net::UnixListener, sync::Semaphore};
 
@@ -181,6 +182,30 @@ impl Host {
             return Err(Failure::missing());
         }
         Ok(())
+    }
+
+    fn box_on_disk(&self, box_id: &str) -> Result<bool, Failure> {
+        if !valid_id(box_id) {
+            return Ok(false);
+        }
+        self.runtime_dir
+            .join("boxes")
+            .join(box_id)
+            .join("box.json")
+            .try_exists()
+            .map_err(Failure::internal)
+    }
+
+    async fn create_observed_running(&self, box_id: &str) -> Result<bool, Failure> {
+        if !self.box_on_disk(box_id)? {
+            return Ok(false);
+        }
+        let record = self
+            .runtime
+            .inspect(box_id)
+            .await
+            .map_err(Failure::internal)?;
+        Ok(record.state == "running")
     }
 
     async fn execute(&self, action: Action, box_id: &str) -> kiln_runtime::Result<Outcome> {
@@ -511,23 +536,157 @@ async fn operation(
         .ok_or_else(Failure::missing)
 }
 
-async fn submit(
-    State(host): State<Arc<Host>>,
-    Json(request): Json<Submit>,
-) -> Result<(StatusCode, Json<Operation>), Failure> {
-    if !valid_id(&request.id) {
-        return Err(Failure::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "invalid request ID",
-        ));
+async fn wait_for_create(
+    host: Arc<Host>,
+    op_id: &str,
+    wait_seconds: u64,
+) -> Result<Operation, Failure> {
+    let deadline = Instant::now() + Duration::from_secs(wait_seconds);
+    let mut interval = Duration::from_millis(50);
+    loop {
+        let op = host
+            .journal
+            .lock()
+            .unwrap()
+            .get(op_id)
+            .map_err(Failure::internal)?
+            .ok_or_else(Failure::missing)?;
+        if op.state != OperationState::Running {
+            if matches!(op.state, OperationState::Failed | OperationState::Unknown) {
+                return Ok(op);
+            }
+            if op.state == OperationState::Succeeded
+                && host.create_observed_running(&op.box_id).await?
+            {
+                return Ok(op);
+            }
+            if Instant::now() >= deadline {
+                let message = if op.state == OperationState::Succeeded {
+                    "The control plane has not observed the new box."
+                } else {
+                    "Create did not succeed. The box is shown only after the control plane records it."
+                };
+                return Err(Failure::new(
+                    StatusCode::REQUEST_TIMEOUT,
+                    "wait_timeout",
+                    message,
+                ));
+            }
+        } else if Instant::now() >= deadline {
+            let message = format!(
+                "create {op_id} still running after {wait_seconds}s; reconnect with `kiln operation {op_id} --wait`"
+            );
+            return Err(Failure::new(
+                StatusCode::REQUEST_TIMEOUT,
+                "wait_timeout",
+                &message,
+            ));
+        }
+        tokio::time::sleep(interval).await;
+        interval = interval.mul_f64(1.5).min(Duration::from_millis(2_000));
     }
-    request
-        .action
-        .validate()
-        .map_err(|e| Failure::new(StatusCode::BAD_REQUEST, "invalid_request", e))?;
+}
+
+fn spawn_operation_worker(
+    host: Arc<Host>,
+    request: Submit,
+    mut op: Operation,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) {
+    let worker_host = host.clone();
+    let journal_host = host;
+    let is_exec = matches!(request.action, Action::Exec { .. });
+    // Detached from the HTTP request. The outer task records panics as unknown;
+    // a process crash is handled by Journal::open, never by command replay.
+    tokio::spawn(async move {
+        let _permit = permit;
+        let box_id = op.box_id.clone();
+        let result =
+            tokio::spawn(async move { worker_host.execute(request.action, &box_id).await }).await;
+        match result {
+            Ok(Ok(outcome)) => {
+                op.state = OperationState::Succeeded;
+                op.result = Some(outcome);
+            }
+            other => {
+                op.state = if is_exec || other.is_err() {
+                    OperationState::Unknown
+                } else {
+                    OperationState::Failed
+                };
+                op.error = Some(ApiError {
+                    code: "runtime_operation_failed".into(),
+                    message: "Operation did not return a confirmed result. Inspect the box before issuing another command; consult the host log for lifecycle failures.".into(),
+                });
+                // Exec inputs and output are never logged, including on error.
+                if !is_exec {
+                    eprintln!("operation {}: {other:?}", op.id);
+                }
+            }
+        }
+        if let Err(error) = journal_host.journal.lock().unwrap().finish(&op) {
+            eprintln!("could not persist operation {} outcome: {error}", op.id);
+        }
+    });
+}
+
+async fn finish_create_inline(
+    host: &Arc<Host>,
+    request: Submit,
+    mut op: Operation,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+) -> Operation {
+    let box_id = op.box_id.clone();
+    let is_exec = matches!(request.action, Action::Exec { .. });
+    let result = host.execute(request.action, &box_id).await;
+    match result {
+        Ok(outcome) => {
+            op.state = OperationState::Succeeded;
+            op.result = Some(outcome);
+        }
+        Err(error) => {
+            op.state = if is_exec {
+                OperationState::Unknown
+            } else {
+                OperationState::Failed
+            };
+            op.error = Some(ApiError {
+                code: "runtime_operation_failed".into(),
+                message: "Operation did not return a confirmed result. Inspect the box before issuing another command; consult the host log for lifecycle failures.".into(),
+            });
+            eprintln!("operation {}: {error:?}", op.id);
+        }
+    }
+    if let Err(error) = host.journal.lock().unwrap().finish(&op) {
+        eprintln!("could not persist operation {} outcome: {error}", op.id);
+    }
+    op
+}
+
+async fn submit_create_wait(
+    host: Arc<Host>,
+    request: Submit,
+    accepted: Operation,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    wait_seconds: u64,
+) -> Result<(StatusCode, Json<Operation>), Failure> {
+    let finished = finish_create_inline(&host, request, accepted, permit).await;
+    let op = wait_for_create(host, &finished.id, wait_seconds).await?;
+    Ok((StatusCode::OK, Json(op)))
+}
+
+enum SubmitPlan {
+    ReplayExisting(Operation),
+    Run {
+        request: Submit,
+        accepted: Operation,
+        permit: tokio::sync::OwnedSemaphorePermit,
+    },
+}
+
+fn plan_submit(host: &Arc<Host>, request: &Submit) -> Result<SubmitPlan, Failure> {
     let mut db = host.journal.lock().unwrap();
-    if let Some(existing) = db.existing(&request).map_err(|e| {
+    if let Some(existing) = db.existing(request).map_err(|e| {
         if e.is::<Conflict>() {
             Failure::new(
                 StatusCode::CONFLICT,
@@ -538,7 +697,7 @@ async fn submit(
             Failure::internal(e)
         }
     })? {
-        return Ok((StatusCode::OK, Json(existing)));
+        return Ok(SubmitPlan::ReplayExisting(existing));
     }
     match &request.action {
         Action::Create { template, .. } if !host.templates.contains_key(template) => {
@@ -561,41 +720,57 @@ async fn submit(
             "Eight operations are already in flight. No new operation was accepted.",
         )
     })?;
-    let accepted = db.accept(&request).map_err(Failure::internal)?;
-    let mut op = accepted.clone();
-    drop(db);
-    let worker_host = host.clone();
-    let is_exec = matches!(request.action, Action::Exec { .. });
-    // Detached from the HTTP request. The outer task records panics as unknown;
-    // a process crash is handled by Journal::open, never by command replay.
-    tokio::spawn(async move {
-        let _permit = permit;
-        let box_id = op.box_id.clone();
-        let result =
-            tokio::spawn(async move { worker_host.execute(request.action, &box_id).await }).await;
-        match result {
-            Ok(Ok(outcome)) => {
-                op.state = OperationState::Succeeded;
-                op.result = Some(outcome);
+    let accepted = db.accept(request).map_err(Failure::internal)?;
+    Ok(SubmitPlan::Run {
+        request: request.clone(),
+        accepted,
+        permit,
+    })
+}
+
+async fn submit(
+    State(host): State<Arc<Host>>,
+    RawQuery(raw_query): RawQuery,
+    Json(request): Json<Submit>,
+) -> Result<(StatusCode, Json<Operation>), Failure> {
+    let query = OperationSubmitQuery::parse("/v1/operations", raw_query.as_deref())
+        .map_err(|message| Failure::new(StatusCode::BAD_REQUEST, "invalid_request", message))?;
+    query
+        .validate_for_action(&request.action)
+        .map_err(|message| Failure::new(StatusCode::BAD_REQUEST, "invalid_request", message))?;
+    if !valid_id(&request.id) {
+        return Err(Failure::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "invalid request ID",
+        ));
+    }
+    request
+        .action
+        .validate()
+        .map_err(|e| Failure::new(StatusCode::BAD_REQUEST, "invalid_request", e))?;
+    let plan = plan_submit(&host, &request)?;
+    match plan {
+        SubmitPlan::ReplayExisting(existing) => {
+            if query.wait {
+                let op = wait_for_create(host.clone(), &existing.id, query.wait_seconds).await?;
+                return Ok((StatusCode::OK, Json(op)));
             }
-            other => {
-                op.state = if is_exec || other.is_err() {
-                    OperationState::Unknown
-                } else {
-                    OperationState::Failed
-                };
-                op.error = Some(ApiError { code: "runtime_operation_failed".into(), message: "Operation did not return a confirmed result. Inspect the box before issuing another command; consult the host log for lifecycle failures.".into() });
-                // Exec inputs and output are never logged, including on error.
-                if !is_exec {
-                    eprintln!("operation {}: {other:?}", op.id);
-                }
+            Ok((StatusCode::OK, Json(existing)))
+        }
+        SubmitPlan::Run {
+            request,
+            accepted,
+            permit,
+        } => {
+            if query.wait {
+                return submit_create_wait(host, request, accepted, permit, query.wait_seconds)
+                    .await;
             }
+            spawn_operation_worker(host, request, accepted.clone(), permit);
+            Ok((StatusCode::ACCEPTED, Json(accepted)))
         }
-        if let Err(error) = host.journal.lock().unwrap().finish(&op) {
-            eprintln!("could not persist operation {} outcome: {error}", op.id);
-        }
-    });
-    Ok((StatusCode::ACCEPTED, Json(accepted)))
+    }
 }
 
 /// Parent directory must be operator-owned and not writable by socket clients.
@@ -632,6 +807,7 @@ pub async fn bind_socket(path: &FsPath) -> Result<UnixListener> {
 mod tests {
     use super::*;
     use axum::response::IntoResponse;
+    use kiln_api::new_id;
 
     #[tokio::test]
     async fn ssh_key_lookup_does_not_consume_a_tunnel_permit() {
@@ -671,5 +847,81 @@ mod tests {
             .unwrap();
         let body = String::from_utf8_lossy(&body);
         assert!(!body.contains("ssh_busy"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn create_wait_times_out_when_create_stays_running() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let host = Host::open(&Config {
+            runtime_dir: root.path().join("runtime"),
+            journal_dir: root.path().join("journal"),
+            socket: root.path().join("host.sock"),
+            isolation_config: None,
+            allow_unsafe_development: true,
+            templates: Default::default(),
+        })
+        .unwrap();
+        let op = host
+            .journal
+            .lock()
+            .unwrap()
+            .accept(&Submit {
+                id: new_id(),
+                action: Action::Create {
+                    template: "ubuntu".into(),
+                    name: "slow".into(),
+                },
+            })
+            .unwrap();
+        let err = wait_for_create(host, &op.id, 1).await.unwrap_err();
+        assert_eq!(err.0, StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(err.1.code, "wait_timeout");
+        assert!(err.1.message.contains("still running"));
+    }
+
+    #[tokio::test]
+    async fn create_wait_reports_control_plane_timeout_after_success() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let host = Host::open(&Config {
+            runtime_dir: root.path().join("runtime"),
+            journal_dir: root.path().join("journal"),
+            socket: root.path().join("host.sock"),
+            isolation_config: None,
+            allow_unsafe_development: true,
+            templates: Default::default(),
+        })
+        .unwrap();
+        let op = host
+            .journal
+            .lock()
+            .unwrap()
+            .accept(&Submit {
+                id: new_id(),
+                action: Action::Create {
+                    template: "ubuntu".into(),
+                    name: "ghost".into(),
+                },
+            })
+            .unwrap();
+        let mut finished = op.clone();
+        finished.state = OperationState::Succeeded;
+        finished.result = Some(Outcome::Box(BoxView {
+            id: finished.box_id.clone(),
+            name: "ghost".into(),
+            state: "running".into(),
+            memory_mib: 256,
+            vcpus: 1,
+        }));
+        finished.error = None;
+        host.journal.lock().unwrap().finish(&finished).unwrap();
+        let err = wait_for_create(host, &op.id, 1).await.unwrap_err();
+        assert_eq!(err.0, StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(err.1.code, "wait_timeout");
+        assert_eq!(
+            err.1.message,
+            "The control plane has not observed the new box."
+        );
     }
 }

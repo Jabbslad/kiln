@@ -175,6 +175,66 @@ pub struct Submit {
     pub action: Action,
 }
 
+pub const DEFAULT_OPERATION_WAIT_SECONDS: u64 = 300;
+pub const MAX_OPERATION_WAIT_SECONDS: u64 = 3605;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OperationSubmitQuery {
+    pub wait: bool,
+    pub wait_seconds: u64,
+}
+
+impl OperationSubmitQuery {
+    pub fn parse(path: &str, query: Option<&str>) -> Result<Self, &'static str> {
+        if query.is_none() {
+            return Ok(Self {
+                wait: false,
+                wait_seconds: DEFAULT_OPERATION_WAIT_SECONDS,
+            });
+        }
+        if path != "/v1/operations" {
+            return Err("query parameters are not accepted");
+        }
+        let mut wait = false;
+        let mut wait_seconds = None;
+        for pair in query.unwrap().split('&') {
+            if pair.is_empty() {
+                return Err("invalid query parameter");
+            }
+            let (key, value) = pair.split_once('=').ok_or("invalid query parameter")?;
+            match key {
+                "wait" => {
+                    wait = match value {
+                        "true" | "1" => true,
+                        "false" | "0" => false,
+                        _ => return Err("invalid wait query parameter"),
+                    };
+                }
+                "wait_seconds" => {
+                    wait_seconds = Some(
+                        value
+                            .parse::<u64>()
+                            .map_err(|_| "invalid wait_seconds query parameter")?,
+                    );
+                }
+                _ => return Err("unknown query parameter"),
+            }
+        }
+        let wait_seconds = wait_seconds.unwrap_or(DEFAULT_OPERATION_WAIT_SECONDS);
+        if !(1..=MAX_OPERATION_WAIT_SECONDS).contains(&wait_seconds) {
+            return Err("wait_seconds must be between 1 and 3605");
+        }
+        Ok(Self { wait, wait_seconds })
+    }
+
+    pub fn validate_for_action(&self, action: &Action) -> Result<(), &'static str> {
+        if self.wait && !matches!(action, Action::Create { .. }) {
+            return Err("wait is only supported for create");
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BoxView {
     pub id: String,
@@ -304,6 +364,42 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn operation_submit_query_accepts_only_create_wait_parameters() {
+        let create = Action::Create {
+            template: "ubuntu".into(),
+            name: "box".into(),
+        };
+        let parsed = OperationSubmitQuery::parse("/v1/operations", Some("wait=true")).unwrap();
+        assert!(parsed.wait);
+        assert_eq!(parsed.wait_seconds, DEFAULT_OPERATION_WAIT_SECONDS);
+        parsed.validate_for_action(&create).unwrap();
+        assert!(
+            OperationSubmitQuery::parse("/v1/operations", Some("wait=true&wait_seconds=42"))
+                .unwrap()
+                .wait_seconds
+                == 42
+        );
+        assert!(
+            OperationSubmitQuery::parse("/v1/boxes", Some("wait=true")).is_err(),
+            "query is limited to POST /v1/operations"
+        );
+        assert!(OperationSubmitQuery::parse("/v1/operations", Some("preview=1")).is_err());
+        let parsed = OperationSubmitQuery::parse("/v1/operations", Some("wait=false")).unwrap();
+        parsed.validate_for_action(&create).unwrap();
+        assert!(
+            parsed
+                .validate_for_action(&Action::Delete { id: "a".repeat(32) })
+                .is_ok()
+        );
+        assert!(
+            OperationSubmitQuery::parse("/v1/operations", Some("wait=true"))
+                .unwrap()
+                .validate_for_action(&Action::Delete { id: "a".repeat(32) })
+                .is_err()
+        );
     }
 
     #[test]

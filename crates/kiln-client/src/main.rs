@@ -88,6 +88,9 @@ enum Command {
         template: Option<String>,
         #[arg(long)]
         name: Option<String>,
+        /// Block until the box is running and recorded by the control plane.
+        #[arg(long)]
+        wait: bool,
     },
     Pause {
         #[arg(value_name = "BOX")]
@@ -892,6 +895,7 @@ async fn run(cli: Cli) -> Result<i32> {
     }
     let request_id = cli.request_id.unwrap_or_else(new_id);
     anyhow::ensure!(kiln_api::valid_id(&request_id), "invalid request ID");
+    let mut create_wait = false;
     let action = match cli.command {
         Command::Templates => {
             let templates = client.templates().await?;
@@ -945,7 +949,12 @@ async fn run(cli: Cli) -> Result<i32> {
             }
             return show_operation(&op, cli.json);
         }
-        Command::Create { template, name } => {
+        Command::Create {
+            template,
+            name,
+            wait,
+        } => {
+            create_wait = wait;
             let template = match template {
                 Some(template) => template,
                 None => {
@@ -1035,8 +1044,15 @@ async fn run(cli: Cli) -> Result<i32> {
         action,
     };
     eprintln!("request {}", request.id);
-    let mut op = client.submit(&request).await.with_context(|| format!("request {} may have been accepted; query `kiln operation {}` before retrying; any retry must use --request-id {} and the same arguments", request.id, request.id, request.id))?;
-    if !cli.no_wait {
+    let mut op = if create_wait {
+        client
+            .submit_with_wait(&request, true, cli.wait_seconds)
+            .await
+    } else {
+        client.submit(&request).await
+    }
+    .with_context(|| format!("request {} may have been accepted; query `kiln operation {}` before retrying; any retry must use --request-id {} and the same arguments", request.id, request.id, request.id))?;
+    if !cli.no_wait && !create_wait {
         op = wait(&client, op, cli.wait_seconds).await?;
     }
     if !cli.json
