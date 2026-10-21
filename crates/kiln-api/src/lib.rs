@@ -306,6 +306,78 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dashboard_operation_action_types_match_api_action_tags() {
+        use std::collections::BTreeSet;
+
+        let web_source = include_str!("../../../web/src/operationKinds.ts");
+        let marker = "export const OPERATION_ACTION_TYPES = [";
+        let rest = web_source
+            .split(marker)
+            .nth(1)
+            .expect("web operation action type list");
+        let inner = rest.split(']').next().expect("web operation action array");
+        let web: BTreeSet<String> = inner
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| entry.trim_matches(['\'', '"']).to_string())
+            .collect();
+
+        let samples = [
+            Action::Create {
+                template: "ubuntu".into(),
+                name: "box".into(),
+            },
+            Action::Pause {
+                id: "a".repeat(32),
+            },
+            Action::Resume {
+                id: "a".repeat(32),
+            },
+            Action::Stop {
+                id: "a".repeat(32),
+                force: false,
+            },
+            Action::Start {
+                id: "a".repeat(32),
+            },
+            Action::Delete {
+                id: "a".repeat(32),
+            },
+            Action::Exec {
+                id: "a".repeat(32),
+                request: ExecRequest {
+                    argv: vec!["/bin/true".into()],
+                    cwd: None,
+                    env: Default::default(),
+                    timeout_ms: 1_000,
+                },
+            },
+            Action::Checkpoint {
+                id: "a".repeat(32),
+            },
+            Action::Restore {
+                id: "a".repeat(32),
+                checkpoint: "b".repeat(32),
+                acknowledge_external_state_replay: true,
+            },
+        ];
+        let api: BTreeSet<String> = samples
+            .iter()
+            .map(|action| {
+                let value = serde_json::to_value(action).expect("serialize action");
+                value
+                    .get("type")
+                    .and_then(|tag| tag.as_str())
+                    .expect("action tag")
+                    .to_string()
+            })
+            .collect();
+
+        assert_eq!(web, api, "web OPERATION_ACTION_TYPES must match kiln_api::Action tags");
+    }
+
     #[cfg(unix)]
     #[test]
     fn token_files_must_be_private_regular_files() {

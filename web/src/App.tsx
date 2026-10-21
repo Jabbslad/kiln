@@ -17,7 +17,7 @@ import {
   SlidersHorizontal,
   UserRound,
 } from 'lucide-react'
-import { fetchDashboard, readCsrf, timestamp, type Dashboard } from './data'
+import { fetchDashboard, readCsrf, setDashboardObserver, timestamp, type Dashboard } from './data'
 import { previewDashboard } from './fixtures'
 import Inventory from './Inventory'
 import BoxDetail from './BoxDetail'
@@ -92,7 +92,11 @@ function Dashboard() {
     }
   }, [preview, attempt])
   const data = preview ? previewDashboard : connection.state === 'ready' ? connection.data : null
-  const observe = (next: Dashboard) => setConnection({ state: 'ready', data: next })
+  useEffect(() => {
+    if (preview) return
+    setDashboardObserver((next) => setConnection({ state: 'ready', data: next }))
+    return () => setDashboardObserver(undefined)
+  }, [preview])
   const routeLabel =
     navigation.find((item) => location.pathname.startsWith(item.path))?.label ?? 'Guide'
   useEffect(() => {
@@ -234,24 +238,14 @@ function Dashboard() {
               element={
                 data ? (
                   <Routes>
-                    <Route
-                      path="/boxes"
-                      element={<Inventory data={data} preview={preview} onObserved={observe} />}
-                    />
+                    <Route path="/boxes" element={<Inventory data={data} preview={preview} />} />
                     <Route
                       path="/boxes/:id"
-                      element={
-                        <BoxDetail
-                          key={location.pathname}
-                          data={data}
-                          preview={preview}
-                          onObserved={observe}
-                        />
-                      }
+                      element={<BoxDetail key={location.pathname} data={data} preview={preview} />}
                     />
                     <Route
                       path="/templates"
-                      element={<Templates data={data} preview={preview} onObserved={observe} />}
+                      element={<Templates data={data} preview={preview} />}
                     />
                     <Route
                       path="/operations"

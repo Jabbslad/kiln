@@ -6,7 +6,6 @@ import { formatBytes, formatMetric, type Dashboard } from './data'
 export type PageProps = {
   data: Dashboard
   preview: boolean
-  onObserved?: (data: Dashboard) => void
 }
 
 export function AppLink({ to, ...props }: ComponentProps<typeof Link>) {

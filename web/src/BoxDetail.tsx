@@ -40,7 +40,7 @@ import {
 
 const tabs = ['Terminal', 'Exec', 'Previews', 'Checkpoints', 'Metrics', 'Activity']
 
-export default function BoxDetail({ data, preview, onObserved }: PageProps) {
+export default function BoxDetail({ data, preview }: PageProps) {
   const { id } = useParams()
   const [params, setParams] = useSearchParams()
   const requestedTab = params.get('tab') ?? 'terminal'
@@ -325,7 +325,6 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
           box={box}
           preview={preview}
           authenticated={authenticated}
-          onObserved={onObserved}
           onClose={() => setAction(null)}
         />
       ) : (
@@ -335,7 +334,6 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
             box={box}
             preview={preview}
             authenticated={!preview && data.host.state === 'online'}
-            onObserved={onObserved}
             onClose={() => setAction(null)}
           />
         )
@@ -346,7 +344,6 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
           checkpoint={restoring}
           preview={preview}
           authenticated={authenticated}
-          onObserved={onObserved}
           onClose={() => setRestoring(null)}
         />
       )}

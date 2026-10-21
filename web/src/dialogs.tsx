@@ -22,14 +22,12 @@ export function CreateDrawer({
   preview,
   authenticated,
   initialTemplate,
-  onObserved,
   onClose,
 }: {
   data: Dashboard
   preview: boolean
   authenticated: boolean
   initialTemplate?: Template
-  onObserved?: (data: Dashboard) => void
   onClose: () => void
 }) {
   const [templateId, setTemplateId] = useState(
@@ -59,10 +57,7 @@ export function CreateDrawer({
           setPending(true)
           setError('')
           void createBox(template.name, name)
-            .then((observed) => {
-              onObserved?.(observed)
-              onClose()
-            })
+            .then(() => onClose())
             .catch((reason: unknown) => {
               setError(reason instanceof Error ? reason.message : 'Create did not finish.')
               setPending(false)
@@ -228,14 +223,12 @@ export function RestoreDialog({
   checkpoint,
   preview,
   authenticated = false,
-  onObserved,
   onClose,
 }: {
   box: Box
   checkpoint: Checkpoint
   preview: boolean
   authenticated?: boolean
-  onObserved?: (data: Dashboard) => void
   onClose: () => void
 }) {
   const [acknowledged, setAcknowledged] = useState(false)
@@ -317,10 +310,7 @@ export function RestoreDialog({
             setPending(true)
             setError('')
             void restoreCheckpoint(box.id, checkpoint.id, fetch, document.cookie, operationId)
-              .then((observed) => {
-                onObserved?.(observed)
-                onClose()
-              })
+              .then(() => onClose())
               .catch((reason: unknown) => {
                 setError(reason instanceof Error ? reason.message : 'unknown')
                 setPending(false)
@@ -344,14 +334,12 @@ export function LifecycleDialog({
   box,
   preview,
   authenticated = false,
-  onObserved,
   onClose,
 }: {
   action: string
   box: Box
   preview: boolean
   authenticated?: boolean
-  onObserved?: (data: Dashboard) => void
   onClose: () => void
 }) {
   const [pending, setPending] = useState(false)
@@ -434,10 +422,7 @@ export function LifecycleDialog({
                   action === 'Stop' && force,
                 )
             void task
-              .then((observed) => {
-                onObserved?.(observed)
-                onClose()
-              })
+              .then(() => onClose())
               .catch((reason: unknown) => {
                 setError(reason instanceof Error ? reason.message : 'unknown')
                 setPending(false)
@@ -455,13 +440,11 @@ export function DeleteDialog({
   box,
   preview,
   authenticated = false,
-  onObserved,
   onClose,
 }: {
   box: Box
   preview: boolean
   authenticated?: boolean
-  onObserved?: (data: Dashboard) => void
   onClose: () => void
 }) {
   const [typed, setTyped] = useState('')
@@ -517,10 +500,7 @@ export function DeleteDialog({
             setPending(true)
             setError('')
             void deleteBox(box.id)
-              .then((observed) => {
-                onObserved?.(observed)
-                onClose()
-              })
+              .then(() => onClose())
               .catch((reason: unknown) => {
                 setError(reason instanceof Error ? reason.message : 'The operation did not finish.')
                 setPending(false)

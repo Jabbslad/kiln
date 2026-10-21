@@ -12,7 +12,7 @@ import {
 } from './ui'
 import { CreateDrawer } from './dialogs'
 
-export default function Inventory({ data, preview, onObserved }: PageProps) {
+export default function Inventory({ data, preview }: PageProps) {
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<BoxState | 'all'>('all')
   const [descending, setDescending] = useState(false)
@@ -259,7 +259,6 @@ export default function Inventory({ data, preview, onObserved }: PageProps) {
           data={data}
           preview={preview}
           authenticated={!preview && data.host.state === 'online'}
-          onObserved={onObserved}
           onClose={() => setCreating(false)}
         />
       )}
