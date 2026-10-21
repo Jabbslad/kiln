@@ -101,7 +101,7 @@ export type Checkpoint = Dashboard['checkpoints'][number]
 export type Operation = Dashboard['operations'][number]
 export type BoxState = Box['state']
 
-function requestId() {
+export function requestId() {
   const bytes = new Uint8Array(16)
   crypto.getRandomValues(bytes)
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('')
@@ -120,25 +120,51 @@ type OperationReceipt = {
   id: string
   box_id: string
   state: string
-  result?: { state?: string } | null
+  result?: { type?: string; id?: string; box_id?: string; state?: string } | null
   error?: { message?: string } | null
 }
 
-type SubmittedAction =
+export type OperationAction =
   | { type: 'create'; template: string; name: string }
   | { type: 'pause'; id: string }
   | { type: 'resume'; id: string }
   | { type: 'stop'; id: string; force: boolean }
   | { type: 'start'; id: string }
+  | { type: 'checkpoint'; id: string }
+  | {
+      type: 'restore'
+      id: string
+      checkpoint: string
+      acknowledge_external_state_replay: true
+    }
 
-async function submitOperation(
-  action: SubmittedAction,
-  fetcher: typeof fetch,
-  cookie: string,
-  rejected: (status: number) => string,
-  stalled: (status: number) => string,
+async function rejected(response: Response) {
+  let code = ''
+  try {
+    code = ((await response.json()) as { code?: string }).code ?? ''
+  } catch {
+    code = ''
+  }
+  if (response.status === 401 || code === 'unauthorized') {
+    return new Error('Unauthenticated (HTTP 401). No operation was accepted.')
+  }
+  if (code === 'invalid_origin') {
+    return new Error('The origin was rejected. No operation was accepted.')
+  }
+  if (code === 'invalid_csrf' || response.status === 403) {
+    return new Error('The CSRF check was rejected. No operation was accepted.')
+  }
+  return new Error(
+    `The operation was not accepted (HTTP ${response.status}). No change was recorded.`,
+  )
+}
+
+export async function submitOperation(
+  action: OperationAction,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+  id = requestId(),
 ): Promise<OperationReceipt> {
-  const id = requestId()
   const response = await fetcher('/v1/operations', {
     method: 'POST',
     credentials: 'same-origin',
@@ -150,7 +176,7 @@ async function submitOperation(
     },
     body: JSON.stringify({ id, action }),
   })
-  if (response.status !== 200 && response.status !== 202) throw new Error(rejected(response.status))
+  if (response.status !== 200 && response.status !== 202) throw await rejected(response)
   let receipt = (await response.json()) as OperationReceipt
   for (let attempt = 0; attempt < 20 && receipt.state === 'running'; attempt += 1) {
     const polled = await fetcher(`/v1/operations/${receipt.id}`, {
@@ -158,10 +184,32 @@ async function submitOperation(
       cache: 'no-store',
       headers: { Accept: 'application/json' },
     })
-    if (!polled.ok) throw new Error(stalled(polled.status))
+    if (!polled.ok) {
+      if (polled.status === 401 || polled.status === 403) throw await rejected(polled)
+      throw new Error('unknown')
+    }
     receipt = (await polled.json()) as OperationReceipt
   }
   return receipt
+}
+
+function confirmed(receipt: OperationReceipt) {
+  if (receipt.state === 'unknown' || receipt.state === 'running') throw new Error('unknown')
+  if (receipt.state !== 'succeeded') {
+    throw new Error(receipt.error?.message || 'The operation did not succeed.')
+  }
+}
+
+async function awaitDashboard(
+  fetcher: typeof fetch,
+  seen: (dashboard: Dashboard) => boolean,
+  pending: string,
+) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const dashboard = await fetchDashboard(undefined, fetcher)
+    if (seen(dashboard)) return dashboard
+  }
+  throw new Error(pending)
 }
 
 export async function createBox(
@@ -170,24 +218,68 @@ export async function createBox(
   fetcher: typeof fetch = fetch,
   cookie = globalThis.document?.cookie ?? '',
 ): Promise<Dashboard> {
-  const receipt = await submitOperation(
-    { type: 'create', template, name },
-    fetcher,
-    cookie,
-    (status) => `Create was not accepted (HTTP ${status}). No box was added.`,
-    (status) => `Operation status returned HTTP ${status}. The box is unchanged.`,
-  )
+  const receipt = await submitOperation({ type: 'create', template, name }, fetcher, cookie)
   if (receipt.state !== 'succeeded') {
     throw new Error(
       receipt.error?.message ||
         'Create did not succeed. The box is shown only after the control plane records it.',
     )
   }
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const dashboard = await fetchDashboard(undefined, fetcher)
-    if (dashboard.boxes.some((box) => box.id === receipt.box_id)) return dashboard
+  return awaitDashboard(
+    fetcher,
+    (dashboard) => dashboard.boxes.some((box) => box.id === receipt.box_id),
+    'The control plane has not observed the new box.',
+  )
+}
+
+export async function createCheckpoint(
+  boxId: string,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+  id = requestId(),
+): Promise<Dashboard> {
+  const receipt = await submitOperation({ type: 'checkpoint', id: boxId }, fetcher, cookie, id)
+  confirmed(receipt)
+  const checkpointId = receipt.result?.type === 'checkpoint' ? receipt.result.id : undefined
+  if (!checkpointId || (receipt.result?.box_id && receipt.result.box_id !== boxId)) {
+    throw new Error('unknown')
   }
-  throw new Error('The control plane has not observed the new box.')
+  return awaitDashboard(
+    fetcher,
+    (dashboard) =>
+      dashboard.checkpoints.some(
+        (checkpoint) => checkpoint.id === checkpointId && checkpoint.box_id === boxId,
+      ),
+    'The control plane has not observed the checkpoint.',
+  )
+}
+
+export async function restoreCheckpoint(
+  boxId: string,
+  checkpointId: string,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+  id = requestId(),
+): Promise<Dashboard> {
+  const receipt = await submitOperation(
+    {
+      type: 'restore',
+      id: boxId,
+      checkpoint: checkpointId,
+      acknowledge_external_state_replay: true,
+    },
+    fetcher,
+    cookie,
+    id,
+  )
+  confirmed(receipt)
+  if (receipt.box_id !== boxId) throw new Error('unknown')
+  return awaitDashboard(
+    fetcher,
+    (dashboard) =>
+      dashboard.boxes.some((box) => box.id === boxId && box.restored_from === checkpointId),
+    'The control plane has not observed the restore.',
+  )
 }
 
 export async function applyLifecycle(
@@ -201,8 +293,6 @@ export async function applyLifecycle(
     action === 'stop' ? { type: 'stop', id: boxId, force } : { type: action, id: boxId },
     fetcher,
     cookie,
-    (status) => `The operation was not accepted (HTTP ${status}). The box is unchanged.`,
-    (status) => `Operation status returned HTTP ${status}. The box is unchanged.`,
   )
   if (receipt.state === 'unknown') throw new Error('The outcome is unknown.')
   if (receipt.state !== 'succeeded') {
