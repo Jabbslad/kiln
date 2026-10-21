@@ -1,6 +1,6 @@
 # Dashboard
 
-The console in `web/` is a React app served as static files. Release `v0.4.17` publishes `kiln-dashboard-v0.4.17.tar.gz`. Server `deploy/install.sh` accepts `--dashboard-archive` and installs the static tree under `/usr/local/share/kiln/dashboard` (`deploy/kiln-app.service` serves it through `kiln-api app`). Preview mode (`?preview=1`) renders `web/src/fixtures.ts` and does not call the network. Without that flag the app requests `GET /api/v1/dashboard` and, when signed in, posts operations to `/v1/operations` on the same origin (`web/src/data.ts`).
+The console in `web/` is a React app served as static files. Release `v0.4.17` publishes `kiln-dashboard-v0.4.17.tar.gz`. Server `deploy/install.sh` accepts `--dashboard-archive` and installs the static tree under `/usr/local/share/kiln/dashboard` (`deploy/kiln-app.service` serves it through `kiln-api app`). Preview mode (`?preview=1`) renders `web/src/fixtures.ts` and does not call the network. Without that flag the app requests `GET /api/v1/dashboard` and, when signed in, posts operations to `/v1/operations` on the same origin (`web/src/data.ts`). All console API fetches go through `kilnFetch` in `web/src/kilnFetch.ts`: network failures (including abort/timeouts and Safari’s “Load failed”) become **Couldn’t reach the server**; HTTP errors still surface the server’s message. The live shell retries unreachable loads on **Retry connection**, the browser `online` event, and exponential backoff. `kiln-app` records `dashboard_unreachable` in its audit log when a signed-in `GET /api/v1/dashboard` cannot reach loopback `kiln-api`.
 
 `kiln-host` builds the document and serves inventory on its Unix socket (`crates/kiln-server/src/host.rs`). Loopback `kiln-api` proxies read routes (`crates/kiln-server/src/gateway.rs`). The installed gateway listens on `127.0.0.1:8443` (`deploy/kiln-api.service`). `kiln-door` checks an identity JWT and forwards read traffic. `kiln-api app` on `127.0.0.1:8093` (`deploy/kiln-app.service`) serves the dashboard archive, browser login, CSRF-protected mutations, and proxies dashboard GET plus operate routes to loopback `kiln-api` with the owner’s operate-scoped JWT (`crates/kiln-server/src/app_listener.rs`).
 
@@ -111,7 +111,7 @@ cargo test -p kiln-server --test app_listener --locked -- --nocapture \
   a_signed_in_operate_session_reaches_the_host
 ```
 
-Deploy and smoke validate live host metrics with `kiln-api self-check`, which deserializes the same `dashboard::Document` the server publishes and checks `host.metrics.cpu_percent`, `host.metrics.memory_bytes`, `host.metrics.disk_bytes`, and `host.metrics.disk_total_bytes` (running-box CPU may be null on the first read after restart; box disk is not gated). For launch timing, a **running** box with `timing: null` is a legacy box (no v2 journal finish and no stored measurement) and passes the general gate. Once the dashboard publishes a `timing` object for a running box, `timing.total_ms` must be set (from runtime phases, a v2 journal finish, or honest timestamps already present in an old operation JSON). Stopped boxes may show their last launch or `timing: null`; with zero running boxes the general gate passes before smoke creates a box. After `deploy/github/smoke.sh` creates the `kiln-smoke` box, smoke also runs `kiln-api self-check --require-launch-timing kiln-smoke`, which requires that named box (by id or name) to publish `timing.total_ms` even when legacy boxes elsewhere still have `timing: null`. No shell JSON parsing on the host.
+Deploy and smoke validate live host metrics with `kiln-api self-check`. `scripts/test-deploy-host-tools.sh` and `cargo xtask test-deploy-workflow` fail if `deploy/github/*.sh` invokes `jq` or revives the removed shell `check-dashboard-metrics.sh` scraper (the v0.4.33 deploy break)., which deserializes the same `dashboard::Document` the server publishes and checks `host.metrics.cpu_percent`, `host.metrics.memory_bytes`, `host.metrics.disk_bytes`, and `host.metrics.disk_total_bytes` (running-box CPU may be null on the first read after restart; box disk is not gated). For launch timing, a **running** box with `timing: null` is a legacy box (no v2 journal finish and no stored measurement) and passes the general gate. Once the dashboard publishes a `timing` object for a running box, `timing.total_ms` must be set (from runtime phases, a v2 journal finish, or honest timestamps already present in an old operation JSON). Stopped boxes may show their last launch or `timing: null`; with zero running boxes the general gate passes before smoke creates a box. After `deploy/github/smoke.sh` creates the `kiln-smoke` box, smoke also runs `kiln-api self-check --require-launch-timing kiln-smoke`, which requires that named box (by id or name) to publish `timing.total_ms` even when legacy boxes elsewhere still have `timing: null`. No shell JSON parsing on the host.
 
 ```sh
 cargo test -p kiln-server --test dashboard_self_check --locked
@@ -120,14 +120,14 @@ sh scripts/test-check-dashboard-bundle.sh
 
 ## Driving it with Playwright
 
-Install the browser once: `npx playwright install chromium`. Set `KILN_SCREENSHOT_DIR` before `npm run test:browser`.
+Pull requests that change console output should attach rerunnable proof via `scripts/proof.sh` (see [proof.md](proof.md)). For ad-hoc verification, install the browser once: `npx playwright install chromium`. Set `KILN_SCREENSHOT_DIR` before `npm run test:browser`.
 
 ```sh
 cd web
 KILN_SCREENSHOT_DIR="$VERIFY_EVIDENCE/dashboard" npm run test:browser
 ```
 
-Preview tests keep mutations disabled and make no `/api/` requests. Live-route tests mock `GET /api/v1/dashboard` for loading, empty, and error states. Without preview on the dev server (no proxy), `/boxes` shows **Connect your control plane**. Unit tests include `web/src/capabilities.test.tsx`, `web/src/BoxDetail.test.tsx`, and `web/src/App.test.tsx` for capability surfaces.
+Preview tests keep mutations disabled and make no `/api/` requests. Live-route tests mock `GET /api/v1/dashboard` for loading, empty, and error states. Without preview on the dev server (no proxy), `/boxes` shows **Connect your control plane** with **Couldn’t reach the server** when the API is unreachable. Unit tests include `web/src/kilnFetch.test.ts`, `web/src/capabilities.test.tsx`, `web/src/BoxDetail.test.tsx`, and `web/src/App.test.tsx` for capability surfaces and unreachable recovery. `cargo test -p kiln-server --test app_listener failed_dashboard_upstream_refresh_is_audited` covers the dashboard audit line. Proof screenshots for unreachable vs recovered states: `sh scripts/capture-dashboard-unreachable-proof.sh`.
 
 ```sh
 cd web
