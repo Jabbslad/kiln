@@ -1,4 +1,5 @@
-//! Explicit local administrative enrollment. Never invoked by the installer.
+//! Explicit local administrative enrollment.
+//! `run` is never invoked by the installer. `publish_login` is.
 use crate::auth::Enrollment;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -116,6 +117,11 @@ fn install_file(path: &Path, bytes: &[u8], mode: u32, gid: u32) -> Result<()> {
         );
         return Ok(());
     }
+    create_file(path, bytes, mode, gid)
+}
+fn create_file(path: &Path, bytes: &[u8], mode: u32, gid: u32) -> Result<()> {
+    let parent = path.parent().context("missing directory")?;
+    directory(parent)?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     temporary.write_all(bytes)?;
     use std::os::fd::AsRawFd;
@@ -310,14 +316,7 @@ pub async fn run(options: Options) -> Result<()> {
     lock.try_lock()
         .context("another installer or enrollment is running")?;
     let receipt_path = Path::new(ETC).join("enrollment.pending.json");
-    let http = reqwest::Client::builder()
-        .https_only(true)
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .retry(reqwest::retry::never())
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(30))
-        .build()?;
+    let http = identity_client()?;
     let receipt: Receipt = if options.resume {
         serde_json::from_slice(&read(&receipt_path, 0o077, 131072)?)?
     } else {
@@ -413,12 +412,11 @@ pub async fn run(options: Options) -> Result<()> {
             ensure!(value["status"] != "denied", "enrollment denied");
             break serde_json::from_value(value)?;
         };
-        let login_token = login_token_from_response(
-            http.post(central.join(&format!("v1/servers/{}/app-login", registration.server_id))?)
-                .bearer_auth(&registration.directory_token)
-                .json(&serde_json::json!({"redirect_uri": kiln_api::auth::APP_OAUTH_REDIRECT}))
-                .send()
-                .await?,
+        let login_token = request_app_login(
+            &http,
+            &central,
+            &registration.server_id,
+            &registration.directory_token,
         )
         .await?;
         let receipt = Receipt {
@@ -440,9 +438,7 @@ pub async fn run(options: Options) -> Result<()> {
     };
     receipt.enrollment.validate()?;
     origin(&receipt.origin)?;
-    let group = unsafe { libc::getgrnam(c"kiln-api".as_ptr()) };
-    ensure!(!group.is_null(), "kiln-api group is missing");
-    let gid = unsafe { (*group).gr_gid };
+    let gid = service_gid()?;
     eprintln!(
         "Enrollment saved. Restarting only kiln-api; existing API/SSH connections will disconnect."
     );
@@ -474,6 +470,183 @@ pub async fn run(options: Options) -> Result<()> {
     .await?;
     eprintln!("Server enrolled. Log in on your laptop with `kiln login`.");
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginPublish {
+    Unchanged,
+    Created,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginPublishError {
+    Unreachable,
+    Unauthorized,
+    Invalid,
+    NotWritten,
+}
+
+impl std::fmt::Display for LoginPublishError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unreachable => "unreachable",
+            Self::Unauthorized => "unauthorized",
+            Self::Invalid => "invalid",
+            Self::NotWritten => "not-written",
+        })
+    }
+}
+
+impl std::error::Error for LoginPublishError {}
+
+trait LoginIssuer {
+    fn issue(
+        &mut self,
+        issuer: &str,
+        server_id: &str,
+        directory_token: &str,
+    ) -> impl Future<Output = Result<reqwest::Response>> + '_;
+}
+
+struct IdentityLogin {
+    http: reqwest::Client,
+}
+
+impl LoginIssuer for IdentityLogin {
+    fn issue(
+        &mut self,
+        issuer: &str,
+        server_id: &str,
+        directory_token: &str,
+    ) -> impl Future<Output = Result<reqwest::Response>> + '_ {
+        let http = self.http.clone();
+        let issuer = issuer.to_owned();
+        let server_id = server_id.to_owned();
+        let directory_token = directory_token.to_owned();
+        async move {
+            let issuer = origin(&issuer)?;
+            send_app_login(&http, &issuer, &server_id, &directory_token).await
+        }
+    }
+}
+
+pub async fn publish_login() -> Result<LoginPublish, LoginPublishError> {
+    if unsafe { libc::geteuid() } != 0 {
+        return Err(LoginPublishError::NotWritten);
+    }
+    let gid = service_gid().map_err(|_| LoginPublishError::NotWritten)?;
+    let http = identity_client().map_err(|_| LoginPublishError::Unreachable)?;
+    let mut issuer = IdentityLogin { http };
+    publish_at(Path::new(ETC), || Ok(gid), &mut issuer).await
+}
+
+async fn publish_at<G, I>(
+    etc: &Path,
+    gid: G,
+    issuer: &mut I,
+) -> Result<LoginPublish, LoginPublishError>
+where
+    G: FnOnce() -> Result<u32>,
+    I: LoginIssuer,
+{
+    let login = etc.join("login.token");
+    match fs::symlink_metadata(&login) {
+        Ok(_) => return Ok(LoginPublish::Unchanged),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(LoginPublishError::NotWritten),
+    }
+    match fs::symlink_metadata(etc.join("enrollment.pending.json")) {
+        Ok(_) => return Ok(LoginPublish::Unchanged),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(LoginPublishError::NotWritten),
+    }
+    directory(etc).map_err(|_| LoginPublishError::NotWritten)?;
+    let enrollment = load_enrolled(&etc.join("identity.json"))?;
+    let directory_token = directory_bearer(&etc.join("directory.token"))?;
+    let service_gid = gid().map_err(|_| LoginPublishError::NotWritten)?;
+    let response = issuer
+        .issue(&enrollment.issuer, &enrollment.server_id, &directory_token)
+        .await
+        .map_err(|_| LoginPublishError::Unreachable)?;
+    let status = response.status();
+    let token = match login_token_from_response(response).await {
+        Ok(token) => token,
+        Err(_) if status.is_success() => return Err(LoginPublishError::Invalid),
+        Err(_) => return Err(LoginPublishError::Unauthorized),
+    };
+    if token.is_empty() {
+        return Ok(LoginPublish::Unchanged);
+    }
+    create_file(&login, token.as_bytes(), 0o640, service_gid)
+        .map_err(|_| LoginPublishError::NotWritten)?;
+    Ok(LoginPublish::Created)
+}
+
+fn identity_client() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .https_only(true)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
+        .build()?)
+}
+
+fn service_gid() -> Result<u32> {
+    let group = unsafe { libc::getgrnam(c"kiln-api".as_ptr()) };
+    ensure!(!group.is_null(), "kiln-api group is missing");
+    Ok(unsafe { (*group).gr_gid })
+}
+
+async fn send_app_login(
+    http: &reqwest::Client,
+    issuer: &reqwest::Url,
+    server_id: &str,
+    directory_token: &str,
+) -> Result<reqwest::Response> {
+    Ok(http
+        .post(issuer.join(&format!("v1/servers/{server_id}/app-login"))?)
+        .bearer_auth(directory_token)
+        .json(&serde_json::json!({"redirect_uri": kiln_api::auth::APP_OAUTH_REDIRECT}))
+        .send()
+        .await?)
+}
+
+async fn request_app_login(
+    http: &reqwest::Client,
+    issuer: &reqwest::Url,
+    server_id: &str,
+    directory_token: &str,
+) -> Result<String> {
+    login_token_from_response(send_app_login(http, issuer, server_id, directory_token).await?).await
+}
+
+fn load_enrolled(path: &Path) -> Result<Enrollment, LoginPublishError> {
+    let meta = fs::symlink_metadata(path).map_err(|_| LoginPublishError::Invalid)?;
+    if !meta.is_file()
+        || meta.uid() != unsafe { libc::geteuid() }
+        || meta.mode() & 0o027 != 0
+        || meta.len() >= 8192
+    {
+        return Err(LoginPublishError::Invalid);
+    }
+    let bytes = read(path, 0o027, 8192).map_err(|_| LoginPublishError::Invalid)?;
+    let enrollment: Enrollment =
+        serde_json::from_slice(&bytes).map_err(|_| LoginPublishError::Invalid)?;
+    enrollment
+        .validate()
+        .map_err(|_| LoginPublishError::Invalid)?;
+    Ok(enrollment)
+}
+
+fn directory_bearer(path: &Path) -> Result<String, LoginPublishError> {
+    let bytes = read(path, 0o077, 4096).map_err(|_| LoginPublishError::Invalid)?;
+    let text = String::from_utf8(bytes).map_err(|_| LoginPublishError::Invalid)?;
+    if text.is_empty() || text.contains(['\0', '\n', '\r']) {
+        return Err(LoginPublishError::Invalid);
+    }
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -545,5 +718,230 @@ mod tests {
         std::os::unix::fs::symlink(&p, &link).unwrap();
         assert!(install_file(&link, b"receipt", 0o600, gid).is_err());
         assert_eq!(fs::metadata(p).unwrap().mode() & 0o777, 0o600);
+    }
+
+    #[derive(Clone, Copy)]
+    enum Script {
+        Created,
+        Missing,
+        Unauthorized,
+        Transport,
+    }
+
+    struct Scripted {
+        calls: u32,
+        script: Script,
+    }
+
+    impl LoginIssuer for Scripted {
+        fn issue(
+            &mut self,
+            _issuer: &str,
+            _server_id: &str,
+            _directory_token: &str,
+        ) -> impl Future<Output = Result<reqwest::Response>> + '_ {
+            self.calls += 1;
+            let script = self.script;
+            async move {
+                let response = |status, body: &'static str| {
+                    reqwest::Response::from(
+                        axum::http::Response::builder()
+                            .status(status)
+                            .body(reqwest::Body::from(body))
+                            .unwrap(),
+                    )
+                };
+                match script {
+                    Script::Created => Ok(response(
+                        200,
+                        r#"{"login_token":"fixture-not-a-credential"}"#,
+                    )),
+                    Script::Missing => Ok(response(404, "missing")),
+                    Script::Unauthorized => Ok(response(401, "{}")),
+                    Script::Transport => Err(std::io::Error::other("transport").into()),
+                }
+            }
+        }
+    }
+
+    fn host_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let identity = dir.path().join("identity.json");
+        fs::write(
+            &identity,
+            br#"{"version":1,"issuer":"https://identity.example","owner_id":"owner","server_id":"server"}"#,
+        )
+        .unwrap();
+        fs::set_permissions(&identity, fs::Permissions::from_mode(0o640)).unwrap();
+        let directory = dir.path().join("directory.token");
+        fs::write(&directory, b"fixture-directory-file").unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o600)).unwrap();
+        dir
+    }
+
+    fn stamp(path: &Path) -> (Vec<u8>, i64, i64, u32, u32) {
+        let meta = fs::symlink_metadata(path).unwrap();
+        (
+            fs::read(path).unwrap(),
+            meta.mtime(),
+            meta.mtime_nsec(),
+            meta.uid(),
+            meta.mode(),
+        )
+    }
+
+    #[tokio::test]
+    async fn missing_file_is_created_present_file_is_kept_failure_writes_nothing() {
+        let gid = unsafe { libc::getegid() };
+        let dir = host_dir();
+        let mut issuer = Scripted {
+            calls: 0,
+            script: Script::Created,
+        };
+        let outcome = publish_at(dir.path(), || Ok(gid), &mut issuer)
+            .await
+            .unwrap();
+        assert_eq!(outcome, LoginPublish::Created);
+        assert_eq!(issuer.calls, 1);
+        let login = dir.path().join("login.token");
+        let meta = fs::symlink_metadata(&login).unwrap();
+        assert_eq!(fs::read(&login).unwrap(), b"fixture-not-a-credential");
+        assert_eq!(meta.mode() & 0o777, 0o640);
+        assert_eq!(meta.uid(), unsafe { libc::geteuid() });
+        assert_eq!(meta.gid(), gid);
+        let kept = stamp(&login);
+        let again = publish_at(dir.path(), || panic!("group lookup"), &mut issuer)
+            .await
+            .unwrap();
+        assert_eq!(again, LoginPublish::Unchanged);
+        assert_eq!(issuer.calls, 1);
+        assert_eq!(stamp(&login), kept);
+
+        let present = host_dir();
+        let existing = present.path().join("login.token");
+        fs::write(&existing, b"already-present").unwrap();
+        fs::set_permissions(&existing, fs::Permissions::from_mode(0o600)).unwrap();
+        let before = stamp(&existing);
+        let mut issuer = Scripted {
+            calls: 0,
+            script: Script::Created,
+        };
+        let outcome = publish_at(present.path(), || panic!("group lookup"), &mut issuer)
+            .await
+            .unwrap();
+        assert_eq!(outcome, LoginPublish::Unchanged);
+        assert_eq!(issuer.calls, 0);
+        assert_eq!(stamp(&existing), before);
+        let link = present.path().join("login.link");
+        fs::rename(&existing, &link).unwrap();
+        std::os::unix::fs::symlink("missing-target", &existing).unwrap();
+        let outcome = publish_at(present.path(), || panic!("group lookup"), &mut issuer)
+            .await
+            .unwrap();
+        assert_eq!(outcome, LoginPublish::Unchanged);
+        assert_eq!(issuer.calls, 0);
+        assert_eq!(
+            fs::read_link(&existing).unwrap(),
+            std::path::Path::new("missing-target")
+        );
+
+        let failed = host_dir();
+        let mut issuer = Scripted {
+            calls: 0,
+            script: Script::Unauthorized,
+        };
+        assert_eq!(
+            publish_at(failed.path(), || Ok(gid), &mut issuer).await,
+            Err(LoginPublishError::Unauthorized)
+        );
+        assert_eq!(issuer.calls, 1);
+        assert!(fs::read_dir(failed.path()).unwrap().all(|entry| {
+            let name = entry.unwrap().file_name();
+            name == "identity.json" || name == "directory.token"
+        }));
+        issuer.script = Script::Transport;
+        issuer.calls = 0;
+        assert_eq!(
+            publish_at(failed.path(), || Ok(gid), &mut issuer).await,
+            Err(LoginPublishError::Unreachable)
+        );
+        assert!(!failed.path().join("login.token").exists());
+
+        let missing = host_dir();
+        let mut issuer = Scripted {
+            calls: 0,
+            script: Script::Missing,
+        };
+        assert_eq!(
+            publish_at(missing.path(), || Ok(gid), &mut issuer)
+                .await
+                .unwrap(),
+            LoginPublish::Unchanged
+        );
+        assert_eq!(issuer.calls, 1);
+        assert!(!missing.path().join("login.token").exists());
+
+        let pending = host_dir();
+        let receipt = pending.path().join("enrollment.pending.json");
+        fs::write(&receipt, b"leave-me").unwrap();
+        let receipt_stamp = stamp(&receipt);
+        let mut issuer = Scripted {
+            calls: 0,
+            script: Script::Created,
+        };
+        assert_eq!(
+            publish_at(pending.path(), || panic!("group lookup"), &mut issuer)
+                .await
+                .unwrap(),
+            LoginPublish::Unchanged
+        );
+        assert_eq!(issuer.calls, 0);
+        assert_eq!(stamp(&receipt), receipt_stamp);
+        assert!(!pending.path().join("login.token").exists());
+
+        let ungrouped = host_dir();
+        let mut issuer = Scripted {
+            calls: 0,
+            script: Script::Created,
+        };
+        assert_eq!(
+            publish_at(
+                ungrouped.path(),
+                || Err(anyhow::anyhow!("missing group")),
+                &mut issuer
+            )
+            .await,
+            Err(LoginPublishError::NotWritten)
+        );
+        assert_eq!(issuer.calls, 0);
+        assert!(!ungrouped.path().join("login.token").exists());
+
+        let exposed = host_dir();
+        fs::set_permissions(
+            exposed.path().join("identity.json"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let mut issuer = Scripted {
+            calls: 0,
+            script: Script::Created,
+        };
+        assert_eq!(
+            publish_at(exposed.path(), || panic!("group lookup"), &mut issuer).await,
+            Err(LoginPublishError::Invalid)
+        );
+        assert_eq!(issuer.calls, 0);
+        assert!(!exposed.path().join("login.token").exists());
+    }
+
+    #[tokio::test]
+    async fn publish_login_refuses_a_non_root_caller() {
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let error = publish_login().await.unwrap_err();
+        assert_eq!(error, LoginPublishError::NotWritten);
+        assert_eq!(error.to_string(), "not-written");
     }
 }

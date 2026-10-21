@@ -102,6 +102,7 @@ jobs:
           python scripts/test-merge-queue-tested.py
           python scripts/test-proof-status.py
           bash scripts/test-listener-restart.sh
+          bash scripts/test-login-token.sh
           sh scripts/test-caddy-endings.sh
           sh scripts/test-bootstrap-pins.sh
           sh scripts/test-installer-release.sh
@@ -191,6 +192,7 @@ jobs:
           python scripts/test-merge-queue-tested.py
           python scripts/test-proof-status.py
           bash scripts/test-listener-restart.sh
+          bash scripts/test-login-token.sh
           sh scripts/test-caddy-endings.sh
           sh scripts/test-bootstrap-pins.sh
           sh scripts/test-installer-release.sh
@@ -202,6 +204,7 @@ jobs:
             deploy/github/install-remote.sh deploy/github/smoke.sh \
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
             scripts/test-listener-restart.sh \
+            scripts/test-login-token.sh \
             scripts/test-installer-release.sh \
             scripts/check-tag-version.sh scripts/reuse-server-check.sh \
             scripts/wait-main-run.sh scripts/test-wait-main-run.sh

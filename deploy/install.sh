@@ -943,6 +943,41 @@ upgrade_restore() {
   healthcheck "$address" "$catalog" >/dev/null || return 1
 }
 
+publish_login_token() {
+  local issuer server status
+  if [ -L "$ETC/identity.json" ]; then
+    printf 'Dashboard login token was not published. Sign-in stays unavailable until a later upgrade.\n' >&2
+    return 1
+  fi
+  if [ ! -f "$ETC/identity.json" ]; then
+    return 0
+  fi
+  issuer=$(json_string "$ETC/identity.json" issuer || true)
+  server=$(json_string "$ETC/identity.json" server_id || true)
+  if [ -z "$issuer" ] || [ -z "$server" ]; then
+    return 0
+  fi
+  if ! status=$("$LIBEXEC/kiln-api" publish-login-token); then
+    printf 'Dashboard login token was not published. Sign-in stays unavailable until a later upgrade.\n' >&2
+    return 1
+  fi
+  case "$status" in
+    created)
+      if unit_active kiln-app.service; then
+        systemctl restart kiln-app.service || {
+          printf 'Dashboard login token is on disk. kiln-app did not restart; sign-in stays unavailable until it starts again.\n' >&2
+          return 1
+        }
+      fi
+      ;;
+    unchanged) ;;
+    *)
+      printf 'Dashboard login token was not published. Sign-in stays unavailable until a later upgrade.\n' >&2
+      return 1
+      ;;
+  esac
+}
+
 close_public_door() {
   local unit state changed=0 before
   unit=$UNITS/kiln-door-proxy.service
@@ -970,7 +1005,7 @@ close_public_door() {
 upgrade() {
   local bundle=$1 address=${2:-} uplink=${3:-} network=${4:-0} apply=${5:-0}
   local pending name dest release target installed found reported count min_from
-  local catalog same api_argv host_argv installed_address backup dir
+  local catalog same api_argv host_argv installed_address backup dir login_failed=0
   pending=$OPT/pending-upgrade.json
   if [ -e "$pending" ] || [ -L "$pending" ]; then
     die "pending update requires recovery: inspect $pending"
@@ -1094,6 +1129,7 @@ upgrade() {
   done < <(binary_names)
   if [ "$same" = 1 ]; then
     if [ "$apply" = 1 ]; then
+      publish_login_token || login_failed=1
       close_public_door
       install_dashboard
     fi
@@ -1103,6 +1139,7 @@ upgrade() {
       printf 'Kiln %s is already current; nothing changed.\n' "$target"
     fi
     connection_instructions "$installed_address"
+    [ "$login_failed" = 0 ] || return 1
     return 0
   fi
   printf 'Kiln %s -> %s: preserve configuration and VM state; briefly disconnect API/SSH sessions.\n' "$installed" "$target"
@@ -1140,10 +1177,12 @@ upgrade() {
   rm -f -- "$pending"
   sync "$OPT"
   printf 'Binaries are already updated. Closing public tcp/8443. A failure here leaves those binaries in place.\n'
+  publish_login_token || login_failed=1
   close_public_door
   install_dashboard
   printf 'Updated to Kiln %s. Host admin API: https://%s:8443\nPrevious binaries: %s\n' "$target" "$installed_address" "$backup"
   connection_instructions "$installed_address"
+  [ "$login_failed" = 0 ] || return 1
 }
 
 app_unit_names() {
