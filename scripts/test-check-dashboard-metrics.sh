@@ -46,6 +46,11 @@ if PATH="$work:$PATH" bash "$check" 127.0.0.1 >/dev/null 2>&1; then
   fail 'null host cpu must fail'
 fi
 
+gateway_stamped='{"boxes":[{"state":"stopped","metrics":{"cpu_percent":null,"memory_bytes":1}}],"checkpoints":[],"host":{"metrics":{"cpu_percent":0.42,"memory_bytes":5000,"disk_bytes":null},"name":"local","state":"online"},"observed_at":"2026-10-21T00:00:00Z","operations":[],"schema_version":1,"templates":[],"workspace":"local"}'
+printf '%s' "$gateway_stamped" >"$work/body"
+PATH="$work:$PATH" bash "$check" 127.0.0.1 >/dev/null \
+  || fail 'gateway-stamped body must read host.metrics when boxes precede host'
+
 running='{"host":{"metrics":{"cpu_percent":2,"memory_bytes":2000}},"boxes":[{"state":"running","metrics":{"cpu_percent":null,"memory_bytes":100}}]}'
 printf '%s' "$running" >"$work/body"
 if PATH="$work:$PATH" bash "$check" 127.0.0.1 >/dev/null 2>&1; then
