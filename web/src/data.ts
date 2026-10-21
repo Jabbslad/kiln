@@ -120,15 +120,24 @@ type OperationReceipt = {
   id: string
   box_id: string
   state: string
+  result?: { state?: string } | null
   error?: { message?: string } | null
 }
 
-export async function createBox(
-  template: string,
-  name: string,
-  fetcher: typeof fetch = fetch,
-  cookie = globalThis.document?.cookie ?? '',
-): Promise<Dashboard> {
+type SubmittedAction =
+  | { type: 'create'; template: string; name: string }
+  | { type: 'pause'; id: string }
+  | { type: 'resume'; id: string }
+  | { type: 'stop'; id: string; force: boolean }
+  | { type: 'start'; id: string }
+
+async function submitOperation(
+  action: SubmittedAction,
+  fetcher: typeof fetch,
+  cookie: string,
+  rejected: (status: number) => string,
+  stalled: (status: number) => string,
+): Promise<OperationReceipt> {
   const id = requestId()
   const response = await fetcher('/v1/operations', {
     method: 'POST',
@@ -139,11 +148,9 @@ export async function createBox(
       'Content-Type': 'application/json',
       'x-kiln-csrf': readCsrf(cookie),
     },
-    body: JSON.stringify({ id, action: { type: 'create', template, name } }),
+    body: JSON.stringify({ id, action }),
   })
-  if (response.status !== 200 && response.status !== 202) {
-    throw new Error(`Create was not accepted (HTTP ${response.status}). No box was added.`)
-  }
+  if (response.status !== 200 && response.status !== 202) throw new Error(rejected(response.status))
   let receipt = (await response.json()) as OperationReceipt
   for (let attempt = 0; attempt < 20 && receipt.state === 'running'; attempt += 1) {
     const polled = await fetcher(`/v1/operations/${receipt.id}`, {
@@ -151,11 +158,25 @@ export async function createBox(
       cache: 'no-store',
       headers: { Accept: 'application/json' },
     })
-    if (!polled.ok) {
-      throw new Error(`Operation status returned HTTP ${polled.status}. The box is unchanged.`)
-    }
+    if (!polled.ok) throw new Error(stalled(polled.status))
     receipt = (await polled.json()) as OperationReceipt
   }
+  return receipt
+}
+
+export async function createBox(
+  template: string,
+  name: string,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+): Promise<Dashboard> {
+  const receipt = await submitOperation(
+    { type: 'create', template, name },
+    fetcher,
+    cookie,
+    (status) => `Create was not accepted (HTTP ${status}). No box was added.`,
+    (status) => `Operation status returned HTTP ${status}. The box is unchanged.`,
+  )
   if (receipt.state !== 'succeeded') {
     throw new Error(
       receipt.error?.message ||
@@ -167,6 +188,38 @@ export async function createBox(
     if (dashboard.boxes.some((box) => box.id === receipt.box_id)) return dashboard
   }
   throw new Error('The control plane has not observed the new box.')
+}
+
+export async function applyLifecycle(
+  action: 'pause' | 'resume' | 'stop' | 'start',
+  boxId: string,
+  force = false,
+  fetcher: typeof fetch = fetch,
+  cookie = globalThis.document?.cookie ?? '',
+): Promise<Dashboard> {
+  const receipt = await submitOperation(
+    action === 'stop' ? { type: 'stop', id: boxId, force } : { type: action, id: boxId },
+    fetcher,
+    cookie,
+    (status) => `The operation was not accepted (HTTP ${status}). The box is unchanged.`,
+    (status) => `Operation status returned HTTP ${status}. The box is unchanged.`,
+  )
+  if (receipt.state === 'unknown') throw new Error('The outcome is unknown.')
+  if (receipt.state !== 'succeeded') {
+    throw new Error(
+      receipt.error?.message ||
+        'The operation did not succeed. The box state is shown only after the control plane reports it.',
+    )
+  }
+  const observed = receipt.result?.state
+  if (!observed) throw new Error('The control plane has not observed the box state.')
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const dashboard = await fetchDashboard(undefined, fetcher)
+    if (dashboard.boxes.some((box) => box.id === receipt.box_id && box.state === observed)) {
+      return dashboard
+    }
+  }
+  throw new Error('The control plane has not observed the box state.')
 }
 
 export async function fetchDashboard(
