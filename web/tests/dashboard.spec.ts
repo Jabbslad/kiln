@@ -168,9 +168,10 @@ test('live loading, empty, zero metrics and service failure are distinct', async
   await expect(page.getByText('No boxes yet')).toBeVisible()
   await expect(page.getByTestId('capability-metrics')).toHaveAttribute(
     'data-capability-state',
-    'not-yet',
+    'available',
   )
-  await expect(page.getByTestId('capability-metrics')).toContainText('Not available yet')
+  await expect(page.getByTestId('capability-metrics')).toContainText('0%')
+  await expect(page.getByTestId('capability-metrics')).toContainText('0 B')
   await capture(page, 'empty-desktop')
   await page.unroute('**/api/v1/dashboard')
   await page.route('**/api/v1/dashboard', (route) =>
