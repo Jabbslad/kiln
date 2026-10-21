@@ -2,8 +2,6 @@
 # Verify release archive attestations. Retries only Sigstore public-good verifier init flakes.
 set -eu
 
-root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-
 fail() {
   printf 'verify-release-attestations: %s\n' "$*" >&2
   exit 1

@@ -103,8 +103,8 @@ tags=$tmp/orphan-tags.txt
   printf '%s\n' 'refs/tags/v0.4.45'
   printf '%s\n' 'refs/tags/v0.4.46'
 } >"$tags"
-next=$(cat "$tags" | sh "$root/scripts/next-release-tag.sh")
+next=$(sh "$root/scripts/next-release-tag.sh" <"$tags")
 [ "$next" = v0.4.47 ] || fail "orphan tag: expected v0.4.47 got $next"
-cat "$tags" | sh "$root/scripts/next-release-tag.sh" --check v0.4.47
+sh "$root/scripts/next-release-tag.sh" --check v0.4.47 <"$tags"
 
 printf 'verify release attestations passed\n'
