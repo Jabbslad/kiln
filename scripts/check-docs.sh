@@ -1,8 +1,8 @@
 #!/bin/sh
-# docs-check "Repository checks" step from .github/workflows/build.yml
+# docs-check "Repository checks" from .github/workflows/build.yml (opt-in via check.sh).
 set -eu
 
-root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
 cargo xtask test-ci-docs-only
@@ -33,5 +33,5 @@ sh scripts/test-check-stamped-clients.sh
 sh scripts/test-release-budget.sh
 sh scripts/test-check-dropped-platform.sh
 sh scripts/test-feature-map-guard.sh
+sh scripts/test-operations-journal-version-sync.sh
 sh scripts/test-fmt.sh
-sh scripts/test-check.sh

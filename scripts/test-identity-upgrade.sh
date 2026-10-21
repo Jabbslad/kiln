@@ -8,6 +8,148 @@ root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 script=$root/deploy/github/install-identity.sh
 fail() { printf 'identity-upgrade: %s\n' "$*" >&2; exit 1; }
 
+run_server_upgrade_rehearsal() {
+  local prev_tar=$1 next_tar=$2
+  local work fx state log package etc opt var libexec
+  [ -f "$prev_tar" ] || fail "missing previous server archive: $prev_tar"
+  [ -f "$next_tar" ] || fail "missing target server archive: $next_tar"
+  work=$(mktemp -d)
+  state=$work/stub-state
+  log=$work/commands.log
+  package=$work/package
+  etc=$work/etc/kiln
+  opt=$work/opt/kiln
+  var=$work/var/lib/kiln
+  libexec=$work/usr/local/libexec
+  mkdir -p "$work/prev" "$work/next"
+  tar -xzf "$prev_tar" -C "$work/prev"
+  tar -xzf "$next_tar" -C "$work/next"
+  read_release_version_json() {
+    tr -d '\n' |
+      grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' |
+      head -1 |
+      sed 's/^.*"\([^"]*\)"$/\1/' |
+      sed 's/^v//'
+  }
+  installed=$(
+    tar -xOzf "$prev_tar" release.json 2>/dev/null | read_release_version_json
+  )
+  target=$(
+    tar -xOzf "$next_tar" release.json 2>/dev/null | read_release_version_json
+  )
+  if [ -z "$installed" ] || [ -z "$target" ]; then
+    fail "could not read release.json versions"
+  fi
+  mkdir -p "$state" "$package/bin" "$etc" "$opt/bin" "$var/runtime" "$var/journal" "$var/image" \
+    "$libexec" "$work/run/systemd/system" "$work/sys/fs/cgroup" "$work/dev" \
+    "$work/etc/systemd/system" "$work/proc" "$work/stubs"
+  cp "$work/next/install.sh" "$package/install.sh"
+  chmod 755 "$package/install.sh"
+  cp "$root/deploy/operations-journal.max-version" "$package/operations-journal.max-version"
+  printf 'ID=ubuntu\nVERSION_ID=24.04\n' > "$work/etc/os-release"
+  printf 'MemAvailable:       8388608 kB\n' > "$work/proc/meminfo"
+  printf 'cpu memory pids\n' > "$work/sys/fs/cgroup/cgroup.controllers"
+  : > "$work/dev/kvm"
+  printf 'process\n' > "$state/killmode"
+  : > "$log"
+  cat > "$work/stubs/systemctl" << EOF
+#!/bin/bash
+printf '%s\\n' "systemctl \$*" >> "$log"
+prop= service=
+for arg in "\$@"; do
+  case "\$arg" in
+    --property=*) prop=\${arg#--property=} ;;
+    --value|--no-pager|--quiet) ;;
+    show|stop|start|restart|enable|disable|daemon-reload|is-active) ;;
+    *) service=\$arg ;;
+  esac
+done
+case "\$1" in
+  show)
+    case "\$prop" in
+      LoadState) printf '%s\\n' loaded ;;
+      ActiveState)
+        if [ -f "$state/active-\$service" ]; then cat "$state/active-\$service"; else printf '%s\\n' inactive; fi
+        ;;
+      MainPID) printf '%s\\n' 0 ;;
+      KillMode) cat "$state/killmode" ;;
+      ExecStart) cat "$state/exec-\$service" ;;
+      *) printf '%s\\n' "" ;;
+    esac
+    ;;
+  stop|start)
+    for svc in "\${@:2}"; do
+      if [ "\$1" = stop ]; then printf '%s\\n' inactive; else printf '%s\\n' active; fi > "$state/active-\$svc"
+    done
+    ;;
+  restart|enable|disable|daemon-reload|is-active) ;;
+  *) exit 1 ;;
+esac
+EOF
+  cat > "$work/stubs/curl" << EOF
+#!/bin/bash
+printf '%s\\n' "curl \$*" >> "$log"
+if [ ! -s "$work/curl.seq" ]; then exit 1; fi
+line=\$(head -n 1 "$work/curl.seq")
+tail -n +2 "$work/curl.seq" > "$work/curl.seq.next"
+mv "$work/curl.seq.next" "$work/curl.seq"
+[ "\$line" = ok ] || exit 1
+printf '%s' '[{"name":"custom","memory_mib":3072,"vcpus":2}]'
+EOF
+  chmod 755 "$work/stubs/systemctl" "$work/stubs/curl"
+  printf '#!/bin/bash\nexit 0\n' > "$work/stubs/systemd-analyze"
+  chmod 755 "$work/stubs/systemd-analyze"
+  custom=$(printf 'a%.0s' $(seq 1 32))
+  printf '{"runtime_dir":"%s/runtime","journal_dir":"%s/journal","socket":"/run/kiln/host.sock","isolation_config":"%s/isolation.json","templates":{"custom":"%s"}}\n' \
+    "$var" "$var" "$etc" "$custom" > "$etc/host.json"
+  printf '{}\n' > "$etc/isolation.json"
+  for name in ca.crt tls.crt tls.key admin.token; do printf 'synthetic-test-only\n' > "$etc/$name"; done
+  sqlite3 "$var/journal/operations.sqlite" \
+    'PRAGMA journal_mode=DELETE; PRAGMA user_version=1; CREATE TABLE operations(running INTEGER); INSERT INTO operations VALUES(0);'
+  for name in kiln kiln-runtime kiln-network kiln-host kiln-api; do
+    if [ "$name" = kiln ] || [ "$name" = kiln-runtime ] || [ "$name" = kiln-network ]; then
+      dest=$opt/bin/$name
+      live=$work/prev/bin/$name
+      staged=$work/next/bin/$name
+    else
+      dest=$libexec/$name
+      live=$work/prev/bin/$name
+      staged=$work/next/bin/$name
+    fi
+    cp "$live" "$dest"
+    chmod 755 "$dest"
+    cp "$staged" "$package/bin/$name"
+    chmod 755 "$package/bin/$name"
+  done
+  cp "$work/prev/release.json" "$opt/release.json"
+  cp "$work/next/release.json" "$package/release.json"
+  host=$libexec/kiln-host
+  api=$libexec/kiln-api
+  printf '{ path=%s ; argv[]=%s --config %s ; ignore_errors=no ; }\n' "$host" "$host" "$etc/host.json" > "$state/exec-kiln-host.service"
+  printf '{ path=%s ; argv[]=%s --listen 100.64.5.6:8443 --host-socket /run/kiln/host.sock --token-file %s --tls-cert %s --tls-key %s ; ignore_errors=no ; }\n' \
+    "$api" "$api" "$etc/admin.token" "$etc/tls.crt" "$etc/tls.key" > "$state/exec-kiln-api.service"
+  printf 'active\n' > "$state/active-kiln-host.service"
+  printf 'active\n' > "$state/active-kiln-api.service"
+  printf 'ok\nok\n' > "$work/curl.seq"
+  set +e
+  KILN_INSTALL_FIXTURE=$work PATH="$work/stubs:$PATH" bash "$package/install.sh" --apply >"$work/out" 2>"$work/err"
+  rc=$?
+  set -e
+  [ "$rc" = 0 ] || {
+    cat "$work/err" >&2
+    cat "$work/out" >&2
+    rm -rf "$work"
+    fail "server upgrade rehearsal failed (${installed} -> ${target})"
+  }
+  rm -rf "$work"
+  printf 'server upgrade rehearsal ok (%s -> %s)\n' "$installed" "$target"
+}
+
+if [ -n "${KILN_SERVER_UPGRADE_PREV_TAR:-}" ] && [ -n "${KILN_SERVER_UPGRADE_TO_TAR:-}" ]; then
+  run_server_upgrade_rehearsal "$KILN_SERVER_UPGRADE_PREV_TAR" "$KILN_SERVER_UPGRADE_TO_TAR"
+  exit 0
+fi
+
 [ -f "$script" ] || fail "missing $script"
 
 work=

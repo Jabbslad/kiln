@@ -1,23 +1,25 @@
 #!/bin/sh
-# Local equivalent of required CI checks (see .github/workflows/build.yml).
+# Fast local checks before push. See .github/workflows/build.yml for full CI.
 set -eu
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
+docs=0
 release=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --docs-check) docs=1 ;;
     --release) release=1 ;;
     -h | --help)
       cat <<'EOF'
-Usage: sh scripts/check.sh [--release]
+Usage: sh scripts/check.sh [--docs-check] [--release]
 
-Runs the same checks as required CI jobs before you push:
-  fmt (check mode), docs-check, server-check, dashboard, client (this OS),
-  and feature-map-guard.
+Default (fast, run before every push):
+  fmt check, server-check (cargo fmt/clippy/test), feature-map-guard
 
-  --release  Also run tag-path-dry-run (needs GH_TOKEN; uses gh auth token when set).
+  --docs-check  Also run the docs-check repository script bundle (slow; opt-in).
+  --release     Also run tag-path-dry-run (needs GH_TOKEN / gh auth login).
 
 Exits non-zero on the first failure and prints which check failed.
 EOF
@@ -30,18 +32,6 @@ EOF
   esac
   shift
 done
-
-github_token() {
-  if [ -n "${GITHUB_TOKEN:-}" ]; then
-    printf '%s\n' "$GITHUB_TOKEN"
-    return 0
-  fi
-  if command -v gh >/dev/null 2>&1; then
-    gh auth token 2>/dev/null || true
-    return 0
-  fi
-  printf '\n'
-}
 
 run_check() {
   name=$1
@@ -56,26 +46,52 @@ run_check() {
 }
 
 run_check fmt sh scripts/fmt.sh --check
-run_check install-caddy bash scripts/install-caddy.sh
-run_check socket-tools bash scripts/ci/ensure-socket-tools.sh
-if ! command -v shellcheck >/dev/null 2>&1; then
-  run_check shellcheck-install sh -c 'sudo apt-get update && sudo apt-get install -y shellcheck'
+
+run_server_check() {
+  cargo fmt --all -- --check
+  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+  cargo test --workspace --all-features --locked --exclude xtask
+  if command -v shellcheck >/dev/null 2>&1; then
+    shellcheck scripts/check.sh scripts/fmt.sh scripts/test-check.sh scripts/check-docs.sh
+  else
+    printf 'shellcheck not installed, skipped\n'
+  fi
+}
+
+run_check server-check run_server_check
+
+run_feature_map_guard() {
+  base=${PR_BASE_SHA:-}
+  if [ -z "$base" ]; then
+    git fetch origin main 2>/dev/null || true
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+      base=$(git merge-base HEAD origin/main 2>/dev/null || echo origin/main)
+    else
+      base=origin/main
+    fi
+  fi
+  git diff --name-only --no-renames "$base" HEAD \
+    | sh scripts/check-feature-map.sh
+}
+
+run_check feature-map-guard run_feature_map_guard
+
+if [ "$docs" = 1 ]; then
+  run_check docs-check sh scripts/check-docs.sh
 fi
-token=$(github_token)
-run_check docs-check env GITHUB_TOKEN="$token" bash scripts/ci/run-docs-check.sh
-run_check server-check env GITHUB_TOKEN="$token" bash scripts/ci/run-server-check.sh
-run_check dashboard bash scripts/ci/run-dashboard-check.sh
-run_check client env GITHUB_TOKEN="$token" bash scripts/ci/run-client-check.sh
-run_check feature-map-guard bash scripts/ci/run-feature-map-guard.sh
 
 if [ "$release" = 1 ]; then
   repo=${GH_REPO:-Jabbslad/kiln}
   export GH_REPO="$repo"
+  if [ -z "${GH_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
+    GH_TOKEN=$(gh auth token 2>/dev/null || true)
+  fi
+  export GH_TOKEN
   if [ -z "${GH_TOKEN:-}" ]; then
     printf 'FAILED: tag-path-dry-run (set GH_TOKEN or run gh auth login)\n' >&2
     exit 1
   fi
-  export GH_TOKEN
+  export GITHUB_EVENT_NAME=pull_request
   run_check tag-path-dry-run sh scripts/tag-path-dry-run.sh
 fi
 

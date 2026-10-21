@@ -11,7 +11,8 @@ Tagged deploy and auto-release also ship `kiln-identity-*.tar.gz` and `kiln-dash
 - `sh install.sh server --address PRIVATE_IP` selects the address.
 - `sh install.sh server --network` or `--network-uplink INTERFACE` opts into guest egress.
 - `bash deploy/install.sh --address IP --apply [--dashboard-archive PATH]` is the provisioner the shell calls. Without `--apply` it only preflights. `--apply` requires root outside the test fixture.
-- Checksums are pinned in the `assets` function of `install.sh`. The version variable is set in `main`.
+- Checksums are pinned in the `assets` function of `install.sh`. The version variable is set in `main`. Current server packages ship `operations-journal.max-version` beside `install.sh`; bootstrap accepts older archives that omit it and requires the file when present.
+- Binary updates call `wait_for_operations` on `/var/lib/kiln/journal/operations.sqlite` before stopping `kiln-host`. The max supported schema version is pinned in `deploy/operations-journal.max-version` (also shipped beside `install.sh` and included by `crates/kiln-server/src/journal.rs`). The installer accepts versions `1` through that max; anything else fails with the sqlite command, the found version, and the accepted range. Any failed update step prints its name, command, exit code, and the last twenty output lines.
 - Identity upgrade on deploy: `deploy/github/install-identity.sh` replaces `/usr/local/libexec/kiln-identity` from the release tarball with rollback probes.
 
 ## How to get to it (user POV)
@@ -51,6 +52,8 @@ Identity-only upgrade logic:
 bash scripts/test-identity-upgrade.sh
 ```
 
+Pull-request tag-path rehearsal (`scripts/tag-path-dry-run.sh`) builds a server package from the PR, then runs `KILN_SERVER_UPGRADE_PREV_TAR` / `KILN_SERVER_UPGRADE_TO_TAR` through the same script against a v2 operation journal fixture.
+
 ShellCheck, as in CI:
 
 ```sh
@@ -71,5 +74,7 @@ See `features/auto-release.md` for the main-push release and deploy chain.
 - A green harness is not an installed server. Fresh-host provisioning and reboot are still described as unverified in `docs/releases.md`.
 - `deploy/bootstrap/install.sh` `main` pins the latest published release when the template pin matches. The harness reads that pin from the script and checks it against the GitHub releases API.
 - Server mode requires `/dev/kvm`, Ubuntu 24.04, Ubuntu 26.04, or Debian 13, systemd, and cgroup controllers `cpu`, `memory`, and `pids`. The harness stubs those checks.
-- CI runs the xtask harnesses, shell fixture tests, and ShellCheck in `.github/workflows/build.yml`. `deploy.yml` and `diagnose.yml` SSH to dark-forge and do not run on pull requests.
+- CI runs the xtask harnesses, shell fixture tests, and ShellCheck in `.github/workflows/build.yml`. Pull-request tag-path dry-run also rehearses a server upgrade over a fixture journal plus reuse-fetched release tarballs.
+- `scripts/test-operations-journal-version-sync.sh` fails when `deploy/operations-journal.max-version` diverges from `crates/kiln-server/src/journal.rs`.
+- Failed server update steps print step name, command, exit code, and trailing output (`install_step_fail` / `report_install_step` in `deploy/install.sh`).
 - Bootstrap server install does not lay down `kiln-identity` or the dashboard archive; those arrive on tagged deploy/auto-release (`deploy/github/install-remote.sh`).

@@ -9,21 +9,15 @@ fail() {
   exit 1
 }
 
-docs=$root/scripts/ci/run-docs-check.sh
-server=$root/scripts/ci/run-server-check.sh
-grep -q 'bash scripts/ci/run-docs-check.sh' .github/workflows/build.yml \
-  || fail 'build does not call run-docs-check.sh'
-grep -q 'bash scripts/ci/run-server-check.sh' .github/workflows/build.yml \
-  || fail 'build does not call run-server-check.sh'
-grep -q 'sh scripts/test-check-dropped-platform.sh' "$docs" \
-  || fail 'docs-check runner does not run the platform check'
-grep -q 'sh scripts/test-check-dropped-platform.sh' "$server" \
-  || fail 'server-check runner does not run the platform check'
-docs_job=$(awk '/^  docs-check:$/,/^  feature-map-guard:$/' .github/workflows/build.yml)
-server_job=$(awk '/^  server-check:$/,/^  reuse:$/' .github/workflows/build.yml)
-printf '%s\n' "$docs_job" | grep -q 'needs: changes' \
+docs=$(awk '/^  docs-check:$/,/^  feature-map-guard:$/' .github/workflows/build.yml)
+server=$(awk '/^  server-check:$/,/^  reuse:$/' .github/workflows/build.yml)
+printf '%s\n' "$docs" | grep -q 'sh scripts/test-check-dropped-platform.sh' \
+  || fail 'docs-check does not run the platform check'
+printf '%s\n' "$server" | grep -q 'sh scripts/test-check-dropped-platform.sh' \
+  || fail 'server-check does not run the platform check'
+printf '%s\n' "$docs" | grep -q 'needs: changes' \
   || fail 'docs-check is not a required dependency'
-printf '%s\n' "$server_job" | grep -q 'needs: \[changes, reuse\]' \
+printf '%s\n' "$server" | grep -q 'needs: \[changes, reuse\]' \
   || fail 'server-check is not a required dependency'
 grep -q 'needs: \[changes, docs-check, feature-map-guard, server-check, client, dashboard\]' \
   .github/workflows/build.yml \

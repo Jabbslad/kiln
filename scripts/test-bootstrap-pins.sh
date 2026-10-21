@@ -158,15 +158,9 @@ fi
 if grep -q 'check_bootstrap_pins.py' "$workflow" "$build"; then
     fail 'workflow still calls python'
 fi
-grep -q 'bash scripts/ci/run-docs-check.sh' "$build" || fail 'build must call run-docs-check.sh'
-grep -q 'bash scripts/ci/run-server-check.sh' "$build" || fail 'build must call run-server-check.sh'
-grep -q 'sh scripts/test-bootstrap-pins.sh' "$root/scripts/ci/run-docs-check.sh" \
-  || fail 'docs-check runner must run the pin test'
-grep -q 'sh scripts/test-bootstrap-pins.sh' "$root/scripts/ci/run-server-check.sh" \
-  || fail 'server-check runner must run the pin test'
-grep -q 'sh scripts/test-caddy-endings.sh' "$root/scripts/ci/run-docs-check.sh" \
-  || fail 'docs-check runner must run the caddy ending test'
-grep -q 'sh scripts/test-caddy-endings.sh' "$root/scripts/ci/run-server-check.sh" \
-  || fail 'server-check runner must run the caddy ending test'
+n=$(grep -c '^[[:space:]]*sh scripts/test-bootstrap-pins.sh$' "$build")
+[ "$n" -eq 2 ] || fail "build runs the pin test $n times"
+n=$(grep -c '^[[:space:]]*sh scripts/test-caddy-endings.sh$' "$build")
+[ "$n" -eq 2 ] || fail "build runs the ending test $n times"
 
 printf '%s\n' 'ok'
