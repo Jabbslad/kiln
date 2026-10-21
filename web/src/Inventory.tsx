@@ -1,12 +1,6 @@
 import { useState } from 'react'
 import { ArrowDown, ArrowUp, ArrowUpRight, CircleAlert, Cpu, Search, X } from 'lucide-react'
-import {
-  boxStates,
-  filterBoxes,
-  formatBytes,
-  formatDiskUsedOfTotal,
-  type BoxState,
-} from './data'
+import { boxStates, filterBoxes, formatBytes, formatDiskUsedOfTotal, type BoxState } from './data'
 import {
   AppLink,
   CreateButton,

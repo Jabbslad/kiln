@@ -25,9 +25,7 @@ impl fmt::Display for CheckError {
             Self::HostMemoryMissing => f.write_str("host memory_bytes is missing or null"),
             Self::HostMemoryNotPositive => f.write_str("host memory_bytes must be positive"),
             Self::HostDiskMissing => f.write_str("host disk_bytes is missing or null"),
-            Self::HostDiskTotalMissing => {
-                f.write_str("host disk_total_bytes is missing or null")
-            }
+            Self::HostDiskTotalMissing => f.write_str("host disk_total_bytes is missing or null"),
         }
     }
 }

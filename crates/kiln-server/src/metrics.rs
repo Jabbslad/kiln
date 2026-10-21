@@ -1,3 +1,7 @@
+#[cfg(target_os = "linux")]
+use std::os::linux::fs::MetadataExt;
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::MetadataExt;
 use std::{
     collections::HashMap,
     fs::{self, File},
@@ -7,10 +11,6 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-#[cfg(target_os = "linux")]
-use std::os::linux::fs::MetadataExt;
-#[cfg(target_os = "macos")]
-use std::os::unix::fs::MetadataExt;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Snapshot {

@@ -2,13 +2,7 @@ import { useEffect, useId, useRef, useState, type ReactNode, type ComponentProps
 import { Link, useSearchParams } from 'react-router-dom'
 import { ArrowUpRight, Box as BoxIcon, Check, Copy, Info, X } from 'lucide-react'
 import { capabilities, capabilityAvailable, type Capability } from './capabilities'
-import {
-  boxStates,
-  formatBytes,
-  formatDiskUsedOfTotal,
-  formatMetric,
-  type Dashboard,
-} from './data'
+import { boxStates, formatBytes, formatDiskUsedOfTotal, formatMetric, type Dashboard } from './data'
 
 type BoxState = (typeof boxStates)[number]
 type MetricRow = { label: string; value: string; hint: string }
@@ -21,7 +15,11 @@ function metricRows(
 ): MetricRow[] {
   const active = !boxState || boxState === 'running' || boxState === 'paused'
   const inactiveLabel = boxState === 'stopped' ? 'Stopped' : 'Not available yet'
-  const display = (value: number | null, format: (next: number) => string, hint = 'Observed use') => {
+  const display = (
+    value: number | null,
+    format: (next: number) => string,
+    hint = 'Observed use',
+  ) => {
     if (value !== null) {
       return { value: format(value), hint }
     }
@@ -191,13 +189,15 @@ export function ResourceMetrics({
       </div>
       <CapabilitySurface capability="metrics">
         <div className="metric-grid">
-          {metricRows(metrics, boxState, diskTotalBytes, hostObservedDisk).map(({ label, value, hint }) => (
-            <div className="metric" key={label}>
-              <span className="eyebrow">{label}</span>
-              <strong>{value}</strong>
-              <span className="micro">{hint}</span>
-            </div>
-          ))}
+          {metricRows(metrics, boxState, diskTotalBytes, hostObservedDisk).map(
+            ({ label, value, hint }) => (
+              <div className="metric" key={label}>
+                <span className="eyebrow">{label}</span>
+                <strong>{value}</strong>
+                <span className="micro">{hint}</span>
+              </div>
+            ),
+          )}
         </div>
       </CapabilitySurface>
     </section>

@@ -476,10 +476,12 @@ fn assert_document(raw: &str, value: &Value, fixture: &Fixture) {
     assert!(value["host"]["metrics"]["cpu_percent"].as_f64().is_some());
     assert!(value["host"]["metrics"]["memory_bytes"].as_u64().unwrap() > 0);
     assert!(value["host"]["metrics"]["disk_bytes"].as_u64().unwrap() > 0);
-    assert!(value["host"]["metrics"]["disk_total_bytes"]
-        .as_u64()
-        .unwrap()
-        > 0);
+    assert!(
+        value["host"]["metrics"]["disk_total_bytes"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
     let observed = value["observed_at"].as_str().unwrap();
     assert_eq!(observed.len(), 20, "{observed}");
     assert!(observed.ends_with('Z'), "{observed}");

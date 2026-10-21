@@ -144,9 +144,8 @@ impl Host {
             });
         }
         let journal = Journal::open(&config.journal_dir.join("operations.sqlite"))?;
-        let mut metrics = crate::metrics::Sampler::new(crate::metrics::Paths::live(
-            config.runtime_dir.clone(),
-        ));
+        let mut metrics =
+            crate::metrics::Sampler::new(crate::metrics::Paths::live(config.runtime_dir.clone()));
         metrics.prime();
         Ok(Arc::new(Self {
             runtime,
@@ -255,11 +254,7 @@ impl Host {
             names.insert(id.clone(), record.name.clone());
             let active = matches!(record.state.as_str(), "running" | "paused");
             let cgroup = self.runtime.box_cgroup(&record.run);
-            let metrics = sampler.box_metrics(
-                cgroup.as_deref(),
-                disk_path.as_deref(),
-                active,
-            );
+            let metrics = sampler.box_metrics(cgroup.as_deref(), disk_path.as_deref(), active);
             boxes.push(crate::dashboard::BoxFacts {
                 id,
                 name: record.name,
@@ -668,10 +663,12 @@ mod tests {
         assert!(value["host"]["metrics"]["cpu_percent"].as_f64().is_some());
         assert!(value["host"]["metrics"]["memory_bytes"].as_u64().unwrap() > 0);
         assert!(value["host"]["metrics"]["disk_bytes"].as_u64().unwrap() > 0);
-        assert!(value["host"]["metrics"]["disk_total_bytes"]
-            .as_u64()
-            .unwrap()
-            > 0);
+        assert!(
+            value["host"]["metrics"]["disk_total_bytes"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
     }
 
     #[test]
