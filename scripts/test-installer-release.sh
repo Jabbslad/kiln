@@ -20,6 +20,15 @@ curl -fsSL --proto '=https' --proto-redir '=https' \
     --connect-timeout 30 --max-time 60 \
     -o "$work/published.sh" \
     "https://github.com/Jabbslad/kiln/releases/download/${tag}/install.sh"
+curl -fsSL --proto '=https' --proto-redir '=https' \
+    --connect-timeout 30 --max-time 60 \
+    -o "$work/published.sh.sha256" \
+    "https://github.com/Jabbslad/kiln/releases/download/${tag}/install.sh.sha256"
+(
+    cd "$work"
+    awk 'NR == 1 { print $1 "  published.sh" }' published.sh.sha256 >published.sha256
+    sha256sum -c published.sha256
+)
 
 mkdir -p "$work/bin" "$work/home" "$work/tmp"
 cat >"$work/bin/uname" <<'EOF'
@@ -113,6 +122,59 @@ while read -r got_version spec got_digest; do
     [ "$got_digest" = "$want" ] || fail "$name resolved $got_digest"
 done <"$work/resolved"
 
+# A stamped v0.4.15 installer accepts a binary that prints kiln 0.4.15 and
+# refuses kiln 0.4.10 before it copies anything. HOME is a temp directory.
+fit_client() {
+    printed=$1
+    printf '%s\n' '#!/bin/sh' "printf '%s\\n' 'kiln ${printed}'" >"$work/kiln"
+    chmod 755 "$work/kiln"
+    tar -C "$work" -czf "$work/fit.tar.gz" kiln
+    digest=$(sha256sum "$work/fit.tar.gz" | awk 'NR == 1 { print $1 }')
+    sed -e 's/^    version=0\.4\.12$/    version=0.4.15/' \
+        -e "s/^client:x86_64-unknown-linux-gnu [0-9a-f][0-9a-f]*$/client:x86_64-unknown-linux-gnu ${digest}/" \
+        "$root/deploy/bootstrap/install.sh" >"$work/fit.sh"
+    chmod 755 "$work/fit.sh"
+    cat >"$work/bin/curl" <<EOF
+#!/bin/sh
+out=
+prev=
+for arg in "\$@"; do
+    if [ "\$prev" = --output ]; then
+        out=\$arg
+    fi
+    prev=\$arg
+done
+cp '$work/fit.tar.gz' "\$out"
+printf '%s' 200
+EOF
+    chmod 755 "$work/bin/curl"
+    rm -rf "${work:?}/home" "${work:?}/tmp"
+    mkdir -p "$work/home" "$work/tmp"
+}
+
+fit_client 0.4.15
+env -u KILN_RELEASE -u FIXTURE -u KILN_RESOLVE_ONLY \
+    HOME="$work/home" TMPDIR="$work/tmp" PATH="$work/bin:/usr/bin:/bin" \
+    sh "$work/fit.sh" >"$work/out" 2>"$work/err"
+installed=$work/home/.local/bin/kiln
+[ -x "$installed" ] || fail '0.4.15 client was not installed'
+got=$("$installed" --version)
+[ "$got" = "kiln 0.4.15" ] || fail "installed client reported $got"
+grep -q 'Downloading kiln 0.4.15' "$work/out" || fail '0.4.15 installer did not report its tag'
+
+fit_client 0.4.10
+set +e
+env -u KILN_RELEASE -u FIXTURE -u KILN_RESOLVE_ONLY \
+    HOME="$work/home" TMPDIR="$work/tmp" PATH="$work/bin:/usr/bin:/bin" \
+    sh "$work/fit.sh" >"$work/out" 2>"$work/err"
+status=$?
+set -e
+[ "$status" -ne 0 ] || fail '0.4.10 binary was accepted for tag 0.4.15'
+grep -q 'Downloaded client version does not match release.' "$work/err" || fail "reject message was $(cat "$work/err")"
+if [ -e "$work/home/.local/bin/kiln" ]; then
+    fail 'rejected client was copied into place'
+fi
+
 workflow=$root/.github/workflows/build.yml
 if grep -n 'REPIN_TOKEN' "$workflow"; then
     fail 'build.yml names a repin token'
@@ -120,7 +182,11 @@ fi
 if grep -n '^  repin:' "$workflow"; then
     fail 'build.yml still has a repin job'
 fi
-grep -q -- '--align-release' "$workflow" || fail 'publish does not set version from the tag'
+grep -q '^  version-guard:' "$workflow" || fail 'build.yml has no version guard'
+grep -q "needs.version-guard.result == 'success'" "$workflow" || fail 'publish does not require the version guard'
+if grep -n -- '--align-release' "$workflow"; then
+    fail 'publish still rewrites install.sh after renaming archives'
+fi
 if [ -e "$root/scripts/repin-installer.sh" ]; then
     fail 'repin script remains'
 fi

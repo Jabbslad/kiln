@@ -514,8 +514,10 @@ latest stable release tag and the SHA-256 sidecar for each archive, then
 downloads that tag and refuses the archive when the checksum differs.
 The tag job renders `install.sh` from the archive checksums and writes that
 tag into `version=`. The rendered copy installs that tag and checks the
-checksums in its asset block. When a reused build's version differs from
-the tag, the job renames the archives and sets `version=` to the tag.
+checksums in its asset block. A `v*` tag that is not the `Cargo.toml`
+version is refused before publish, and a reused Linux client must print
+that same version. The installer accepts the download when `kiln --version`
+prints `kiln` and that version.
 The tag job publishes only after `sha256sum -c` and
 `gh attestation verify` succeed for every archive. The same job attaches
 `install.sh` and `install.sh.sha256`. Publishing a release leaves main

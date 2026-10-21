@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -110,6 +111,146 @@ fn downloaded_tools_are_checksummed_before_use() {
             .iter()
             .any(|violation| violation.contains("used before a checksum")),
         "{violations:?}"
+    );
+}
+
+fn tag_guard(tag: &str, cargo: &str) -> std::process::Output {
+    Command::new("sh")
+        .arg(repo_root().join("scripts/check-tag-version.sh"))
+        .arg(tag)
+        .arg(cargo)
+        .output()
+        .unwrap_or_else(|error| panic!("run check-tag-version.sh: {error}"))
+}
+
+#[test]
+fn a_tag_that_differs_from_cargo_toml_cannot_publish() {
+    let mismatch = tag_guard("v0.4.14", "0.4.10");
+    let mismatch_err = String::from_utf8_lossy(&mismatch.stderr);
+    assert!(
+        !mismatch.status.success(),
+        "v0.4.14 against Cargo.toml 0.4.10 must be rejected: {mismatch_err}"
+    );
+    assert!(mismatch_err.contains("0.4.10"), "{mismatch_err}");
+
+    let matched = tag_guard("v0.4.15", "0.4.15");
+    assert!(
+        matched.status.success(),
+        "a matching tag and Cargo.toml version must be accepted: {}",
+        String::from_utf8_lossy(&matched.stderr)
+    );
+
+    let root = repo_root();
+    let workflow = read(&root.join(".github/workflows/build.yml"));
+    let violations = ci_guards::version_guard_violations(&workflow);
+    assert!(violations.is_empty(), "{violations:?}");
+
+    let manifest = read(&root.join("Cargo.toml"));
+    assert!(
+        manifest.contains("version = \"0.4.15\""),
+        "workspace version must be 0.4.15 so a v0.4.15 tag reuses main's archives"
+    );
+
+    let missing = "\
+jobs:
+  draft-release:
+    needs: [reuse]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - run: echo publish
+";
+    let missing_hits = ci_guards::version_guard_violations(missing);
+    assert!(
+        missing_hits
+            .iter()
+            .any(|violation| violation.contains("does not depend on version-guard")),
+        "{missing_hits:?}"
+    );
+}
+
+#[test]
+fn published_v0_4_14_linux_binary_fails_the_tag_version_check() {
+    let root = repo_root();
+    let dir = std::env::temp_dir().join(format!("kiln-v0414-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap_or_else(|error| panic!("mkdir {}: {error}", dir.display()));
+    let archive = dir.join("kiln.tar.gz");
+    let url = "https://github.com/Jabbslad/kiln/releases/download/v0.4.14/kiln-v0.4.14-x86_64-unknown-linux-gnu.tar.gz";
+    let download = Command::new("curl")
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--output",
+        ])
+        .arg(&archive)
+        .arg(url)
+        .status()
+        .unwrap_or_else(|error| panic!("curl: {error}"));
+    assert!(download.success(), "download {url}");
+    let extract = Command::new("tar")
+        .arg("-xzf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(&dir)
+        .arg("kiln")
+        .status()
+        .unwrap_or_else(|error| panic!("tar: {error}"));
+    assert!(
+        extract.success(),
+        "extract kiln from the v0.4.14 Linux archive"
+    );
+    let binary = dir.join("kiln");
+    let output = Command::new("python3")
+        .arg(root.join("scripts/release_version.py"))
+        .args(["check-binary", "--version", "v0.4.14", "--"])
+        .arg(&binary)
+        .output()
+        .unwrap_or_else(|error| panic!("check-binary: {error}"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    eprintln!("v0.4.14 check-binary: {stderr}");
+    assert!(
+        !output.status.success(),
+        "published v0.4.14 kiln must fail check-binary for v0.4.14: {stderr}"
+    );
+    assert!(
+        stderr.contains("0.4.10"),
+        "published binary should report kiln 0.4.10, got {stderr}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reuse_publish_does_not_need_server_check_and_rebuild_does() {
+    let workflow = read(&repo_root().join(".github/workflows/build.yml"));
+    let violations = ci_guards::publish_server_check_violations(&workflow);
+    assert!(violations.is_empty(), "{violations:?}");
+    assert!(
+        workflow.contains("sh scripts/reuse-server-check.sh"),
+        "reuse must prove main's server-check before mode stays reuse"
+    );
+    assert!(
+        workflow.contains("server_check: ${{ steps.decide.outputs.server_check }}"),
+        "publish reads the server-check proof from the reuse job"
+    );
+
+    let stuck =
+        ci_guards::publish_server_check_violations(&fixture("publish-always-server-check.yml"));
+    assert!(
+        stuck
+            .iter()
+            .any(|violation| violation.contains("reuse path: publish is false")),
+        "{stuck:?}"
+    );
+
+    let open = ci_guards::publish_server_check_violations(&fixture(
+        "publish-skips-server-check-on-rebuild.yml",
+    ));
+    assert!(
+        open.iter()
+            .any(|violation| { violation.contains("rebuild path: publish is true") }),
+        "{open:?}"
     );
 }
 

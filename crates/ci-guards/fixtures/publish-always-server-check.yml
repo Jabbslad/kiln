@@ -1,0 +1,25 @@
+name: Publish still waits for the tag server-check
+on:
+  push:
+jobs:
+  server-check:
+    needs: changes
+    if: ${{ !cancelled() && ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.changes.result != 'success' || needs.changes.outputs.heavy != 'false') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo check
+  draft-release:
+    needs: [server-check, reuse, server-package, client, dashboard, attest]
+    if: >-
+      !cancelled() &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.server-check.result == 'success' &&
+      ((needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse') ||
+        (needs.server-package.result == 'success' &&
+          needs.client.result == 'success' &&
+          needs.dashboard.result == 'success' &&
+          needs.attest.result == 'success'))
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo publish
