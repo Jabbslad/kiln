@@ -78,6 +78,15 @@ printf '%s\n' "$want_server" >"$work/want-server"
 cmp -s "$work/got-identity" "$work/want-identity" || fail 'identity release.json was not stamped'
 cmp -s "$work/got-server" "$work/want-server" || fail 'server release.json was not stamped'
 
+mkdir -p "$work/zipdist"
+printf 'x\n' >"$work/zipdist/kiln-v0.4.17-x86_64-pc-windows-msvc.zip"
+if sh "$root/scripts/stamp-release-dist.sh" "$work/zipdist" v0.4.17 v0.4.18 \
+  >"$work/zip-out" 2>"$work/zip-err"; then
+  fail 'stamp accepted a windows zip'
+fi
+grep -q 'unexpected dist file kiln-v0.4.17-x86_64-pc-windows-msvc.zip' "$work/zip-err" \
+  || fail "stamp did not reject the windows zip: $(cat "$work/zip-err")"
+
 mkdir -p "$work/bin" "$work/deploy/bin"
 cat >"$work/bin/ssh" <<EOF
 #!/bin/sh
