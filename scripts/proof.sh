@@ -68,6 +68,32 @@ build_kiln_app() {
   cargo build --locked --release -p kiln-server --bin kiln-api
 }
 
+start_built_preview() {
+  port=4174
+  (
+    cd "$root/web"
+    npm run preview -- --host 127.0.0.1 --port "$port" --strictPort
+  ) &
+  preview_pid=$!
+  cleanup_preview() {
+    kill "$preview_pid" 2>/dev/null || true
+  }
+  trap cleanup_preview EXIT INT TERM
+  ready=0
+  i=0
+  while [ "$i" -lt 60 ]; do
+    if curl -sf "http://127.0.0.1:$port/" >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    i=$((i + 1))
+    sleep 0.5
+  done
+  [ "$ready" -eq 1 ] || fail "preview server did not become ready on port $port"
+  KILN_PROOF_BASE_URL="http://127.0.0.1:$port"
+  export KILN_PROOF_BASE_URL
+}
+
 dashboard_proof() {
   (
     cd "$root/web"
@@ -80,11 +106,13 @@ dashboard_proof() {
   if ! command -v npx >/dev/null 2>&1; then
     fail 'npx is required for dashboard proof'
   fi
+  start_built_preview
   (
     cd "$root/web"
     npx playwright install chromium
     KILN_SCREENSHOT_DIR="$proof_dir" \
       KILN_PROOF_PHASE="$phase" \
+      KILN_PROOF_BASE_URL="$KILN_PROOF_BASE_URL" \
       npx playwright test tests/proof.spec.ts --config playwright.proof.config.ts
   )
 }

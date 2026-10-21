@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test'
 
 export default defineConfig({
   testDir: './tests',
-  testIgnore: ['proof.spec.ts'],
+  testIgnore: ['proof.spec.ts', 'network-unreachable-proof.spec.ts'],
   fullyParallel: true,
   workers: 2,
   retries: 0,
