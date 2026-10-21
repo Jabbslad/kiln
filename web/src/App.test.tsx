@@ -80,7 +80,7 @@ it('shows only same-box checkpoints and keeps restore gated after acknowledgemen
   const restore = within(dialog).getByRole('button', { name: 'Restore checkpoint' })
   expect(restore).toBeDisabled()
   await user.click(
-    within(dialog).getByRole('checkbox', { name: 'I understand the rollback risks.' }),
+    within(dialog).getByRole('checkbox', { name: /I understand external state may replay/ }),
   )
   expect(restore).toBeDisabled()
   await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
@@ -161,13 +161,13 @@ it('keeps create disabled when the live host is offline and keeps other mutation
   expect(within(dialog).getByText(/Read-only console/)).toBeVisible()
 })
 
-it('keeps checkpoint confirmation disabled on a live console', async () => {
+it('enables checkpoint confirmation on a live console', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(previewDashboard)))
   open('/boxes/box-7f3a2c1e')
   const user = userEvent.setup()
   await user.click(await screen.findByRole('button', { name: 'Create checkpoint' }))
   const dialog = screen.getByRole('dialog')
-  expect(within(dialog).getByRole('button', { name: 'Create checkpoint' })).toBeDisabled()
+  expect(within(dialog).getByRole('button', { name: 'Create checkpoint' })).toBeEnabled()
 })
 
 it.each([

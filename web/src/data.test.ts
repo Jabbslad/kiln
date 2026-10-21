@@ -2,12 +2,15 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   applyLifecycle,
   createBox,
+  createCheckpoint,
   dashboardSchema,
   deleteBox,
   fetchDashboard,
   formatBytes,
   formatMetric,
   filterBoxes,
+  restoreCheckpoint,
+  submitOperation,
 } from './data'
 import { previewDashboard } from './fixtures'
 
@@ -115,6 +118,163 @@ describe('dashboard boundary', () => {
     expect(posts).toHaveLength(1)
     expect(posts[0].init?.headers).toMatchObject({ 'x-kiln-csrf': 'form-csrf' })
     expect(posts[0].init?.credentials).toBe('same-origin')
+  })
+
+  it('rejects a checkpoint when CSRF, Origin, or the session fails', async () => {
+    const cases = [
+      {
+        status: 403,
+        body: { code: 'invalid_csrf', message: 'The request was refused.' },
+        message: /csrf/i,
+      },
+      {
+        status: 403,
+        body: { code: 'invalid_origin', message: 'The request was refused.' },
+        message: /origin/i,
+      },
+      {
+        status: 401,
+        body: { code: 'unauthorized', message: 'A valid credential is required.' },
+        message: /401/,
+      },
+    ]
+    for (const item of cases) {
+      const fetcher = vi.fn(async () => Response.json(item.body, { status: item.status }))
+      await expect(
+        submitOperation(
+          { type: 'checkpoint', id: 'a'.repeat(32) },
+          fetcher,
+          '__Host-kiln_csrf=form-csrf',
+        ),
+      ).rejects.toThrow(item.message)
+      expect(fetcher).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('retries one checkpoint id and withholds it until the dashboard lists that box', async () => {
+    const request = 'a'.repeat(32)
+    const checkpoint = 'b'.repeat(32)
+    const box = 'c'.repeat(32)
+    const seen = structuredClone(previewDashboard)
+    seen.checkpoints = [
+      {
+        id: checkpoint,
+        box_id: box,
+        name: 'shift-snapshot',
+        created_at: previewDashboard.observed_at,
+        size_bytes: 4096,
+        compatible: true,
+      },
+    ]
+    let posts = 0
+    let reads = 0
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        posts += 1
+        const posted = JSON.parse(String(init.body))
+        expect(posted.id).toBe(request)
+        expect(posted.action).toEqual({ type: 'checkpoint', id: box })
+        expect(init.headers).toMatchObject({ 'x-kiln-csrf': 'form-csrf' })
+        if (posts === 1) {
+          return Response.json(
+            { id: request, box_id: box, state: 'running', result: null, error: null },
+            { status: 202 },
+          )
+        }
+        return Response.json({
+          id: request,
+          box_id: box,
+          state: 'succeeded',
+          result: { type: 'checkpoint', id: checkpoint, box_id: box },
+          error: null,
+        })
+      }
+      if (url.startsWith('/v1/operations/')) {
+        return Response.json({
+          id: request,
+          box_id: box,
+          state: 'succeeded',
+          result: { type: 'checkpoint', id: checkpoint, box_id: box },
+          error: null,
+        })
+      }
+      reads += 1
+      if (reads === 1) return Response.json({ ...previewDashboard, checkpoints: [] })
+      return Response.json(seen)
+    })
+    const first = await createCheckpoint(box, fetcher, '__Host-kiln_csrf=form-csrf', request)
+    const second = await createCheckpoint(box, fetcher, '__Host-kiln_csrf=form-csrf', request)
+    expect(first.checkpoints.map((item) => item.id)).toEqual([checkpoint])
+    expect(second.checkpoints.map((item) => item.id)).toEqual([checkpoint])
+    expect(posts).toBe(2)
+    expect(first.checkpoints.some((item) => item.box_id !== box)).toBe(false)
+  })
+
+  it('reports an unconfirmed checkpoint as unknown and does not invent one', async () => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL) =>
+      Response.json({
+        id: 'd'.repeat(32),
+        box_id: 'c'.repeat(32),
+        state: 'unknown',
+        result: null,
+        error: { message: 'Operation did not return a confirmed result.' },
+      }),
+    )
+    await expect(
+      createCheckpoint('c'.repeat(32), fetcher, '__Host-kiln_csrf=form-csrf', 'd'.repeat(32)),
+    ).rejects.toThrow(/^unknown$/)
+    expect(fetcher.mock.calls.map(([url]) => String(url))).not.toContain('/api/v1/dashboard')
+  })
+
+  it('restores only the same box after acknowledgement and only once that box is observed', async () => {
+    const request = 'e'.repeat(32)
+    const box = 'c'.repeat(32)
+    const checkpoint = 'b'.repeat(32)
+    const other = 'f'.repeat(32)
+    let reads = 0
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        expect(posted.id).toBe(request)
+        expect(posted.action).toEqual({
+          type: 'restore',
+          id: box,
+          checkpoint,
+          acknowledge_external_state_replay: true,
+        })
+        return Response.json(
+          {
+            id: request,
+            box_id: box,
+            state: 'succeeded',
+            result: { type: 'box', id: box },
+            error: null,
+          },
+          { status: 202 },
+        )
+      }
+      reads += 1
+      const dashboard = structuredClone(previewDashboard)
+      dashboard.boxes = [
+        {
+          ...previewDashboard.boxes[0],
+          id: reads < 5 ? other : box,
+          restored_from: checkpoint,
+        },
+      ]
+      return Response.json(dashboard)
+    })
+    const observed = await restoreCheckpoint(
+      box,
+      checkpoint,
+      fetcher,
+      '__Host-kiln_csrf=form-csrf',
+      request,
+    )
+    expect(observed.boxes.find((item) => item.id === box)?.restored_from).toBe(checkpoint)
+    expect(reads).toBe(5)
   })
 
   it('submits pause, resume, stop, and start and shows state only once observed', async () => {

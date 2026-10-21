@@ -56,6 +56,7 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
       </Empty>
     )
   const checkpoints = data.checkpoints.filter((checkpoint) => checkpoint.box_id === box.id)
+  const authenticated = !preview && data.host.state === 'online'
   return (
     <>
       <div className="breadcrumb">
@@ -314,7 +315,7 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
         <DeleteDialog
           box={box}
           preview={preview}
-          authenticated={!preview && data.host.state === 'online'}
+          authenticated={authenticated}
           onObserved={onObserved}
           onClose={() => setAction(null)}
         />
@@ -335,6 +336,8 @@ export default function BoxDetail({ data, preview, onObserved }: PageProps) {
           box={box}
           checkpoint={restoring}
           preview={preview}
+          authenticated={authenticated}
+          onObserved={onObserved}
           onClose={() => setRestoring(null)}
         />
       )}

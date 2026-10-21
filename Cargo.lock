@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "ci-guards"
-version = "0.4.15"
+version = "0.4.16"
 
 [[package]]
 name = "clap"
@@ -1354,7 +1354,7 @@ dependencies = [
 
 [[package]]
 name = "kiln-api"
-version = "0.4.15"
+version = "0.4.16"
 dependencies = [
  "kiln-protocol",
  "serde",
@@ -1365,7 +1365,7 @@ dependencies = [
 
 [[package]]
 name = "kiln-client"
-version = "0.4.15"
+version = "0.4.16"
 dependencies = [
  "anyhow",
  "axum",
@@ -1384,7 +1384,7 @@ dependencies = [
 
 [[package]]
 name = "kiln-guest"
-version = "0.4.15"
+version = "0.4.16"
 dependencies = [
  "kiln-protocol",
  "libc",
@@ -1398,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "kiln-identity"
-version = "0.4.15"
+version = "0.4.16"
 dependencies = [
  "anyhow",
  "axum",
@@ -1431,7 +1431,7 @@ dependencies = [
 
 [[package]]
 name = "kiln-protocol"
-version = "0.4.15"
+version = "0.4.16"
 dependencies = [
  "serde",
  "serde_json",
@@ -1441,7 +1441,7 @@ dependencies = [
 
 [[package]]
 name = "kiln-runtime"
-version = "0.4.15"
+version = "0.4.16"
 dependencies = [
  "clap",
  "kiln-protocol",
@@ -1457,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "kiln-server"
-version = "0.4.15"
+version = "0.4.16"
 dependencies = [
  "anyhow",
  "axum",
