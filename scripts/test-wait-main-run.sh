@@ -155,10 +155,18 @@ fi
 command -v curl >/dev/null 2>&1 || fail 'curl is not installed'
 command -v jq >/dev/null 2>&1 || fail 'jq is not installed'
 read_run() {
-  curl -fsS \
-    -H 'Accept: application/vnd.github+json' \
-    -H 'User-Agent: kiln-wait-test' \
-    "$1"
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    curl -fsS \
+      -H 'Accept: application/vnd.github+json' \
+      -H 'User-Agent: kiln-wait-test' \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+      "$1"
+  else
+    curl -fsS \
+      -H 'Accept: application/vnd.github+json' \
+      -H 'User-Agent: kiln-wait-test' \
+      "$1"
+  fi
 }
 
 tag=$(read_run https://api.github.com/repos/Jabbslad/kiln/actions/runs/39523146863)

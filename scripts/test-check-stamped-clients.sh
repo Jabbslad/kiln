@@ -9,8 +9,6 @@ fail() {
   exit 1
 }
 
-command -v zip >/dev/null || fail 'zip is required'
-
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -46,7 +44,7 @@ pack() {
   slot_bin "$stage/$member" "$version" "$label"
   case $archive in
     *.tar.gz) tar -C "$stage" -czf "$work/dist/$archive" "$member" ;;
-    *.zip) (cd "$stage" && zip -X -q "$work/dist/$archive" "$member") ;;
+    *) fail "unexpected archive ${archive}" ;;
   esac
 }
 
@@ -54,7 +52,6 @@ mkdir -p "$work/dist"
 pack kiln-v9.9.9-x86_64-unknown-linux-gnu.tar.gz kiln 9.9.9 kiln
 pack kiln-v9.9.9-aarch64-apple-darwin.tar.gz kiln 9.9.9 kiln
 pack kiln-v9.9.9-x86_64-apple-darwin.tar.gz kiln 9.9.9 kiln
-pack kiln-v9.9.9-x86_64-pc-windows-msvc.zip kiln.exe 9.9.9 kiln
 sh "$root/scripts/check-stamped-clients.sh" "$work/dist" v9.9.9 >"$work/out"
 grep -q 'client v9.9.9 kiln-v9.9.9-x86_64-unknown-linux-gnu.tar.gz' "$work/out" \
   || fail 'linux client was not checked'
@@ -62,8 +59,9 @@ grep -q 'client v9.9.9 kiln-v9.9.9-aarch64-apple-darwin.tar.gz' "$work/out" \
   || fail 'arm mac client was not checked'
 grep -q 'client v9.9.9 kiln-v9.9.9-x86_64-apple-darwin.tar.gz' "$work/out" \
   || fail 'intel mac client was not checked'
-grep -q 'client v9.9.9 kiln-v9.9.9-x86_64-pc-windows-msvc.zip' "$work/out" \
-  || fail 'windows client was not checked'
+if grep -E -q 'windows|kiln\.exe|\.zip' "$work/out"; then
+  fail 'windows client is still a shipped asset'
+fi
 pack kiln-v9.9.9-x86_64-apple-darwin.tar.gz kiln 9.9.8 kiln
 if sh "$root/scripts/check-stamped-clients.sh" "$work/dist" v9.9.9 >"$work/bad" 2>"$work/err"; then
   fail 'wrong mac slot was accepted'

@@ -23,7 +23,6 @@ pub const PACKAGE_ARTIFACTS: &[&str] = &[
     "package-dashboard",
     "package-server",
     "package-x86_64-apple-darwin",
-    "package-x86_64-pc-windows-msvc",
     "package-x86_64-unknown-linux-gnu",
 ];
 
@@ -226,7 +225,6 @@ pub fn expected_archives(version: &ReleaseVersion) -> BTreeSet<String> {
         "kiln-identity-{tag}-x86_64-unknown-linux-gnu.tar.gz"
     ));
     names.insert(format!("kiln-server-{tag}-x86_64-unknown-linux-gnu.tar.gz"));
-    names.insert(format!("kiln-{tag}-x86_64-pc-windows-msvc.zip"));
     for target in [
         "x86_64-unknown-linux-gnu",
         "x86_64-apple-darwin",
@@ -287,7 +285,7 @@ pub fn finish_dist(repo: &Path, dist: &Path, version: &ReleaseVersion) -> Result
     let paths = regular_files(dist)?;
     let names: BTreeSet<String> = paths.iter().map(|path| entry_name(path)).collect();
     if names != expected_release_files(version) {
-        return Err(refused("dist is not the 16-file release set"));
+        return Err(refused("dist is not the 14-file release set"));
     }
     Ok(())
 }
@@ -1674,13 +1672,7 @@ fn fill_archives(dist: &Path, version: &ReleaseVersion) {
         let stamped = name.starts_with("kiln-server-")
             || name.starts_with("kiln-identity-")
             || name.starts_with("kiln-dashboard-");
-        if name.ends_with(".zip") {
-            if stamped {
-                write_zip(&path, "release.json", &payload);
-            } else {
-                write_zip(&path, "kiln.exe", b"kiln");
-            }
-        } else if stamped {
+        if stamped {
             write_tar_gz(&path, "release.json", &payload);
         } else {
             write_tar_gz(&path, "kiln", b"kiln");
@@ -1712,16 +1704,6 @@ fn write_tar_gz(path: &Path, name: &str, data: &[u8]) {
     archive.append(&header, data).unwrap();
     let encoder = archive.into_inner().unwrap();
     encoder.finish().unwrap();
-}
-
-fn write_zip(path: &Path, name: &str, data: &[u8]) {
-    let file = File::create(path).unwrap();
-    let mut archive = zip::ZipWriter::new(file);
-    let options =
-        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-    archive.start_file(name, options).unwrap();
-    archive.write_all(data).unwrap();
-    archive.finish().unwrap();
 }
 
 fn test_selects_the_latest_successful_main_push() {
@@ -1789,14 +1771,14 @@ fn test_absent_attestation_is_allowed_only_before_the_workflow_attests() {
         "{old}        uses: {ATTEST_ACTION}e8998f949152b193b063cb0ec769d69d929409be # v2.4.0\n"
     );
     assert_eq!(
-        attestation_gate(old, &["absent"; 7]).unwrap(),
+        attestation_gate(old, &["absent"; 6]).unwrap(),
         "not-produced"
     );
     assert_eq!(
-        attestation_gate(&new, &["verified"; 7]).unwrap(),
+        attestation_gate(&new, &["verified"; 6]).unwrap(),
         "verified"
     );
-    assert!(attestation_gate(&new, &["absent"; 7]).is_err());
+    assert!(attestation_gate(&new, &["absent"; 6]).is_err());
     assert!(attestation_gate(old, &["verified", "absent"]).is_err());
     assert!(attestation_gate(&new, &["rejected"]).is_err());
     assert!(!workflow_attests(
@@ -1821,12 +1803,12 @@ fn test_checksum_mismatch_refuses_and_a_match_keeps_the_bytes() {
     let tag = version.tag();
     let dashboard = dist.join(format!("kiln-dashboard-{tag}.tar.gz"));
     let before = fs::read(&dashboard).unwrap();
-    let windows = dist.join(format!("kiln-{tag}-x86_64-pc-windows-msvc.zip.sha256"));
-    let crlf = crlf_bytes(&fs::read(&windows).unwrap());
-    fs::write(&windows, crlf).unwrap();
+    let macos = dist.join(format!("kiln-{tag}-aarch64-apple-darwin.tar.gz.sha256"));
+    let crlf = crlf_bytes(&fs::read(&macos).unwrap());
+    fs::write(&macos, crlf).unwrap();
     verify_and_refresh_sidecars(dist, &version).unwrap();
     assert_eq!(fs::read(&dashboard).unwrap(), before);
-    let refreshed = fs::read(&windows).unwrap();
+    let refreshed = fs::read(&macos).unwrap();
     assert!(refreshed.ends_with(b"\n"));
     assert!(!refreshed.ends_with(b"\r\n"));
     let sidecar = dist.join(format!("kiln-dashboard-{tag}.tar.gz.sha256"));
@@ -1838,7 +1820,7 @@ fn test_checksum_mismatch_refuses_and_a_match_keeps_the_bytes() {
     }
 }
 
-fn test_finish_writes_the_sixteen_asset_release_set() {
+fn test_finish_writes_the_fourteen_asset_release_set() {
     let version = release_tag("v0.4.10");
     let tmp = tempfile::tempdir().unwrap();
     let dist = tmp.path();
@@ -1852,7 +1834,7 @@ fn test_finish_writes_the_sixteen_asset_release_set() {
         count += 1;
     }
     assert_eq!(names, expected_release_files(&version));
-    assert_eq!(count, 16);
+    assert_eq!(count, 14);
     let mut sidecars: Vec<PathBuf> = fs::read_dir(dist)
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -2039,7 +2021,7 @@ register_cases! {
     test_absent_attestation_is_allowed_only_before_the_workflow_attests,
     test_classifies_the_real_missing_attestation_error,
     test_checksum_mismatch_refuses_and_a_match_keeps_the_bytes,
-    test_finish_writes_the_sixteen_asset_release_set,
+    test_finish_writes_the_fourteen_asset_release_set,
     test_parser_rejects_a_paginated_artifact_list,
     test_attest_signs_the_archives_a_tag_publishes,
     test_workflow_keeps_drafts_and_does_not_move_tags,

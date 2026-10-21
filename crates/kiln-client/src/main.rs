@@ -399,9 +399,7 @@ fn identity_origin(explicit: Option<&str>) -> String {
         .unwrap_or_else(|| kiln_api::auth::DEFAULT_IDENTITY_ORIGIN.to_owned())
 }
 fn open_browser(url: &str) -> Result<()> {
-    // Windows resolves `rundll32` to System32 even when PATH is replaced, so a
-    // `.cmd` stand-in never runs. Debug builds read KILN_BROWSER=0 and skip
-    // the launch. The release binary does not.
+    // Debug builds read KILN_BROWSER=0 and skip the launch. The release binary does not.
     #[cfg(debug_assertions)]
     if std::env::var_os("KILN_BROWSER").is_some_and(|value| value == "0") {
         bail!("browser launch failed");
@@ -410,12 +408,6 @@ fn open_browser(url: &str) -> Result<()> {
     let mut command = std::process::Command::new("open");
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut command = std::process::Command::new("xdg-open");
-    #[cfg(windows)]
-    let mut command = {
-        let mut c = std::process::Command::new("rundll32");
-        c.arg("url.dll,FileProtocolHandler");
-        c
-    };
     command.arg(url);
     let status = command.status().context("could not launch browser")?;
     anyhow::ensure!(status.success(), "browser launch failed");
