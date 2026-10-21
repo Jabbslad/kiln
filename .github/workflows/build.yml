@@ -116,6 +116,7 @@ jobs:
           sh scripts/test-plan-release.sh
           sh scripts/test-check-stamped-clients.sh
           sh scripts/test-release-budget.sh
+          sh scripts/test-verify-release-attestations.sh
           sh scripts/test-check-dropped-platform.sh
           sh scripts/test-feature-map-guard.sh
           sh scripts/test-check-pr-proof.sh
@@ -254,6 +255,7 @@ jobs:
           sh scripts/test-plan-release.sh
           sh scripts/test-check-stamped-clients.sh
           sh scripts/test-release-budget.sh
+          sh scripts/test-verify-release-attestations.sh
           sh scripts/test-check-dropped-platform.sh
           sh scripts/test-feature-map-guard.sh
           sh scripts/test-check-pr-proof.sh
@@ -283,6 +285,7 @@ jobs:
             scripts/check-stamped-clients.sh scripts/test-check-stamped-clients.sh \
             scripts/check-dropped-platform.sh scripts/test-check-dropped-platform.sh \
             scripts/test-release-budget.sh \
+            scripts/verify-release-attestations.sh scripts/test-verify-release-attestations.sh \
             scripts/check-feature-map.sh             scripts/test-feature-map-guard.sh \
             scripts/test-operations-journal-version-sync.sh \
             scripts/fmt.sh scripts/test-fmt.sh
@@ -799,22 +802,7 @@ jobs:
           started=$(date +%s)
           cargo xtask reuse-release finish --version "$VERSION" --dist dist
           (cd dist && sha256sum -c ./*.sha256)
-          source_ref=refs/heads/main
-          regex='^https://github\.com/Jabbslad/kiln/\.github/workflows/build\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$'
-          found=0
-          pids=
-          for archive in dist/*.tar.gz; do
-            [ -f "$archive" ] || continue
-            found=1
-            gh attestation verify "$archive" --repo Jabbslad/kiln --cert-identity-regex "$regex" --source-ref "$source_ref" &
-            pids="$pids $!"
-          done
-          [ "$found" = 1 ]
-          fail=0
-          for pid in $pids; do
-            wait "$pid" || fail=1
-          done
-          [ "$fail" = 0 ]
+          sh scripts/verify-release-attestations.sh dist
           gh release create "$TAG" dist/* --verify-tag --target "$GITHUB_SHA" --title "$TAG" \
             --notes 'Trusted-workload pilot. Native client tests and Linux build checks passed. The unattended installer requires Ubuntu 24.04 or 26.04 x86-64/KVM for servers. Checksums and attestations were verified in this job before publish. Binaries are not signed or notarized.'
           if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
