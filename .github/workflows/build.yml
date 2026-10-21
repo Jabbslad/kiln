@@ -534,12 +534,15 @@ jobs:
 
   # A v* tag stops here unless it matches Cargo.toml at that commit.
   # When main's archives are reused, the Linux client must report that version.
+  # !cancelled() keeps a skipped reuse from rewriting this if to success().
+  # The result check still requires the reuse job to have succeeded.
   version-guard:
     needs: [reuse]
     if: >-
       !cancelled() &&
       github.event_name == 'push' &&
-      startsWith(github.ref, 'refs/tags/v')
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.reuse.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
