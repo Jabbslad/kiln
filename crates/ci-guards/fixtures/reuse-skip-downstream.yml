@@ -1,0 +1,65 @@
+name: Reuse skip downstream
+on:
+  push:
+jobs:
+  other:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo other
+  package:
+    if: needs.reuse.outputs.mode == 'reuse'
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo package
+  attest:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo attest
+  deploy:
+    needs: [attest]
+    if: needs.attest.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo deploy
+  publish:
+    needs: [package]
+    if: >-
+      !cancelled() &&
+      github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo publish
+  success-fn:
+    needs: [attest]
+    if: >-
+      success() &&
+      needs.attest.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo success
+  report:
+    needs: [package]
+    if: >-
+      !cancelled() &&
+      needs.package.result == 'skipped'
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo report
+  wrapped:
+    needs: [package]
+    if: "${{ !cancelled() && needs.package.result == 'success' }}"
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo wrapped
+  required:
+    needs: [package]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo required
+  unrelated:
+    needs: [other]
+    if: needs.other.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo unrelated

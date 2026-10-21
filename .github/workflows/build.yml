@@ -663,7 +663,9 @@ jobs:
   # release: published, so the tag calls deploy in the same run.
   deploy:
     needs: [draft-release]
-    if: needs.draft-release.result == 'success'
+    if: >-
+      !cancelled() &&
+      needs.draft-release.result == 'success'
     permissions:
       contents: read
     uses: ./.github/workflows/deploy.yml
