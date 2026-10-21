@@ -29,7 +29,21 @@ fi
 
 repo=${KILN_RELEASE_NOTES_REPO:-Jabbslad/kiln}
 version=${tag#v}
-from=$(git tag -l 'v*' | sh "$root/scripts/previous-release-tag.sh" "$tag")
+if [ "${KILN_FETCH_RELEASE_TAGS:-1}" = 1 ]; then
+  git fetch --tags origin >/dev/null 2>&1 || true
+fi
+from=
+if from=$(git tag -l 'v*' | sh "$root/scripts/previous-release-tag.sh" "$tag" 2>/dev/null); then
+  :
+else
+  from=
+fi
+
+if [ -z "$from" ]; then
+  printf '{"version":"%s","title":"%s","changes":[],"releaseUrl":"https://github.com/%s/releases/tag/%s"}\n' \
+    "$version" "$tag" "$repo" "$tag"
+  exit 0
+fi
 
 git log "${from}..${end}" --first-parent --pretty=format:%s | awk -v version="$version" -v tag="$tag" -v repo="$repo" '
 function json_escape(text,    out, i, ch, code) {

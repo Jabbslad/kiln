@@ -16,7 +16,7 @@ tag=${1:-${VERSION:-}}
 printf '%s\n' "$tag" | grep -Eq '^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$' \
   || fail "tag ${tag} is not stable"
 
-export VERSION=$tag
+export VERSION="$tag"
 sh "$root/scripts/write-release-notes.sh"
 expected=$root/web/src/release-notes.json
 

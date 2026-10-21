@@ -21,11 +21,24 @@ if [ -z "$end" ]; then
   fi
 fi
 
-from=$(git tag -l 'v*' | sh "$root/scripts/previous-release-tag.sh" "$tag")
+if [ "${KILN_FETCH_RELEASE_TAGS:-1}" = 1 ]; then
+  git fetch --tags origin >/dev/null 2>&1 || true
+fi
+from=
+if from=$(git tag -l 'v*' | sh "$root/scripts/previous-release-tag.sh" "$tag" 2>/dev/null); then
+  :
+else
+  from=
+fi
 repo=${KILN_RELEASE_NOTES_REPO:-Jabbslad/kiln}
 
 printf '## %s\n\n' "$tag"
 printf '### Changes\n\n'
+if [ -z "$from" ]; then
+  printf '_No release notes were generated._\n\n'
+  printf 'Full release: https://github.com/%s/releases/tag/%s\n' "$repo" "$tag"
+  exit 0
+fi
 git log "${from}..${end}" --first-parent --pretty=format:%s | awk '
 {
   subject = $0
