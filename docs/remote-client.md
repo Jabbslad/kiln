@@ -97,8 +97,8 @@ session; log out to change accounts. Existing direct administrator profiles belo
 are preserved; use `kiln --profile personal login` for a separate central profile.
 No enrolled server means login stops with enrollment instructions, not a usable
 VM profile. Use `--issuer` or `KILN_IDENTITY_URL` for another identity service.
-Native Windows private-ACL checks pass. Real account consent and full
-central-authenticated VM acceptance remain outstanding; this is a pilot release.
+Real account consent and full central-authenticated VM acceptance remain
+outstanding; this is a pilot release.
 
 ## Build the binaries
 
@@ -113,9 +113,8 @@ cargo install --locked --path crates/kiln-client
 Build natively on the laptop OS/architecture. The client crate does not depend on
 `kiln-runtime`, SQLite, Firecracker or Linux/vsock APIs. This repository does not
 yet provide signed installers. Release automation builds downloadable binaries
-once the source is published to GitHub and the workflow succeeds. On Windows,
-restrict token-file ACLs to your account; Unix builds additionally enforce mode
-0600/0400. The client uses bundled public CA roots or an explicit private CA file,
+once the source is published to GitHub and the workflow succeeds. Unix builds
+enforce mode 0600/0400 on token files. The client uses bundled public CA roots or an explicit private CA file,
 not an insecure certificate-verification switch. It connects directly (proxy
 environment variables are not used).
 
@@ -279,9 +278,8 @@ guest; terminal/file payloads do not enter the operation journal.
 SSH sessions are separate from buffered `exec`: Ctrl-C and terminal resizing
 work through OpenSSH, with no automatic command replay or session reconnect.
 There are at most 32 tunnels per service, eight sessions per guest, and a 24-hour
-tunnel lifetime. Windows management commands remain supported, but these new
-SSH/SFTP commands are currently Unix-only. Native macOS editor execution still
-needs validation; Linux OpenSSH protocol integration is tested.
+tunnel lifetime. Native macOS editor execution still needs validation; Linux
+OpenSSH protocol integration is tested.
 
 Existing images/templates do not acquire a new agent when the host is updated.
 Build a new Ubuntu image and template for SSH. Internet access additionally
@@ -389,7 +387,7 @@ Run only one state store at a time with a given isolated UID/GID allocation.
 Validated on `ser7` on 2026-10-01: 82 ordinary tests, Clippy with warnings denied,
 formatting, release builds, development and isolated Ubuntu KVM service lifecycle
 tests, and all three release binaries together against a disposable VM. No
-persistent service was installed. Native macOS/Windows execution is unverified;
+persistent service was installed. Native macOS execution is unverified;
 an Apple Silicon cross-check was blocked by missing Apple SDK headers in ring's
 C build. The systemd examples still require installation-time validation on the
 destination host.

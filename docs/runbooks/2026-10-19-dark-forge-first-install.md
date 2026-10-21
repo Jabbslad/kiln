@@ -16,7 +16,6 @@ Workflow run https://github.com/Jabbslad/kiln/actions/runs/39274237685 on `dfd14
 | server-package | success |
 | client (ubuntu-24.04, x86_64-unknown-linux-gnu) | success |
 | client (macos-15, aarch64-apple-darwin) | success |
-| client (windows-2025, x86_64-pc-windows-msvc, .exe) | success |
 | dashboard | success |
 | Socket Security: Project Report | success |
 | draft-release | skipped |

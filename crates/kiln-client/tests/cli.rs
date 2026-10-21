@@ -635,8 +635,7 @@ async fn identity_fixture(servers: &[(&str, &str)]) -> IdentityFixture {
     let bin_dir = root.path().join("bin");
     fs::create_dir(&bin_dir).unwrap();
     // PATH is only this directory. Linux launches `xdg-open` and macOS launches
-    // `open`. Windows still finds System32 `rundll32.exe`, so login() also sets
-    // KILN_BROWSER=0 and open_browser does not spawn.
+    // `open`. login() sets KILN_BROWSER=0 and open_browser does not spawn.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
