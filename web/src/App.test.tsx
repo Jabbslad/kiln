@@ -449,6 +449,82 @@ it('disables delete when the console is not live or not authenticated', async ()
   expect(within(dialog).getByText(/Read-only console/)).toBeVisible()
 })
 
+it('disables exec in preview, when the host is offline or unknown, and when the box is stopped', async () => {
+  const user = userEvent.setup()
+  const { unmount } = open('/boxes/box-7f3a2c1e?preview=1&tab=exec')
+  expect(await screen.findByRole('button', { name: /Execute command/ })).toBeDisabled()
+  expect(screen.getByText(/Read-only preview/)).toBeVisible()
+  unmount()
+
+  for (const state of ['offline', 'unknown'] as const) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        Response.json({
+          ...previewDashboard,
+          host: { ...previewDashboard.host, state },
+        }),
+      ),
+    )
+    const view = open('/boxes/box-7f3a2c1e?tab=exec')
+    expect(await screen.findByRole('button', { name: /Execute command/ })).toBeDisabled()
+    expect(screen.getByText(/Read-only console/)).toBeVisible()
+    view.unmount()
+  }
+
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(previewDashboard)))
+  open('/boxes/box-a1b2c3d4?tab=exec')
+  expect(await screen.findByRole('button', { name: /Execute command/ })).toBeDisabled()
+  expect(screen.queryByText(/Read-only console/)).not.toBeInTheDocument()
+})
+
+it('shows the exit code, stdout and stderr after one exec', async () => {
+  const boxId = 'box-7f3a2c1e'
+  let posts = 0
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        posts += 1
+        const posted = JSON.parse(String(init.body))
+        expect(posted.action).toEqual({
+          type: 'exec',
+          id: boxId,
+          request: { argv: ['/bin/pwd'], timeout_ms: 10000 },
+        })
+        expect(init.credentials).toBe('same-origin')
+        return Response.json(
+          {
+            id: posted.id,
+            box_id: boxId,
+            state: 'succeeded',
+            result: {
+              type: 'exec',
+              stdout: [...'hello'].map((char) => char.charCodeAt(0)),
+              stderr: [...'err'].map((char) => char.charCodeAt(0)),
+              exit_code: 0,
+              truncated: false,
+              timed_out: false,
+            },
+            error: null,
+          },
+          { status: 202 },
+        )
+      }
+      return Response.json(previewDashboard)
+    }),
+  )
+  open(`/boxes/${boxId}?tab=exec`)
+  const user = userEvent.setup()
+  const submit = await screen.findByRole('button', { name: /Execute command/ })
+  expect(submit).toBeEnabled()
+  await user.click(submit)
+  expect(await screen.findByText('Exit code 0')).toBeVisible()
+  expect(screen.getByText('hello')).toBeVisible()
+  expect(screen.getByText('err')).toBeVisible()
+  expect(posts).toBe(1)
+})
+
 it('validates a create form but cannot create a fake VM', async () => {
   open('/templates?preview=1')
   const user = userEvent.setup()
