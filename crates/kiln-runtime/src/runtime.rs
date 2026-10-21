@@ -600,40 +600,44 @@ impl Runtime {
             network: None,
             last_launch: None,
         };
-        let result = scoped(async {
-            let phase = Phase::start("allocation_wait");
-            let allocation = self.allocation().await?;
-            drop(phase);
-            let phase = Phase::start("reservation");
-            let records = self.records()?;
-            ensure_unique_name(&records, name)?;
-            if records.len() >= 8
-                || records.iter().map(|r| r.memory_mib).sum::<u32>() + memory_mib > 16384
-            {
-                return Err(Error::Invalid(
-                    "local quota exceeded (8 boxes / 16384 MiB allocated)".into(),
-                ));
+        let (result, phases) = scoped(async {
+            let result = async {
+                let phase = Phase::start("allocation_wait");
+                let allocation = self.allocation().await?;
+                drop(phase);
+                let phase = Phase::start("reservation");
+                let records = self.records()?;
+                ensure_unique_name(&records, name)?;
+                if records.len() >= 8
+                    || records.iter().map(|r| r.memory_mib).sum::<u32>() + memory_mib > 16384
+                {
+                    return Err(Error::Invalid(
+                        "local quota exceeded (8 boxes / 16384 MiB allocated)".into(),
+                    ));
+                }
+                record.jail = self.allocate_identity(&records)?;
+                record.network = self.allocate_network(&records)?;
+                storage::private_dir(&self.root.join("boxes").join(&record.id))?;
+                let _lock = storage::lock(&self.directory(&record.id)?)?;
+                let run = self.run(&record)?;
+                self.save(&record)?;
+                drop(allocation);
+                drop(phase);
+                let phase = Phase::start("disk_copy");
+                let method = storage::copy_disk(
+                    &record.image.rootfs_path,
+                    &run.join("disk.ext4"),
+                    Instant::now() + Duration::from_secs(120),
+                )?;
+                record.disk_copy = format!("{method:?}");
+                drop(phase);
+                self.boot(&mut record, None, !template).await
             }
-            record.jail = self.allocate_identity(&records)?;
-            record.network = self.allocate_network(&records)?;
-            storage::private_dir(&self.root.join("boxes").join(&record.id))?;
-            let _lock = storage::lock(&self.directory(&record.id)?)?;
-            let run = self.run(&record)?;
-            self.save(&record)?;
-            drop(allocation);
-            drop(phase);
-            let phase = Phase::start("disk_copy");
-            let method = storage::copy_disk(
-                &record.image.rootfs_path,
-                &run.join("disk.ext4"),
-                Instant::now() + Duration::from_secs(120),
-            )?;
-            record.disk_copy = format!("{method:?}");
-            drop(phase);
-            self.boot(&mut record, None, !template).await
+            .await;
+            (result, take_phases())
         })
         .await;
-        self.finish_launch(&mut record, started, "create", result)?;
+        self.finish_launch(&mut record, started, "create", result, phases)?;
         Ok(record)
     }
 
@@ -643,6 +647,7 @@ impl Runtime {
         started: Instant,
         method: &str,
         result: Result<()>,
+        phases: std::collections::BTreeMap<&'static str, f64>,
     ) -> Result<()> {
         let _phase = Phase::start("launch_commit");
         match result {
@@ -651,7 +656,7 @@ impl Runtime {
                     method,
                     &record.disk_copy,
                     started.elapsed().as_secs_f64() * 1000.,
-                    take_phases(),
+                    phases,
                 ));
                 record.operation = None;
                 record.last_error = None;
@@ -1184,8 +1189,12 @@ impl Runtime {
         record.operation = Some("start".into());
         self.save(&record)?;
         let started = Instant::now();
-        let result = scoped(async { self.boot(&mut record, None, true).await }).await;
-        self.finish_launch(&mut record, started, "start", result)?;
+        let (result, phases) = scoped(async {
+            let result = self.boot(&mut record, None, true).await;
+            (result, take_phases())
+        })
+        .await;
+        self.finish_launch(&mut record, started, "start", result, phases)?;
         if self.is_isolated() {
             fs::remove_dir_all(self.generation(&previous)?)?;
         }

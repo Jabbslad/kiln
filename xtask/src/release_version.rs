@@ -367,6 +367,7 @@ pub fn dispatch(args: &[String], env: &HashMap<String, String>) -> Result<String
         "resolve" => dispatch_resolve(&args[1..], env),
         "check-binary" => dispatch_check_binary(&args[1..]),
         "check-archives" => dispatch_check_archives(&args[1..]),
+        "read-json-field" => dispatch_read_json_field(&args[1..]),
         "attach-bootstrap" => dispatch_attach(&args[1..]),
         other => Err(format!("unknown command {other}")),
     }
@@ -422,6 +423,40 @@ fn dispatch_check_binary(args: &[String]) -> Result<String, String> {
     let binaries: Vec<PathBuf> = parsed.positionals.iter().map(PathBuf::from).collect();
     check_binary(&version, &binaries)?;
     Ok(String::new())
+}
+
+fn dispatch_read_json_field(args: &[String]) -> Result<String, String> {
+    let strip_v = args.iter().any(|arg| arg == "--strip-v");
+    let filtered: Vec<String> = args
+        .iter()
+        .filter(|arg| arg.as_str() != "--strip-v")
+        .cloned()
+        .collect();
+    let parsed = parse_flags(&filtered, &["--field"])?;
+    let field = required(&parsed.options, "--field")?;
+    let mut data = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut data)
+        .map_err(|err| err.to_string())?;
+    let text = read_json_field(&data, field, strip_v)?;
+    Ok(format!("{text}\n"))
+}
+
+fn read_json_field(data: &[u8], field: &str, strip_v: bool) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(data).map_err(|_| "release.json is not valid JSON".to_string())?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "release.json root must be an object".to_string())?;
+    let raw = object
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("release.json field {field:?} is missing or not a string"))?;
+    if strip_v {
+        Ok(raw.strip_prefix('v').unwrap_or(raw).to_string())
+    } else {
+        Ok(raw.to_string())
+    }
 }
 
 fn dispatch_check_archives(args: &[String]) -> Result<String, String> {
@@ -2373,8 +2408,30 @@ fn rewrite_release_json(archive: &Path, version: &str) {
     encoder.finish().unwrap();
 }
 
+fn test_read_json_field_returns_version_not_other_semvers() {
+    let json =
+        br#"{"min_upgrade_from":"0.3.0","target":"x86_64-unknown-linux-gnu","version":"v0.4.40"}"#;
+    assert_eq!(read_json_field(json, "version", false).unwrap(), "v0.4.40");
+    assert_eq!(read_json_field(json, "version", true).unwrap(), "0.4.40");
+    assert!(
+        read_json_field(json, "min_upgrade_from", false)
+            .unwrap()
+            .starts_with("0.3")
+    );
+}
+
+fn test_read_json_field_rejects_non_object_and_missing_field() {
+    let err = read_json_field(b"[]", "version", false).unwrap_err();
+    assert!(err.contains("object"), "{err}");
+    let json = br#"{"target":"x86_64-unknown-linux-gnu"}"#;
+    let err = read_json_field(json, "version", false).unwrap_err();
+    assert!(err.contains("version"), "{err}");
+}
+
 register_cases! {
     test_rejects_prerelease_build_metadata_leading_zeros_and_bare_cargo,
+    test_read_json_field_returns_version_not_other_semvers,
+    test_read_json_field_rejects_non_object_and_missing_field,
     test_plan_stamp_rewrites_only_member_path_versions,
     test_plan_stamp_is_idempotent,
     test_branch_resolve_does_not_write,
