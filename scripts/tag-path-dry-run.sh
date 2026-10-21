@@ -118,7 +118,7 @@ if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
   VERSION=${tag#v}
   export VERSION
   cargo xtask release-version resolve --ref-type tag --ref-name "$tag"
-  cargo xtask release-version check-binary --version "$VERSION" -- \
+  cargo xtask release-version check-binary --version "$tag" -- \
     target/release/kiln \
     target/release/kiln-runtime \
     target/release/kiln-host \
