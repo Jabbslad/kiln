@@ -171,6 +171,15 @@ async function rejected(response: Response) {
   )
 }
 
+const OPERATION_POLL_MS = 50
+const OPERATION_WAIT_MS = 300_000
+
+function pause(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
 export async function submitOperation(
   action: OperationAction,
   fetcher: typeof fetch = fetch,
@@ -190,7 +199,9 @@ export async function submitOperation(
   })
   if (response.status !== 200 && response.status !== 202) throw await rejected(response)
   let receipt = (await response.json()) as OperationReceipt
-  for (let attempt = 0; attempt < 20 && receipt.state === 'running'; attempt += 1) {
+  const deadline = Date.now() + OPERATION_WAIT_MS
+  while (receipt.state === 'running' && Date.now() < deadline) {
+    await pause(OPERATION_POLL_MS)
     const polled = await fetcher(`/v1/operations/${receipt.id}`, {
       credentials: 'same-origin',
       cache: 'no-store',
@@ -231,6 +242,11 @@ export async function createBox(
   cookie = globalThis.document?.cookie ?? '',
 ): Promise<Dashboard> {
   const receipt = await submitOperation({ type: 'create', template, name }, fetcher, cookie)
+  if (receipt.state === 'running') {
+    throw new Error(
+      'Create is still in progress. Refresh the dashboard to see the box once the control plane records it.',
+    )
+  }
   if (receipt.state !== 'succeeded') {
     throw new Error(
       receipt.error?.message ||

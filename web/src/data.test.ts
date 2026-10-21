@@ -121,6 +121,65 @@ describe('dashboard boundary', () => {
     expect(posts[0].init?.credentials).toBe('same-origin')
   })
 
+  it('keeps polling a create that stays running longer than twenty instant polls', async () => {
+    const boxId = 'b'.repeat(32)
+    const seen = structuredClone(previewDashboard)
+    seen.boxes = [{ ...previewDashboard.boxes[0], id: boxId, name: 'slow-boot' }]
+    let pollCount = 0
+    let observed = false
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json(
+          { id: posted.id, box_id: boxId, state: 'running', result: null, error: null },
+          { status: 202 },
+        )
+      }
+      if (url.startsWith('/v1/operations/')) {
+        pollCount += 1
+        const id = url.slice('/v1/operations/'.length)
+        if (pollCount < 25) {
+          return Response.json({ id, box_id: boxId, state: 'running', result: null, error: null })
+        }
+        return Response.json({ id, box_id: boxId, state: 'succeeded', result: null, error: null })
+      }
+      if (!observed) {
+        observed = true
+        return Response.json({ ...previewDashboard, boxes: [] })
+      }
+      return Response.json(seen)
+    })
+    const dashboard = await createBox('ubuntu', 'slow-boot', fetcher, '__Host-kiln_csrf=form-csrf')
+    expect(pollCount).toBeGreaterThanOrEqual(25)
+    expect(dashboard.boxes.map((box) => box.id)).toEqual([boxId])
+  })
+
+  it('reports a create still running after the wait budget expires', async () => {
+    vi.useFakeTimers()
+    const boxId = 'c'.repeat(32)
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json(
+          { id: posted.id, box_id: boxId, state: 'running', result: null, error: null },
+          { status: 202 },
+        )
+      }
+      if (url.startsWith('/v1/operations/')) {
+        const id = url.slice('/v1/operations/'.length)
+        return Response.json({ id, box_id: boxId, state: 'running', result: null, error: null })
+      }
+      return Response.json(previewDashboard)
+    })
+    const pending = createBox('ubuntu', 'never-finishes', fetcher, '__Host-kiln_csrf=form-csrf')
+    const outcome = expect(pending).rejects.toThrow(/still in progress/i)
+    await vi.advanceTimersByTimeAsync(300_050)
+    await outcome
+    vi.useRealTimers()
+  })
+
   it('rejects a checkpoint when CSRF, Origin, or the session fails', async () => {
     const cases = [
       {
