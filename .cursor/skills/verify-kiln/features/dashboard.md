@@ -110,7 +110,7 @@ cargo test -p kiln-server --test app_listener --locked -- --nocapture \
   a_signed_in_operate_session_reaches_the_host
 ```
 
-Deploy fetches the live dashboard on the host with `deploy/github/fetch-dashboard-metrics.sh` (curl only), then validates `.host.metrics.cpu_percent` and `.host.metrics.memory_bytes` on the GitHub runner via `deploy/github/verify-dashboard-host-metrics.sh` (jq). Guest smoke on the host still uses `deploy/github/check-dashboard-metrics.sh`, which scopes POSIX awk to the `"host"` object (sorted gateway JSON can put `boxes` before `host`, so a document-wide `cpu_percent` match is wrong). CI runs the host scripts with a PATH limited to bash, curl, awk, grep, and tr so a stray jq dependency fails in PR checks.
+Deploy fetches the live dashboard on the host with `deploy/github/fetch-dashboard-metrics.sh` (curl only), then validates `.host.metrics.cpu_percent` and `.host.metrics.memory_bytes` on the GitHub runner via `deploy/github/verify-dashboard-host-metrics.sh` (jq). Guest smoke on the host uses `deploy/github/check-dashboard-metrics.sh` with `sqlite3` `json_extract` / `json_type` on `$.host.metrics` (gateway JSON can sort `boxes` before `host`). CI runs the host metrics scripts with a PATH limited to bash, curl, sqlite3, and coreutils (no jq) so a host-side jq dependency fails in PR checks.
 
 ```sh
 sh scripts/test-check-dashboard-bundle.sh

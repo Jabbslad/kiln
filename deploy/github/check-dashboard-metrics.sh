@@ -1,76 +1,79 @@
 #!/bin/bash
-# Host-side dashboard metrics check for smoke (fetch + POSIX awk). Deploy uses
+# Host-side dashboard metrics check for smoke (fetch + sqlite3 JSON). Deploy uses
 # fetch-dashboard-metrics.sh on the host and verify-dashboard-host-metrics.sh on the runner.
 set -euo pipefail
 umask 077
 
 fail() { printf 'dashboard-metrics: %s\n' "$*" >&2; exit 1; }
 
+command -v sqlite3 >/dev/null 2>&1 || fail 'sqlite3 is required'
+
 address=${1:?usage: check-dashboard-metrics.sh ADDRESS}
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
-host_metric() {
-  local body=$1 field=$2
-  printf '%s' "$body" | tr -d '\n' | awk -v field="$field" '
-  {
-    host = index($0, "\"host\":")
-    if (host == 0) exit 1
-    rest = substr($0, host)
-    metrics = index(rest, "\"metrics\":")
-    if (metrics == 0) exit 1
-    rest = substr(rest, metrics)
-    key = "\"" field "\":"
-    at = index(rest, key)
-    if (at == 0) exit 1
-    rest = substr(rest, at + length(key))
-    sub(/^[[:space:]]*/, "", rest)
-    if (rest !~ /^[0-9]/) exit 1
-    match(rest, /^[0-9]+(\.[0-9]+)?/)
-    print substr(rest, RSTART, RLENGTH)
-  }'
+json_doc_file=
+
+json_doc_cleanup() {
+  if [ -n "${json_doc_file:-}" ]; then
+    rm -f "$json_doc_file"
+    json_doc_file=
+  fi
 }
 
-body=$(bash "$script_dir/fetch-dashboard-metrics.sh" "$address")
-host_cpu=$(host_metric "$body" cpu_percent)
-[ -n "$host_cpu" ] || fail 'host cpu_percent is missing or null'
-host_mem=$(host_metric "$body" memory_bytes)
-[ -n "$host_mem" ] || fail 'host memory_bytes is missing or null'
-[ "$host_mem" -gt 0 ] || fail 'host memory_bytes must be positive'
+load_doc() {
+  json_doc_cleanup
+  json_doc_file=$(mktemp)
+  bash "$script_dir/fetch-dashboard-metrics.sh" "$address" >"$json_doc_file"
+}
 
-running=$(printf '%s' "$body" | tr -d '\n' | awk '
-  {
-    if ($0 !~ /"state":"running"/) {
-      print "0"
-      exit 0
-    }
-    print "1"
-  }
-')
-if [ "$running" = "0" ]; then
+json_host_scalar() {
+  local field=$1
+  sqlite3 -batch :memory: "
+SELECT json_extract(json(readfile('${json_doc_file}')), '$.host.metrics.${field}')
+WHERE json_type(json(readfile('${json_doc_file}')), '$.host.metrics.${field}')
+  IN ('integer', 'real');
+"
+}
+
+has_running_box() {
+  sqlite3 -batch :memory: "
+SELECT 1
+FROM json_each(json(readfile('${json_doc_file}')), '\$.boxes') AS b
+WHERE json_extract(b.value, '\$.state') = 'running'
+LIMIT 1;
+"
+}
+
+running_box_metrics_ok() {
+  sqlite3 -batch :memory: "
+SELECT 'ok'
+FROM json_each(json(readfile('${json_doc_file}')), '\$.boxes') AS b
+WHERE json_extract(b.value, '\$.state') = 'running'
+  AND json_type(b.value, '\$.metrics.cpu_percent') IN ('integer', 'real')
+  AND json_type(b.value, '\$.metrics.memory_bytes') IN ('integer', 'real')
+LIMIT 1;
+"
+}
+
+trap json_doc_cleanup EXIT
+
+load_doc
+host_cpu=$(json_host_scalar cpu_percent)
+[ -n "$host_cpu" ] || fail 'host cpu_percent is missing or null'
+host_mem=$(json_host_scalar memory_bytes)
+[ -n "$host_mem" ] || fail 'host memory_bytes is missing or null'
+mem_ok=$(sqlite3 -batch :memory: "
+SELECT 1
+WHERE json_extract(json(readfile('${json_doc_file}')), '\$.host.metrics.memory_bytes') > 0;
+")
+[ -n "$mem_ok" ] || fail 'host memory_bytes must be positive'
+
+if [ -z "$(has_running_box)" ]; then
   printf 'dashboard-metrics host cpu=%s memory=%s (no running box)\n' "$host_cpu" "$host_mem"
   exit 0
 fi
 
-body=$(bash "$script_dir/fetch-dashboard-metrics.sh" "$address")
-box_mem=$(printf '%s' "$body" | tr -d '\n' | awk '
-  {
-    while (match($0, /"state":"running"/)) {
-      rest = substr($0, RSTART)
-      cpu_key = "\"cpu_percent\":"
-      mem_key = "\"memory_bytes\":"
-      cpu_at = index(rest, cpu_key)
-      mem_at = index(rest, mem_key)
-      if (cpu_at == 0 || mem_at == 0) exit 1
-      cpu_rest = substr(rest, cpu_at + length(cpu_key))
-      sub(/^[[:space:]]*/, "", cpu_rest)
-      if (cpu_rest !~ /^[0-9]/) exit 1
-      mem_rest = substr(rest, mem_at + length(mem_key))
-      sub(/^[[:space:]]*/, "", mem_rest)
-      if (mem_rest !~ /^[0-9]/) exit 1
-      print "ok"
-      exit 0
-    }
-    exit 1
-  }
-') || fail 'running box metrics are missing or null'
-printf 'dashboard-metrics host cpu=%s memory=%s %s\n' "$host_cpu" "$host_mem" "$box_mem"
+load_doc
+box_ok=$(running_box_metrics_ok)
+[ -n "$box_ok" ] || fail 'running box metrics are missing or null'
+printf 'dashboard-metrics host cpu=%s memory=%s %s\n' "$host_cpu" "$host_mem" "$box_ok"

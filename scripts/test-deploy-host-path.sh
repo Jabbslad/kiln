@@ -1,6 +1,6 @@
 #!/bin/sh
-# Host-side deploy scripts must run with only tools install-remote already
-# hard-requires on an upgraded host: bash, curl, awk, and coreutils (cat, dirname, grep, tr).
+# Host-side dashboard metrics scripts must run with dark-forge tools only (no jq):
+# bash, curl, sqlite3, and coreutils (cat, dirname, grep, mktemp, rm, tr).
 set -eu
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -14,7 +14,7 @@ fail() {
 host_bin=$(mktemp -d)
 trap 'rm -rf "$host_bin"' EXIT
 
-for name in awk bash cat curl dirname grep tr; do
+for name in bash cat curl dirname grep mktemp rm sqlite3 tr; do
   path=$(command -v "$name") || fail "missing host tool: $name"
   ln -sf "$path" "$host_bin/$name"
 done

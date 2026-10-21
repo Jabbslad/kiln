@@ -529,7 +529,7 @@ fn test_deploy_installs_dashboard_and_checks_the_live_bundle() {
     );
     assert!(
         smoke.contains("check-dashboard-metrics.sh"),
-        "guest smoke still checks live metrics on the host with awk"
+        "guest smoke still checks live metrics on the host with sqlite3"
     );
 }
 
