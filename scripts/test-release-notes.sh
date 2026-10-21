@@ -49,4 +49,30 @@ printf '%s\n' "$md" | grep -q 'Second feature (#2)' || fail 'markdown bullet mis
 prev=$(printf 'v1.0.0\nv1.0.1\nv1.0.2\n' | sh "$root/scripts/previous-release-tag.sh" v1.0.2)
 [ "$prev" = v1.0.1 ] || fail "previous tag is ${prev}"
 
+git tag -l 'v*' | while read -r tag_name; do
+  git tag -d "$tag_name"
+done
+
+json=$(KILN_RELEASE_NOTES_ROOT="$work/repo" KILN_FETCH_RELEASE_TAGS=0 KILN_RELEASE_NOTES_STRICT=0 \
+  sh "$root/scripts/release-notes-json.sh" v1.0.2 HEAD)
+printf '%s\n' "$json" | grep -q '"changes":\[\]' || fail 'PR-like build must fall back to empty notes'
+printf '%s\n' "$json" | grep -q '"version":"1.0.2"' || fail 'PR-like fallback missing version'
+
+if KILN_RELEASE_NOTES_ROOT="$work/repo" KILN_FETCH_RELEASE_TAGS=0 KILN_RELEASE_NOTES_STRICT=1 \
+  sh "$root/scripts/release-notes-json.sh" v1.0.2 HEAD >"$work/strict.out" 2>"$work/strict.err"; then
+  fail 'tag build must fail without tag history'
+fi
+grep -q 'release-notes-json: v1.0.2: no previous stable tag in history' "$work/strict.err" \
+  || fail "strict failure did not name the tag: $(cat "$work/strict.err")"
+
+git tag v1.0.0
+git tag v1.0.1
+commit 'Only merge commit' d.txt
+if KILN_RELEASE_NOTES_ROOT="$work/repo" KILN_FETCH_RELEASE_TAGS=0 KILN_RELEASE_NOTES_STRICT=1 \
+  sh "$root/scripts/release-notes-json.sh" v1.0.2 v1.0.1 >"$work/empty-range.out" 2>"$work/empty-range.err"; then
+  fail 'tag build must fail when the release range has no commits'
+fi
+grep -q 'release-notes-json: v1.0.2: no release notes between v1.0.1 and v1.0.1' "$work/empty-range.err" \
+  || fail "empty-range failure missing tag: $(cat "$work/empty-range.err")"
+
 printf 'test-release-notes ok\n'

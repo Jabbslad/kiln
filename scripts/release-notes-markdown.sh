@@ -5,12 +5,19 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 repo_root=${KILN_RELEASE_NOTES_ROOT:-$root}
 cd "$repo_root"
+. "$root/scripts/release-notes-mode.sh"
 
-tag=${1:-}
-[ -n "$tag" ] || {
-  printf 'release-notes-markdown: usage: release-notes-markdown.sh TAG [END_REF]\n' >&2
+fail() {
+  printf 'release-notes-markdown: %s\n' "$*" >&2
   exit 1
 }
+
+strict_fail() {
+  fail "$1: $2"
+}
+
+tag=${1:-}
+[ -n "$tag" ] || fail 'usage: release-notes-markdown.sh TAG [END_REF]'
 
 end=${2:-}
 if [ -z "$end" ]; then
@@ -32,13 +39,30 @@ else
 fi
 repo=${KILN_RELEASE_NOTES_REPO:-Jabbslad/kiln}
 
-printf '## %s\n\n' "$tag"
-printf '### Changes\n\n'
 if [ -z "$from" ]; then
+  if release_notes_strict_enabled; then
+    strict_fail "$tag" 'no previous stable tag in history'
+  fi
+  printf '## %s\n\n' "$tag"
+  printf '### Changes\n\n'
   printf '_No release notes were generated._\n\n'
   printf 'Full release: https://github.com/%s/releases/tag/%s\n' "$repo" "$tag"
   exit 0
 fi
+
+if ! git log "${from}..${end}" --first-parent --pretty=format:%s | grep -q .; then
+  if release_notes_strict_enabled; then
+    strict_fail "$tag" "no release notes between ${from} and ${end}"
+  fi
+  printf '## %s\n\n' "$tag"
+  printf '### Changes\n\n'
+  printf '_No release notes were generated._\n\n'
+  printf 'Full release: https://github.com/%s/releases/tag/%s\n' "$repo" "$tag"
+  exit 0
+fi
+
+printf '## %s\n\n' "$tag"
+printf '### Changes\n\n'
 git log "${from}..${end}" --first-parent --pretty=format:%s | awk '
 {
   subject = $0

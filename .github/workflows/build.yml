@@ -259,8 +259,8 @@ jobs:
             scripts/test-release-budget.sh \
             scripts/check-feature-map.sh             scripts/test-feature-map-guard.sh \
             scripts/test-operations-journal-version-sync.sh \
-            scripts/previous-release-tag.sh scripts/release-notes-json.sh \
-            scripts/release-notes-markdown.sh scripts/write-release-notes.sh \
+            scripts/previous-release-tag.sh scripts/release-notes-mode.sh \
+            scripts/release-notes-json.sh scripts/release-notes-markdown.sh scripts/write-release-notes.sh \
             scripts/check-embedded-release-notes.sh scripts/test-release-notes.sh \
             scripts/test-embedded-release-notes.sh \
             scripts/capture-dashboard-release-notes-proof.sh \
@@ -772,6 +772,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.release-plan.outputs.tag }}
           VERSION: ${{ needs.release-plan.outputs.tag }}
+          KILN_RELEASE_NOTES_STRICT: "1"
         run: |
           started=$(date +%s)
           cargo xtask reuse-release finish --version "$VERSION" --dist dist

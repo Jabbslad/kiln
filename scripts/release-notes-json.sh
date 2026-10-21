@@ -6,10 +6,15 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 repo_root=${KILN_RELEASE_NOTES_ROOT:-$root}
 cd "$repo_root"
+. "$root/scripts/release-notes-mode.sh"
 
 fail() {
   printf 'release-notes-json: %s\n' "$*" >&2
   exit 1
+}
+
+strict_fail() {
+  fail "$1: $2"
 }
 
 tag=${1:-}
@@ -40,6 +45,18 @@ else
 fi
 
 if [ -z "$from" ]; then
+  if release_notes_strict_enabled; then
+    strict_fail "$tag" 'no previous stable tag in history'
+  fi
+  printf '{"version":"%s","title":"%s","changes":[],"releaseUrl":"https://github.com/%s/releases/tag/%s"}\n' \
+    "$version" "$tag" "$repo" "$tag"
+  exit 0
+fi
+
+if ! git log "${from}..${end}" --first-parent --pretty=format:%s | grep -q .; then
+  if release_notes_strict_enabled; then
+    strict_fail "$tag" "no release notes between ${from} and ${end}"
+  fi
   printf '{"version":"%s","title":"%s","changes":[],"releaseUrl":"https://github.com/%s/releases/tag/%s"}\n' \
     "$version" "$tag" "$repo" "$tag"
   exit 0
@@ -65,6 +82,7 @@ BEGIN {
   printf "\"title\":\"%s\",", tag
   printf "\"changes\":["
   first = 1
+  entries = 0
 }
 {
   subject = $0
@@ -80,6 +98,7 @@ BEGIN {
   }
   if (key in seen) next
   seen[key] = 1
+  entries++
   if (!first) printf ","
   first = 0
   if (pr != "") {
