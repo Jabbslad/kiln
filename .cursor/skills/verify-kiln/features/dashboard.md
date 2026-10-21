@@ -110,10 +110,11 @@ cargo test -p kiln-server --test app_listener --locked -- --nocapture \
   a_signed_in_operate_session_reaches_the_host
 ```
 
-Deploy verifies the published dashboard bundle against live HTML:
+Deploy verifies host metrics with `deploy/github/check-dashboard-metrics.sh`, which uses `jq` on `.host.metrics.cpu_percent` and `.host.metrics.memory_bytes` (loopback `kiln-api` re-serializes dashboard JSON with sorted keys, so `boxes` can precede `host` and the first document-level `cpu_percent` may belong to a box).
 
 ```sh
 sh scripts/test-check-dashboard-bundle.sh
+sh scripts/test-check-dashboard-metrics.sh
 ```
 
 ## Driving it with Playwright

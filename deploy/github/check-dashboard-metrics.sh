@@ -24,30 +24,11 @@ fetch() {
 }
 
 body=$(fetch)
-host_cpu=$(printf '%s' "$body" | tr -d '\n' | awk '
-  {
-    key = "\"cpu_percent\":"
-    at = index($0, key)
-    if (at == 0) exit 1
-    rest = substr($0, at + length(key))
-    sub(/^[[:space:]]*/, "", rest)
-    if (rest !~ /^[0-9]/) exit 1
-    match(rest, /^[0-9]+(\.[0-9]+)?/)
-    print substr(rest, RSTART, RLENGTH)
-  }
-') || fail 'host cpu_percent is missing or null'
-host_mem=$(printf '%s' "$body" | tr -d '\n' | awk '
-  {
-    key = "\"memory_bytes\":"
-    at = index($0, key)
-    if (at == 0) exit 1
-    rest = substr($0, at + length(key))
-    sub(/^[[:space:]]*/, "", rest)
-    if (rest !~ /^[0-9]/) exit 1
-    match(rest, /^[0-9]+/)
-    print substr(rest, RSTART, RLENGTH)
-  }
-') || fail 'host memory_bytes is missing or null'
+command -v jq >/dev/null 2>&1 || fail 'jq is required'
+host_cpu=$(printf '%s' "$body" | jq -er '.host.metrics.cpu_percent | select(type == "number")') \
+  || fail 'host cpu_percent is missing or null'
+host_mem=$(printf '%s' "$body" | jq -er '.host.metrics.memory_bytes | select(type == "number")') \
+  || fail 'host memory_bytes is missing or null'
 [ "$host_mem" -gt 0 ] || fail 'host memory_bytes must be positive'
 
 running=$(printf '%s' "$body" | tr -d '\n' | awk '
