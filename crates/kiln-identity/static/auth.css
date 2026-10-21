@@ -1,3 +1,157 @@
-:root{color-scheme:light;--ink:#102027;--paper:#e8f0f1;--kiln:#b93318;--white:#fff}*{box-sizing:border-box}body{margin:0;background:#d9e6e8;color:var(--ink);font:17px/1.5 system-ui,sans-serif;min-height:100vh;display:grid;place-items:center}.card{width:min(92vw,620px);background:var(--white);border:2px solid var(--ink);border-radius:4px;padding:clamp(24px,6vw,56px);box-shadow:12px 12px 0 #6d8b94}.mark{font:700 13px ui-monospace,monospace;letter-spacing:.18em;text-transform:uppercase;color:var(--kiln)}h1{font:700 clamp(34px,7vw,58px)/.98 Georgia,serif;margin:.3em 0}p{max-width:48ch}label{display:block;font-weight:700;margin:20px 0 6px}input{width:100%;padding:12px;border:2px solid var(--ink);border-radius:2px;background:white;color:var(--ink);font:700 22px ui-monospace,monospace}.code{font:700 28px ui-monospace,monospace;letter-spacing:.15em;padding:16px;background:var(--paper);border:2px solid var(--ink)}button,.button{display:block;width:100%;margin:12px 0;padding:14px;border:2px solid var(--ink);background:var(--ink);color:white;font-weight:700;text-align:center;text-decoration:none;cursor:pointer}.secondary{background:white;color:var(--ink)}input:focus,button:focus,.button:focus{outline:4px solid #e8a400;outline-offset:3px}
-dd{margin-inline-start:0;overflow-wrap:anywhere}dt{font-weight:700;margin-top:12px}.fingerprint{font:14px/1.6 ui-monospace,monospace}
-.code{font-size:clamp(18px,5vw,28px);letter-spacing:.1em;overflow-wrap:anywhere}
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(/static/fonts/geist-latin-400-normal.woff2) format('woff2');
+}
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url(/static/fonts/geist-mono-latin-400-normal.woff2) format('woff2');
+}
+:root {
+  color-scheme: dark;
+  --surface: #0e0e0e;
+  --panel: #111111;
+  --line: #202020;
+  --line-strong: #3b3b3b;
+  --text: #f4f4f4;
+  --muted: #949494;
+  --green: #78e772;
+  --mono: 'Geist Mono', monospace;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+  background: var(--surface);
+  color: var(--text);
+  font: 400 16px/1.5 'Geist', sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+.card {
+  width: min(92vw, 480px);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: clamp(24px, 5vw, 40px);
+}
+.mark {
+  font: 400 10px/1.6 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--green);
+  margin-bottom: 24px;
+}
+h1 {
+  margin: 0 0 16px;
+  font-size: clamp(28px, 5vw, 40px);
+  font-weight: 400;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+p {
+  margin: 0 0 24px;
+  max-width: 48ch;
+  color: var(--muted);
+}
+label {
+  display: block;
+  margin: 20px 0 8px;
+  font: 400 10px/1.6 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--muted);
+}
+input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--text);
+  font: 400 14px var(--mono);
+}
+.code {
+  margin: 16px 0 24px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font: 400 clamp(18px, 4vw, 24px)/1.4 var(--mono);
+  letter-spacing: 0.12em;
+  overflow-wrap: anywhere;
+}
+button,
+.button {
+  display: block;
+  width: 100%;
+  margin: 12px 0 0;
+  min-height: 39px;
+  padding: 10px 15px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: 400 10px/1.5 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+button:not(.secondary),
+.button:not(.secondary) {
+  background: var(--text);
+  border-color: var(--text);
+  color: #111;
+}
+button:not(.secondary):hover,
+.button:not(.secondary):hover {
+  background: #d6d6d6;
+  border-color: #d6d6d6;
+}
+button.secondary:hover,
+.button.secondary:hover {
+  background: #1d1d1d;
+  border-color: #777;
+}
+input:focus,
+button:focus,
+.button:focus {
+  outline: 2px solid #ffffff99;
+  outline-offset: 4px;
+}
+dd {
+  margin-inline-start: 0;
+  overflow-wrap: anywhere;
+}
+dt {
+  margin-top: 12px;
+  font: 400 10px/1.6 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--muted);
+}
+.fingerprint {
+  font: 400 12px/1.6 var(--mono);
+  color: var(--text);
+}
+::selection {
+  background: #345432;
+  color: #fff;
+}
