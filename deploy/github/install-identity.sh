@@ -8,7 +8,13 @@ umask 077
 fail() { printf 'identity: %s\n' "$*" >&2; exit 1; }
 
 dir=${1:?usage: install-identity.sh DIRECTORY}
-if [ -n "${KILN_IDENTITY_FIXTURE:-}" ]; then
+if [ "${KILN_IDENTITY_CHECK_ONLY:-}" = 1 ]; then
+  case "$dir" in
+    /tmp/kiln-deploy.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) ;;
+    *) fail 'refusing to operate outside the deploy directory' ;;
+  esac
+  prefix=
+elif [ -n "${KILN_IDENTITY_FIXTURE:-}" ]; then
   prefix=${KILN_IDENTITY_FIXTURE}
 else
   case "$dir" in
@@ -83,6 +89,10 @@ printf '%s\n' "$filename_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || fail 
 [ "$target" = "x86_64-unknown-linux-gnu" ] || fail 'unexpected identity target'
 package_version=$("$extract/bin/kiln-identity" --version) || fail 'packaged identity version failed'
 [ "$package_version" = "kiln-identity $filename_version" ] || fail "packaged identity reports $package_version"
+if [ "${KILN_IDENTITY_CHECK_ONLY:-}" = 1 ]; then
+  printf 'identity inputs %s\n' "$filename_version"
+  exit 0
+fi
 package=$extract/bin/kiln-identity
 version=$filename_version
 

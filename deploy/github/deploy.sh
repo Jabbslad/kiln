@@ -7,7 +7,10 @@ script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
 ssh_sh=${KILN_SSH_SH:-$script_dir/ssh.sh}
 # shellcheck source=/dev/null
 source "$script_dir/guard.sh"
-guard_github_event deploy
+# A dry run checks the files deploy would copy. It does not SSH.
+if [ "${KILN_DEPLOY_DRY_RUN:-}" != 1 ]; then
+  guard_github_event deploy
+fi
 
 tag=${KILN_RELEASE_TAG:-latest}
 address=${KILN_ADDRESS:-}
@@ -69,7 +72,11 @@ remote=
 cleanup() {
   rm -rf "$work"
   if [ -n "$remote" ]; then
-    bash "$ssh_sh" ssh -- rm -rf -- "$remote" || true
+    if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
+      rm -rf -- "$remote"
+    else
+      bash "$ssh_sh" ssh -- rm -rf -- "$remote" || true
+    fi
   fi
 }
 trap cleanup EXIT
@@ -85,24 +92,48 @@ fetch_asset() {
     sha256sum -c "${name}.sha256"
   )
 }
-fetch_asset "$asset"
-fetch_asset "$identity"
 
-remote=$(bash "$ssh_sh" ssh -- mktemp -d /tmp/kiln-deploy.XXXXXX)
+put() {
+  if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
+    cp -- "$1" "$2"
+  else
+    bash "$ssh_sh" scp "$1" "$2"
+  fi
+}
+
+if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
+  dist=${KILN_DEPLOY_DIST:-}
+  [ -n "$dist" ] || fail 'dry run needs KILN_DEPLOY_DIST'
+  for name in "$asset" "${asset}.sha256" "$identity" "${identity}.sha256"; do
+    [ -f "$dist/$name" ] || fail "missing deploy input ${name}"
+    cp -- "$dist/$name" "$work/$name"
+  done
+  remote=$(mktemp -d /tmp/kiln-deploy.XXXXXX)
+else
+  fetch_asset "$asset"
+  fetch_asset "$identity"
+  remote=$(bash "$ssh_sh" ssh -- mktemp -d /tmp/kiln-deploy.XXXXXX)
+fi
 case "$remote" in
   /tmp/kiln-deploy.[A-Za-z0-9]*) ;;
   *) fail "unexpected remote directory: ${remote}" ;;
 esac
-bash "$ssh_sh" scp "$work/$asset" "$remote/$asset"
-bash "$ssh_sh" scp "$work/${asset}.sha256" "$remote/${asset}.sha256"
-bash "$ssh_sh" scp "$work/$identity" "$remote/$identity"
-bash "$ssh_sh" scp "$work/${identity}.sha256" "$remote/${identity}.sha256"
-bash "$ssh_sh" scp "$script_dir/install-identity.sh" "$remote/install-identity.sh"
+put "$work/$asset" "$remote/$asset"
+put "$work/${asset}.sha256" "$remote/${asset}.sha256"
+put "$work/$identity" "$remote/$identity"
+put "$work/${identity}.sha256" "$remote/${identity}.sha256"
+put "$script_dir/install-identity.sh" "$remote/install-identity.sh"
 if [ "$tag" = "v0.4.4" ]; then
-  bash "$ssh_sh" scp "$repo_root/deploy/install.sh" "$remote/installer.sh"
+  put "$repo_root/deploy/install.sh" "$remote/installer.sh"
 fi
-bash "$ssh_sh" scp "$script_dir/install-remote.sh" "$remote/install-remote.sh"
-bash "$ssh_sh" scp "$script_dir/smoke.sh" "$remote/smoke.sh"
+put "$script_dir/install-remote.sh" "$remote/install-remote.sh"
+put "$script_dir/smoke.sh" "$remote/smoke.sh"
+if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
+  KILN_IDENTITY_CHECK_ONLY=1 bash "$remote/install-identity.sh" "$remote"
+  KILN_INSTALL_CHECK_ONLY=1 bash "$remote/install-remote.sh" "$remote"
+  printf 'deploy inputs %s\n' "$tag"
+  exit 0
+fi
 if [ -n "$address" ]; then
   bash "$ssh_sh" ssh -- bash "$remote/install-remote.sh" "$remote" "$address"
 else
