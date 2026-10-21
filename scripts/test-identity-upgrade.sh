@@ -498,39 +498,70 @@ if [ ! -f "$files/\$name" ]; then
 fi
 cp "$files/\$name" "\$out"
 EOF
-  cat > "$work/ssh.sh" << EOF
+  cat > "$work/stubs/ssh" << EOF
 #!/bin/bash
-printf '%s\\n' "\$*" >> "$work/ssh.log"
-if [ "\$1" = scp ]; then
-  mkdir -p -- "\$(dirname -- "\$3")"
-  cp -- "\$2" "\$3"
-  exit 0
-fi
-if [ "\$1" = ssh ]; then
+printf '%s\\n' "ssh \$*" >> "$work/ssh.log"
+case " \$* " in
+  *" -M "*|*ControlMaster=yes*)
+    exit 0
+    ;;
+  *" -O exit "*)
+    exit 0
+    ;;
+esac
+while [ \$# -gt 0 ]; do
+  if [ "\$1" = -- ]; then
+    shift
+    if [ "\${1:-}" = mktemp ]; then
+      shift
+      mktemp "\$@"
+      exit 0
+    fi
+    if [ "\${1:-}" = rm ]; then
+      shift
+      rm "\$@"
+      exit 0
+    fi
+    exit 0
+  fi
   shift
-  [ "\${1:-}" = -- ] && shift
-  if [ "\${1:-}" = mktemp ]; then
-    shift
-    mktemp "\$@"
-    exit 0
-  fi
-  if [ "\${1:-}" = rm ]; then
-    shift
-    rm "\$@"
-    exit 0
-  fi
-  exit 0
-fi
-exit 1
+done
+exit 0
 EOF
-  chmod 755 "$work/stubs/curl" "$work/ssh.sh"
+  cat > "$work/stubs/scp" << EOF
+#!/bin/bash
+printf '%s\\n' "scp \$*" >> "$work/ssh.log"
+local=
+remote=
+for arg in "\$@"; do
+  case "\$arg" in
+    -*) ;;
+    *:*)
+      remote=\${arg#*:}
+      ;;
+    *)
+      local=\$arg
+      ;;
+  esac
+done
+mkdir -p -- "\$(dirname -- "\$remote")"
+cp -- "\$local" "\$remote"
+exit 0
+EOF
+  chmod 755 "$work/stubs/curl" "$work/stubs/ssh" "$work/stubs/scp"
   : > "$work/ssh.log"
 }
 
 run_deploy() {
   set +e
   env -u GITHUB_EVENT_NAME -u GITHUB_REF -u GITHUB_REPOSITORY -u KILN_ADDRESS \
-    PATH="$work/stubs:$PATH" KILN_RELEASE_TAG=v0.4.16 KILN_SSH_SH="$work/ssh.sh" \
+    PATH="$work/stubs:$PATH" \
+    DARK_FORGE_SSH_KEY='-----BEGIN PRIVATE KEY-----
+fake
+-----END PRIVATE KEY-----' \
+    DARK_FORGE_KNOWN_HOSTS='dark-forge.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHRlc3Q=' \
+    KILN_RELEASE_TAG=v0.4.16 \
+    KILN_SSH_CONTROL_PATH="$work/kiln-ssh-control" \
     bash "$root/deploy/github/deploy.sh" >"$work/out" 2>"$work/err"
   rc=$?
   set -e
