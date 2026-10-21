@@ -10,8 +10,8 @@ use axum::{
     routing::{get, post},
 };
 use kiln_api::{
-    Action, ApiError, BoxView, Operation, OperationState, Outcome, Submit, TemplateView,
-    valid_alias, valid_id,
+    Action, ApiError, BoxView, CheckpointView, Operation, OperationState, Outcome, Submit,
+    TemplateView, valid_alias, valid_id,
 };
 use kiln_runtime::{
     isolation,
@@ -179,6 +179,26 @@ impl Host {
             Action::Exec { id, request } => {
                 return self.runtime.exec(&id, request).await.map(Outcome::Exec);
             }
+            Action::Checkpoint { id } => {
+                let snapshot = self.runtime.checkpoint(&id).await?;
+                return Ok(Outcome::Checkpoint(CheckpointView {
+                    id: snapshot.id,
+                    box_id: snapshot.source_box,
+                }));
+            }
+            Action::Restore {
+                id,
+                checkpoint,
+                acknowledge_external_state_replay,
+            } => {
+                if !acknowledge_external_state_replay {
+                    return Err(kiln_runtime::Error::Invalid(
+                        "restore rewinds memory and disk, not external systems; pass --acknowledge-external-state-replay"
+                            .into(),
+                    ));
+                }
+                self.runtime.restore(&id, &checkpoint).await?
+            }
         };
         Ok(Outcome::Box(view(record)))
     }
@@ -245,6 +265,24 @@ impl Host {
                 disk_bytes: snapshot_disk(&self.runtime_dir, id).and_then(file_len),
             });
         }
+        let isolated = self.runtime.is_isolated();
+        let host_fingerprint = kiln_runtime::host::fingerprint().ok();
+        let mut checkpoints = Vec::new();
+        for snapshot in self.runtime.snapshots()? {
+            if snapshot.template || !valid_id(&snapshot.id) || !valid_id(&snapshot.source_box) {
+                continue;
+            }
+            checkpoints.push(crate::dashboard::CheckpointFacts {
+                id: snapshot.id.clone(),
+                box_id: snapshot.source_box,
+                created_at: snapshot_created(&self.runtime_dir, &snapshot.id).unwrap_or(0),
+                size_bytes: checkpoint_bytes(&self.runtime_dir, &snapshot.id),
+                compatible: snapshot.schema_version == 1
+                    && snapshot.isolated == isolated
+                    && host_fingerprint.as_deref() == Some(snapshot.host.as_str()),
+            });
+        }
+        checkpoints.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(crate::dashboard::document(
             "",
             &crate::dashboard::utc_timestamp(crate::dashboard::unix_now()),
@@ -253,6 +291,7 @@ impl Host {
                 boxes,
                 templates,
                 operations,
+                checkpoints,
             },
         ))
     }
@@ -291,6 +330,41 @@ fn snapshot_disk(runtime_dir: &FsPath, id: &str) -> Option<PathBuf> {
         return None;
     }
     Some(runtime_dir.join("snapshots").join(id).join("disk.ext4"))
+}
+
+fn snapshot_created(runtime_dir: &FsPath, id: &str) -> Option<i64> {
+    if !kiln_runtime::storage::valid_id(id) {
+        return None;
+    }
+    let metadata =
+        fs::symlink_metadata(runtime_dir.join("snapshots").join(id).join("snapshot.json")).ok()?;
+    if !metadata.file_type().is_file() {
+        return None;
+    }
+    let secs = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    i64::try_from(secs).ok()
+}
+
+fn checkpoint_bytes(runtime_dir: &FsPath, id: &str) -> Option<u64> {
+    if !kiln_runtime::storage::valid_id(id) {
+        return None;
+    }
+    let directory = runtime_dir.join("snapshots").join(id);
+    let mut total = 0u64;
+    let mut any = false;
+    for name in ["disk.ext4", "state.snap", "memory.snap"] {
+        let Some(len) = file_len(directory.join(name)) else {
+            continue;
+        };
+        any = true;
+        total = total.checked_add(len)?;
+    }
+    any.then_some(total)
 }
 
 fn file_len(path: PathBuf) -> Option<u64> {
