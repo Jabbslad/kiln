@@ -148,8 +148,8 @@ fn a_tag_that_differs_from_cargo_toml_cannot_publish() {
 
     let manifest = read(&root.join("Cargo.toml"));
     assert!(
-        manifest.contains("version = \"0.4.15\""),
-        "workspace version must be 0.4.15 so a v0.4.15 tag reuses main's archives"
+        manifest.contains("version = \"0.4.16\""),
+        "workspace version must be 0.4.16 so a v0.4.16 tag reuses main's archives"
     );
 
     let missing = "\
