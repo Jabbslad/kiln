@@ -42,5 +42,9 @@ grep -q 'sh scripts/test-check.sh' "$docs" \
   || fail 'check-docs.sh must run test-check.sh (docs-check parity)'
 grep -q 'sh scripts/test-tag-path-pr-stamp-order.sh' "$docs" \
   || fail 'check-docs.sh must run test-tag-path-pr-stamp-order.sh (docs-check parity)'
+grep -q 'sh scripts/test-deploy-host-tools.sh' "$docs" \
+  || fail 'check-docs.sh must run test-deploy-host-tools.sh (docs-check parity)'
+grep -q 'sh scripts/test-release-json-field.sh' "$docs" \
+  || fail 'check-docs.sh must run test-release-json-field.sh (docs-check parity)'
 
 printf 'check wiring tests ok\n'

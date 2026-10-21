@@ -25,6 +25,8 @@ sh scripts/test-installer-release.sh
 sh scripts/test-wait-main-run.sh
 sh scripts/test-tag-path-dry-run.sh
 sh scripts/test-tag-path-pr-stamp-order.sh
+sh scripts/test-deploy-host-tools.sh
+sh scripts/test-release-json-field.sh
 sh scripts/test-check-dashboard-bundle.sh
 cargo test -p kiln-server --test dashboard_self_check --locked
 sh scripts/test-releasable.sh
