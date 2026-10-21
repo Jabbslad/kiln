@@ -1879,6 +1879,422 @@ async fn lifecycle_actions_reuse_the_operation_forwarder() {
     served.server.abort();
 }
 
+#[tokio::test]
+async fn delete_reuses_the_operation_forwarder() {
+    let served = serve_operations().await;
+    let peer = "127.0.0.1:9";
+    let box_id = reserve_box(&served, peer).await;
+    let rejected_id = new_id();
+    let rejected = serde_json::to_vec(&Submit {
+        id: rejected_id.clone(),
+        action: Action::Delete { id: box_id.clone() },
+    })
+    .unwrap();
+    let (status, _, denied) = text(
+        send(
+            &served.operate.router,
+            peer,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/operations")
+                .header("content-type", "application/json")
+                .body(Body::from(rejected.clone()))
+                .unwrap(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{denied}");
+    let (status, _, csrf) = text(
+        send(
+            &served.operate.router,
+            peer,
+            posted_operation(
+                &served.operate.session,
+                &served.operate.csrf,
+                "nope",
+                "https://app.dark-forge.dev",
+                &rejected,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{csrf}");
+    assert!(csrf.contains("invalid_csrf"), "{csrf}");
+    let (status, _, origin) = text(
+        send(
+            &served.operate.router,
+            peer,
+            posted_operation(
+                &served.operate.session,
+                &served.operate.csrf,
+                &served.operate.csrf,
+                "https://evil.example",
+                &rejected,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{origin}");
+    assert!(origin.contains("invalid_origin"), "{origin}");
+    let (status, _, scoped) = text(
+        send(
+            &served.read.router,
+            peer,
+            posted_operation(
+                &served.read.session,
+                &served.read.csrf,
+                &served.read.csrf,
+                "https://app.dark-forge.dev",
+                &rejected,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{scoped}");
+    assert!(scoped.contains("insufficient_scope"), "{scoped}");
+    assert_eq!(rows_for(&served.journal, &rejected_id), 0);
+    let foreign_id = new_id();
+    let foreign_box = new_id();
+    let foreign = serde_json::to_vec(&Submit {
+        id: foreign_id.clone(),
+        action: Action::Delete { id: foreign_box },
+    })
+    .unwrap();
+    let (status, _, missing) = text(
+        send(
+            &served.operate.router,
+            peer,
+            create_request(
+                &served.operate.session,
+                &served.operate.csrf,
+                &served.operate.csrf,
+                &foreign,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    assert!(missing.contains("not_found"), "{missing}");
+    assert_eq!(
+        rows_for(&served.journal, &foreign_id),
+        0,
+        "another user's box is not journaled"
+    );
+    assert_eq!(create_rows(&served.journal), 1);
+    let delete_id = new_id();
+    let body = serde_json::to_vec(&Submit {
+        id: delete_id.clone(),
+        action: Action::Delete { id: box_id.clone() },
+    })
+    .unwrap();
+    let post = || {
+        create_request(
+            &served.operate.session,
+            &served.operate.csrf,
+            &served.operate.csrf,
+            &body,
+        )
+    };
+    let (status, _, accepted) = text(send(&served.operate.router, peer, post()).await).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+    let (status, _, replay) = text(send(&served.operate.router, peer, post()).await).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&replay).unwrap()["id"],
+        delete_id
+    );
+    assert_eq!(rows_for(&served.journal, &delete_id), 1);
+    let changed = serde_json::to_vec(&Submit {
+        id: delete_id.clone(),
+        action: Action::Pause { id: box_id.clone() },
+    })
+    .unwrap();
+    let (status, _, conflict) = text(
+        send(
+            &served.operate.router,
+            peer,
+            create_request(
+                &served.operate.session,
+                &served.operate.csrf,
+                &served.operate.csrf,
+                &changed,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+    assert_eq!(rows_for(&served.journal, &delete_id), 1);
+    let outcomes: Vec<_> = served
+        .operate
+        .audit
+        .records()
+        .into_iter()
+        .map(|record| record.outcome)
+        .collect();
+    assert!(outcomes.contains(&"unauthorized"), "{outcomes:?}");
+    assert!(outcomes.contains(&"invalid_csrf"), "{outcomes:?}");
+    assert!(outcomes.contains(&"invalid_origin"), "{outcomes:?}");
+    assert!(
+        outcomes.contains(&"forwarded"),
+        "audit line missing for delete"
+    );
+    assert!(
+        served
+            .operate
+            .audit
+            .records()
+            .iter()
+            .any(|record| record.outcome == "forwarded" && record.request_id == delete_id),
+        "delete audit line missing"
+    );
+    assert!(
+        served
+            .read
+            .audit
+            .records()
+            .iter()
+            .any(|record| record.outcome == "forwarded" && record.request_id == rejected_id),
+        "a read-scoped delete is audited and still refused"
+    );
+    served.server.abort();
+}
+
+#[tokio::test]
+async fn exec_reuses_the_operation_forwarder() {
+    let served = serve_operations().await;
+    let peer = "127.0.0.1:9";
+    let box_id = reserve_box(&served, peer).await;
+    plant_stopped_box(served._root.path(), &box_id);
+    let rejected_id = new_id();
+    let rejected = exec_body(&rejected_id, &box_id);
+    let (status, _, denied) = text(
+        send(
+            &served.operate.router,
+            peer,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/operations")
+                .header("content-type", "application/json")
+                .body(Body::from(rejected.clone()))
+                .unwrap(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{denied}");
+    let (status, _, csrf) = text(
+        send(
+            &served.operate.router,
+            peer,
+            posted_operation(
+                &served.operate.session,
+                &served.operate.csrf,
+                "nope",
+                "https://app.dark-forge.dev",
+                &rejected,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{csrf}");
+    assert!(csrf.contains("invalid_csrf"), "{csrf}");
+    let (status, _, origin) = text(
+        send(
+            &served.operate.router,
+            peer,
+            posted_operation(
+                &served.operate.session,
+                &served.operate.csrf,
+                &served.operate.csrf,
+                "https://evil.example",
+                &rejected,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{origin}");
+    assert!(origin.contains("invalid_origin"), "{origin}");
+    let (status, _, scoped) = text(
+        send(
+            &served.read.router,
+            peer,
+            posted_operation(
+                &served.read.session,
+                &served.read.csrf,
+                &served.read.csrf,
+                "https://app.dark-forge.dev",
+                &rejected,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{scoped}");
+    assert!(scoped.contains("insufficient_scope"), "{scoped}");
+    assert_eq!(rows_for(&served.journal, &rejected_id), 0);
+    let foreign_id = new_id();
+    let foreign = exec_body(&foreign_id, &new_id());
+    let (status, _, missing) = text(
+        send(
+            &served.operate.router,
+            peer,
+            create_request(
+                &served.operate.session,
+                &served.operate.csrf,
+                &served.operate.csrf,
+                &foreign,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    assert!(missing.contains("not_found"), "{missing}");
+    assert_eq!(rows_for(&served.journal, &foreign_id), 0);
+    let exec_id = new_id();
+    let body = exec_body(&exec_id, &box_id);
+    let post = || {
+        create_request(
+            &served.operate.session,
+            &served.operate.csrf,
+            &served.operate.csrf,
+            &body,
+        )
+    };
+    let (status, _, accepted) = text(send(&served.operate.router, peer, post()).await).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+    let (status, _, replay) = text(send(&served.operate.router, peer, post()).await).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(rows_for(&served.journal, &exec_id), 1);
+    let mut terminal = String::new();
+    let mut polled = String::new();
+    for _ in 0..100 {
+        let (status, _, body) = text(
+            send(
+                &served.operate.router,
+                peer,
+                Request::builder()
+                    .uri(format!("/v1/operations/{exec_id}"))
+                    .header(
+                        "cookie",
+                        format!(
+                            "__Host-kiln_app={}; __Host-kiln_csrf={}",
+                            served.operate.session, served.operate.csrf
+                        ),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        polled = body;
+        terminal = serde_json::from_str::<serde_json::Value>(&polled).unwrap()["state"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        if terminal != "running" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(terminal, "unknown", "{polled}");
+    let value: serde_json::Value = serde_json::from_str(&polled).unwrap();
+    assert!(value["result"].is_null(), "{polled}");
+    assert!(!polled.contains("kiln-exec-canary"), "{polled}");
+    assert_eq!(rows_for(&served.journal, &exec_id), 1);
+    let outcomes: Vec<_> = served
+        .operate
+        .audit
+        .records()
+        .into_iter()
+        .map(|record| record.outcome)
+        .collect();
+    assert!(outcomes.contains(&"unauthorized"), "{outcomes:?}");
+    assert!(outcomes.contains(&"invalid_csrf"), "{outcomes:?}");
+    assert!(outcomes.contains(&"invalid_origin"), "{outcomes:?}");
+    assert!(
+        served
+            .operate
+            .audit
+            .records()
+            .iter()
+            .any(|record| record.outcome == "forwarded" && record.request_id == exec_id),
+        "exec audit line missing"
+    );
+    assert!(
+        served
+            .read
+            .audit
+            .records()
+            .iter()
+            .any(|record| record.outcome == "forwarded" && record.request_id == rejected_id),
+        "a read-scoped exec is audited and still refused"
+    );
+    served.server.abort();
+}
+
+fn exec_body(id: &str, box_id: &str) -> Vec<u8> {
+    serde_json::to_vec(&Submit {
+        id: id.to_owned(),
+        action: Action::Exec {
+            id: box_id.to_owned(),
+            request: kiln_api::ExecRequest {
+                argv: vec!["/bin/printf".into(), "kiln-exec-canary".into()],
+                cwd: None,
+                env: Default::default(),
+                timeout_ms: 1000,
+            },
+        },
+    })
+    .unwrap()
+}
+
+fn plant_stopped_box(root: &Path, id: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = root.join("runtime").join("boxes").join(id);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let record = serde_json::json!({
+        "schema_version": 1,
+        "id": id,
+        "name": "stopped",
+        "state": "stopped",
+        "run": new_id(),
+        "process": null,
+        "image": {
+            "schema_version": 1,
+            "architecture": "x86_64",
+            "kernel_path": "kernel",
+            "kernel_sha256": "ab".repeat(32),
+            "rootfs_path": "rootfs",
+            "rootfs_sha256": "cd".repeat(32),
+            "agent_protocol_version": 1
+        },
+        "host": "test",
+        "memory_mib": 256,
+        "vcpus": 1,
+        "source": null,
+        "operation": null,
+        "last_error": null,
+        "disk_copy": ""
+    });
+    std::fs::write(
+        directory.join("box.json"),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+}
+
 async fn reserve_box(served: &ServedOperations, peer: &str) -> String {
     let body = serde_json::to_vec(&Submit {
         id: new_id(),
