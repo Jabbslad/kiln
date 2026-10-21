@@ -234,7 +234,9 @@ it('shows the host failure message when create returns failed', async () => {
   const dialog = screen.getByRole('dialog')
   await user.type(within(dialog).getByRole('textbox', { name: 'Box name' }), 'jamie')
   await user.click(within(dialog).getByRole('button', { name: 'Create box' }))
-  expect(await within(dialog).findByRole('alert')).toHaveTextContent('Template disk is unavailable.')
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    'Template disk is unavailable.',
+  )
   expect(within(dialog).queryByText(/still in progress/i)).not.toBeInTheDocument()
   expect(screen.getByRole('dialog')).toBeInTheDocument()
 })
