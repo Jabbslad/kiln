@@ -110,7 +110,7 @@ cargo test -p kiln-server --test app_listener --locked -- --nocapture \
   a_signed_in_operate_session_reaches_the_host
 ```
 
-Deploy and smoke validate live host metrics with `kiln-api self-check`, which deserializes the dashboard in Rust and checks `host.metrics.cpu_percent` and `host.metrics.memory_bytes` (and running-box metrics during smoke). No shell JSON parsing on the host.
+Deploy and smoke validate live host metrics with `kiln-api self-check`, which deserializes the same `dashboard::Document` the server publishes and checks only `host.metrics.cpu_percent` and `host.metrics.memory_bytes` (running-box CPU may be null on the first read after restart). No shell JSON parsing on the host.
 
 ```sh
 cargo test -p kiln-server --test dashboard_self_check --locked
