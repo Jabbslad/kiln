@@ -203,13 +203,15 @@ jobs:
             scripts/check-tag-version.sh scripts/reuse-server-check.sh
 
   # A v* tag publishes main's packages for that commit when the run verifies.
+  # A main run that is still in progress is polled for 15 minutes.
   # A miss falls through to the cache-free package jobs.
   reuse:
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
       (github.event_name == 'workflow_dispatch' && inputs.dry_run)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # 15 minutes of polling, plus the previous budget for download and attest.
+    timeout-minutes: 35
     permissions:
       contents: read
       actions: read

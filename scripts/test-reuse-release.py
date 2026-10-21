@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import urllib.request
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -476,6 +477,258 @@ class ReuseDecisionTests(unittest.TestCase):
             self.assertIn("mode=fallback", output)
             self.assertNotIn("gh release", output)
             self.assertNotIn("ghp_", output + completed.stderr)
+
+    def test_in_progress_main_run_waits_then_reuses_or_falls_back(self):
+        """A null conclusion means the main run is still going, so wait for it."""
+        item = {
+            "databaseId": 8,
+            "headSha": SHA,
+            "headBranch": "main",
+            "event": "push",
+            "path": reuse.WORKFLOW_PATH,
+            "conclusion": None,
+            "status": "in_progress",
+        }
+        pending = reuse.parse_runs([item])
+        self.assertEqual(len(pending), 1)
+        self.assertIsNone(pending[0].conclusion)
+        with self.assertRaises(reuse.ReuseRefused) as caught:
+            reuse.parse_runs([{**item, "conclusion": 1}])
+        self.assertEqual(str(caught.exception), "conclusion is not a string")
+        self.assertEqual(reuse.WAIT_LIMIT, timedelta(minutes=15))
+
+        success = _run(run_id=8)
+        failure = _run(run_id=8, conclusion="failure")
+        cancelled = _run(run_id=8, conclusion="cancelled")
+        still = _run(run_id=8, conclusion=None, status="in_progress")
+
+        chosen, logs, exc, slept = _drive((success,))
+        self.assertIsNone(exc)
+        self.assertEqual(chosen.run_id, 8)
+        self.assertEqual(chosen.conclusion, "success")
+        self.assertEqual(chosen.status, "completed")
+        self.assertEqual(
+            logs,
+            [
+                "reuse waiting: main run 8 is in progress",
+                "reuse reusing main run 8",
+            ],
+        )
+        self.assertEqual(slept, 1)
+
+        chosen, logs, exc, slept = _drive((failure,))
+        self.assertIsNone(chosen)
+        self.assertEqual(slept, 1)
+        self.assertEqual(logs, ["reuse waiting: main run 8 is in progress"])
+        self.assertEqual(str(exc), "main run 8 failed")
+        self.assertEqual(f"reuse refused: {exc}", "reuse refused: main run 8 failed")
+
+        chosen, logs, exc, slept = _drive((cancelled,))
+        self.assertIsNone(chosen)
+        self.assertEqual(slept, 1)
+        self.assertEqual(logs, ["reuse waiting: main run 8 is in progress"])
+        self.assertEqual(str(exc), "main run 8 was cancelled")
+        self.assertEqual(f"reuse refused: {exc}", "reuse refused: main run 8 was cancelled")
+
+        chosen, logs, exc, slept = _drive((still,))
+        self.assertIsNone(chosen)
+        self.assertEqual(logs, ["reuse waiting: main run 8 is in progress"])
+        self.assertEqual(str(exc), "timed out waiting for main run 8")
+        self.assertEqual(
+            f"reuse refused: {exc}",
+            "reuse refused: timed out waiting for main run 8",
+        )
+        self.assertEqual(slept, int(reuse.WAIT_LIMIT / reuse.POLL_INTERVAL))
+
+        fast_logs = []
+        fast_sleeps = {"n": 0}
+
+        def fast_sleep(seconds):
+            fast_sleeps["n"] += 1
+
+        fast = reuse.wait_for_main(
+            (_run(run_id=9),),
+            SHA,
+            clock=lambda: NOW,
+            poll=lambda run_id: _run(run_id=run_id),
+            sleep=fast_sleep,
+            log=fast_logs.append,
+        )
+        self.assertEqual(fast.run_id, 9)
+        self.assertEqual(fast_logs, [])
+        self.assertEqual(fast_sleeps["n"], 0)
+
+        body = _job_body((REPO / ".github/workflows/build.yml").read_text(encoding="utf-8"), "reuse")
+        timeout = next(line for line in body if "timeout-minutes:" in line)
+        minutes = int(timeout.split(":", 1)[1].strip())
+        self.assertGreaterEqual(minutes, 20 + int(reuse.WAIT_LIMIT.total_seconds() // 60))
+
+
+def _drive(snapshots):
+    """Poll a run that starts in progress. snapshots are the later observations."""
+    logs = []
+    state = {"now": NOW, "slept": 0, "index": 0}
+
+    def clock():
+        return state["now"]
+
+    def sleep(seconds):
+        if seconds != reuse.POLL_INTERVAL.total_seconds():
+            raise AssertionError(f"poll interval {seconds}")
+        state["slept"] += 1
+        state["now"] += timedelta(seconds=seconds)
+
+    def poll(run_id):
+        if run_id != 8:
+            raise AssertionError(f"polled {run_id}")
+        snapshot = snapshots[min(state["index"], len(snapshots) - 1)]
+        state["index"] += 1
+        return snapshot
+
+    try:
+        chosen = reuse.wait_for_main(
+            (_run(run_id=8, conclusion=None, status="in_progress"),),
+            SHA,
+            clock=clock,
+            poll=poll,
+            sleep=sleep,
+            log=logs.append,
+        )
+    except reuse.ReuseRefused as exc:
+        return None, logs, exc, state["slept"]
+    return chosen, logs, None, state["slept"]
+
+
+def _github_json(url):
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "kiln-reuse-test",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = json.load(response)
+    if not isinstance(payload, dict):
+        raise AssertionError(f"github response is not an object: {url}")
+    return payload
+
+
+class HistoricalReuseTests(unittest.TestCase):
+    def test_tag_run_39523146863_would_reuse_main_for_910a466(self):
+        """v0.4.15 asked while main's run was open. Waiting would have reused it."""
+        sha = "910a466315f2708b02502363ab694aceb8aa471a"
+        tag = _github_json("https://api.github.com/repos/Jabbslad/kiln/actions/runs/39523146863")
+        self.assertEqual(tag["id"], 39523146863)
+        self.assertEqual(tag["head_sha"], sha)
+        listed = _github_json(
+            "https://api.github.com/repos/Jabbslad/kiln/actions/runs"
+            f"?head_sha={sha}&per_page=20"
+        )
+        main_runs = [
+            run
+            for run in listed["workflow_runs"]
+            if run["head_sha"] == sha
+            and run["head_branch"] == "main"
+            and run["event"] == "push"
+            and run["path"] == reuse.WORKFLOW_PATH
+        ]
+        self.assertEqual([run["id"] for run in main_runs], [39523085432])
+        main_run = main_runs[0]
+        self.assertEqual(main_run["conclusion"], "success")
+        self.assertEqual(main_run["status"], "completed")
+
+        tag_jobs = _github_json(
+            "https://api.github.com/repos/Jabbslad/kiln/actions/runs/39523146863/jobs?per_page=100"
+        )
+        reuse_jobs = [job for job in tag_jobs["jobs"] if job["name"] == "reuse"]
+        self.assertEqual(len(reuse_jobs), 1)
+        decided_at = _timestamp(reuse_jobs[0]["completed_at"])
+        self.assertLess(_timestamp(main_run["run_started_at"]), decided_at)
+        self.assertGreater(_timestamp(main_run["updated_at"]), decided_at)
+
+        main_jobs = _github_json(
+            "https://api.github.com/repos/Jabbslad/kiln/actions/runs/39523085432/jobs?per_page=100"
+        )
+        server = [job["conclusion"] for job in main_jobs["jobs"] if job["name"] == "server-check"]
+        self.assertEqual(server, ["success"])
+
+        refusal = _historical_refusal(reuse_jobs[0]["id"])
+        if refusal is not None:
+            self.assertIn("reuse refused: conclusion is not a string", refusal)
+
+        finished = reuse.parse_api_run(main_run)
+        self.assertEqual(finished.run_id, 39523085432)
+        self.assertEqual(finished.conclusion, "success")
+        pending_payload = dict(main_run)
+        pending_payload["conclusion"] = None
+        pending_payload["status"] = "in_progress"
+        pending = reuse.parse_api_run(pending_payload)
+        self.assertIsNone(pending.conclusion)
+        self.assertEqual(pending.run_id, finished.run_id)
+
+        logs = []
+        clock_at = {"t": decided_at}
+
+        def clock():
+            return clock_at["t"]
+
+        def sleep(seconds):
+            self.assertEqual(seconds, reuse.POLL_INTERVAL.total_seconds())
+            clock_at["t"] += timedelta(seconds=seconds)
+
+        def poll(run_id):
+            self.assertEqual(run_id, finished.run_id)
+            return finished
+
+        chosen = reuse.wait_for_main(
+            (pending,),
+            sha,
+            clock=clock,
+            poll=poll,
+            sleep=sleep,
+            log=logs.append,
+        )
+        self.assertIs(chosen, finished)
+        self.assertEqual(
+            logs,
+            [
+                "reuse waiting: main run 39523085432 is in progress",
+                "reuse reusing main run 39523085432",
+            ],
+        )
+        self.assertLess(clock_at["t"], decided_at + reuse.WAIT_LIMIT)
+
+
+def _timestamp(text):
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+def _historical_refusal(job_id):
+    """The tag run's reuse log, when Actions read permission is available."""
+    try:
+        completed = subprocess.run(
+            [
+                "gh",
+                "run",
+                "view",
+                "--repo",
+                "Jabbslad/kiln",
+                "--job",
+                str(job_id),
+                "--log",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
 
 
 if __name__ == "__main__":
