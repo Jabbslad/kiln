@@ -30,7 +30,7 @@ import {
 
 const tabs = ['Terminal', 'Exec', 'Previews', 'Checkpoints', 'Metrics', 'Activity']
 
-export default function BoxDetail({ data, preview }: PageProps) {
+export default function BoxDetail({ data, preview, onObserved }: PageProps) {
   const { id } = useParams()
   const [params, setParams] = useSearchParams()
   const requestedTab = params.get('tab') ?? 'terminal'
@@ -310,6 +310,8 @@ export default function BoxDetail({ data, preview }: PageProps) {
           action={action}
           box={box}
           preview={preview}
+          authenticated={!preview && data.host.state === 'online'}
+          onObserved={onObserved}
           onClose={() => setAction(null)}
         />
       )}

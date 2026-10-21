@@ -225,7 +225,14 @@ function Dashboard() {
                     />
                     <Route
                       path="/boxes/:id"
-                      element={<BoxDetail key={location.pathname} data={data} preview={preview} />}
+                      element={
+                        <BoxDetail
+                          key={location.pathname}
+                          data={data}
+                          preview={preview}
+                          onObserved={observe}
+                        />
+                      }
                     />
                     <Route
                       path="/templates"

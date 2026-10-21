@@ -19,9 +19,9 @@ Open `/` for the public landing page (no API requests), `/boxes` for the live co
 
 ## Delivery boundary
 
-Implemented: responsive inventory, search and sorting, state filters, box detail tabs, template selection and create form validation, create submission when the console is live and the host is online, same-box checkpoint/restore confirmation, lifecycle explanations, operation details, loading/empty/error states, settings, and the console guide.
+Implemented: responsive inventory, search and sorting, state filters, box detail tabs, template selection and create form validation, create, pause, resume, stop (optional force) and start when the console is live and the host is online, same-box checkpoint/restore confirmation, lifecycle explanations, operation details, loading/empty/error states, settings, and the console guide.
 
-**Create is the one mutation this console sends.** A live authenticated console (`GET /api/v1/dashboard` succeeded and the host is `online`, not preview) can submit Create box. The button stays disabled in preview, while disconnected, and while the host is offline. Lifecycle actions, restore, exec, terminal sessions, SSH, secrets, and HTTP preview routing stay unavailable. Their controls never report success or mutate fixture state. A created box is added to the inventory only after a later dashboard response contains it.
+**Create, pause, resume, stop, and start are the mutations this console sends.** A live authenticated console (`GET /api/v1/dashboard` succeeded and the host is `online`, not preview) can submit them. Stop includes an optional force flag. The buttons stay disabled in preview, while disconnected, and while the host is offline. Delete, exec, restore, terminal sessions, SSH, secrets, and HTTP preview routing stay unavailable. Their controls never report success or mutate fixture state. A created box is added to the inventory only after a later dashboard response contains it. A lifecycle action changes the displayed box state only after a later dashboard response reports that state.
 
 Preview mode uses `src/fixtures.ts`, is labelled across all screens, makes no API requests, and is never automatically entered on a failed connection. Example resource sizes and host status are not claims about the local runtime.
 
@@ -62,11 +62,11 @@ The server, **not** frontend filters, must enforce workspace ownership. Do not i
 
 For deployment, serve `dist/` behind the same authenticated origin as the API. Route `/api/` to the service before the SPA fallback; route other application paths to `index.html` so deep links work. Apply authorization to terminal, preview, snapshot, metrics and exec endpoints independently. The frontend is not an authentication barrier.
 
-Create box is the only mutation wired through. `kiln-app` forwards `POST /v1/operations` and `GET /v1/operations/{id}` to the existing host create path. The host journal supplies the request-id idempotency and the single box reservation. Cookie writes reuse the logout origin and `__Host-kiln_csrf` check. Each operation attempt appends an audit line. The browser posts one create, polls the operation, and renders the box only when a following `GET /api/v1/dashboard` contains it. A timeout or a failed operation does not invent a box.
+Create, pause, resume, stop, and start are wired through the same helper. `kiln-app` already forwards `POST /v1/operations` and `GET /v1/operations/{id}` to the host journal. The host journal supplies the request-id idempotency and the single box reservation. Cookie writes reuse the logout origin and `__Host-kiln_csrf` check. Each operation attempt appends an audit line. The browser posts one operation, polls it, and renders the box only when a following `GET /api/v1/dashboard` contains the observed result. Stop sends `force: true` only when that option is selected. A timeout or a failed operation does not invent a box. An operation outcome of `unknown` is shown as unknown and does not change the displayed state.
 
-That forwarder sends the current `__Host-kiln_app` session as it is. Identity still issues that session with read scope, and the gateway accepts writes only with operate scope, so a signed-in dashboard cannot create a box until identity grants an operate-scoped dashboard session or a separate step-up. This console does not change that.
+That forwarder sends the current `__Host-kiln_app` session as it is. Identity still issues that session with read scope, and the gateway accepts writes only with operate scope, so a signed-in dashboard cannot run these actions until identity grants an operate-scoped dashboard session or a separate step-up. This console does not change that.
 
-Lifecycle mutations and same-box restore are not forwarded by the console. Same-box restore still requires explicit rollback acknowledgement and must not become an unrestricted clone action. Never optimistically mark a box running. A timeout is an unknown outcome, not proof that a command did not run.
+Delete, exec, and same-box restore are not forwarded by the console. Same-box restore still requires explicit rollback acknowledgement and must not become an unrestricted clone action. Never optimistically mark a box running. A timeout is an unknown outcome, not proof that a command did not run.
 
 ## Verify
 

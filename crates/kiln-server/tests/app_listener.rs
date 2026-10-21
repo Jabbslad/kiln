@@ -1399,8 +1399,16 @@ async fn an_expired_cookie_write_is_refused_before_the_host() {
     );
 }
 
-#[tokio::test]
-async fn create_box_checks_session_and_csrf_and_reserves_one_box() {
+struct ServedOperations {
+    _root: tempfile::TempDir,
+    operate: app_listener::OperateSession,
+    read: app_listener::OperateSession,
+    journal: std::path::PathBuf,
+    hits: Arc<AtomicUsize>,
+    server: tokio::task::JoinHandle<()>,
+}
+
+async fn serve_operations() -> ServedOperations {
     use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -1463,6 +1471,7 @@ async fn create_box_checks_session_and_csrf_and_reserves_one_box() {
             },
         ));
     let (port, ca_pem) = listen_tls(gateway).await;
+    let journal = config.journal_dir.join("operations.sqlite");
     let operate = app_listener::router_with_operate_session(
         auth,
         &format!("https://127.0.0.1:{port}"),
@@ -1479,7 +1488,23 @@ async fn create_box_checks_session_and_csrf_and_reserves_one_box() {
         &token(&key, "owner-a", Scope::Read),
     )
     .unwrap();
-    let journal = config.journal_dir.join("operations.sqlite");
+    ServedOperations {
+        _root: root,
+        operate,
+        read,
+        journal,
+        hits,
+        server,
+    }
+}
+
+#[tokio::test]
+async fn create_box_checks_session_and_csrf_and_reserves_one_box() {
+    let served = serve_operations().await;
+    let operate = &served.operate;
+    let read = &served.read;
+    let journal = served.journal.clone();
+    let hits = &served.hits;
     let id = new_id();
     let body = serde_json::to_vec(&Submit {
         id: id.clone(),
@@ -1657,7 +1682,273 @@ async fn create_box_checks_session_and_csrf_and_reserves_one_box() {
             .iter()
             .any(|record| record.outcome == "forwarded" && record.request_id == id)
     );
-    server.abort();
+    served.server.abort();
+}
+
+#[tokio::test]
+async fn lifecycle_actions_reuse_the_operation_forwarder() {
+    let served = serve_operations().await;
+    let peer = "127.0.0.1:9";
+    let box_id = reserve_box(&served, peer).await;
+    let rejected_id = new_id();
+    let rejected = serde_json::to_vec(&Submit {
+        id: rejected_id.clone(),
+        action: Action::Pause { id: box_id.clone() },
+    })
+    .unwrap();
+    let (status, _, denied) = text(
+        send(
+            &served.operate.router,
+            peer,
+            Request::builder()
+                .method("POST")
+                .uri("/v1/operations")
+                .header("content-type", "application/json")
+                .body(Body::from(rejected.clone()))
+                .unwrap(),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{denied}");
+    let (status, _, csrf) = text(
+        send(
+            &served.operate.router,
+            peer,
+            posted_operation(
+                &served.operate.session,
+                &served.operate.csrf,
+                "nope",
+                "https://app.dark-forge.dev",
+                &rejected,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{csrf}");
+    assert!(csrf.contains("invalid_csrf"), "{csrf}");
+    let (status, _, origin) = text(
+        send(
+            &served.operate.router,
+            peer,
+            posted_operation(
+                &served.operate.session,
+                &served.operate.csrf,
+                &served.operate.csrf,
+                "https://evil.example",
+                &rejected,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{origin}");
+    assert!(origin.contains("invalid_origin"), "{origin}");
+    let (status, _, scoped) = text(
+        send(
+            &served.read.router,
+            peer,
+            posted_operation(
+                &served.read.session,
+                &served.read.csrf,
+                &served.read.csrf,
+                "https://app.dark-forge.dev",
+                &rejected,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{scoped}");
+    assert!(scoped.contains("insufficient_scope"), "{scoped}");
+    assert_eq!(
+        rows_for(&served.journal, &rejected_id),
+        0,
+        "rejected lifecycle writes must not be journaled"
+    );
+    let actions = [
+        Action::Pause { id: box_id.clone() },
+        Action::Resume { id: box_id.clone() },
+        Action::Stop {
+            id: box_id.clone(),
+            force: false,
+        },
+        Action::Start { id: box_id.clone() },
+    ];
+    for action in actions {
+        assert_one_operation(&served, peer, &box_id, action).await;
+    }
+    let conflict_id = new_id();
+    let gentle = serde_json::to_vec(&Submit {
+        id: conflict_id.clone(),
+        action: Action::Stop {
+            id: box_id.clone(),
+            force: false,
+        },
+    })
+    .unwrap();
+    let forced = serde_json::to_vec(&Submit {
+        id: conflict_id.clone(),
+        action: Action::Stop {
+            id: box_id.clone(),
+            force: true,
+        },
+    })
+    .unwrap();
+    let (status, _, accepted) = text(
+        send(
+            &served.operate.router,
+            peer,
+            create_request(
+                &served.operate.session,
+                &served.operate.csrf,
+                &served.operate.csrf,
+                &gentle,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+    let (status, _, replay) = text(
+        send(
+            &served.operate.router,
+            peer,
+            create_request(
+                &served.operate.session,
+                &served.operate.csrf,
+                &served.operate.csrf,
+                &gentle,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&replay).unwrap()["id"],
+        conflict_id
+    );
+    assert_eq!(rows_for(&served.journal, &conflict_id), 1);
+    let (status, _, conflict) = text(
+        send(
+            &served.operate.router,
+            peer,
+            create_request(
+                &served.operate.session,
+                &served.operate.csrf,
+                &served.operate.csrf,
+                &forced,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+    assert_eq!(rows_for(&served.journal, &conflict_id), 1);
+    assert_one_operation(
+        &served,
+        peer,
+        &box_id,
+        Action::Stop {
+            id: box_id.clone(),
+            force: true,
+        },
+    )
+    .await;
+    let outcomes: Vec<_> = served
+        .operate
+        .audit
+        .records()
+        .into_iter()
+        .map(|record| record.outcome)
+        .collect();
+    assert!(outcomes.contains(&"unauthorized"), "{outcomes:?}");
+    assert!(outcomes.contains(&"invalid_csrf"), "{outcomes:?}");
+    assert!(outcomes.contains(&"invalid_origin"), "{outcomes:?}");
+    assert!(
+        served
+            .read
+            .audit
+            .records()
+            .iter()
+            .any(|record| record.outcome == "forwarded" && record.request_id == rejected_id),
+        "a read-scoped write is audited and still refused"
+    );
+    served.server.abort();
+}
+
+async fn reserve_box(served: &ServedOperations, peer: &str) -> String {
+    let body = serde_json::to_vec(&Submit {
+        id: new_id(),
+        action: Action::Create {
+            template: "small".into(),
+            name: "lifecycle".into(),
+        },
+    })
+    .unwrap();
+    let (status, _, created) = text(
+        send(
+            &served.operate.router,
+            peer,
+            create_request(
+                &served.operate.session,
+                &served.operate.csrf,
+                &served.operate.csrf,
+                &body,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{created}");
+    serde_json::from_str::<serde_json::Value>(&created).unwrap()["box_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+async fn assert_one_operation(served: &ServedOperations, peer: &str, box_id: &str, action: Action) {
+    let id = new_id();
+    let body = serde_json::to_vec(&Submit {
+        id: id.clone(),
+        action,
+    })
+    .unwrap();
+    let post = |body: &[u8]| {
+        create_request(
+            &served.operate.session,
+            &served.operate.csrf,
+            &served.operate.csrf,
+            body,
+        )
+    };
+    let (status, _, accepted) = text(send(&served.operate.router, peer, post(&body)).await).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+    let accepted: serde_json::Value = serde_json::from_str(&accepted).unwrap();
+    assert_eq!(accepted["id"], id);
+    assert_eq!(accepted["box_id"], box_id);
+    let (status, _, replay) = text(send(&served.operate.router, peer, post(&body)).await).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&replay).unwrap()["id"],
+        id
+    );
+    assert_eq!(
+        rows_for(&served.journal, &id),
+        1,
+        "same request id is one operation"
+    );
+    assert!(
+        served
+            .operate
+            .audit
+            .records()
+            .iter()
+            .any(|record| record.outcome == "forwarded" && record.request_id == id),
+        "audit line missing for {id}"
+    );
 }
 
 fn central(dir: &Path) -> Authenticator {
@@ -1674,10 +1965,20 @@ fn central(dir: &Path) -> Authenticator {
 }
 
 fn create_request(session: &str, csrf: &str, presented: &str, body: &[u8]) -> Request<Body> {
+    posted_operation(session, csrf, presented, "https://app.dark-forge.dev", body)
+}
+
+fn posted_operation(
+    session: &str,
+    csrf: &str,
+    presented: &str,
+    origin: &str,
+    body: &[u8],
+) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri("/v1/operations")
-        .header("origin", "https://app.dark-forge.dev")
+        .header("origin", origin)
         .header(
             "cookie",
             format!("__Host-kiln_app={session}; __Host-kiln_csrf={csrf}"),
@@ -1685,6 +1986,15 @@ fn create_request(session: &str, csrf: &str, presented: &str, body: &[u8]) -> Re
         .header("x-kiln-csrf", presented)
         .header("content-type", "application/json")
         .body(Body::from(body.to_vec()))
+        .unwrap()
+}
+
+fn rows_for(path: &Path, id: &str) -> i64 {
+    rusqlite::Connection::open(path)
+        .unwrap()
+        .query_row("SELECT count(*) FROM operations WHERE id=?1", [id], |row| {
+            row.get(0)
+        })
         .unwrap()
 }
 

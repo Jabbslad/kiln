@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  applyLifecycle,
   createBox,
   dashboardSchema,
   fetchDashboard,
@@ -113,5 +114,109 @@ describe('dashboard boundary', () => {
     expect(posts).toHaveLength(1)
     expect(posts[0].init?.headers).toMatchObject({ 'x-kiln-csrf': 'form-csrf' })
     expect(posts[0].init?.credentials).toBe('same-origin')
+  })
+
+  it('submits pause, resume, stop, and start and shows state only once observed', async () => {
+    const boxId = 'd'.repeat(32)
+    const specs = [
+      { action: 'pause', force: false, state: 'paused' },
+      { action: 'resume', force: false, state: 'running' },
+      { action: 'stop', force: false, state: 'stopped' },
+      { action: 'stop', force: true, state: 'stopped' },
+      { action: 'start', force: false, state: 'running' },
+    ] as const
+    for (const spec of specs) {
+      const seen = structuredClone(previewDashboard)
+      const box = { ...previewDashboard.boxes[0], id: boxId, state: spec.state }
+      seen.boxes = [box]
+      const withheld = spec.state === 'running' ? 'stopped' : 'running'
+      let observed = false
+      const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url === '/v1/operations' && init?.method === 'POST') {
+          const posted = JSON.parse(String(init.body))
+          expect(posted.id).toMatch(/^[a-f0-9]{32}$/)
+          expect(posted.action).toEqual(
+            spec.action === 'stop'
+              ? { type: 'stop', id: boxId, force: spec.force }
+              : { type: spec.action, id: boxId },
+          )
+          expect(init.headers).toMatchObject({ 'x-kiln-csrf': 'form-csrf' })
+          expect(init.credentials).toBe('same-origin')
+          return Response.json(
+            {
+              id: posted.id,
+              box_id: boxId,
+              state: 'running',
+              result: { type: 'box', state: spec.state },
+              error: null,
+            },
+            { status: 202 },
+          )
+        }
+        if (url.startsWith('/v1/operations/')) {
+          return Response.json({
+            id: url.slice('/v1/operations/'.length),
+            box_id: boxId,
+            state: 'succeeded',
+            result: { type: 'box', state: spec.state },
+            error: null,
+          })
+        }
+        if (!observed) {
+          observed = true
+          return Response.json({
+            ...previewDashboard,
+            boxes: [{ ...box, state: withheld }],
+          })
+        }
+        return Response.json(seen)
+      })
+      const dashboard = await applyLifecycle(
+        spec.action,
+        boxId,
+        spec.force,
+        fetcher,
+        '__Host-kiln_csrf=form-csrf',
+      )
+      expect(dashboard.boxes.find((item) => item.id === boxId)?.state).toBe(spec.state)
+      expect(fetcher.mock.calls.filter(([url]) => String(url) === '/api/v1/dashboard').length).toBe(
+        2,
+      )
+    }
+  })
+
+  it('reports an unknown lifecycle outcome without inventing a box state', async () => {
+    const boxId = 'e'.repeat(32)
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/v1/operations' && init?.method === 'POST') {
+        const posted = JSON.parse(String(init.body))
+        return Response.json({
+          id: posted.id,
+          box_id: boxId,
+          state: 'unknown',
+          result: null,
+          error: null,
+        })
+      }
+      if (url.startsWith('/v1/operations/')) {
+        return Response.json({
+          id: url.slice('/v1/operations/'.length),
+          box_id: boxId,
+          state: 'unknown',
+          result: null,
+          error: null,
+        })
+      }
+      return Response.json({
+        ...previewDashboard,
+        boxes: [{ ...previewDashboard.boxes[0], id: boxId, state: 'paused' }],
+      })
+    })
+    await expect(
+      applyLifecycle('pause', boxId, false, fetcher, '__Host-kiln_csrf=form-csrf'),
+    ).rejects.toThrow(/unknown/)
+    expect(fetcher.mock.calls.some(([url]) => String(url) === '/api/v1/dashboard')).toBe(false)
   })
 })
