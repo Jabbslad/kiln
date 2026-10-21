@@ -8,7 +8,9 @@ cd "$root"
 usage() {
   cat <<'EOF' >&2
 usage: sh scripts/proof.sh dashboard [--phase before|after|smoke]
+       sh scripts/proof.sh dashboard-unreachable
        sh scripts/proof.sh cli [--phase before|after] [-- kiln-args...]
+       sh scripts/proof.sh cli-create-wait
 EOF
   exit 2
 }
@@ -25,7 +27,7 @@ cli_args=
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    dashboard|cli)
+    dashboard|dashboard-unreachable|cli|cli-create-wait)
       mode=$1
       shift
       ;;
@@ -51,10 +53,12 @@ done
 
 [ -n "$mode" ] || usage
 
-case "$phase" in
-  before|after|smoke) ;;
-  *) fail "phase must be before, after, or smoke" ;;
-esac
+if [ "$mode" != dashboard-unreachable ] && [ "$mode" != cli-create-wait ]; then
+  case "$phase" in
+    before|after|smoke) ;;
+    *) fail "phase must be before, after, or smoke" ;;
+  esac
+fi
 
 mkdir -p "$proof_dir"
 
@@ -134,9 +138,21 @@ cli_proof() {
   fi
 }
 
+dashboard_unreachable_proof() {
+  sh "$root/scripts/capture-dashboard-unreachable-proof.sh" "$proof_dir/dashboard-unreachable"
+}
+
+cli_create_wait_proof() {
+  out=$proof_dir/cli/create-wait-transcript.txt
+  mkdir -p "$(dirname "$out")"
+  sh "$root/scripts/prove-create-wait-cli.sh" | tee "$out"
+}
+
 case "$mode" in
   dashboard) dashboard_proof ;;
+  dashboard-unreachable) dashboard_unreachable_proof ;;
   cli) cli_proof ;;
+  cli-create-wait) cli_create_wait_proof ;;
 esac
 
 printf 'proof: wrote artifacts under %s\n' "$proof_dir"

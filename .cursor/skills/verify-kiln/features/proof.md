@@ -14,7 +14,13 @@ sh scripts/proof.sh dashboard --phase after
 
 Artifacts land in `artifacts/proof/` (override with `KILN_PROOF_DIR`). Each run builds `web/` (`npm run build`), builds `kiln-api` (the kiln-app listener binary), serves the production bundle with Vite preview on `127.0.0.1:4174`, and runs `web/tests/proof.spec.ts`. PNGs are named `{phase}-dashboard-boxes.png`.
 
-For live-route unreachable vs recovered screenshots on the built bundle, use `sh scripts/capture-dashboard-unreachable-proof.sh` (same Playwright proof config, before/after PNGs under `artifacts/dashboard-unreachable-proof/` by default).
+For live-route unreachable vs recovered screenshots on the built bundle:
+
+```sh
+sh scripts/proof.sh dashboard-unreachable
+```
+
+(Writes under `artifacts/proof/dashboard-unreachable/`; same driver as `scripts/capture-dashboard-unreachable-proof.sh`.)
 
 CI smoke (no kiln-api build): `KILN_PROOF_SKIP_KILN_APP=1 sh scripts/test-proof.sh`.
 
@@ -30,6 +36,14 @@ Default capture writes `artifacts/proof/cli/{phase}-version.txt` and `{phase}-he
 ```sh
 sh scripts/proof.sh cli --phase after -- boxes --help
 ```
+
+For `kiln create` vs `kiln create --wait` before/after transcripts (mock host, real binary):
+
+```sh
+sh scripts/proof.sh cli-create-wait
+```
+
+This runs `scripts/prove-create-wait-cli.sh` and saves `artifacts/proof/cli/create-wait-transcript.txt`.
 
 ## Pull request body
 
