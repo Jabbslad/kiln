@@ -107,6 +107,7 @@ jobs:
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
           sh scripts/test-tag-path-dry-run.sh
+          sh scripts/test-tag-path-pr-stamp-order.sh
           sh scripts/test-check-dashboard-bundle.sh
           cargo test -p kiln-server --test dashboard_self_check --locked
           sh scripts/test-releasable.sh
@@ -244,6 +245,7 @@ jobs:
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
           sh scripts/test-tag-path-dry-run.sh
+          sh scripts/test-tag-path-pr-stamp-order.sh
           sh scripts/test-check-dashboard-bundle.sh
           cargo test -p kiln-server --test dashboard_self_check --locked
           sh scripts/test-releasable.sh
@@ -272,6 +274,7 @@ jobs:
             scripts/stamp-release-version.sh scripts/stamp-release-dist.sh scripts/reuse-server-check.sh \
             scripts/wait-main-run.sh scripts/test-wait-main-run.sh \
             scripts/tag-path-dry-run.sh scripts/test-tag-path-dry-run.sh \
+            scripts/test-tag-path-pr-stamp-order.sh \
             scripts/releasable.sh scripts/test-releasable.sh \
             scripts/next-release-tag.sh scripts/test-next-release-tag.sh \
             scripts/plan-release.sh scripts/test-plan-release.sh \
