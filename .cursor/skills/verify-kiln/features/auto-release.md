@@ -20,6 +20,14 @@ Manual recovery uses workflow dispatch on `Deploy` with a published tag, or `bui
 
 ## Driving it in a checkout
 
+Before push, run the fast local gate (fmt check, `cargo fmt`/`clippy`/workspace tests, feature-map guard):
+
+```sh
+bash scripts/check.sh
+```
+
+Opt-in: `--docs-check` runs the full docs-check script bundle; `--release` runs `scripts/tag-path-dry-run.sh` (needs `GH_TOKEN`).
+
 Rehearse without publishing:
 
 ```sh

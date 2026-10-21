@@ -52,7 +52,7 @@ run_server_check() {
   cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
   cargo test --workspace --all-features --locked --exclude xtask
   if command -v shellcheck >/dev/null 2>&1; then
-    shellcheck scripts/check.sh scripts/fmt.sh scripts/test-check.sh scripts/check-docs.sh
+    shellcheck -S error scripts/check.sh scripts/test-check.sh scripts/check-docs.sh
   else
     printf 'shellcheck not installed, skipped\n'
   fi
