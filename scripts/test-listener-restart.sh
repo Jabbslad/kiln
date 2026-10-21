@@ -94,13 +94,14 @@ EOF
   chmod 755 "$work/stubs/systemctl" "$work/stubs/curl" "$work/stubs/systemd-analyze"
   cp "$install" "$package/install.sh"
   chmod 755 "$package/install.sh"
+  cp "$root/deploy/operations-journal.max-version" "$package/operations-journal.max-version"
   printf 'identity-bytes-v1' > "$libexec/kiln-identity"
   custom=$(printf 'a%.0s' $(seq 1 32))
   printf '{"runtime_dir":"%s/runtime","journal_dir":"%s/journal","socket":"/run/kiln/host.sock","isolation_config":"%s/isolation.json","templates":{"custom":"%s"}}\n' \
     "$var" "$var" "$etc" "$custom" > "$etc/host.json"
   printf '{}\n' > "$etc/isolation.json"
   for name in ca.crt tls.crt tls.key admin.token; do printf 'synthetic-test-only\n' > "$etc/$name"; done
-  sqlite3 "$var/journal/operations.sqlite" 'PRAGMA journal_mode=DELETE; PRAGMA user_version=1; CREATE TABLE operations(running INTEGER); INSERT INTO operations VALUES(0);' >/dev/null
+  init_journal_v1
   host=$libexec/kiln-host
   api=$libexec/kiln-api
   printf '{ path=%s ; argv[]=%s --config %s ; ignore_errors=no ; }\n' "$host" "$host" "$etc/host.json" > "$state/exec-kiln-host.service"
@@ -108,6 +109,49 @@ EOF
     "$api" "$api" "$etc/admin.token" "$etc/tls.crt" "$etc/tls.key" > "$state/exec-kiln-api.service"
   printf 'active\n' > "$state/active-kiln-host.service"
   printf 'active\n' > "$state/active-kiln-api.service"
+}
+
+init_journal_v1() {
+  rm -f "$var/journal/operations.sqlite"
+  sqlite3 "$var/journal/operations.sqlite" \
+    'PRAGMA journal_mode=DELETE; PRAGMA user_version=1; CREATE TABLE operations(running INTEGER); INSERT INTO operations VALUES(0);' \
+    >/dev/null
+}
+
+init_journal_v3() {
+  rm -f "$var/journal/operations.sqlite"
+  sqlite3 "$var/journal/operations.sqlite" <<'SQL'
+PRAGMA journal_mode=DELETE;
+PRAGMA user_version=3;
+CREATE TABLE operations (
+  id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
+  is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
+  created_at INTEGER NOT NULL, finished_at INTEGER,
+  action TEXT NOT NULL DEFAULT 'unknown');
+INSERT INTO operations(
+  id, fingerprint, box_id, is_create, running, response, created_at, finished_at, action
+) VALUES (
+  '0123456789abcdef0123456789abcde1', X'00', '0123456789abcdef0123456789abcdef',
+  1, 0, '{"state":"succeeded"}', 1700000000, 1700000001, 'create');
+SQL
+}
+
+init_journal_v2() {
+  rm -f "$var/journal/operations.sqlite"
+  sqlite3 "$var/journal/operations.sqlite" <<'SQL'
+PRAGMA journal_mode=DELETE;
+PRAGMA user_version=2;
+CREATE TABLE operations (
+  id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
+  is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
+  created_at INTEGER NOT NULL, finished_at INTEGER,
+  action TEXT NOT NULL DEFAULT 'unknown');
+INSERT INTO operations(
+  id, fingerprint, box_id, is_create, running, response, created_at, finished_at, action
+) VALUES (
+  '0123456789abcdef0123456789abcde1', X'00', '0123456789abcdef0123456789abcdef',
+  1, 0, '{"state":"succeeded"}', 1700000000, 1700000001, 'create');
+SQL
 }
 
 write_bin() {
@@ -152,14 +196,24 @@ write_release() {
 mark() { printf 'active\n' > "$state/active-$1"; printf '%s\n' "$2" > "$state/pid-$1"; }
 
 run_install() {
-  local n=$1 i
+  local n=$1 i clear_seq=1
   shift
-  : > "$work/curl.seq"
-  i=0
-  while [ "$i" -lt "$n" ]; do
-    printf 'ok\n' >> "$work/curl.seq"
-    i=$((i + 1))
-  done
+  if [ "$n" -ge 0 ]; then
+    case ${1:-} in
+      --keep-curl-seq)
+        clear_seq=0
+        shift
+        ;;
+    esac
+  fi
+  if [ "$clear_seq" = 1 ]; then
+    : > "$work/curl.seq"
+    i=0
+    while [ "$i" -lt "$n" ]; do
+      printf 'ok\n' >> "$work/curl.seq"
+      i=$((i + 1))
+    done
+  fi
   set +e
   KILN_INSTALL_FIXTURE=$work PATH="$work/stubs:$PATH" bash "$package/install.sh" "$@" >"$work/out" 2>"$work/err"
   rc=$?
@@ -246,6 +300,57 @@ grep -q restored "$work/err" || fail "missing restored: $(cat "$work/err")"
 [ "$(pid_of kiln-app.service)" != 4100 ] || fail "restored listener kept pid 4100"
 count=$(grep -c 'systemctl restart kiln-app.service' "$log" || true)
 [ "$count" -ge 2 ] || fail "expected two restarts, saw $count"
+
+# A v2 operation journal must not block binary swap on an installed host.
+prepare
+write_release 0.4.5
+write_bin 0.4.4 0.4.5
+init_journal_v2
+mark kiln-app.service 4100
+mark kiln-door.service 4200
+run_install 2 --apply
+[ "$rc" = 0 ] || fail "v2 journal upgrade failed: $(cat "$work/err")"
+grep -q '0.4.4 -> 0.4.5' "$work/out" || fail "missing upgrade banner: $(cat "$work/out")"
+
+# Unsupported journal schema versions fail with the sqlite command and version range.
+prepare
+write_release 0.4.5
+write_bin 0.4.4 0.4.5
+init_journal_v3
+mark kiln-app.service 4100
+run_install 1 --apply
+[ "$rc" != 0 ] || fail "unsupported journal version should fail the swap"
+grep -q 'install step failed: wait for journal idle' "$work/err" \
+  || fail "missing step name: $(cat "$work/err")"
+grep -q "PRAGMA user_version;" "$work/err" || fail "missing journal command: $(cat "$work/err")"
+grep -q 'found operation journal schema version 3' "$work/err" \
+  || fail "missing found version: $(cat "$work/err")"
+grep -q 'installer accepts 1 through 2' "$work/err" \
+  || fail "missing expected range: $(cat "$work/err")"
+grep -q 'exit code: 1' "$work/err" || fail "missing exit code: $(cat "$work/err")"
+
+# Failed update steps print the step name, command, and exit code to stderr.
+prepare
+write_release 0.4.5
+write_bin 0.4.4 0.4.5
+init_journal_v1
+mark kiln-app.service 4100
+mark kiln-door.service 4200
+{
+  printf 'ok\n'
+  i=0
+  while [ "$i" -lt 35 ]; do
+    printf 'fail\n'
+    i=$((i + 1))
+  done
+  printf 'ok\n'
+} > "$work/curl.seq"
+run_install 0 --keep-curl-seq --apply
+[ "$rc" != 0 ] || fail "healthcheck failure should fail the swap"
+grep -q 'install step failed: healthcheck after binary swap' "$work/err" \
+  || fail "missing step name: $(cat "$work/err")$(cat "$work/out")"
+grep -q 'exit code: 1' "$work/err" || fail "missing exit code: $(cat "$work/err")"
+grep -q 'update failed (command)' "$work/err" || fail "missing rollback message: $(cat "$work/err")"
 
 rm -rf "$work"
 trap - EXIT

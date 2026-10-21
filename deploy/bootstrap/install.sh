@@ -221,6 +221,9 @@ FILES
         if grep -qx 'bin/kiln-network' "$work/names"; then
             printf 'bin/kiln-network\n' >> "$work/expected"
         fi
+        if grep -qx 'operations-journal.max-version' "$work/names"; then
+            printf '%s\n' operations-journal.max-version >> "$work/expected"
+        fi
         # Door proxy units and their runbook ship together. An archive that
         # has any of these files must include the private unit and the
         # runbook. The public unit is optional. An older archive may still

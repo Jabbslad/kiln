@@ -1396,6 +1396,7 @@ const ASSET_KEYS: &[&str] = &[
 
 const PACKAGE_FILES: &[&str] = &[
     "deploy/install.sh",
+    "deploy/operations-journal.max-version",
     "deploy/kiln-network",
     "deploy/kiln-host.service",
     "deploy/kiln-api.service",
@@ -1507,7 +1508,12 @@ fn write_named(root: &Path, names: &[&str]) {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();
         }
-        fs::write(path, name).unwrap();
+        let body = if *name == "deploy/operations-journal.max-version" {
+            "2\n"
+        } else {
+            name
+        };
+        fs::write(path, body).unwrap();
     }
 }
 
