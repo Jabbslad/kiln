@@ -25,7 +25,11 @@ run_server_upgrade_rehearsal() {
   tar -xzf "$prev_tar" -C "$work/prev"
   tar -xzf "$next_tar" -C "$work/next"
   read_release_version_json() {
-    sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\(v\?\)[^"]*"/\2/p' | head -1 | sed 's/^v//'
+    tr -d '\n' |
+      grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' |
+      head -1 |
+      sed 's/^.*"\([^"]*\)"$/\1/' |
+      sed 's/^v//'
   }
   installed=$(
     tar -xOzf "$prev_tar" release.json 2>/dev/null | read_release_version_json
