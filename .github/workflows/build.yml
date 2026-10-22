@@ -17,6 +17,10 @@ on:
         description: Commit to reuse when dry_run is true. Empty uses the latest main commit.
         type: string
         default: ''
+      batch_base_sha:
+        description: Main commit before a batch merge; used for release planning when this run follows Batch merge.
+        type: string
+        default: ''
 
 # Build jobs cannot publish or deploy. Never run PR code on the real KVM host.
 # actions: write is omitted. The cache service uses the runner token, and that
@@ -134,7 +138,7 @@ jobs:
           sh scripts/test-bootstrap-pins.sh
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
-          sh scripts/test-slow-lane-merge.sh
+          sh scripts/test-batch-merge.sh
           sh scripts/test-tag-path-dry-run.sh
           sh scripts/test-tag-path-pr-stamp-order.sh
           sh scripts/test-deploy-host-tools.sh
@@ -305,7 +309,7 @@ jobs:
           sh scripts/test-bootstrap-pins.sh
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
-          sh scripts/test-slow-lane-merge.sh
+          sh scripts/test-batch-merge.sh
           sh scripts/test-tag-path-dry-run.sh
           sh scripts/test-tag-path-pr-stamp-order.sh
           sh scripts/test-deploy-host-tools.sh
@@ -354,8 +358,8 @@ jobs:
             scripts/test-installer-release.sh \
             scripts/stamp-release-version.sh scripts/stamp-release-dist.sh scripts/reuse-server-check.sh \
             scripts/wait-main-run.sh scripts/test-wait-main-run.sh \
-            scripts/slow-lane-merge.sh scripts/slow-lane-require-deploy.sh \
-            scripts/slow-lane-workflow-run-gate.sh scripts/test-slow-lane-merge.sh \
+            scripts/batch-merge.sh scripts/batch-merge-idle-gate.sh \
+            scripts/test-batch-merge.sh \
             scripts/tag-path-dry-run.sh scripts/test-tag-path-dry-run.sh \
             scripts/test-tag-path-pr-stamp-order.sh \
             scripts/read-release-json-field.sh scripts/test-release-json-field.sh \
@@ -771,8 +775,8 @@ jobs:
     needs: [required, server-check, server-package, client, dashboard]
     if: >-
       !cancelled() &&
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.dry_run == false)) &&
       needs.required.result == 'success' &&
       needs.server-check.result == 'success' &&
       needs.server-package.result == 'success' &&
@@ -798,7 +802,7 @@ jobs:
       - name: Plan the release
         id: plan
         env:
-          BEFORE: ${{ github.event.before }}
+          BEFORE: ${{ inputs.batch_base_sha != '' && inputs.batch_base_sha || github.event.before }}
           AFTER: ${{ github.sha }}
           PLAN_RELEASE_APPLY: 1
           PLAN_RELEASE_SHA: ${{ github.sha }}
@@ -812,8 +816,8 @@ jobs:
     needs: [release-plan, server-package, client, dashboard]
     if: >-
       !cancelled() &&
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.dry_run == false)) &&
       needs.release-plan.result == 'success' &&
       needs.release-plan.outputs.release == 'true' &&
       needs.server-package.result == 'success' &&
@@ -916,8 +920,8 @@ jobs:
     needs: [version-guard, release-plan, server-check, server-package, client, dashboard, attest]
     if: >-
       !cancelled() &&
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.dry_run == false)) &&
       needs.release-plan.result == 'success' &&
       needs.release-plan.outputs.release == 'true' &&
       needs.version-guard.result == 'success' &&
