@@ -44,7 +44,7 @@ fn pre_change_box_json_gets_tenant_owner_on_read() {
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::fs::write(directory.join("box.json"), LEGACY_BOX_JSON.as_bytes()).unwrap();
 
-    let record = runtime.read_sync(&id).unwrap();
+    let record = runtime.read_sync(id).unwrap();
     assert_eq!(record.owner, "acct-jamie");
     assert_eq!(record.name, "jamie");
 }
