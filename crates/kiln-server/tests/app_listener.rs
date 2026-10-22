@@ -576,24 +576,17 @@ async fn response_headers_and_cache() {
 }
 
 #[tokio::test]
-async fn preview_query_is_limited_to_one() {
+async fn document_queries_are_rejected() {
     let root = tempfile::tempdir().unwrap();
     archive(root.path());
     let up = upstream_json().await;
     let (router, key) = open(root.path(), &up);
-    let (status, headers, body) =
-        text(send(&router, "127.0.0.1:9", get("/boxes?preview=1")).await).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        headers
-            .get("content-type")
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with("text/html")
-    );
-    assert_eq!(body, HTML);
-    for uri in ["/boxes?preview=2", "/boxes?x=1", "/boxes?preview=1&x=1"] {
+    for uri in [
+        "/boxes?preview=1",
+        "/boxes?preview=2",
+        "/boxes?x=1",
+        "/boxes?preview=1&x=1",
+    ] {
         let (status, _, _) = text(send(&router, "127.0.0.1:9", get(uri)).await).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
     }

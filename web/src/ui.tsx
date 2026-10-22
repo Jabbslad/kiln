@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type ComponentProps } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { ArrowUpRight, Box as BoxIcon, Check, Copy, Info, X } from 'lucide-react'
 import { capabilities, capabilityAvailable, type Capability } from './capabilities'
 import { boxStates, formatBytes, formatDiskUsedOfTotal, formatMetric, type Dashboard } from './data'
@@ -52,16 +52,10 @@ function metricRows(
 
 export type PageProps = {
   data: Dashboard
-  preview: boolean
 }
 
 export function AppLink({ to, ...props }: ComponentProps<typeof Link>) {
-  const [params] = useSearchParams()
-  const destination =
-    typeof to === 'string' && params.get('preview') === '1'
-      ? `${to}${to.includes('?') ? '&' : '?'}preview=1`
-      : to
-  return <Link to={destination} {...props} />
+  return <Link to={to} {...props} />
 }
 
 export function Status({ state }: { state: string }) {
@@ -143,15 +137,11 @@ export function CapabilitySurface({
   )
 }
 
-export function Unavailable({ preview }: { preview: boolean }) {
+export function Unavailable() {
   return (
     <div className="notice muted-notice">
       <Info size={16} aria-hidden="true" />
-      <span>
-        {preview
-          ? 'Read-only preview. Example data; no VM operations are sent.'
-          : 'Read-only console. Mutations require the authenticated control plane.'}
-      </span>
+      <span>Read-only console. Mutations require the authenticated control plane.</span>
     </div>
   )
 }

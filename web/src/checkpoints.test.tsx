@@ -49,27 +49,7 @@ it('renders only that box’s checkpoints from the dashboard payload', async () 
   expect(screen.queryByText('foreign-snapshot')).not.toBeInTheDocument()
 })
 
-it('keeps checkpoint and restore disabled when the console is not live or not authenticated', async () => {
-  const request = vi.fn()
-  vi.stubGlobal('fetch', request)
-  const user = userEvent.setup()
-  open('/boxes/box-7f3a2c1e?preview=1&tab=checkpoints')
-  const [openCreate] = await screen.findAllByRole('button', { name: 'Create checkpoint' })
-  await user.click(openCreate)
-  let dialog = screen.getByRole('dialog')
-  expect(within(dialog).getByRole('button', { name: 'Create checkpoint' })).toBeDisabled()
-  await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
-  await user.click(screen.getByRole('button', { name: 'Restore before-upgrade' }))
-  dialog = screen.getByRole('dialog')
-  const restore = within(dialog).getByRole('button', { name: 'Restore checkpoint' })
-  expect(restore).toBeDisabled()
-  await user.click(
-    within(dialog).getByRole('checkbox', { name: /I understand external state may replay/ }),
-  )
-  expect(restore).toBeDisabled()
-  expect(request).not.toHaveBeenCalled()
-  cleanup()
-
+it('keeps checkpoint and restore disabled when the host is offline or unknown', async () => {
   for (const state of ['offline', 'unknown'] as const) {
     vi.stubGlobal(
       'fetch',
@@ -84,7 +64,7 @@ it('keeps checkpoint and restore disabled when the console is not live or not au
     const user = userEvent.setup()
     const [create] = await screen.findAllByRole('button', { name: 'Create checkpoint' })
     await user.click(create)
-    dialog = screen.getByRole('dialog')
+    let dialog = screen.getByRole('dialog')
     expect(within(dialog).getByRole('button', { name: 'Create checkpoint' })).toBeDisabled()
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await user.click(screen.getByRole('button', { name: 'Restore before-upgrade' }))
