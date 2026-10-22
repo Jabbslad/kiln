@@ -18,6 +18,7 @@ close_ssh_session() {
     return 0
   fi
   if [ -n "${KILN_SSH_CONTROL_PATH:-}" ]; then
+    printf 'ssh session closed\n'
     bash "$ssh_session" close || true
   fi
   KILN_SSH_SESSION_OPEN=0
@@ -31,6 +32,7 @@ start_ssh_session() {
     bash "$ssh_session" open-dry
   else
     bash "$ssh_session" open
+    printf 'ssh session opened\n'
   fi
   KILN_SSH_SESSION_OPEN=1
 }
@@ -99,7 +101,6 @@ base="https://github.com/Jabbslad/kiln/releases/download/${tag}"
 work=$(mktemp -d)
 remote=
 cleanup() {
-  close_ssh_session
   rm -rf "$work"
   if [ -n "$remote" ]; then
     if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
@@ -108,6 +109,7 @@ cleanup() {
       bash "$ssh_sh" ssh -- rm -rf -- "$remote" || true
     fi
   fi
+  close_ssh_session
 }
 trap cleanup EXIT
 

@@ -306,6 +306,54 @@ fn test_older_tags_and_prereleases_are_refused_before_ssh() {
     assert!(latest.ssh_calls.is_empty(), "{}", latest.captured.stderr);
 }
 
+fn test_deploy_ssh_and_scp_run_while_multiplex_master_is_open() {
+    let result = run_deploy("v0.4.5", "[]", Some("printf 'archive-v045\\n'\n"), false);
+    assert!(
+        result.captured.status.success(),
+        "{}{}",
+        result.captured.stdout,
+        result.captured.stderr
+    );
+    assert!(
+        result.captured.stdout.contains("deployed v0.4.5"),
+        "{}",
+        result.captured.stdout
+    );
+    assert!(
+        result.captured.stdout.contains("ssh session opened\n"),
+        "{}",
+        result.captured.stdout
+    );
+    assert!(
+        result.captured.stdout.contains("ssh session closed\n"),
+        "{}",
+        result.captured.stdout
+    );
+    let remote_rm = result
+        .ssh_calls
+        .iter()
+        .position(|call| call.contains(" rm ") && call.contains("rm -rf"));
+    let master_close = result
+        .ssh_calls
+        .iter()
+        .position(|call| call.contains("-O exit"));
+    assert!(
+        remote_rm.is_some(),
+        "missing remote staging cleanup: {:?}",
+        result.ssh_calls
+    );
+    assert!(
+        master_close.is_some(),
+        "missing master close: {:?}",
+        result.ssh_calls
+    );
+    assert!(
+        remote_rm < master_close,
+        "remote cleanup must run before master close: {:?}",
+        result.ssh_calls
+    );
+}
+
 fn test_v044_uses_this_tree_and_later_tags_use_the_archive() {
     let tree = repo().join("deploy/install.sh").display().to_string();
     let current = run_deploy("v0.4.4", "[]", Some("printf 'archive\\n'\n"), false);
@@ -889,8 +937,9 @@ fn run_deploy(
             ("assets/index-deploytest.js", "console.log('ok');\n"),
         ]);
         write_release_asset(&assets, &dashboard_name, &dashboard_blob, bad_checksum);
-        write_executable(&tmp.path().join("ssh"), &ssh_stub(&ssh_log));
-        write_executable(&tmp.path().join("scp"), &scp_stub(&ssh_log));
+        let master_state = tmp.path().join("ssh-master.state");
+        write_executable(&tmp.path().join("ssh"), &ssh_stub(&ssh_log, &master_state));
+        write_executable(&tmp.path().join("scp"), &scp_stub(&ssh_log, &master_state));
     }
     write_executable(
         &tmp.path().join("curl"),
@@ -973,17 +1022,23 @@ exit 1
     )
 }
 
-fn ssh_stub(log: &Path) -> String {
+fn ssh_stub(log: &Path, master_state: &Path) -> String {
     r#"#!/bin/bash
 printf '%s\n' "ssh $*" >> __LOG__
 case " $* " in
   *" -M "*|*ControlMaster=yes*)
+    printf '1\n' > __STATE__
     exit 0
     ;;
   *" -O exit "*)
+    printf '0\n' > __STATE__
     exit 0
     ;;
 esac
+if [ "$(cat __STATE__ 2>/dev/null || printf 0)" != 1 ]; then
+  printf 'ssh stub: multiplex master is not open\n' >&2
+  exit 97
+fi
 while [ $# -gt 0 ]; do
   if [ "$1" = -- ]; then
     shift
@@ -1004,11 +1059,16 @@ done
 exit 0
 "#
     .replace("__LOG__", &sh_quote(&log.display().to_string()))
+    .replace("__STATE__", &sh_quote(&master_state.display().to_string()))
 }
 
-fn scp_stub(log: &Path) -> String {
+fn scp_stub(log: &Path, master_state: &Path) -> String {
     r#"#!/bin/bash
 printf '%s\n' "scp $*" >> __LOG__
+if [ "$(cat __STATE__ 2>/dev/null || printf 0)" != 1 ]; then
+  printf 'scp stub: multiplex master is not open\n' >&2
+  exit 96
+fi
 local=
 remote=
 for arg in "$@"; do
@@ -1027,6 +1087,7 @@ cp -- "$local" "$remote"
 exit 0
 "#
     .replace("__LOG__", &sh_quote(&log.display().to_string()))
+    .replace("__STATE__", &sh_quote(&master_state.display().to_string()))
 }
 
 fn run_remote(archive_body: &str, overlay: Option<&str>, bad_checksum: bool) -> Captured {
@@ -1385,6 +1446,7 @@ register_cases! {
     test_guard_allows_main_dispatch_and_a_tag_release,
     test_secrets_are_read_only_by_the_dark_forge_environment,
     test_older_tags_and_prereleases_are_refused_before_ssh,
+    test_deploy_ssh_and_scp_run_while_multiplex_master_is_open,
     test_v044_uses_this_tree_and_later_tags_use_the_archive,
     test_apt_installs_missing_packages_without_upgrading,
     test_sqlite3_install_is_exact_and_skipped_when_present,
