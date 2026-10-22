@@ -61,8 +61,7 @@ where
     let connection = hyper::upgrade::on(&mut request);
     tokio::spawn(async move {
         let _permit = permit;
-        if let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_secs(10), connection).await
-        {
+        if let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_secs(10), connection).await {
             let mut stream = hyper_util::rt::TokioIo::new(stream);
             let deadline = Duration::from_secs(24 * 3600);
             let _ = tokio::time::timeout(
