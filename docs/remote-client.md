@@ -354,11 +354,18 @@ loses ownership and idempotency history. Back up both together with services
 stopped (and VM disks handled using the runtime's checkpoint contract).
 
 There are eight in-flight host operations, 32 in-flight gateway requests, 128 KiB
-request bodies, and 1 MiB response bounds. A private pilot journal accepts at most
-10,000 requests and then fails closed; do not prune idempotency keys to bypass
-that bound. Automated retention/tombstone compaction is a follow-up before
-long-running production use. Catalog changes and token rotation require service
-restart; token rotation means securely replacing the file on server and laptop.
+request bodies, and 1 MiB response bounds. The operation journal uses a
+10,000-row high-water mark inside `kiln-host`. Before refusing a new row,
+`kiln-host` prunes terminal operations (succeeded, failed, or unknown) that are
+older than 30 days and outside the 8,000 newest finished rows. Running operations
+are never pruned. Create rows for boxes that still exist on disk are never
+pruned, so the dashboard and API box list stay aligned with live VMs. Retries
+with the same `--request-id` and identical arguments still dedupe while the row
+remains; changed arguments still return 409. If the journal is still at the cap
+after pruning, new mutations return HTTP 503 with code `journal_full` and an
+actionable message rather than failing silently. Catalog changes and token
+rotation require service restart; token rotation means securely replacing the
+file on server and laptop.
 
 ## Verification
 
