@@ -1299,6 +1299,128 @@ fn four_4g_clones_preserve_resources_and_enforce_total_quota() {
 
 #[test]
 #[ignore = "requires KVM and KILN_TEST_IMAGE"]
+fn stop_start_resumes_process_memory_without_checkpoint() {
+    let image = std::env::var("KILN_TEST_IMAGE").expect("set KILN_TEST_IMAGE");
+    let state = state_directory();
+    std::fs::set_permissions(state.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let _cleanup = Cleanup(state.path());
+    let created = success(
+        state.path(),
+        &["create", "--image", &image, "--allow-unsafe-development"],
+    );
+    let id = created["id"].as_str().unwrap();
+    let marker = format!("MEMORY_MARKER=stop-resume-{id}");
+    success(
+        state.path(),
+        &[
+            "exec",
+            id,
+            "--env",
+            &marker,
+            "--",
+            "/bin/sh",
+            "-c",
+            "/bin/sleep 300 </dev/null >/dev/null 2>&1 & printf %s $! > /workspace/memory-pid",
+        ],
+    );
+    success(state.path(), &["stop", id]);
+    assert!(
+        state
+            .path()
+            .join("boxes")
+            .join(id)
+            .join("saved")
+            .join("memory.snap")
+            .is_file()
+    );
+    let restarted = success(state.path(), &["start", id]);
+    assert_eq!(
+        restarted["last_launch"]["cache"].as_str(),
+        Some("memory_resume")
+    );
+    let memory_command = "cat /proc/$(cat /workspace/memory-pid)/environ";
+    assert!(
+        success(
+            state.path(),
+            &["exec", id, "--", "/bin/sh", "-c", memory_command]
+        )["stdout"]
+            .as_str()
+            .unwrap()
+            .contains(&marker)
+    );
+    success(state.path(), &["delete", id]);
+}
+
+#[test]
+#[ignore = "requires KVM and KILN_TEST_IMAGE"]
+fn boxes_stopped_before_upgrade_cold_boot_once_then_resume() {
+    let image = std::env::var("KILN_TEST_IMAGE").expect("set KILN_TEST_IMAGE");
+    let state = state_directory();
+    std::fs::set_permissions(state.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let _cleanup = Cleanup(state.path());
+    let created = success(
+        state.path(),
+        &["create", "--image", &image, "--allow-unsafe-development"],
+    );
+    let id = created["id"].as_str().unwrap();
+    success(
+        state.path(),
+        &[
+            "exec",
+            id,
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf upgraded > /workspace/upgrade-marker",
+        ],
+    );
+    success(state.path(), &["stop", id, "--force"]);
+    assert!(!state.path().join("boxes").join(id).join("saved").exists());
+    let first = success(state.path(), &["start", id]);
+    assert_eq!(first["last_launch"]["cache"].as_str(), Some("cold_boot"));
+    success(state.path(), &["stop", id]);
+    let second = success(state.path(), &["start", id]);
+    assert_eq!(
+        second["last_launch"]["cache"].as_str(),
+        Some("memory_resume")
+    );
+    assert_eq!(
+        success(
+            state.path(),
+            &["exec", id, "--", "/bin/cat", "/workspace/upgrade-marker"]
+        )["stdout"],
+        "upgraded"
+    );
+    success(state.path(), &["delete", id]);
+}
+
+#[test]
+#[ignore = "requires KVM and KILN_TEST_IMAGE"]
+fn resume_failure_falls_back_to_cold_boot_and_records_journal_cache() {
+    let image = std::env::var("KILN_TEST_IMAGE").expect("set KILN_TEST_IMAGE");
+    let state = state_directory();
+    std::fs::set_permissions(state.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let _cleanup = Cleanup(state.path());
+    let created = success(
+        state.path(),
+        &["create", "--image", &image, "--allow-unsafe-development"],
+    );
+    let id = created["id"].as_str().unwrap();
+    success(state.path(), &["stop", id]);
+    let saved = state.path().join("boxes").join(id).join("saved");
+    std::fs::write(saved.join("state.snap"), b"corrupted").unwrap();
+    let restarted = success(state.path(), &["start", id]);
+    assert_eq!(
+        restarted["last_launch"]["cache"].as_str(),
+        Some("resume_fallback")
+    );
+    assert_eq!(restarted["state"], "running");
+    assert!(!saved.exists());
+    success(state.path(), &["delete", id]);
+}
+
+#[test]
+#[ignore = "requires KVM and KILN_TEST_IMAGE"]
 fn simultaneous_starts_cannot_create_two_disk_writers() {
     let image = std::env::var("KILN_TEST_IMAGE").expect("set KILN_TEST_IMAGE");
     let state = state_directory();
