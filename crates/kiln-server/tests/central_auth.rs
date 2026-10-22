@@ -23,14 +23,36 @@ fn claims(enrollment: &Enrollment, sub: &str, role: Role, scope: Scope, now: u64
         iss: enrollment.issuer.clone(),
         sub: sub.into(),
         aud: format!("kiln:server:{}", enrollment.server_id),
-        tenant_id: enrollment.tenant_id().into(),
+        tenant_id: Some(enrollment.tenant_id().into()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-c".into(),
         scope,
-        role,
+        role: Some(role),
     }
+}
+
+#[test]
+fn legacy_token_without_tenant_id_claim_uses_sub_as_tenant() {
+    let (key, jwks) = fixture();
+    let enrollment = Enrollment {
+        version: 1,
+        issuer: "https://identity.example.test".into(),
+        owner_id: "owner-a".into(),
+        server_id: "server-b".into(),
+        tenant_id: None,
+    };
+    let now = jsonwebtoken::get_current_timestamp();
+    let mut claims = claims(&enrollment, "owner-a", Role::Owner, Scope::Read, now);
+    claims.tenant_id = None;
+    claims.role = None;
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some("first".into());
+    let token = jsonwebtoken::encode(&header, &claims, &key).unwrap();
+    let grant = verify(&token, &enrollment, &jwks).unwrap();
+    assert_eq!(grant.caller.tenant_id, "owner-a");
+    assert_eq!(grant.caller.role, Role::Owner);
 }
 
 #[test]
@@ -67,7 +89,7 @@ fn issuer_tenant_audience_time_and_scope_are_enforced() {
         let mut bad = token_claims.clone();
         match field {
             "issuer" => bad.iss.push_str("/other"),
-            "tenant" => bad.tenant_id = "tenant-other".into(),
+            "tenant" => bad.tenant_id = Some("tenant-other".into()),
             "server" => bad.aud = "kiln:server:server-e".into(),
             "expired" => {
                 bad.iat = now - 400;
@@ -118,7 +140,7 @@ fn tenant_member_is_accepted_when_tenant_id_matches() {
     assert_eq!(grant.caller.role, Role::Member);
     assert_eq!(grant.caller.tenant_id, "tenant-t");
     let mut other_tenant = token_claims.clone();
-    other_tenant.tenant_id = "tenant-other".into();
+    other_tenant.tenant_id = Some("tenant-other".into());
     assert!(
         verify(
             &jsonwebtoken::encode(&header, &other_tenant, &key).unwrap(),

@@ -85,9 +85,9 @@ fn token(key: &EncodingKey) -> String {
         nbf: now,
         exp: now + 300,
         credential_id: "device-1".into(),
-        tenant_id: "owner-a".into(),
+        tenant_id: Some("owner-a".into()),
         scope: Scope::Operate,
-        role: Role::Owner,
+        role: Some(Role::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

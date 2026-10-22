@@ -54,13 +54,13 @@ fn token_for_tenant(
         iss: "https://identity.example.test".into(),
         sub: sub.into(),
         aud: "kiln:server:server-b".into(),
-        tenant_id: tenant_id.into(),
+        tenant_id: Some(tenant_id.into()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-1".into(),
         scope,
-        role,
+        role: Some(role),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

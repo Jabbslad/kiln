@@ -768,9 +768,9 @@ fn mint_with(key: &EncodingKey, issuer: &str, sub: &str, tenant_id: &str, role: 
         nbf: now,
         exp: now + 300,
         credential_id: "dev_dashboard".into(),
-        tenant_id: tenant_id.into(),
+        tenant_id: Some(tenant_id.into()),
         scope: Scope::Operate,
-        role,
+        role: Some(role),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

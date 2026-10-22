@@ -38,17 +38,17 @@ fn token_with_tenant(key: &EncodingKey, sub: &str, tenant_id: &str, audience: &s
         iss: "https://identity.example.test".into(),
         sub: sub.into(),
         aud: audience.into(),
-        tenant_id: tenant_id.into(),
+        tenant_id: Some(tenant_id.into()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-1".into(),
         scope: Scope::Operate,
-        role: if sub == "owner-a" {
+        role: Some(if sub == "owner-a" {
             Role::Owner
         } else {
             Role::Member
-        },
+        }),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

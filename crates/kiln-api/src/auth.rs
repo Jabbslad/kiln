@@ -97,11 +97,13 @@ pub struct ServerClaims {
     pub iss: String,
     pub sub: String,
     pub aud: String,
-    pub tenant_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
     pub iat: u64,
     pub nbf: u64,
     pub exp: u64,
     pub credential_id: String,
     pub scope: Scope,
-    pub role: Role,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
 }

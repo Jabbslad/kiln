@@ -133,8 +133,20 @@ pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Auth
     validation.validate_nbf = true;
     validation.leeway = 30;
     let c = decode::<ServerClaims>(token, &key, &validation)?.claims;
+    let sub = c.sub.clone();
+    let tenant_id = c
+        .tenant_id
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| sub.clone());
+    let role = c.role.unwrap_or_else(|| {
+        if sub == enrollment.owner_id {
+            Role::Owner
+        } else {
+            Role::Member
+        }
+    });
     ensure!(
-        c.tenant_id == enrollment.tenant_id()
+        tenant_id == enrollment.tenant_id()
             && !c.credential_id.is_empty()
             && c.credential_id.len() <= 128
             && c.exp > c.iat
@@ -146,9 +158,9 @@ pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Auth
     );
     Ok(AuthGrant {
         caller: Caller {
-            sub: c.sub,
-            tenant_id: c.tenant_id,
-            role: c.role,
+            sub,
+            tenant_id,
+            role,
         },
         scope: c.scope,
     })
