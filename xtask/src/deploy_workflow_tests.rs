@@ -72,6 +72,8 @@ fn test_diagnose_is_manual_and_read_only() {
     }
     let ssh = read_repo("deploy/github/ssh.sh");
     assert!(ssh.contains("StrictHostKeyChecking=yes"));
+    assert!(ssh.contains("ControlMaster=auto"));
+    assert!(ssh.contains("ControlPath"));
     assert!(!ssh.contains("accept-new"));
     assert!(!ssh.contains("ssh-keyscan"));
 }
@@ -304,6 +306,54 @@ fn test_older_tags_and_prereleases_are_refused_before_ssh() {
     assert!(latest.ssh_calls.is_empty(), "{}", latest.captured.stderr);
 }
 
+fn test_deploy_ssh_and_scp_run_while_multiplex_master_is_open() {
+    let result = run_deploy("v0.4.5", "[]", Some("printf 'archive-v045\\n'\n"), false);
+    assert!(
+        result.captured.status.success(),
+        "{}{}",
+        result.captured.stdout,
+        result.captured.stderr
+    );
+    assert!(
+        result.captured.stdout.contains("deployed v0.4.5"),
+        "{}",
+        result.captured.stdout
+    );
+    assert!(
+        result.captured.stdout.contains("ssh session opened\n"),
+        "{}",
+        result.captured.stdout
+    );
+    assert!(
+        result.captured.stdout.contains("ssh session closed\n"),
+        "{}",
+        result.captured.stdout
+    );
+    let remote_rm = result
+        .ssh_calls
+        .iter()
+        .position(|call| call.contains(" rm ") && call.contains("rm -rf"));
+    let master_close = result
+        .ssh_calls
+        .iter()
+        .position(|call| call.contains("-O exit"));
+    assert!(
+        remote_rm.is_some(),
+        "missing remote staging cleanup: {:?}",
+        result.ssh_calls
+    );
+    assert!(
+        master_close.is_some(),
+        "missing master close: {:?}",
+        result.ssh_calls
+    );
+    assert!(
+        remote_rm < master_close,
+        "remote cleanup must run before master close: {:?}",
+        result.ssh_calls
+    );
+}
+
 fn test_v044_uses_this_tree_and_later_tags_use_the_archive() {
     let tree = repo().join("deploy/install.sh").display().to_string();
     let current = run_deploy("v0.4.4", "[]", Some("printf 'archive\\n'\n"), false);
@@ -517,6 +567,8 @@ fn test_deploy_installs_dashboard_and_checks_the_live_bundle() {
     assert!(remote.contains("--dashboard-archive"));
     assert!(remote.contains("check-dashboard-bundle.sh"));
     assert!(remote.contains("kiln-api self-check"));
+    assert!(deploy.contains("check-installed-versions.sh"));
+    assert!(remote.contains("check-installed-versions.sh"));
     assert!(remote.contains("dashboard inputs"));
     let metrics_at = index_of(&remote, "kiln-api self-check");
     let smoke_at = index_of(&remote, "bash \"$dir/smoke.sh\"");
@@ -559,6 +611,287 @@ fn test_deploy_host_scripts_do_not_invoke_jq() {
             "{name} still references check-dashboard-metrics.sh"
         );
     }
+}
+
+fn door_caddy_docker_stub(log: &Path, snippet: &Path) -> String {
+    format!(
+        r#"#!/bin/bash
+printf '%s\n' "$*" >> "{log}"
+case "$1" in
+  inspect)
+    if [ "$2" = '-f' ] && [ "$3" = '{{{{.State.Running}}}}' ]; then
+      printf 'true\n'
+      exit 0
+    fi
+    ;;
+  exec)
+    if [ "$2" = caddy ] && printf '%s\n' "$*" | grep -q 'caddy validate'; then
+      if grep -q 'not_a_directive' "{snippet}"; then
+        printf 'invalid config\n' >&2
+        exit 17
+      fi
+      printf 'Valid configuration\n'
+      exit 0
+    fi
+    if [ "$2" = caddy ] && printf '%s\n' "$*" | grep -q 'caddy reload'; then
+      printf 'reloaded\n'
+      exit 0
+    fi
+    exit 98
+    ;;
+esac
+exit 97
+"#,
+        log = log.display(),
+        snippet = snippet.display()
+    )
+}
+
+fn run_install_door_caddy(root: &Path, snippet: &Path, door: &Path, paseo: &Path) -> Captured {
+    let mut command = Command::new("bash");
+    command.arg(repo().join("deploy/github/install-door-caddy.sh"));
+    command.arg(door);
+    command.env("PATH", prepend_path(&root.join("bin")));
+    command.env("KILN_DOOR_CADDY_SNIPPET", snippet);
+    command.env("KILN_PASEO_CADDYFILE", paseo);
+    command.env("KILN_DOCKER", root.join("bin/docker"));
+    command.env("KILN_DOOR_CADDY_SKIP_PROBE", "1");
+    capture(&mut command)
+}
+
+fn test_deploy_scripts_never_write_paseo_caddyfile() {
+    let dir = crate::repo_root().join("deploy/github");
+    for entry in fs::read_dir(&dir).expect("deploy/github") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("sh") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy();
+        let text = fs::read_to_string(&path).unwrap_or_else(|err| panic!("{name}: {err}"));
+        for line in text.lines() {
+            let trimmed = line.split('#').next().unwrap_or(line);
+            if trimmed.contains("/opt/paseo/Caddyfile") {
+                assert!(
+                    trimmed.contains("grep -Fq")
+                        || trimmed.contains("grep -F")
+                        || trimmed.contains("paseo_caddyfile=")
+                        || trimmed.contains("missing shared Caddyfile")
+                        || (trimmed.contains("[ -f") && trimmed.contains("paseo_caddyfile")),
+                    "{name} may read /opt/paseo/Caddyfile only: {trimmed}"
+                );
+                assert!(
+                    !trimmed.contains(">>")
+                        && !trimmed.contains(" >")
+                        && !trimmed.contains("cp ")
+                        && !trimmed.contains("mv ")
+                        && !trimmed.contains("install ")
+                        && !trimmed.contains("cat ")
+                        && !trimmed.contains("tee "),
+                    "{name} must not write /opt/paseo/Caddyfile: {trimmed}"
+                );
+            }
+        }
+    }
+    let script = read_repo("deploy/github/install-door-caddy.sh");
+    assert!(script.contains("KILN_DOOR_CADDY_SNIPPET"));
+    assert!(script.contains("/var/lib/docker/volumes/paseo_caddy_config/_data/kiln/kiln.caddy"));
+    assert!(script.contains("import /config/kiln/kiln.caddy"));
+    assert!(script.contains("mktemp"));
+    assert!(script.contains("mv -f"));
+    assert!(!script.contains("Caddyfile.candidate"));
+    assert!(!script.contains("glob"));
+    assert!(!script.contains("readdir"));
+}
+
+fn test_install_door_caddy_updates_snippet_and_validates_whole_config() {
+    let deploy = read_repo("deploy/github/deploy.sh");
+    let remote = read_repo("deploy/github/install-remote.sh");
+    assert!(deploy.contains("install-door-caddy.sh"));
+    assert!(remote.contains("install-door-caddy.sh"));
+    assert!(remote.contains("deploy/door.Caddyfile"));
+    assert!(remote.contains("\"$door_caddy_rc\" -eq 0"));
+
+    let root = std::env::temp_dir().join(format!("kiln-door-caddy-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("bin")).unwrap();
+    let snippet = root.join("kiln/kiln.caddy");
+    fs::create_dir_all(snippet.parent().unwrap()).unwrap();
+    let paseo = root.join("Caddyfile");
+    let door = root.join("door.Caddyfile");
+    let log = root.join("docker.log");
+    let legacy = read_repo("deploy/door.Caddyfile").replace("versions 1.1\n", "");
+    fs::write(&snippet, legacy).unwrap();
+    fs::write(&paseo, "import /config/kiln/kiln.caddy\n").unwrap();
+    fs::write(&door, read_repo("deploy/door.Caddyfile")).unwrap();
+    write_executable(
+        &root.join("bin/docker"),
+        &door_caddy_docker_stub(&log, &snippet),
+    );
+
+    let before = fs::read(&snippet).unwrap();
+    let ok = run_install_door_caddy(&root, &snippet, &door, &paseo);
+    assert!(ok.status.success(), "{}{}", ok.stderr, ok.stdout);
+    assert!(
+        ok.stdout
+            .contains("door caddy snippet installed and reloaded")
+    );
+    assert!(String::from_utf8_lossy(&fs::read(&snippet).unwrap()).contains("versions 1.1"));
+    assert_ne!(fs::read(&snippet).unwrap(), before);
+    let logged = fs::read_to_string(&log).unwrap();
+    assert!(logged.contains("/etc/caddy/Caddyfile"));
+    assert!(logged.contains("validate"));
+
+    let noop = run_install_door_caddy(&root, &snippet, &door, &paseo);
+    assert!(noop.status.success(), "{}{}", noop.stderr, noop.stdout);
+    assert!(noop.stdout.contains("door caddy unchanged"));
+
+    fs::write(
+        snippet.parent().unwrap().join("Caddyfile.candidate"),
+        "stray\n",
+    )
+    .unwrap();
+    let noop_stray = run_install_door_caddy(&root, &snippet, &door, &paseo);
+    assert!(
+        noop_stray.status.success(),
+        "{}{}",
+        noop_stray.stderr,
+        noop_stray.stdout
+    );
+    assert!(noop_stray.stdout.contains("door caddy unchanged"));
+    assert_eq!(
+        fs::read_to_string(snippet.parent().unwrap().join("Caddyfile.candidate")).unwrap(),
+        "stray\n"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn test_install_door_caddy_requires_snippet_and_restores_on_validate_failure() {
+    let root = std::env::temp_dir().join(format!("kiln-door-caddy-guard-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("bin")).unwrap();
+    let snippet = root.join("kiln/kiln.caddy");
+    let paseo = root.join("Caddyfile");
+    let door = root.join("door.Caddyfile");
+    let log = root.join("docker.log");
+    fs::write(&paseo, "dark-forge.dev {\n}\n").unwrap();
+    fs::write(&door, read_repo("deploy/door.Caddyfile")).unwrap();
+    write_executable(
+        &root.join("bin/docker"),
+        &door_caddy_docker_stub(&log, &snippet),
+    );
+    let no_import = run_install_door_caddy(&root, &snippet, &door, &paseo);
+    assert!(!no_import.status.success(), "{}", no_import.stdout);
+    assert!(no_import.stderr.contains("one-time import edit required"));
+
+    fs::write(&paseo, "import /config/kiln/kiln.caddy\n").unwrap();
+    let no_snippet = run_install_door_caddy(&root, &snippet, &door, &paseo);
+    assert!(!no_snippet.status.success(), "{}", no_snippet.stdout);
+    assert!(no_snippet.stderr.contains("missing door Caddy snippet"));
+
+    fs::create_dir_all(snippet.parent().unwrap()).unwrap();
+    fs::write(&snippet, "cli.dark-forge.dev {\n\trespond ok 200\n}\n").unwrap();
+    fs::write(&door, "cli.dark-forge.dev {\n\tnot_a_directive\n}\n").unwrap();
+    let before = fs::read(&snippet).unwrap();
+    let bad = run_install_door_caddy(&root, &snippet, &door, &paseo);
+    assert!(!bad.status.success(), "{}", bad.stdout);
+    assert!(bad.stderr.contains("caddy validate"));
+    assert!(bad.stderr.contains("exit 17"));
+    assert_eq!(fs::read(&snippet).unwrap(), before);
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn test_door_ssh_probe_rejects_an_unauthenticated_request() {
+    let deploy = read_repo("deploy/github/deploy.sh");
+    let remote = read_repo("deploy/github/install-remote.sh");
+    let probe = read_repo("deploy/github/check-door-ssh.sh");
+    assert!(deploy.contains("check-door-ssh.sh"));
+    assert!(deploy.contains("install-door-caddy.sh"));
+    assert!(remote.contains("bash \"$dir/check-door-ssh.sh\""));
+    assert!(remote.contains("bash \"$dir/install-door-caddy.sh\""));
+    assert!(remote.contains("\"$door_rc\" -eq 0"));
+    assert!(probe.contains("Upgrade: kiln-ssh"));
+    assert!(probe.contains("--http1.1"));
+    assert!(probe.contains("journalctl -u kiln-door.service"));
+    assert!(probe.contains("/v1/boxes/${box_id}/ssh"));
+    assert!(!probe.contains(":8444/v1/boxes"));
+    assert!(!probe.contains("Authorization:"));
+    assert!(!probe.contains("admin.token"));
+
+    let root = std::env::temp_dir().join(format!("kiln-door-ssh-probe-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("bin")).unwrap();
+    fs::write(root.join("ca.crt"), "not-a-certificate\n").unwrap();
+    write_executable(
+        &root.join("bin/curl"),
+        r#"#!/bin/bash
+printf '%s\n' "$*" >> "$CURL_LOG"
+if [ "${CURL_FAIL:-}" = 1 ]; then
+  printf 'curl: (7) Failed to connect\n' >&2
+  exit 7
+fi
+out=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --output) out=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '%s' '{"code":"unauthorized","message":"A valid credential is required."}' > "$out"
+printf '%s' "${CURL_CODE:-401}"
+"#,
+    );
+    write_executable(
+        &root.join("bin/journalctl"),
+        r#"#!/bin/bash
+printf '%s\n' "audit ssh outcome=unauthorized box_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+"#,
+    );
+    write_executable(
+        &root.join("bin/systemctl"),
+        r#"#!/bin/bash
+if [ "$1" = is-active ] && [ "$2" = --quiet ] && [ "$3" = kiln-door.service ]; then
+  exit 0
+fi
+exit 1
+"#,
+    );
+    let script = repo().join("deploy/github/check-door-ssh.sh");
+    let run = |code: &str, fail: bool, log_name: &str| {
+        let log = root.join(log_name);
+        let mut command = Command::new("bash");
+        command.arg(&script);
+        command.env("PATH", prepend_path(&root.join("bin")));
+        command.env(
+            "KILN_DOOR_SSH_URL",
+            "https://cli.dark-forge.dev/v1/boxes/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ssh",
+        );
+        command.env("KILN_DOOR_RESOLVE", "cli.dark-forge.dev:443:127.0.0.1");
+        command.env("KILN_DOOR_CA", root.join("ca.crt"));
+        command.env("CURL_LOG", &log);
+        command.env("CURL_CODE", code);
+        if fail {
+            command.env("CURL_FAIL", "1");
+        }
+        let captured = capture(&mut command);
+        let logged = fs::read_to_string(&log).unwrap_or_default();
+        (captured, logged)
+    };
+    let (ok, logged) = run("401", false, "ok.log");
+    assert!(ok.status.success(), "{}{}", ok.stderr, ok.stdout);
+    assert!(ok.stdout.contains("door ssh unauthenticated: 401"));
+    assert!(logged.contains("/v1/boxes/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ssh"));
+    assert!(logged.contains("Upgrade: kiln-ssh"));
+    assert!(!logged.contains("Authorization"));
+    assert!(!logged.contains("Bearer"));
+    let (rejected, _) = run("200", false, "open.log");
+    assert!(!rejected.status.success(), "{}", rejected.stdout);
+    assert!(rejected.stderr.contains("returned 200"));
+    let (down, _) = run("401", true, "down.log");
+    assert!(!down.status.success(), "{}", down.stdout);
+    assert!(down.stderr.contains("not reachable"), "{}", down.stderr);
+    let _ = fs::remove_dir_all(&root);
 }
 
 fn test_smoke_deletes_the_box_when_exec_or_output_fails() {
@@ -647,6 +980,34 @@ fn test_smoke_deletes_the_box_when_exec_or_output_fails() {
     );
     assert!(leaked.captured.stderr.contains("box create failed"));
     assert!(command_names(&leaked.log).contains(&"delete"));
+
+    let smoke = read_repo("deploy/github/smoke.sh");
+    assert!(
+        smoke.find("self-check").unwrap() < smoke.find("delete_box || true").unwrap(),
+        "launch timing check must run before the smoke box is deleted"
+    );
+    assert!(
+        ok.captured
+            .stdout
+            .contains("smoke: launch timing kiln-smoke"),
+        "stdout: {}",
+        ok.captured.stdout
+    );
+
+    let metrics_failed = run_smoke(&[("KILN_SELF_CHECK_RC", "1")]);
+    assert!(
+        !metrics_failed.captured.status.success(),
+        "{}",
+        metrics_failed.captured.stderr
+    );
+    assert!(
+        metrics_failed
+            .captured
+            .stderr
+            .contains("kiln-api self-check failed (exit 1)"),
+        "{}",
+        metrics_failed.captured.stderr
+    );
 }
 
 struct Captured {
@@ -786,7 +1147,9 @@ fn run_deploy(
             ("assets/index-deploytest.js", "console.log('ok');\n"),
         ]);
         write_release_asset(&assets, &dashboard_name, &dashboard_blob, bad_checksum);
-        write_executable(&tmp.path().join("ssh.sh"), &ssh_stub(&ssh_log));
+        let master_state = tmp.path().join("ssh-master.state");
+        write_executable(&tmp.path().join("ssh"), &ssh_stub(&ssh_log, &master_state));
+        write_executable(&tmp.path().join("scp"), &scp_stub(&ssh_log, &master_state));
     }
     write_executable(
         &tmp.path().join("curl"),
@@ -802,7 +1165,18 @@ fn run_deploy(
     command.env("PATH", prepend_path(tmp.path()));
     command.env("KILN_RELEASE_TAG", tag);
     if archive_installer.is_some() {
-        command.env("KILN_SSH_SH", tmp.path().join("ssh.sh"));
+        command.env(
+            "DARK_FORGE_SSH_KEY",
+            "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----",
+        );
+        command.env(
+            "DARK_FORGE_KNOWN_HOSTS",
+            "dark-forge.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHRlc3Q=",
+        );
+        command.env(
+            "KILN_SSH_CONTROL_PATH",
+            tmp.path().join("kiln-ssh-control").display().to_string(),
+        );
     }
     let captured = capture(&mut command);
     DeployRun {
@@ -858,34 +1232,72 @@ exit 1
     )
 }
 
-fn ssh_stub(log: &Path) -> String {
+fn ssh_stub(log: &Path, master_state: &Path) -> String {
     r#"#!/bin/bash
-printf '%s\n' "$*" >> __LOG__
-if [ "$1" = scp ]; then
-  mkdir -p -- "$(dirname -- "$3")"
-  cp -- "$2" "$3"
-  exit 0
+printf '%s\n' "ssh $*" >> __LOG__
+case " $* " in
+  *" -M "*|*ControlMaster=yes*)
+    printf '1\n' > __STATE__
+    exit 0
+    ;;
+  *" -O exit "*)
+    printf '0\n' > __STATE__
+    exit 0
+    ;;
+esac
+if [ "$(cat __STATE__ 2>/dev/null || printf 0)" != 1 ]; then
+  printf 'ssh stub: multiplex master is not open\n' >&2
+  exit 97
 fi
-if [ "$1" = ssh ]; then
+while [ $# -gt 0 ]; do
+  if [ "$1" = -- ]; then
+    shift
+    if [ "${1:-}" = mktemp ]; then
+      shift
+      mktemp "$@"
+      exit 0
+    fi
+    if [ "${1:-}" = rm ]; then
+      shift
+      rm "$@"
+      exit 0
+    fi
+    exit 0
+  fi
   shift
-  if [ "${1:-}" = -- ]; then
-    shift
-  fi
-  if [ "${1:-}" = mktemp ]; then
-    shift
-    mktemp "$@"
-    exit 0
-  fi
-  if [ "${1:-}" = rm ]; then
-    shift
-    rm "$@"
-    exit 0
-  fi
-  exit 0
-fi
-exit 1
+done
+exit 0
 "#
     .replace("__LOG__", &sh_quote(&log.display().to_string()))
+    .replace("__STATE__", &sh_quote(&master_state.display().to_string()))
+}
+
+fn scp_stub(log: &Path, master_state: &Path) -> String {
+    r#"#!/bin/bash
+printf '%s\n' "scp $*" >> __LOG__
+if [ "$(cat __STATE__ 2>/dev/null || printf 0)" != 1 ]; then
+  printf 'scp stub: multiplex master is not open\n' >&2
+  exit 96
+fi
+local=
+remote=
+for arg in "$@"; do
+  case "$arg" in
+    -*) ;;
+    *:*)
+      remote=${arg#*:}
+      ;;
+    *)
+      local=$arg
+      ;;
+  esac
+done
+mkdir -p -- "$(dirname -- "$remote")"
+cp -- "$local" "$remote"
+exit 0
+"#
+    .replace("__LOG__", &sh_quote(&log.display().to_string()))
+    .replace("__STATE__", &sh_quote(&master_state.display().to_string()))
 }
 
 fn run_remote(archive_body: &str, overlay: Option<&str>, bad_checksum: bool) -> Captured {
@@ -1059,7 +1471,9 @@ fn run_smoke(extra: &[(&str, &str)]) -> SmokeRun {
         &kiln_api,
         r#"#!/bin/sh
 case "$*" in
-  *self-check*) exit 0 ;;
+  *self-check*)
+    printf 'smoke: launch timing kiln-smoke total_ms=1 storage_ms=1\n'
+    exit "${KILN_SELF_CHECK_RC-0}" ;;
   *) exit 1 ;;
 esac
 "#,
@@ -1242,10 +1656,15 @@ register_cases! {
     test_guard_allows_main_dispatch_and_a_tag_release,
     test_secrets_are_read_only_by_the_dark_forge_environment,
     test_older_tags_and_prereleases_are_refused_before_ssh,
+    test_deploy_ssh_and_scp_run_while_multiplex_master_is_open,
     test_v044_uses_this_tree_and_later_tags_use_the_archive,
     test_apt_installs_missing_packages_without_upgrading,
     test_sqlite3_install_is_exact_and_skipped_when_present,
     test_deploy_installs_dashboard_and_checks_the_live_bundle,
     test_deploy_host_scripts_do_not_invoke_jq,
     test_smoke_deletes_the_box_when_exec_or_output_fails,
+    test_door_ssh_probe_rejects_an_unauthenticated_request,
+    test_deploy_scripts_never_write_paseo_caddyfile,
+    test_install_door_caddy_updates_snippet_and_validates_whole_config,
+    test_install_door_caddy_requires_snippet_and_restores_on_validate_failure,
 }

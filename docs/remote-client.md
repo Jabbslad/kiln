@@ -275,6 +275,15 @@ initialization and persist on the box disk. Authentication authorizes root
 access inside the selected box. The administrator token is never sent to the
 guest; terminal/file payloads do not enter the operation journal.
 
+On `https://cli.dark-forge.dev`, `kiln ssh` and `kiln ssh-config` use the full
+box id and send `Upgrade: kiln-ssh` to `GET /v1/boxes/<id>/ssh`. The public door
+accepts that upgrade only for an operate-scope identity JWT whose subject is the
+enrolled owner, then proxies the byte stream to loopback `kiln-api` with that
+same JWT. It does not accept the administrator token and does not add one. A
+missing credential, an invalid JWT, a read-scope token, or another owner's JWT
+is rejected before the door dials loopback. Each accepted session is audited.
+Linux and macOS ship this client. There is still no public port 22.
+
 SSH sessions are separate from buffered `exec`: Ctrl-C and terminal resizing
 work through OpenSSH, with no automatic command replay or session reconnect.
 There are at most 32 tunnels per service, eight sessions per guest, and a 24-hour
@@ -354,11 +363,18 @@ loses ownership and idempotency history. Back up both together with services
 stopped (and VM disks handled using the runtime's checkpoint contract).
 
 There are eight in-flight host operations, 32 in-flight gateway requests, 128 KiB
-request bodies, and 1 MiB response bounds. A private pilot journal accepts at most
-10,000 requests and then fails closed; do not prune idempotency keys to bypass
-that bound. Automated retention/tombstone compaction is a follow-up before
-long-running production use. Catalog changes and token rotation require service
-restart; token rotation means securely replacing the file on server and laptop.
+request bodies, and 1 MiB response bounds. The operation journal uses a
+10,000-row high-water mark inside `kiln-host`. Before refusing a new row,
+`kiln-host` prunes terminal operations (succeeded, failed, or unknown) that are
+older than 30 days and outside the 8,000 newest finished rows. Running operations
+are never pruned. Create rows for boxes that still exist on disk are never
+pruned, so the dashboard and API box list stay aligned with live VMs. Retries
+with the same `--request-id` and identical arguments still dedupe while the row
+remains; changed arguments still return 409. If the journal is still at the cap
+after pruning, new mutations return HTTP 503 with code `journal_full` and an
+actionable message rather than failing silently. Catalog changes and token
+rotation require service restart; token rotation means securely replacing the
+file on server and laptop.
 
 ## Verification
 

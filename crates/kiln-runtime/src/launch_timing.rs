@@ -75,6 +75,19 @@ impl LaunchTiming {
     pub fn reported(&self) -> bool {
         self.total_ms.is_some()
     }
+
+    pub fn has_measured_phases(&self) -> bool {
+        [
+            self.storage_ms,
+            self.vmm_ms,
+            self.restore_ms,
+            self.agent_ms,
+            self.init_ms,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| value.is_finite() && value > 0.)
+    }
 }
 
 #[cfg(test)]
@@ -92,5 +105,11 @@ mod tests {
         assert_eq!(timing.vmm_ms, Some(50.));
         assert_eq!(timing.init_ms, Some(25.));
         assert_eq!(timing.total_ms, Some(200.));
+    }
+
+    #[test]
+    fn journal_total_without_phases_is_not_measured() {
+        let timing = LaunchTiming::from_journal("create", "Copy", 1000.);
+        assert!(!timing.has_measured_phases());
     }
 }

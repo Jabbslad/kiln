@@ -76,6 +76,8 @@ prev_server="$prev_saved/$(basename "$prev_server")"
 
 sh scripts/stamp-release-dist.sh "$dist" "$from" "$tag"
 sh scripts/check-stamped-clients.sh "$dist" "$tag"
+KILN_VERSION_CHECK_DIST="$dist" bash deploy/github/check-installed-versions.sh "$tag"
+bash scripts/test-identity-slot-rehearsal.sh "$dist" "$tag"
 
 count=0
 for path in "$dist"/*.tar.gz; do
@@ -104,6 +106,8 @@ KILN_DEPLOY_DRY_RUN=1 \
   KILN_RELEASE_TAG="$tag" \
   KILN_DEPLOY_DIST="$dist" \
   bash deploy/github/deploy.sh >"$output.deploy" 2>&1
+grep -q 'ssh-session: dry-run control path' "$output.deploy" \
+  || fail 'deploy dry-run did not set up the multiplex session'
 grep -q "deploy inputs ${tag}" "$output.deploy" || fail 'deploy dry-run did not finish'
 grep -q "dashboard inputs kiln-dashboard-${tag}.tar.gz" "$output.deploy" \
   || fail 'deploy dry-run did not check the dashboard archive'
@@ -117,7 +121,11 @@ if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
   VERSION=${tag#v}
   export VERSION
   cargo xtask release-version resolve --ref-type tag --ref-name "$tag"
-  cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client
+  trust_json=$(mktemp)
+  trust_bins=$(mktemp -d)
+  trap 'rm -rf "$dist" "$output" "$trust_json" "$trust_bins"' EXIT
+  cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client \
+    --message-format=json >"$trust_json"
   cargo xtask release-version check-binary --version "$tag" -- \
     target/release/kiln \
     target/release/kiln-runtime \
@@ -135,6 +143,18 @@ if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
     break
   done
   [ -n "$next_archive" ] || fail 'PR server package was not assembled'
+  tar -xzf "$next_archive" -C "$trust_bins" \
+    bin/kiln bin/kiln-runtime bin/kiln-host bin/kiln-api
+  sh scripts/check-release-trust.sh --cargo-json "$trust_json" \
+    target/release/kiln \
+    target/release/kiln-runtime \
+    target/release/kiln-host \
+    target/release/kiln-api \
+    "$trust_bins/bin/kiln" \
+    "$trust_bins/bin/kiln-runtime" \
+    "$trust_bins/bin/kiln-host" \
+    "$trust_bins/bin/kiln-api"
+  rm -rf "$trust_json" "$trust_bins"
   KILN_SERVER_UPGRADE_PREV_TAR=$prev_archive \
     KILN_SERVER_UPGRADE_TO_TAR=$next_archive \
     bash scripts/test-identity-upgrade.sh

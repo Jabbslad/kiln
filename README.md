@@ -72,8 +72,9 @@ existing administrator profile. With no enrolled server, login explains how to e
 The host administrator enrolls once with `deploy/enroll-dark-forge.sh` and
 approves as GitHub user Jabbslad, numeric id 3084. The release identity binary
 accepts only the production GitHub endpoints. The steps are in the
-[public door runbook](docs/runbooks/2026-10-19-public-door.md). SSH is not served
-by the public door. See the [identity operator guide](docs/identity-service.md).
+[public door runbook](docs/runbooks/2026-10-19-public-door.md). `kiln ssh` on that
+name is proxied for an operate-scope owner JWT. The administrator token is not
+accepted there. See the [identity operator guide](docs/identity-service.md).
 
 ## Try the runtime
 

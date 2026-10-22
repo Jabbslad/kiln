@@ -4,7 +4,7 @@ Laptops reach this host at `https://cli.dark-forge.dev` on port 443. tcp/8443 is
 
 `kiln-identity.service` is not edited and is not restarted. The identity crate did change. Release builds of `kiln-identity` accept only the production GitHub endpoints (`https://github.com/login/oauth/authorize`, `https://github.com/login/oauth/access_token`, and `https://api.github.com/user`) and no extra provider CA. The non-default Cargo feature `lab-provider` puts `--github-authorize-url`, `--github-token-url`, `--github-user-url`, and `--provider-ca-file` back for a lab issuer. Release archives do not enable that feature. `https://dark-forge.dev` refuses a substitute provider even when the feature is on.
 
-SSH is not on the public door. Direct administrator recovery stays `laptop.tar.gz` on the host.
+`kiln ssh` is proxied by the public door for an operate-scope owner JWT. The administrator token is not accepted on that path. Direct administrator recovery stays `laptop.tar.gz` on the host.
 
 ## Before you start
 

@@ -14,4 +14,13 @@ test('proof capture: built preview inventory', async ({ page }) => {
     path: `${artifactDir}/${phase}-dashboard-boxes.png`,
     fullPage: true,
   })
+
+  await page.goto('/boxes/box-7f3a2c1e?preview=1')
+  await expect(page.getByRole('heading', { name: /api-dev/i })).toBeVisible()
+  await expect(page.getByTestId('capability-ssh')).toBeVisible()
+  await page.evaluate(() => document.fonts.ready)
+  await page.screenshot({
+    path: `${artifactDir}/${phase}-dashboard-access-ssh.png`,
+    fullPage: true,
+  })
 })

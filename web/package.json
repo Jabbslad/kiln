@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc -b && vite build",
+    "build": "sh ../scripts/write-release-notes.sh && tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "vitest run",
+    "test": "sh ../scripts/write-release-notes.sh && vitest run",
     "test:browser": "playwright test"
   },
   "dependencies": {
