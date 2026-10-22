@@ -99,12 +99,20 @@ chmod +x "$nextest_script"
 printf '%s\n' '#!/bin/sh' 'exit 1' >"$tag_script"
 chmod +x "$tag_script"
 
-if out=$(GH_TOKEN=test-token sh "$check" --release 2>&1); then
+if out=$(
+  PR_BASE_SHA=$(git rev-parse HEAD) \
+    PR_BODY='feature-map: n/a' \
+    GH_TOKEN=test-token \
+    sh "$check" --release 2>&1
+); then
   printf '%s\n' "$out" >&2
   fail 'check.sh --release must exit non-zero when tag-path-dry-run fails'
 fi
 printf '%s\n' "$out" | grep -q 'FAILED: tag-path-dry-run' \
-  || fail 'check.sh --release must print FAILED: tag-path-dry-run when dry-run fails'
+  || {
+    printf '%s\n' "$out" >&2
+    fail 'check.sh --release must print FAILED: tag-path-dry-run when dry-run fails'
+  }
 restore_scripts
 trap 'rm -rf "$work"' EXIT
 
