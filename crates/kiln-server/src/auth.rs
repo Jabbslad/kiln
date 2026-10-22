@@ -179,7 +179,8 @@ pub fn verify_claims(
     if enrollment.bound_tenant_id().is_none() {
         enrollment.bind_owner_tenant_from_claim(&c)?;
         if let Some(path) = enrollment_file {
-            enrollment.persist(path)?;
+            // identity.json is root-owned; kiln-api binds in memory when persist is not allowed.
+            let _ = enrollment.persist(path);
         }
     }
     let claim_tenant = c
