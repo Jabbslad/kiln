@@ -701,7 +701,6 @@ jobs:
         id: playwright-version
         if: >-
           steps.queue.outputs.skip_tests != 'true' &&
-          !startsWith(github.ref, 'refs/tags/v') &&
           ((github.event_name != 'pull_request' && github.event_name != 'merge_group') ||
             needs.changes.outputs.web == 'true')
         run: |
