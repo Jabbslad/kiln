@@ -124,6 +124,7 @@ jobs:
           sh scripts/test-operations-journal-version-sync.sh
           sh scripts/test-release-notes.sh
           sh scripts/test-fmt.sh
+          sh scripts/test-check.sh
 
   feature-map-guard:
     if: github.event_name == 'pull_request'
@@ -265,6 +266,7 @@ jobs:
           sh scripts/test-operations-journal-version-sync.sh
           sh scripts/test-release-notes.sh
           sh scripts/test-fmt.sh
+          sh scripts/test-check.sh
           shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-bootstrap-pins.sh scripts/test-bootstrap-pins.sh scripts/test-caddy-endings.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/enroll-dark-forge.sh \
             deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
@@ -301,7 +303,7 @@ jobs:
             scripts/check-embedded-release-notes.sh scripts/test-release-notes.sh \
             scripts/test-embedded-release-notes.sh \
             scripts/capture-dashboard-release-notes-proof.sh \
-            scripts/fmt.sh scripts/test-fmt.sh
+            scripts/fmt.sh scripts/test-fmt.sh scripts/check.sh scripts/test-check.sh scripts/check-docs.sh
 
   # A manual dry run fetches main's packages. A push builds in this run.
   reuse:
