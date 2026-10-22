@@ -1,5 +1,5 @@
 #!/bin/sh
-# Rehearse the tag path against main's latest green packages.
+# Rehearse the tag path against main's green packages at or before the PR merge base.
 # The fake tag is the next patch plus -dryrun and is never pushed. The stamp,
 # version-guard, draft-release, and deploy scripts accept only vX.Y.Z,
 # so they receive that version with the suffix removed.
@@ -13,22 +13,118 @@ fail() {
   exit 1
 }
 
-green_main_run() {
-  repo=$1
-  row=$(
-    gh run list --repo "$repo" --workflow build.yml --branch main --event push \
-      --status success --limit 1 \
-      --json databaseId,headSha,event,conclusion,headBranch,status \
-      --jq '.[0] | select(.conclusion == "success" and .event == "push" and .headBranch == "main" and .status == "completed") | "\(.databaseId)\t\(.headSha)"'
-  )
-  green_main_run_id=${row%%	*}
-  green_main_sha=${row#*	}
-  printf '%s\n' "$green_main_sha" | grep -Eq '^[0-9a-f]{40}$' || return 1
-  printf '%s\n' "$green_main_run_id" | grep -Eq '^[0-9]+$' || return 1
-  return 0
+tag_path_merge_base() {
+  if [ -n "${TAG_PATH_MERGE_BASE:-}" ]; then
+    printf '%s\n' "$TAG_PATH_MERGE_BASE"
+    return 0
+  fi
+  if [ -n "${PR_BASE_SHA:-}" ]; then
+    git merge-base HEAD "$PR_BASE_SHA"
+    return 0
+  fi
+  if [ -n "${GITHUB_SHA:-}" ]; then
+    printf '%s\n' "$GITHUB_SHA"
+    return 0
+  fi
+  git merge-base HEAD origin/main
 }
 
-if [ "${TAG_PATH_GREEN_MAIN_RUN_TEST:-}" = 1 ]; then
+sha_is_ancestor_of_merge_base() {
+  ancestor=$1
+  merge_base=$2
+  if [ -n "${TAG_PATH_ANCESTOR_SHAS:-}" ]; then
+    case ",$TAG_PATH_ANCESTOR_SHAS," in
+      *,"$ancestor",*) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  git merge-base --is-ancestor "$ancestor" "$merge_base"
+}
+
+run_row_eligible() {
+  conclusion=$1
+  status=$2
+  event=$3
+  head_branch=$4
+  [ "$conclusion" = success ] \
+    && [ "$status" = completed ] \
+    && [ "$event" = push ] \
+    && [ "$head_branch" = main ]
+}
+
+# Sets green_main_run_id and green_main_sha when a green main run is an ancestor of the merge base.
+resolve_reuse_main_run() {
+  repo=$1
+  merge_base=$(tag_path_merge_base)
+  printf '%s\n' "$merge_base" | grep -Eq '^[0-9a-f]{40}$' \
+    || fail 'merge base is not a commit sha'
+
+  rows=$(
+    gh run list --repo "$repo" --workflow build.yml --branch main --event push \
+      --limit "${TAG_PATH_MAIN_RUN_LIST_LIMIT:-50}" \
+      --json databaseId,headSha,event,conclusion,headBranch,status \
+      --jq '.[] | [.databaseId, .headSha, .conclusion, .status, .event, .headBranch] | @tsv'
+  ) || return 1
+
+  green_main_run_id=
+  green_main_sha=
+  while IFS='	' read -r run_id head_sha conclusion status event head_branch; do
+    [ -n "$run_id" ] || continue
+    run_row_eligible "$conclusion" "$status" "$event" "$head_branch" || continue
+    printf '%s\n' "$head_sha" | grep -Eq '^[0-9a-f]{40}$' || continue
+    sha_is_ancestor_of_merge_base "$head_sha" "$merge_base" || continue
+    green_main_run_id=$run_id
+    green_main_sha=$head_sha
+    return 0
+  done <<EOF
+$rows
+EOF
+  return 1
+}
+
+tag_path_acquire_dist() {
+  repo=$1
+  dist=$2
+  output=$3
+
+  reuse_source=
+  from=
+  sha=
+
+  if resolve_reuse_main_run "$repo"; then
+    reuse_source=reuse
+    sha=$green_main_sha
+    env -u REUSE_VERSION \
+      GITHUB_OUTPUT="$output" \
+      REUSE_EVENT=workflow_dispatch \
+      REUSE_SHA_INPUT="$sha" \
+      REUSE_RUN_ID="$green_main_run_id" \
+      GH_REPO="$repo" \
+      GH_TOKEN="$GH_TOKEN" \
+      cargo xtask reuse-release fetch --dist "$dist"
+    from=$(awk -F= '$1 == "version" { print $2 }' "$output")
+    mode=$(awk -F= '$1 == "mode" { print $2 }' "$output")
+    [ "$mode" = reuse ] || fail "reuse mode is ${mode:-empty}"
+    return 0
+  fi
+
+  reuse_source=fallback
+  sha=$(tag_path_merge_base)
+  tags=$(git ls-remote --tags origin 'refs/tags/v*') || fail 'could not list tags'
+  tag=$(printf '%s\n' "$tags" | sh scripts/next-release-tag.sh)
+  from=$(printf '%s\n' "$tags" | sh scripts/previous-release-tag.sh "$tag")
+  printf '%s\n' "$from" | grep -Eq '^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$' \
+    || fail "fallback from-tag ${from}"
+  printf 'tag-path-dry-run: no green main ancestor of merge base; local fallback from %s\n' "$from" >&2
+  sh scripts/tag-path-fallback-dist.sh "$from" "$dist"
+  {
+    printf 'mode=fallback\n'
+    printf 'version=%s\n' "$from"
+    printf 'reason=tag-path local fallback\n'
+  } >"$output"
+}
+
+if [ "${TAG_PATH_REUSE_RESOLVE_TEST:-}" = 1 ]; then
   repo=${GH_REPO:-Jabbslad/kiln}
   case $repo in
     */*) ;;
@@ -37,8 +133,25 @@ if [ "${TAG_PATH_GREEN_MAIN_RUN_TEST:-}" = 1 ]; then
   if [ -z "${GH_TOKEN:-}" ]; then
     fail 'GH_TOKEN is required'
   fi
-  green_main_run "$repo" || fail 'no green main run'
-  printf 'green main run %s %s\n' "$green_main_run_id" "$green_main_sha"
+  if resolve_reuse_main_run "$repo"; then
+    printf 'reuse main run %s %s\n' "$green_main_run_id" "$green_main_sha"
+  else
+    printf 'reuse source fallback\n'
+  fi
+  exit 0
+fi
+
+if [ "${TAG_PATH_GENUINE_FAILURE_TEST:-}" = 1 ]; then
+  from=${TAG_PATH_TEST_FROM:-v0.4.17}
+  dist=$(mktemp -d)
+  trap 'rm -rf "$dist"' EXIT
+  prev_server=
+  for path in "$dist/kiln-server-${from}"*.tar.gz; do
+    [ -f "$path" ] || continue
+    prev_server=$path
+    break
+  done
+  [ -n "$prev_server" ] || fail "reuse dist missing server archive for ${from}"
   exit 0
 fi
 
@@ -57,27 +170,21 @@ if [ -z "${GH_TOKEN:-}" ]; then
   fail 'GH_TOKEN is required'
 fi
 
-green_main_run "$repo" || fail 'no green main run'
-sha=$green_main_sha
-
 dist=$(mktemp -d)
 output=$(mktemp)
 trap 'rm -rf "$dist" "$output"' EXIT
 
-env -u REUSE_VERSION \
-  GITHUB_OUTPUT="$output" \
-  REUSE_EVENT=workflow_dispatch \
-  REUSE_SHA_INPUT="$sha" \
-  REUSE_RUN_ID="$green_main_run_id" \
-  GH_REPO="$repo" \
-  GH_TOKEN="$GH_TOKEN" \
-  cargo xtask reuse-release fetch --dist "$dist"
-
+tag_path_acquire_dist "$repo" "$dist" "$output"
 from=$(awk -F= '$1 == "version" { print $2 }' "$output")
 mode=$(awk -F= '$1 == "mode" { print $2 }' "$output")
-[ "$mode" = reuse ] || fail "reuse mode is ${mode:-empty}"
+case $mode in
+  reuse | fallback) ;;
+  *) fail "dist mode is ${mode:-empty}" ;;
+esac
 printf '%s\n' "$from" | grep -Eq '^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$' \
   || fail "from-tag ${from}"
+
+sha=${green_main_sha:-$(tag_path_merge_base)}
 
 tags=$(git ls-remote --tags origin 'refs/tags/v*') || fail 'could not list tags'
 tag=$(printf '%s\n' "$tags" | sh scripts/next-release-tag.sh)
@@ -87,6 +194,7 @@ printf '%s\n' "$tag" | grep -Eq '^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|
 printf '%s\n' "$dry_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-dryrun$' || fail "fake tag ${dry_tag}"
 printf 'dry-run tag %s sha %s\n' "$tag" "$sha"
 printf 'dry-run release %s\n' "$tag"
+printf 'reuse source %s\n' "${reuse_source:-unknown}"
 
 prev_server=
 for path in "$dist/kiln-server-${from}"*.tar.gz; do

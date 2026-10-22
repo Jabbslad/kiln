@@ -27,8 +27,12 @@ grep -q 'scripts/check-release-trust.sh' "$root/scripts/tag-path-dry-run.sh" \
 grep -q 'scripts/check-release-trust.sh' "$root/.github/workflows/build.yml" \
   || fail 'release build must guard release binaries'
 
-grep -q 'green_main_run' "$root/scripts/tag-path-dry-run.sh" \
-  || fail 'tag-path-dry-run must resolve the latest green main run'
+grep -q 'resolve_reuse_main_run' "$root/scripts/tag-path-dry-run.sh" \
+  || fail 'tag-path-dry-run must resolve a green main run for the merge base'
+grep -q 'tag_path_merge_base' "$root/scripts/tag-path-dry-run.sh" \
+  || fail 'tag-path-dry-run must compute the PR merge base'
+grep -q 'tag-path-fallback-dist.sh' "$root/scripts/tag-path-dry-run.sh" \
+  || fail 'tag-path-dry-run must fall back to a local dist build'
 grep -q 'databaseId' "$root/scripts/tag-path-dry-run.sh" \
   || fail 'tag-path-dry-run must pin the green main workflow run id'
 grep -q 'REUSE_RUN_ID' "$root/scripts/tag-path-dry-run.sh" \
@@ -173,10 +177,16 @@ grep -q 'packaged versions v0.4.18' "$work/deploy-out" \
 
 old_green=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 new_main=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+failed_main=dddddddddddddddddddddddddddddddddddddddd
+orphan_green=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+merge_base=$old_green
 green_run_id=8888
 real_gh=$(command -v gh)
-mkdir -p "$work/bin"
-cat >"$work/bin/gh" <<EOF
+
+write_gh_shim() {
+  run_list_tsv=$1
+  mkdir -p "$work/bin"
+  cat >"$work/bin/gh" <<EOF
 #!/bin/sh
 if [ "\$1" = run ] && [ "\$2" = list ]; then
   case "\$*" in
@@ -184,12 +194,10 @@ if [ "\$1" = run ] && [ "\$2" = list ]; then
       printf '[]\n'
       exit 0
       ;;
-    *--status*success*)
-      printf '%s\t%s\n' "$green_run_id" "$old_green"
-      exit 0
-      ;;
     *--branch*main*)
-      printf '[{"databaseId":9999,"headSha":"$new_main","event":"push","conclusion":"","headBranch":"main","status":"in_progress"}]\n'
+      cat <<'RUNLIST'
+$run_list_tsv
+RUNLIST
       exit 0
       ;;
   esac
@@ -234,18 +242,60 @@ if [ "\$1" = run ] && [ "\$2" = download ]; then
 fi
 exec "$real_gh" "\$@"
 EOF
-chmod +x "$work/bin/gh"
+  chmod +x "$work/bin/gh"
+}
 
-if ! TAG_PATH_GREEN_MAIN_RUN_TEST=1 \
-  GH_REPO=Jabbslad/kiln \
-  GH_TOKEN=test-token \
-  PATH="$work/bin:$PATH" \
-  sh "$root/scripts/tag-path-dry-run.sh" >"$work/green-out" 2>"$work/green-err"; then
-  cat "$work/green-err" >&2
-  fail 'green main run lookup must succeed while a newer main build is in progress'
+resolve_reuse() {
+  TAG_PATH_REUSE_RESOLVE_TEST=1 \
+    TAG_PATH_MERGE_BASE="$merge_base" \
+    TAG_PATH_ANCESTOR_SHAS="${TAG_PATH_ANCESTOR_SHAS:-$old_green}" \
+    GH_REPO=Jabbslad/kiln \
+    GH_TOKEN=test-token \
+    PATH="$work/bin:$PATH" \
+    sh "$root/scripts/tag-path-dry-run.sh" >"$work/resolve-out" 2>"$work/resolve-err"
+}
+
+in_progress_runs='9999	'"$new_main"'		in_progress	push	main
+'"$green_run_id"'	'"$old_green"'	success	completed	push	main'
+write_gh_shim "$in_progress_runs"
+if ! resolve_reuse; then
+  cat "$work/resolve-err" >&2
+  fail 'reuse resolve must succeed while a newer main build is in progress'
 fi
-grep -q "green main run $green_run_id $old_green" "$work/green-out" \
-  || fail 'green main run lookup must pin the last green run, not the in-progress main build'
+grep -q "reuse main run $green_run_id $old_green" "$work/resolve-out" \
+  || fail 'reuse resolve must pin the last green ancestor, not the in-progress main build'
+
+failed_runs='7777	'"$failed_main"'	failure	completed	push	main
+'"$green_run_id"'	'"$old_green"'	success	completed	push	main'
+write_gh_shim "$failed_runs"
+if ! resolve_reuse; then
+  cat "$work/resolve-err" >&2
+  fail 'reuse resolve must succeed while the newest main build failed'
+fi
+grep -q "reuse main run $green_run_id $old_green" "$work/resolve-out" \
+  || fail 'reuse resolve must pin the last green ancestor after a failed main build'
+
+no_ancestor_runs=$green_run_id'	'"$orphan_green"'	success	completed	push	main'
+write_gh_shim "$no_ancestor_runs"
+TAG_PATH_ANCESTOR_SHAS=$old_green
+if ! resolve_reuse; then
+  cat "$work/resolve-err" >&2
+  fail 'reuse resolve must not fail when merge base has no green ancestor'
+fi
+grep -q 'reuse source fallback' "$work/resolve-out" \
+  || fail 'reuse resolve must report local fallback without a green ancestor'
+
+if TAG_PATH_GENUINE_FAILURE_TEST=1 \
+  TAG_PATH_TEST_FROM=v0.4.17 \
+  sh "$root/scripts/tag-path-dry-run.sh" >"$work/genuine-out" 2>"$work/genuine-err"; then
+  cat "$work/genuine-err" >&2
+  fail 'tag-path dry-run must fail on a missing reuse server archive'
+fi
+grep -q 'reuse dist missing server archive for v0.4.17' "$work/genuine-err" \
+  || fail 'tag-path dry-run must report a genuine reuse dist break'
+
+TAG_PATH_ANCESTOR_SHAS=$old_green
+write_gh_shim "$in_progress_runs"
 
 align_dist=$work/reuse-dist
 align_out=$work/reuse-output
@@ -285,3 +335,5 @@ if ! cargo xtask test-reuse-release >"$work/reuse-test.log" 2>&1; then
 fi
 grep -q 'test_pinned_run_resolves_when_commit_list_is_empty' "$work/reuse-test.log" \
   || fail 'reuse-release must cover pinned run id when commit list is empty'
+
+printf 'tag-path dry-run tests ok\n'
