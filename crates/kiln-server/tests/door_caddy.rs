@@ -100,7 +100,6 @@ fn enrollment() -> Enrollment {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: None,
     }
 }
 

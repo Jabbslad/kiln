@@ -82,7 +82,13 @@ fn token(key: &EncodingKey, sub: &str, scope: Scope) -> String {
     token_with(key, sub, scope, "device-1")
 }
 
-fn tenant_token(key: &EncodingKey, sub: &str, scope: Scope, tenant_id: &str, role: MemberRole) -> String {
+fn tenant_token(
+    key: &EncodingKey,
+    sub: &str,
+    scope: Scope,
+    tenant_id: &str,
+    role: MemberRole,
+) -> String {
     let now = jsonwebtoken::get_current_timestamp();
     let claims = ServerClaims {
         iss: "https://identity.example.test".into(),
@@ -1551,7 +1557,13 @@ async fn serve_operations() -> ServedOperations {
         &format!("https://127.0.0.1:{port}"),
         ca_pem.as_bytes(),
         Some(root.path()),
-        &tenant_token(&key, "member-b", Scope::Operate, "tenant-a", MemberRole::Member),
+        &tenant_token(
+            &key,
+            "member-b",
+            Scope::Operate,
+            "tenant-a",
+            MemberRole::Member,
+        ),
     )
     .unwrap();
     ServedOperations {

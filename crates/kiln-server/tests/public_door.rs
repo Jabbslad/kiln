@@ -136,7 +136,6 @@ fn auth(dir: &std::path::Path) -> (Authenticator, EncodingKey) {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: None,
     };
     let cache = dir.join("jwks.json");
     std::fs::write(
