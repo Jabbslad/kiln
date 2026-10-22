@@ -152,6 +152,7 @@ jobs:
           sh scripts/test-feature-map-guard.sh
           sh scripts/test-check-pr-proof.sh
           sh scripts/test-operations-journal-version-sync.sh
+          sh scripts/test-tenant-isolation.sh
           sh scripts/test-release-notes.sh
           sh scripts/test-fmt.sh
           sh scripts/test-check.sh
@@ -322,6 +323,7 @@ jobs:
           sh scripts/test-feature-map-guard.sh
           sh scripts/test-check-pr-proof.sh
           sh scripts/test-operations-journal-version-sync.sh
+          sh scripts/test-tenant-isolation.sh
           sh scripts/test-release-notes.sh
           sh scripts/test-fmt.sh
           sh scripts/test-check.sh
@@ -366,6 +368,7 @@ jobs:
             scripts/verify-release-attestations.sh scripts/test-verify-release-attestations.sh \
             scripts/check-feature-map.sh             scripts/test-feature-map-guard.sh \
             scripts/test-operations-journal-version-sync.sh \
+            scripts/test-tenant-isolation.sh \
             scripts/previous-release-tag.sh scripts/previous-release-notes-from.sh \
             scripts/published-release-tags.sh scripts/release-notes-mode.sh \
             scripts/release-notes-json.sh scripts/release-notes-markdown.sh scripts/write-release-notes.sh \

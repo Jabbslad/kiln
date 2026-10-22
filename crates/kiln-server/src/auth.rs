@@ -94,7 +94,7 @@ fn keys(value: &Value) -> Result<JwkSet> {
     Ok(serde_json::from_value(value.clone())?)
 }
 
-pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Scope> {
+pub fn verify_claims(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<ServerClaims> {
     enrollment.validate()?;
     ensure!(token.len() <= 8192, "invalid token");
     let header = decode_header(token)?;
@@ -127,7 +127,11 @@ pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Scop
             && c.iat <= jsonwebtoken::get_current_timestamp().saturating_add(30),
         "invalid token authority or lifetime"
     );
-    Ok(c.scope)
+    Ok(c)
+}
+
+pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Scope> {
+    Ok(verify_claims(token, enrollment, jwks)?.scope)
 }
 
 struct Cache {
@@ -202,21 +206,21 @@ impl Authenticator {
         self.central_jwt(bearer).await
     }
 
-    /// Enrolled owner id when the bearer is a valid central JWT; otherwise `anonymous`.
+    /// JWT `sub` when the bearer is a valid central token; otherwise `anonymous`.
     pub async fn central_caller(&self, bearer: &str) -> String {
-        if bearer.is_empty() {
-            return "anonymous".into();
-        }
-        let Some((enrollment, _)) = self.central.as_ref() else {
-            return "anonymous".into();
-        };
-        if self.authenticate_central(bearer).await.is_ok() {
-            return enrollment.owner_id.clone();
-        }
-        "anonymous".into()
+        self.central_subject(bearer)
+            .await
+            .unwrap_or_else(|| "anonymous".into())
     }
 
-    async fn central_jwt(&self, bearer: &str) -> Result<Scope> {
+    pub async fn central_subject(&self, bearer: &str) -> Option<String> {
+        if bearer.is_empty() {
+            return None;
+        }
+        self.central_claims(bearer).await.ok().map(|c| c.sub)
+    }
+
+    async fn central_claims(&self, bearer: &str) -> Result<ServerClaims> {
         let (enrollment, path) = self
             .central
             .as_ref()
@@ -230,7 +234,7 @@ impl Authenticator {
                 && header.x5c.is_none(),
             "invalid token header"
         );
-        let kid = header.kid.context("missing key id")?;
+        let kid = header.kid.context("missing token key id")?;
         let mut cache = self.cache.lock().await;
         let known = cache.jwks["keys"]
             .as_array()
@@ -269,6 +273,10 @@ impl Authenticator {
             fs::File::open(parent)?.sync_all()?;
             cache.jwks = value;
         }
-        verify(bearer, enrollment, &cache.jwks)
+        verify_claims(bearer, enrollment, &cache.jwks)
+    }
+
+    async fn central_jwt(&self, bearer: &str) -> Result<Scope> {
+        Ok(self.central_claims(bearer).await?.scope)
     }
 }

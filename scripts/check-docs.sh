@@ -43,6 +43,7 @@ sh scripts/test-check-dropped-platform.sh
 sh scripts/test-feature-map-guard.sh
 sh scripts/test-check-pr-proof.sh
 sh scripts/test-operations-journal-version-sync.sh
+sh scripts/test-tenant-isolation.sh
 sh scripts/test-release-notes.sh
 sh scripts/test-fmt.sh
 sh scripts/test-check.sh

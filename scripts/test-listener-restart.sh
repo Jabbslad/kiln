@@ -132,7 +132,24 @@ INSERT INTO operations(
   id, fingerprint, box_id, is_create, running, response, created_at, finished_at, action
 ) VALUES (
   '0123456789abcdef0123456789abcde1', X'00', '0123456789abcdef0123456789abcdef',
-  1, 0, '{"state":"succeeded"}', 1700000000, 1700000001, 'create');
+  1, 0, '{"state":"succeeded"}', 1700000000000, 1700000001000, 'create');
+SQL
+}
+
+init_journal_v5() {
+  rm -f "$var/journal/operations.sqlite"
+  sqlite3 "$var/journal/operations.sqlite" <<'SQL'
+PRAGMA journal_mode=DELETE;
+PRAGMA user_version=5;
+CREATE TABLE operations (
+  id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
+  is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
+  created_at INTEGER NOT NULL);
+INSERT INTO operations(
+  id, fingerprint, box_id, is_create, running, response, created_at
+) VALUES (
+  '0123456789abcdef0123456789abcde1', X'00', '0123456789abcdef0123456789abcdef',
+  1, 0, '{"state":"succeeded"}', 1700000000000);
 SQL
 }
 
@@ -334,16 +351,16 @@ grep -q '0.4.4 -> 0.4.5' "$work/out" || fail "missing upgrade banner: $(cat "$wo
 prepare
 write_release 0.4.5
 write_bin 0.4.4 0.4.5
-init_journal_v4
+init_journal_v5
 mark kiln-app.service 4100
 run_install 1 --apply
 [ "$rc" != 0 ] || fail "unsupported journal version should fail the swap"
 grep -q 'install step failed: wait for journal idle' "$work/err" \
   || fail "missing step name: $(cat "$work/err")"
 grep -q "PRAGMA user_version;" "$work/err" || fail "missing journal command: $(cat "$work/err")"
-grep -q 'found operation journal schema version 4' "$work/err" \
+grep -q 'found operation journal schema version 5' "$work/err" \
   || fail "missing found version: $(cat "$work/err")"
-grep -q 'installer accepts 1 through 3' "$work/err" \
+grep -q 'installer accepts 1 through 4' "$work/err" \
   || fail "missing expected range: $(cat "$work/err")"
 grep -q 'exit code: 1' "$work/err" || fail "missing exit code: $(cat "$work/err")"
 
