@@ -73,6 +73,7 @@ Add the site in `deploy/door.Caddyfile`. Leave the `dark-forge.dev` site and the
 cli.dark-forge.dev {
 	reverse_proxy https://172.18.0.1:8444 {
 		transport http {
+			versions 1.1
 			tls_server_name cli.dark-forge.dev
 			tls_trust_pool file {
 				pem_file /etc/kiln/ca.crt

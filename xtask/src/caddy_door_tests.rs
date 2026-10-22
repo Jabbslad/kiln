@@ -390,6 +390,10 @@ fn test_door_site_trusts_the_mounted_ca_with_the_current_directive() {
     assert!(door.contains(&format!("pem_file {CA_TARGET}\n")));
     assert!(door.contains(&format!("https://{GATEWAY}:8444")));
     assert!(door.contains("tls_server_name cli.dark-forge.dev\n"));
+    assert!(
+        door.contains("versions 1.1\n"),
+        "door upstream must stay on HTTP/1.1 so Upgrade: kiln-ssh can pass"
+    );
     assert!(!door.lines().any(|line| line.starts_with("dark-forge.dev")));
     assert!(!door.contains("tls_trusted_ca_certs"));
     assert!(!runbook.contains("tls_trusted_ca_certs /etc/kiln/ca.crt"));
