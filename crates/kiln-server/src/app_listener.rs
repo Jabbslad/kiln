@@ -1043,23 +1043,7 @@ fn nostore(mut response: Response) -> Response {
 }
 
 fn deny(status: StatusCode, code: &str, message: &str) -> Response {
-    deny_with_reason(status, code, message, code)
-}
-
-fn deny_with_reason(status: StatusCode, code: &str, message: &str, reason: &str) -> Response {
-    eprintln!("app listener deny code={code} reason={reason}");
     nostore(Failure::new(status, code, message).into_response())
-}
-
-fn central_login_deny_reason(error: &anyhow::Error) -> &'static str {
-    match error.to_string().as_str() {
-        "invalid token authority or lifetime" => "central_tenant_or_token_lifetime",
-        "invalid token header" | "missing token key id" | "unknown token key" => {
-            "central_token_header_or_key"
-        }
-        "central authentication not enrolled" => "central_not_enrolled",
-        _ => "central_authenticate_failed",
-    }
 }
 
 fn unauthorized() -> Response {
@@ -1264,24 +1248,19 @@ async fn finish_login(app: &App, request: Request) -> Response {
             "Identity did not complete sign-in.",
         );
     };
-    match app.auth.authenticate_central(&jwt).await {
-        Ok(grant) if dashboard_grant(grant.scope) => {}
-        Ok(_) => {
-            return deny_with_reason(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "Identity did not grant a dashboard session.",
-                "central_dashboard_scope",
-            );
-        }
-        Err(error) => {
-            return deny_with_reason(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "Identity did not grant a dashboard session.",
-                central_login_deny_reason(&error),
-            );
-        }
+    if app
+        .auth
+        .authenticate_central(&jwt)
+        .await
+        .ok()
+        .filter(|grant| dashboard_grant(grant.scope))
+        .is_none()
+    {
+        return deny(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "Identity did not grant a dashboard session.",
+        );
     }
     let id = random_token();
     let csrf = random_token();
