@@ -261,7 +261,7 @@ if [ "$(printf '%s' "$candidate_json" | jq 'length')" -eq 0 ]; then
 fi
 
 order=$(stack_order_numbers "$candidate_json") || fail 'could not order pull request stack'
-summary_line "- **merge order:** $(printf '%s\n' $order | tr '\n' ' ' | sed 's/ $//')"
+summary_line "- **merge order:** $(printf '%s\n' "$order" | tr '\n' ' ' | sed 's/ $//')"
 
 merged_count=0
 for number in $order; do
