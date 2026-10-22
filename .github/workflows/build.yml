@@ -118,6 +118,7 @@ jobs:
           cargo xtask test-deploy-workflow
           cargo xtask test-reuse-release
           cargo xtask test-merge-queue-tested
+          cargo xtask test-cancel-on-failure-gate
           cargo xtask test-repo-guard
           bash scripts/test-listener-restart.sh
           bash scripts/test-wait-for-operations-journal-v2.sh
@@ -265,6 +266,7 @@ jobs:
           cargo xtask test-ci-job-paths
           cargo xtask test-reuse-release
           cargo xtask test-merge-queue-tested
+          cargo xtask test-cancel-on-failure-gate
           cargo xtask test-repo-guard
           bash scripts/test-listener-restart.sh
           bash scripts/test-wait-for-operations-journal-v2.sh
@@ -803,6 +805,25 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
+
+  # When a required compile job fails, stop the rest of the run so agents
+  # do not wait on jobs that will be cancelled anyway.
+  cancel-on-required-failure:
+    needs: [changes, docs-check, feature-map-guard, server-check, client, dashboard, tag-path-dry-run]
+    if: always() && !cancelled()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the workflow run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          if cargo xtask cancel-on-failure-gate; then
+            gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+          fi
 
   # A client matrix leg and a skipped client job are different check names.
   # always() still runs when a dependency fails or is skipped. Without it,
