@@ -460,8 +460,8 @@ async fn world(with_root: bool) -> World {
     let identity_ca = cert.cert.pem();
     let issuer = format!("https://127.0.0.1:{identity_port}/");
     let (key, jwks) = signing_key();
-    let jwt = mint_with(&key, &issuer, "owner-a");
-    let wrong_jwt = mint_with(&key, &issuer, "owner-b");
+    let jwt = mint_with(&key, &issuer, "owner-a", "owner-a", Role::Owner);
+    let wrong_jwt = mint_with(&key, &issuer, "owner-b", "tenant-other", Role::Member);
     let identity = Identity {
         port: identity_port,
         approved: Arc::new(AtomicBool::new(false)),
@@ -745,10 +745,26 @@ fn post_op(cookie: &str, csrf: Option<&str>, admin: &str) -> Request<Body> {
 }
 
 fn mint(world: &World, sub: &str) -> String {
-    mint_with(&world.key, &world.issuer, sub)
+    mint_with(
+        &world.key,
+        &world.issuer,
+        sub,
+        "owner-a",
+        if sub == "owner-a" {
+            Role::Owner
+        } else {
+            Role::Member
+        },
+    )
 }
 
-fn mint_with(key: &EncodingKey, issuer: &str, sub: &str) -> String {
+fn mint_with(
+    key: &EncodingKey,
+    issuer: &str,
+    sub: &str,
+    tenant_id: &str,
+    role: Role,
+) -> String {
     let now = jsonwebtoken::get_current_timestamp();
     let claims = ServerClaims {
         iss: issuer.into(),
@@ -758,9 +774,9 @@ fn mint_with(key: &EncodingKey, issuer: &str, sub: &str) -> String {
         nbf: now,
         exp: now + 300,
         credential_id: "dev_dashboard".into(),
-        tenant_id: "owner-a".into(),
+        tenant_id: tenant_id.into(),
         scope: Scope::Operate,
-        role: Role::Owner,
+        role,
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
