@@ -613,12 +613,142 @@ fn test_deploy_host_scripts_do_not_invoke_jq() {
     }
 }
 
+fn test_install_door_caddy_validates_staging_and_skips_unchanged_bytes() {
+    let script = read_repo("deploy/github/install-door-caddy.sh");
+    let deploy = read_repo("deploy/github/deploy.sh");
+    let remote = read_repo("deploy/github/install-remote.sh");
+    assert!(deploy.contains("install-door-caddy.sh"));
+    assert!(remote.contains("install-door-caddy.sh"));
+    assert!(remote.contains("deploy/door.Caddyfile"));
+    assert!(remote.contains("\"$door_caddy_rc\" -eq 0"));
+    assert!(script.contains("caddy validate"));
+    assert!(script.contains("caddy reload"));
+    assert!(!script.contains("compose up"));
+    assert!(!script.contains("restart caddy"));
+
+    let root = std::env::temp_dir().join(format!("kiln-door-caddy-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("bin")).unwrap();
+    let live = root.join("Caddyfile");
+    let door = root.join("door.Caddyfile");
+    let ca = root.join("ca.crt");
+    let backup = root.join("Caddyfile.bak");
+    let staging = root.join("Caddyfile.new");
+    let log = root.join("docker.log");
+    let base_site = read_repo("deploy/door.Caddyfile");
+    let legacy = base_site.replace("versions 1.1\n", "");
+    let prefix = "dark-forge.dev {\n\trespond \"login ok\" 200\n}\n\n";
+    fs::write(&live, format!("{prefix}{legacy}")).unwrap();
+    fs::write(&door, &base_site).unwrap();
+    fs::write(&ca, read_repo("deploy/host.example.json")).unwrap();
+    write_executable(
+        &root.join("bin/docker"),
+        &format!(
+            r#"#!/bin/bash
+printf '%s\n' "$*" >> "{log}"
+case "$1" in
+  inspect)
+    if [ "$2" = '-f' ] && [ "$3" = '{{{{.State.Running}}}}' ]; then
+      printf 'true\n'
+      exit 0
+    fi
+    if [ "$2" = '-f' ] && [ "$3" = '{{{{.Config.Image}}}}' ]; then
+      printf 'caddy:test\n'
+      exit 0
+    fi
+    ;;
+  run)
+    config=
+    for arg in "$@"; do
+      case "$arg" in
+        type=bind,source=*,target=/etc/caddy/Caddyfile,*)
+          config=${{arg#type=bind,source=}}
+          config=${{config%%,target=/etc/caddy/Caddyfile*}}
+          ;;
+      esac
+    done
+    if printf '%s\n' "$*" | grep -q 'caddy validate'; then
+      if grep -q 'not_a_directive' "$config"; then
+        printf 'invalid config\n' >&2
+        exit 17
+      fi
+      printf 'Valid configuration\n'
+      exit 0
+    fi
+    exit 99
+    ;;
+  exec)
+    if printf '%s\n' "$*" | grep -q 'caddy reload'; then
+      printf 'reloaded\n'
+      exit 0
+    fi
+    exit 98
+    ;;
+esac
+exit 97
+"#,
+            log = log.display()
+        ),
+    );
+    let run = |door_site: &Path| {
+        let mut command = Command::new("bash");
+        command.arg(repo().join("deploy/github/install-door-caddy.sh"));
+        command.arg(door_site);
+        command.env("PATH", prepend_path(&root.join("bin")));
+        command.env("KILN_PASEO_CADDYFILE", &live);
+        command.env("KILN_PASEO_CADDYFILE_BAK", &backup);
+        command.env("KILN_PASEO_CADDYFILE_NEW", &staging);
+        command.env("KILN_KILN_CA_CERT", &ca);
+        command.env("KILN_DOCKER", root.join("bin/docker"));
+        capture(&mut command)
+    };
+
+    let before = fs::read(&live).unwrap();
+    let ok = run(&door);
+    assert!(ok.status.success(), "{}{}", ok.stderr, ok.stdout);
+    assert!(ok.stdout.contains("door caddy installed and reloaded"));
+    let logged = fs::read_to_string(&log).unwrap();
+    assert!(logged.contains("validate"));
+    assert!(logged.contains("reload"));
+    assert!(String::from_utf8_lossy(&fs::read(&live).unwrap()).contains("versions 1.1"));
+    assert_ne!(fs::read(&live).unwrap(), before);
+
+    let log2 = root.join("docker2.log");
+    fs::write(&log, "").unwrap();
+    fs::write(&log2, "").unwrap();
+    let unchanged = run(&door);
+    assert!(
+        unchanged.status.success(),
+        "{}{}",
+        unchanged.stderr,
+        unchanged.stdout
+    );
+    assert!(unchanged.stdout.contains("door caddy unchanged"));
+    let logged2 = fs::read_to_string(&log).unwrap();
+    assert!(!logged2.contains("validate"), "{logged2}");
+    assert!(!logged2.contains("reload"), "{logged2}");
+
+    let bad = root.join("bad.Caddyfile");
+    fs::write(&bad, "cli.dark-forge.dev {\n\tnot_a_directive\n}\n").unwrap();
+    let live_before = fs::read(&live).unwrap();
+    let bad_run = run(&bad);
+    assert!(!bad_run.status.success(), "{}", bad_run.stdout);
+    assert!(bad_run.stderr.contains("validate failed"));
+    assert!(bad_run.stderr.contains("exit 17"));
+    assert_eq!(fs::read(&live).unwrap(), live_before);
+    assert!(!staging.exists());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
 fn test_door_ssh_probe_rejects_an_unauthenticated_request() {
     let deploy = read_repo("deploy/github/deploy.sh");
     let remote = read_repo("deploy/github/install-remote.sh");
     let probe = read_repo("deploy/github/check-door-ssh.sh");
     assert!(deploy.contains("check-door-ssh.sh"));
+    assert!(deploy.contains("install-door-caddy.sh"));
     assert!(remote.contains("bash \"$dir/check-door-ssh.sh\""));
+    assert!(remote.contains("bash \"$dir/install-door-caddy.sh\""));
     assert!(remote.contains("\"$door_rc\" -eq 0"));
     assert!(probe.contains("Upgrade: kiln-ssh"));
     assert!(probe.contains("--http1.1"));
@@ -1473,4 +1603,5 @@ register_cases! {
     test_deploy_host_scripts_do_not_invoke_jq,
     test_smoke_deletes_the_box_when_exec_or_output_fails,
     test_door_ssh_probe_rejects_an_unauthenticated_request,
+    test_install_door_caddy_validates_staging_and_skips_unchanged_bytes,
 }
