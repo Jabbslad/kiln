@@ -182,7 +182,7 @@ async fn dashboard(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    let _grant = authenticate(
+    authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -252,7 +252,7 @@ async fn read_proxy(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    let _grant = authenticate(
+    authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -283,7 +283,7 @@ async fn operate_proxy(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
-    let _grant = authenticate(
+    authenticate(
         &state,
         request.headers(),
         request.method(),
