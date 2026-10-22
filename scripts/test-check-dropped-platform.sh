@@ -9,7 +9,7 @@ fail() {
   exit 1
 }
 
-docs=$(awk '/^  docs-check:$/,/^  server-check:$/' .github/workflows/build.yml)
+docs=$(awk '/^  docs-check:$/,/^  feature-map-guard:$/' .github/workflows/build.yml)
 server=$(awk '/^  server-check:$/,/^  reuse:$/' .github/workflows/build.yml)
 printf '%s\n' "$docs" | grep -q 'sh scripts/test-check-dropped-platform.sh' \
   || fail 'docs-check does not run the platform check'
@@ -19,7 +19,7 @@ printf '%s\n' "$docs" | grep -q 'needs: changes' \
   || fail 'docs-check is not a required dependency'
 printf '%s\n' "$server" | grep -q 'needs: \[changes, reuse\]' \
   || fail 'server-check is not a required dependency'
-grep -q 'needs: \[changes, docs-check, server-check, client, dashboard\]' \
+grep -q 'needs: \[changes, docs-check, feature-map-guard, server-check, client, dashboard\]' \
   .github/workflows/build.yml \
   || fail 'required does not depend on docs-check and server-check'
 

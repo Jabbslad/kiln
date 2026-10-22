@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { kilnFetch } from './kilnFetch.ts'
 import { type OperationActionType } from './operationKinds.ts'
 
 export { OPERATION_ACTION_TYPES, type OperationActionType } from './operationKinds.ts'
@@ -23,22 +24,24 @@ const metrics = z.object({
   cpu_percent: z.number().min(0).max(100).nullable(),
   memory_bytes: measurement,
   disk_bytes: measurement,
+  disk_total_bytes: measurement,
 })
 const timing = z.object({
   method: z.string(),
   cache: z.string(),
   disk_copy: z.string(),
-  storage_ms: measurement,
-  vmm_ms: measurement,
-  restore_ms: measurement,
-  agent_ms: measurement,
-  init_ms: measurement,
-  first_command_ms: measurement,
-  total_ms: measurement,
+  storage_ms: measurement.optional(),
+  vmm_ms: measurement.optional(),
+  restore_ms: measurement.optional(),
+  agent_ms: measurement.optional(),
+  init_ms: measurement.optional(),
+  first_command_ms: measurement.optional(),
+  total_ms: measurement.optional(),
 })
 
 export const dashboardSchema = z.object({
   schema_version: z.literal(1),
+  version: z.string().min(1).optional(),
   observed_at: z.iso.datetime(),
   workspace: z.string().min(1),
   host: z.object({ name: z.string(), state: z.enum(['online', 'offline', 'unknown']), metrics }),
@@ -353,17 +356,21 @@ async function pollOperationReceipt(
   id: string,
   waitMs?: number,
 ): Promise<OperationReceipt> {
-  const response = await fetcher('/v1/operations', {
-    method: 'POST',
-    credentials: 'same-origin',
-    cache: 'no-store',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      'x-kiln-csrf': readCsrf(cookie),
+  const response = await kilnFetch(
+    '/v1/operations',
+    {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'x-kiln-csrf': readCsrf(cookie),
+      },
+      body: JSON.stringify({ id, action }),
     },
-    body: JSON.stringify({ id, action }),
-  })
+    fetcher,
+  )
   if (response.status !== 200 && response.status !== 202) throw await rejected(response)
   let receipt = (await response.json()) as OperationReceipt
   let interval = OPERATION_POLL_START_MS
@@ -371,11 +378,15 @@ async function pollOperationReceipt(
   while (receipt.state === 'running' && Date.now() < deadline) {
     await pause(interval)
     interval = Math.min(OPERATION_POLL_MAX_MS, Math.round(interval * OPERATION_POLL_GROWTH))
-    const polled = await fetcher(`/v1/operations/${receipt.id}`, {
-      credentials: 'same-origin',
-      cache: 'no-store',
-      headers: { Accept: 'application/json' },
-    })
+    const polled = await kilnFetch(
+      `/v1/operations/${receipt.id}`,
+      {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+      },
+      fetcher,
+    )
     if (!polled.ok) {
       if (polled.status === 401 || polled.status === 403) throw await rejected(polled)
       throw new Error('unknown')
@@ -539,12 +550,16 @@ export async function fetchDashboard(
   signal?: AbortSignal,
   fetcher: typeof fetch = fetch,
 ): Promise<Dashboard> {
-  const response = await fetcher('/api/v1/dashboard', {
-    signal,
-    credentials: 'same-origin',
-    cache: 'no-store',
-    headers: { Accept: 'application/json' },
-  })
+  const response = await kilnFetch(
+    '/api/v1/dashboard',
+    {
+      signal,
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+    },
+    fetcher,
+  )
   if (!response.ok)
     throw new Error(
       `The dashboard API returned HTTP ${response.status}. No box state has been inferred.`,
@@ -578,6 +593,15 @@ export function formatBytes(bytes: number | null) {
   if (bytes === 0) return '0 B'
   const power = Math.min(4, Math.floor(Math.log(bytes) / Math.log(1024)))
   return `${Number((bytes / 1024 ** power).toFixed(1))} ${['B', 'KiB', 'MiB', 'GiB', 'TiB'][power]}`
+}
+
+export function formatDiskUsedOfTotal(used: number | null, total: number | null) {
+  if (used === null) return '—'
+  if (total === null || total <= 0) return formatBytes(used)
+  const power = Math.min(4, Math.floor(Math.log(total) / Math.log(1024)))
+  const unit = ['B', 'KiB', 'MiB', 'GiB', 'TiB'][power]
+  const scale = 1024 ** power
+  return `${(used / scale).toFixed(1)} of ${(total / scale).toFixed(1)} ${unit}`
 }
 
 export function timestamp(value: string) {

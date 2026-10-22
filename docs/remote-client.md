@@ -44,6 +44,13 @@ full IDs, binary exec output and exit status behavior are unchanged. Progress
 goes to stderr. Stopped/paused execution and SSH failures suggest `start`/`resume`
 without automatically changing the box state.
 
+`kiln create --wait` blocks until the create operation finishes **and** the host
+has recorded a running box (the same readiness the dashboard uses). The server
+accepts `POST /v1/operations?wait=true&wait_seconds=SECONDS` for create only
+(default 300, maximum 3605). Success returns HTTP 200 with the final operation;
+timeout returns HTTP 408 with code `wait_timeout`. Without `--wait`, create still
+returns 202 and the client polls as before.
+
 After a disconnected mutation, query the printed request ID with
 `kiln operation REQUEST_ID --wait` before retrying. If a retry is needed, use
 the same `--request-id`, resolved full box ID, and original arguments (including
@@ -322,7 +329,9 @@ editing runtime metadata or deleting existing state.
 ## Reconnect without accidentally repeating work
 
 Every mutation prints a 32-hex request ID **before submission**. To submit and
-disconnect immediately, use `--no-wait`. Resume observation with:
+disconnect immediately, use `--no-wait`. Create can instead use `--wait` so the
+command does not return until the box is running and visible to the control
+plane. Resume observation for other mutations with:
 
 ```sh
 kiln operation REQUEST_ID --wait

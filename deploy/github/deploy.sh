@@ -5,8 +5,36 @@ unset CDPATH
 
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd)
 ssh_sh=${KILN_SSH_SH:-$script_dir/ssh.sh}
+ssh_session=$script_dir/ssh-session.sh
 # shellcheck source=/dev/null
 source "$script_dir/guard.sh"
+
+KILN_SSH_SESSION_OPEN=0
+
+close_ssh_session() {
+  [ "${KILN_SSH_SESSION_OPEN:-0}" = 1 ] || return 0
+  if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
+    KILN_SSH_SESSION_OPEN=0
+    return 0
+  fi
+  if [ -n "${KILN_SSH_CONTROL_PATH:-}" ]; then
+    bash "$ssh_session" close || true
+  fi
+  KILN_SSH_SESSION_OPEN=0
+}
+
+start_ssh_session() {
+  if [ -z "${KILN_SSH_CONTROL_PATH:-}" ]; then
+    export KILN_SSH_CONTROL_PATH="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/kiln-ssh-control"
+  fi
+  if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
+    bash "$ssh_session" open-dry
+  else
+    bash "$ssh_session" open
+  fi
+  KILN_SSH_SESSION_OPEN=1
+}
+
 # A dry run checks the files deploy would copy. It does not SSH.
 if [ "${KILN_DEPLOY_DRY_RUN:-}" != 1 ]; then
   guard_github_event deploy
@@ -71,6 +99,7 @@ base="https://github.com/Jabbslad/kiln/releases/download/${tag}"
 work=$(mktemp -d)
 remote=
 cleanup() {
+  close_ssh_session
   rm -rf "$work"
   if [ -n "$remote" ]; then
     if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
@@ -105,6 +134,7 @@ put() {
 if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
   dist=${KILN_DEPLOY_DIST:-}
   [ -n "$dist" ] || fail 'dry run needs KILN_DEPLOY_DIST'
+  start_ssh_session
   for name in \
     "$asset" "${asset}.sha256" \
     "$identity" "${identity}.sha256" \
@@ -130,28 +160,22 @@ else
   [ "$server_rc" -eq 0 ] || fail 'server download failed'
   [ "$identity_rc" -eq 0 ] || fail 'identity download failed'
   [ "$dashboard_rc" -eq 0 ] || fail 'dashboard download failed'
+  start_ssh_session
   remote=$(bash "$ssh_sh" ssh -- mktemp -d /tmp/kiln-deploy.XXXXXX)
 fi
 case "$remote" in
   /tmp/kiln-deploy.[A-Za-z0-9]*) ;;
   *) fail "unexpected remote directory: ${remote}" ;;
 esac
-put "$work/$asset" "$remote/$asset" &
-server_pid=$!
-put "$work/$identity" "$remote/$identity" &
-identity_pid=$!
-server_rc=0
-identity_rc=0
-wait "$server_pid" || server_rc=$?
-wait "$identity_pid" || identity_rc=$?
-[ "$server_rc" -eq 0 ] || fail 'server upload failed'
-[ "$identity_rc" -eq 0 ] || fail 'identity upload failed'
+put "$work/$asset" "$remote/$asset"
+put "$work/$identity" "$remote/$identity"
 put "$work/${asset}.sha256" "$remote/${asset}.sha256"
 put "$work/${identity}.sha256" "$remote/${identity}.sha256"
 put "$work/$dashboard" "$remote/$dashboard"
 put "$work/${dashboard}.sha256" "$remote/${dashboard}.sha256"
 put "$script_dir/install-identity.sh" "$remote/install-identity.sh"
 put "$script_dir/check-dashboard-bundle.sh" "$remote/check-dashboard-bundle.sh"
+put "$script_dir/check-installed-versions.sh" "$remote/check-installed-versions.sh"
 if [ "$tag" = "v0.4.4" ]; then
   put "$repo_root/deploy/install.sh" "$remote/installer.sh"
 fi
@@ -166,6 +190,7 @@ if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
   KILN_DASHBOARD_LIVE_HTML="$stage/index.html" \
     bash "$remote/check-dashboard-bundle.sh" "$work/$dashboard"
   rm -rf -- "$stage"
+  KILN_VERSION_CHECK_DIST="$work" bash "$script_dir/check-installed-versions.sh" "$tag"
   printf 'deploy inputs %s\n' "$tag"
   exit 0
 fi

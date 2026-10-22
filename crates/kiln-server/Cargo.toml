@@ -5,6 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# Off unless the login-token upgrade test asks for it. Release builds cannot
+# enable this: build.rs rejects the feature when PROFILE=release, and
+# scripts/check-release-trust.sh checks the binaries the tag path ships.
+loopback-identity-ca = []
+
 [dependencies]
 kiln-api = { path = "../kiln-api" }
 kiln-runtime = { path = "../kiln-runtime" }

@@ -42,3 +42,4 @@ A pass prints `auth-ssh-ok` and `EXIT:0`. For a failing guest command the client
 - SSH and SFTP need the box `running`. A stopped or paused box produces the start/resume hint and does not change the box.
 - `cargo xtask central-login` refuses a direct administrator profile. It does not perform login.
 - This journey was not driven in the authoring proof. It needs KVM, an Ubuntu image, and a reachable API. CI does not run `scripts/test-network-kvm.sh` or the ignored lifecycle tests (`.github/workflows/build.yml`).
+- A laptop on the public door needs an operate-scope JWT from `kiln login` before `kiln ssh` succeeds; the door rejects read-scope and administrator tokens (`features/public-door.md`). The dashboard Access panel shows the matching CLI commands (`features/dashboard.md`).

@@ -218,6 +218,109 @@ async fn box_targets_resolve_without_guessing_and_lists_keep_json_ids() {
 }
 
 #[tokio::test]
+async fn create_wait_then_exec_succeeds_without_a_client_sleep() {
+    use axum::extract::RawQuery;
+    use kiln_api::{BoxView, TemplateView};
+    let server = server(
+        Router::new()
+            .route(
+                "/v1/templates",
+                get(|| async {
+                    Json(vec![TemplateView {
+                        name: "ubuntu-0".into(),
+                        memory_mib: 4096,
+                        vcpus: 1,
+                    }])
+                }),
+            )
+            .route(
+                "/v1/operations",
+                post(
+                    |RawQuery(raw_query): RawQuery, Json(submit): Json<Submit>| async move {
+                        let query = raw_query.unwrap_or_default();
+                        match submit.action {
+                            Action::Create { name, .. } => {
+                                assert!(query.contains("wait=true"), "expected server-side wait");
+                                Json(Operation {
+                                    id: submit.id,
+                                    box_id: "eeeeeeee000000000000000000000006".into(),
+                                    state: OperationState::Succeeded,
+                                    error: None,
+                                    result: Some(Outcome::Box(BoxView {
+                                        id: "eeeeeeee000000000000000000000006".into(),
+                                        name,
+                                        state: "running".into(),
+                                        memory_mib: 4096,
+                                        vcpus: 1,
+                                    })),
+                                })
+                            }
+                            Action::Exec { id, request: _ } => {
+                                assert!(query.is_empty(), "exec must not use create wait query");
+                                Json(Operation {
+                                    id: submit.id,
+                                    box_id: id,
+                                    state: OperationState::Succeeded,
+                                    error: None,
+                                    result: Some(Outcome::Exec(ExecResult {
+                                        stdout: b"wait-ready".to_vec(),
+                                        stderr: Vec::new(),
+                                        exit_code: Some(0),
+                                        timed_out: false,
+                                        truncated: false,
+                                    })),
+                                })
+                            }
+                            other => panic!("unexpected action {other:?}"),
+                        }
+                    },
+                ),
+            ),
+    )
+    .await;
+    let root = tempfile::tempdir().unwrap();
+    let config = configured(&server, root.path()).await;
+    let create = cli(
+        &config,
+        &[
+            "--json",
+            "create",
+            "--wait",
+            "--template",
+            "ubuntu-0",
+            "--name",
+            "wait-exec",
+        ],
+    )
+    .await;
+    assert!(
+        create.status.success(),
+        "{}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    let created: Operation = serde_json::from_slice(&create.stdout).unwrap();
+    assert_eq!(created.state, OperationState::Succeeded);
+    let exec = cli(
+        &config,
+        &[
+            "exec",
+            &created.box_id,
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf wait-ready",
+        ],
+    )
+    .await;
+    assert!(
+        exec.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exec.stderr)
+    );
+    assert_eq!(exec.stdout, b"wait-ready");
+}
+
+#[tokio::test]
 async fn create_defaults_are_replayable_and_never_guess_between_templates() {
     use kiln_api::{BoxView, TemplateView};
     let count = Arc::new(AtomicUsize::new(1));

@@ -72,6 +72,8 @@ fn test_diagnose_is_manual_and_read_only() {
     }
     let ssh = read_repo("deploy/github/ssh.sh");
     assert!(ssh.contains("StrictHostKeyChecking=yes"));
+    assert!(ssh.contains("ControlMaster=auto"));
+    assert!(ssh.contains("ControlPath"));
     assert!(!ssh.contains("accept-new"));
     assert!(!ssh.contains("ssh-keyscan"));
 }
@@ -516,7 +518,51 @@ fn test_deploy_installs_dashboard_and_checks_the_live_bundle() {
     assert!(deploy.contains("check-dashboard-bundle.sh"));
     assert!(remote.contains("--dashboard-archive"));
     assert!(remote.contains("check-dashboard-bundle.sh"));
+    assert!(remote.contains("kiln-api self-check"));
+    assert!(deploy.contains("check-installed-versions.sh"));
+    assert!(remote.contains("check-installed-versions.sh"));
     assert!(remote.contains("dashboard inputs"));
+    let metrics_at = index_of(&remote, "kiln-api self-check");
+    let smoke_at = index_of(&remote, "bash \"$dir/smoke.sh\"");
+    assert!(
+        metrics_at < smoke_at,
+        "metrics must run right after restart, before guest smoke"
+    );
+    assert!(
+        remote.contains("[ \"$metrics_rc\" -eq 0 ]")
+            && index_of(&remote, "[ \"$metrics_rc\" -eq 0 ]") < smoke_at,
+        "smoke must wait for host metrics"
+    );
+    assert!(
+        !deploy.contains("check-dashboard-metrics.sh"),
+        "deploy must not ship shell JSON metrics scripts"
+    );
+}
+
+fn test_deploy_host_scripts_do_not_invoke_jq() {
+    let dir = crate::repo_root().join("deploy/github");
+    for entry in fs::read_dir(&dir).expect("deploy/github") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("sh") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .expect("script name")
+            .to_string_lossy()
+            .into_owned();
+        let text = fs::read_to_string(&path).unwrap_or_else(|err| panic!("{name}: {err}"));
+        for line in text.lines() {
+            assert!(
+                !line.contains(" jq ") && !line.contains("|jq") && !line.contains("command -v jq"),
+                "{name}: {line}"
+            );
+        }
+        assert!(
+            !text.contains("check-dashboard-metrics.sh"),
+            "{name} still references check-dashboard-metrics.sh"
+        );
+    }
 }
 
 fn test_door_ssh_probe_rejects_an_unauthenticated_request() {
@@ -676,6 +722,34 @@ fn test_smoke_deletes_the_box_when_exec_or_output_fails() {
     );
     assert!(leaked.captured.stderr.contains("box create failed"));
     assert!(command_names(&leaked.log).contains(&"delete"));
+
+    let smoke = read_repo("deploy/github/smoke.sh");
+    assert!(
+        smoke.find("self-check").unwrap() < smoke.find("delete_box || true").unwrap(),
+        "launch timing check must run before the smoke box is deleted"
+    );
+    assert!(
+        ok.captured
+            .stdout
+            .contains("smoke: launch timing kiln-smoke"),
+        "stdout: {}",
+        ok.captured.stdout
+    );
+
+    let metrics_failed = run_smoke(&[("KILN_SELF_CHECK_RC", "1")]);
+    assert!(
+        !metrics_failed.captured.status.success(),
+        "{}",
+        metrics_failed.captured.stderr
+    );
+    assert!(
+        metrics_failed
+            .captured
+            .stderr
+            .contains("kiln-api self-check failed (exit 1)"),
+        "{}",
+        metrics_failed.captured.stderr
+    );
 }
 
 struct Captured {
@@ -815,7 +889,8 @@ fn run_deploy(
             ("assets/index-deploytest.js", "console.log('ok');\n"),
         ]);
         write_release_asset(&assets, &dashboard_name, &dashboard_blob, bad_checksum);
-        write_executable(&tmp.path().join("ssh.sh"), &ssh_stub(&ssh_log));
+        write_executable(&tmp.path().join("ssh"), &ssh_stub(&ssh_log));
+        write_executable(&tmp.path().join("scp"), &scp_stub(&ssh_log));
     }
     write_executable(
         &tmp.path().join("curl"),
@@ -831,7 +906,18 @@ fn run_deploy(
     command.env("PATH", prepend_path(tmp.path()));
     command.env("KILN_RELEASE_TAG", tag);
     if archive_installer.is_some() {
-        command.env("KILN_SSH_SH", tmp.path().join("ssh.sh"));
+        command.env(
+            "DARK_FORGE_SSH_KEY",
+            "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----",
+        );
+        command.env(
+            "DARK_FORGE_KNOWN_HOSTS",
+            "dark-forge.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHRlc3Q=",
+        );
+        command.env(
+            "KILN_SSH_CONTROL_PATH",
+            tmp.path().join("kiln-ssh-control").display().to_string(),
+        );
     }
     let captured = capture(&mut command);
     DeployRun {
@@ -889,30 +975,56 @@ exit 1
 
 fn ssh_stub(log: &Path) -> String {
     r#"#!/bin/bash
-printf '%s\n' "$*" >> __LOG__
-if [ "$1" = scp ]; then
-  mkdir -p -- "$(dirname -- "$3")"
-  cp -- "$2" "$3"
-  exit 0
-fi
-if [ "$1" = ssh ]; then
+printf '%s\n' "ssh $*" >> __LOG__
+case " $* " in
+  *" -M "*|*ControlMaster=yes*)
+    exit 0
+    ;;
+  *" -O exit "*)
+    exit 0
+    ;;
+esac
+while [ $# -gt 0 ]; do
+  if [ "$1" = -- ]; then
+    shift
+    if [ "${1:-}" = mktemp ]; then
+      shift
+      mktemp "$@"
+      exit 0
+    fi
+    if [ "${1:-}" = rm ]; then
+      shift
+      rm "$@"
+      exit 0
+    fi
+    exit 0
+  fi
   shift
-  if [ "${1:-}" = -- ]; then
-    shift
-  fi
-  if [ "${1:-}" = mktemp ]; then
-    shift
-    mktemp "$@"
-    exit 0
-  fi
-  if [ "${1:-}" = rm ]; then
-    shift
-    rm "$@"
-    exit 0
-  fi
-  exit 0
-fi
-exit 1
+done
+exit 0
+"#
+    .replace("__LOG__", &sh_quote(&log.display().to_string()))
+}
+
+fn scp_stub(log: &Path) -> String {
+    r#"#!/bin/bash
+printf '%s\n' "scp $*" >> __LOG__
+local=
+remote=
+for arg in "$@"; do
+  case "$arg" in
+    -*) ;;
+    *:*)
+      remote=${arg#*:}
+      ;;
+    *)
+      local=$arg
+      ;;
+  esac
+done
+mkdir -p -- "$(dirname -- "$remote")"
+cp -- "$local" "$remote"
+exit 0
 "#
     .replace("__LOG__", &sh_quote(&log.display().to_string()))
 }
@@ -1079,11 +1191,30 @@ fn run_smoke(extra: &[(&str, &str)]) -> SmokeRun {
     let log = tmp.path().join("kiln.log");
     let kiln = tmp.path().join("kiln");
     write_executable(&kiln, &kiln_stub(&log));
+    let token = tmp.path().join("admin.token");
+    fs::write(&token, "a".repeat(64)).unwrap();
+    let ca = tmp.path().join("ca.crt");
+    fs::write(&ca, "fixture-ca\n").unwrap();
+    let kiln_api = tmp.path().join("kiln-api");
+    write_executable(
+        &kiln_api,
+        r#"#!/bin/sh
+case "$*" in
+  *self-check*)
+    printf 'smoke: launch timing kiln-smoke total_ms=1 storage_ms=1\n'
+    exit "${KILN_SELF_CHECK_RC-0}" ;;
+  *) exit 1 ;;
+esac
+"#,
+    );
     let mut command = Command::new("bash");
     command.arg(repo().join("deploy/github/smoke.sh"));
     command.arg("127.0.0.1");
     command.current_dir(repo());
     command.env("KILN_BIN", &kiln);
+    command.env("KILN_API_BIN", &kiln_api);
+    command.env("KILN_ADMIN_TOKEN_FILE", &token);
+    command.env("KILN_CA_FILE", &ca);
     for (key, value) in extra {
         command.env(key, value);
     }
@@ -1258,6 +1389,7 @@ register_cases! {
     test_apt_installs_missing_packages_without_upgrading,
     test_sqlite3_install_is_exact_and_skipped_when_present,
     test_deploy_installs_dashboard_and_checks_the_live_bundle,
+    test_deploy_host_scripts_do_not_invoke_jq,
     test_smoke_deletes_the_box_when_exec_or_output_fails,
     test_door_ssh_probe_rejects_an_unauthenticated_request,
 }

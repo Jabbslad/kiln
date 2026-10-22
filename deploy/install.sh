@@ -596,6 +596,7 @@ healthcheck() {
         \[*\]) ;;
         *)
           HEALTH_ERROR="installed service returned an unexpected template catalog"
+          printf '%s\n' "$HEALTH_ERROR" >&2
           return 1
           ;;
       esac
@@ -603,6 +604,7 @@ healthcheck() {
         exp=$(printf '%s' "$expected" | tr -d '[:space:]')
         if [ "$norm" != "$exp" ]; then
           HEALTH_ERROR="installed service returned an unexpected template catalog"
+          printf '%s\n' "$HEALTH_ERROR" >&2
           return 1
         fi
       fi
@@ -612,6 +614,7 @@ healthcheck() {
     i=$((i + 1))
     sleep 1
   done
+  printf '%s\n' "$HEALTH_ERROR" >&2
   return 1
 }
 
@@ -854,19 +857,95 @@ service_argv() {
   printf '%s\n' "$argv"
 }
 
+install_step_fail() {
+  local name=$1 log rc
+  shift
+  log=$(mktemp)
+  set +e
+  "$@" >"$log" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    rm -f -- "$log"
+    return 0
+  fi
+  {
+    printf 'install step failed: %s\n' "$name"
+    printf 'command: %s\n' "$*"
+    printf 'exit code: %d\n' "$rc"
+    printf 'last output lines:\n'
+    tail -n 20 "$log"
+  } >&2
+  rm -f -- "$log"
+  return "$rc"
+}
+
+report_install_step() {
+  local name=$1 command=$2 rc=$3 detail=${4:-}
+  {
+    printf 'install step failed: %s\n' "$name"
+    printf 'command: %s\n' "$command"
+    printf 'exit code: %d\n' "$rc"
+    printf 'last output lines:\n'
+    if [ -n "$detail" ]; then
+      printf '%s\n' "$detail"
+    fi
+  } >&2
+}
+
+operations_journal_max_version() {
+  local file line
+  file=$(dirname "$(realpath "$0")")/operations-journal.max-version
+  if [ -f "$file" ]; then
+    line=$(tr -d '[:space:]' <"$file") || die "operations-journal.max-version is unreadable"
+    case $line in
+      ''|*[!0-9]*) die "operations-journal.max-version must contain a decimal version" ;;
+    esac
+    printf '%s\n' "$line"
+    return 0
+  fi
+  # Match kiln-server SCHEMA_VERSION when the pin is not yet beside install.sh.
+  printf '%s\n' 2
+}
+
+operations_journal_version_supported() {
+  local version=$1 max=$2
+  [ "$version" -ge 1 ] && [ "$version" -le "$max" ]
+}
+
 wait_for_operations() {
-  local journal=$1 count n
-  regular_file "$journal" || return 1
-  have_tool sqlite3 || return 1
-  count=$(sqlite3 -readonly "$journal" 'PRAGMA user_version;' 2>/dev/null) || return 1
-  [ "$count" = 1 ] || return 1
+  local journal=$1 count n version max
+  regular_file "$journal" || {
+    report_install_step "wait for journal file" "test -f $journal" 1 "journal is missing or not a regular file"
+    return 1
+  }
+  have_tool sqlite3 || {
+    report_install_step "wait for journal idle" "command -v sqlite3" 1 "sqlite3 is not installed"
+    return 1
+  }
+  max=$(operations_journal_max_version) || return 1
+  version=$(sqlite3 -readonly "$journal" 'PRAGMA user_version;' 2>/dev/null) || {
+    report_install_step "read journal schema version" "sqlite3 -readonly $journal 'PRAGMA user_version;'" 1 "sqlite3 could not read the journal"
+    return 1
+  }
+  if ! operations_journal_version_supported "$version" "$max"; then
+    report_install_step "wait for journal idle" "sqlite3 -readonly $journal 'PRAGMA user_version;'" 1 \
+      "found operation journal schema version $version; installer accepts 1 through $max"
+    return 1
+  fi
   n=0
   while [ "$n" -lt 60 ]; do
-    count=$(sqlite3 -readonly "$journal" 'SELECT count(*) FROM operations WHERE running=1;' 2>/dev/null) || return 1
+    count=$(sqlite3 -readonly "$journal" 'SELECT count(*) FROM operations WHERE running=1;' 2>/dev/null) || {
+      report_install_step "wait for journal idle" "sqlite3 -readonly $journal 'SELECT count(*) FROM operations WHERE running=1;'" 1 \
+        "sqlite3 could not query running operations"
+      return 1
+    }
     [ "$count" = 0 ] && return 0
     n=$((n + 1))
     sleep 1
   done
+  report_install_step "wait for journal idle" "sqlite3 -readonly $journal 'SELECT count(*) FROM operations WHERE running=1;'" 1 \
+    "timed out after 60s with $count running operation(s)"
   return 1
 }
 
@@ -911,35 +990,70 @@ upgrade_swap() {
   if ! cmp -s "$LIBEXEC/kiln-api" "$bundle/bin/kiln-api"; then
     api_changed=1
   fi
-  systemctl stop kiln-api.service || return 1
+  install_step_fail "stop kiln-api before binary swap" systemctl stop kiln-api.service || return 1
   wait_for_operations "$STATE/journal/operations.sqlite" || return 1
   host_stopped=1
-  systemctl stop kiln-host.service || return 1
+  install_step_fail "stop kiln-host before binary swap" systemctl stop kiln-host.service || return 1
   while IFS= read -r name; do
-    atomic_copy "$bundle/bin/$name" "$(dest_for "$name")" || return 1
+    install_step_fail "install $name binary" atomic_copy "$bundle/bin/$name" "$(dest_for "$name")" || return 1
   done < <(binary_names)
-  systemctl start kiln-host.service || return 1
-  systemctl start kiln-api.service || return 1
+  install_step_fail "start kiln-host after binary swap" systemctl start kiln-host.service || return 1
+  install_step_fail "start kiln-api after binary swap" systemctl start kiln-api.service || return 1
   if [ "$api_changed" = 1 ]; then
-    restart_api_listener kiln-app.service || return 1
-    restart_api_listener kiln-door.service || return 1
+    install_step_fail "restart kiln-app after kiln-api swap" restart_api_listener kiln-app.service || return 1
+    install_step_fail "restart kiln-door after kiln-api swap" restart_api_listener kiln-door.service || return 1
   fi
-  healthcheck "$address" "$catalog" >/dev/null || return 1
+  install_step_fail "healthcheck after binary swap" healthcheck "$address" "$catalog" || return 1
 }
 
 upgrade_restore() {
   local catalog=$1 address=$2 name
   if [ "$host_stopped" = 1 ]; then
-    systemctl stop kiln-api.service || return 1
-    systemctl stop kiln-host.service || return 1
+    install_step_fail "stop kiln-api for rollback" systemctl stop kiln-api.service || return 1
+    install_step_fail "stop kiln-host for rollback" systemctl stop kiln-host.service || return 1
     while IFS= read -r name; do
-      atomic_copy "$backup/$name" "$(dest_for "$name")" || return 1
+      install_step_fail "restore $name binary" atomic_copy "$backup/$name" "$(dest_for "$name")" || return 1
     done < <(binary_names)
-    systemctl start kiln-host.service || return 1
+    install_step_fail "start kiln-host after rollback" systemctl start kiln-host.service || return 1
   fi
-  systemctl start kiln-api.service || return 1
-  restart_replaced_api_listeners || return 1
-  healthcheck "$address" "$catalog" >/dev/null || return 1
+  install_step_fail "start kiln-api after rollback" systemctl start kiln-api.service || return 1
+  install_step_fail "restart API listeners after rollback" restart_replaced_api_listeners || return 1
+  install_step_fail "healthcheck after rollback" healthcheck "$address" "$catalog" || return 1
+}
+
+publish_login_token() {
+  local issuer server status
+  if [ -L "$ETC/identity.json" ]; then
+    printf 'Dashboard login token was not published. Sign-in stays unavailable until a later upgrade.\n' >&2
+    return 1
+  fi
+  if [ ! -f "$ETC/identity.json" ]; then
+    return 0
+  fi
+  issuer=$(json_string "$ETC/identity.json" issuer || true)
+  server=$(json_string "$ETC/identity.json" server_id || true)
+  if [ -z "$issuer" ] || [ -z "$server" ]; then
+    return 0
+  fi
+  if ! status=$("$LIBEXEC/kiln-api" publish-login-token); then
+    printf 'Dashboard login token was not published. Sign-in stays unavailable until a later upgrade.\n' >&2
+    return 1
+  fi
+  case "$status" in
+    created)
+      if unit_active kiln-app.service; then
+        systemctl restart kiln-app.service || {
+          printf 'Dashboard login token is on disk. kiln-app did not restart; sign-in stays unavailable until it starts again.\n' >&2
+          return 1
+        }
+      fi
+      ;;
+    unchanged) ;;
+    *)
+      printf 'Dashboard login token was not published. Sign-in stays unavailable until a later upgrade.\n' >&2
+      return 1
+      ;;
+  esac
 }
 
 close_public_door() {
@@ -969,7 +1083,7 @@ close_public_door() {
 upgrade() {
   local bundle=$1 address=${2:-} uplink=${3:-} network=${4:-0} apply=${5:-0}
   local pending name dest release target installed found reported count min_from
-  local catalog same api_argv host_argv installed_address backup dir
+  local catalog same api_argv host_argv installed_address backup dir login_failed=0
   pending=$OPT/pending-upgrade.json
   if [ -e "$pending" ] || [ -L "$pending" ]; then
     die "pending update requires recovery: inspect $pending"
@@ -1093,6 +1207,7 @@ upgrade() {
   done < <(binary_names)
   if [ "$same" = 1 ]; then
     if [ "$apply" = 1 ]; then
+      install_step_fail "publish dashboard login token" publish_login_token || login_failed=1
       close_public_door
       install_dashboard
     fi
@@ -1102,6 +1217,7 @@ upgrade() {
       printf 'Kiln %s is already current; nothing changed.\n' "$target"
     fi
     connection_instructions "$installed_address"
+    [ "$login_failed" = 0 ] || return 1
     return 0
   fi
   printf 'Kiln %s -> %s: preserve configuration and VM state; briefly disconnect API/SSH sessions.\n' "$installed" "$target"
@@ -1139,10 +1255,12 @@ upgrade() {
   rm -f -- "$pending"
   sync "$OPT"
   printf 'Binaries are already updated. Closing public tcp/8443. A failure here leaves those binaries in place.\n'
+  install_step_fail "publish dashboard login token" publish_login_token || login_failed=1
   close_public_door
   install_dashboard
   printf 'Updated to Kiln %s. Host admin API: https://%s:8443\nPrevious binaries: %s\n' "$target" "$installed_address" "$backup"
   connection_instructions "$installed_address"
+  [ "$login_failed" = 0 ] || return 1
 }
 
 app_unit_names() {

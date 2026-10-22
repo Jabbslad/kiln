@@ -379,12 +379,11 @@ async fn bearer_proxy(door: &Door, request: Request) -> Response {
     if door.auth.authenticate_central(bearer).await.is_err() {
         return unauthorized();
     }
-    if request.uri().query().is_some() {
-        return deny(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "Query parameters are not accepted.",
-        );
+    if request.uri().query().is_some()
+        && let Err(message) =
+            kiln_api::OperationSubmitQuery::parse(request.uri().path(), request.uri().query())
+    {
+        return deny(StatusCode::BAD_REQUEST, "invalid_request", message);
     }
     if request.method() != Method::GET && request.method() != Method::POST {
         return deny(
@@ -614,6 +613,12 @@ async fn forward(
 ) -> Result<Response, Failure> {
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
+    let query = request.uri().query().map(str::to_owned);
+    let wait = query.as_deref().and_then(|query| {
+        kiln_api::OperationSubmitQuery::parse(&path, Some(query))
+            .ok()
+            .filter(|parsed| parsed.wait)
+    });
     let content_type = request.headers().get(header::CONTENT_TYPE).cloned();
     if declared_length(request.headers(), kiln_api::MAX_REQUEST_BYTES) {
         return Err(Failure::new(
@@ -630,10 +635,14 @@ async fn forward(
             == Some("0");
     let mut url = door.upstream.clone();
     url.set_path(&path);
+    url.set_query(query.as_deref());
     let mut upstream = door
         .client
         .request(method.clone(), url)
         .header(header::AUTHORIZATION, authorization);
+    if let Some(wait) = wait {
+        upstream = upstream.timeout(Duration::from_secs(wait.wait_seconds.saturating_add(5)));
+    }
     if let Some(content_type) = content_type {
         upstream = upstream.header(header::CONTENT_TYPE, content_type);
     }
