@@ -107,6 +107,7 @@ jobs:
           sh scripts/test-bootstrap-pins.sh
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
+          sh scripts/test-slow-lane-merge.sh
           sh scripts/test-tag-path-dry-run.sh
           sh scripts/test-tag-path-pr-stamp-order.sh
           sh scripts/test-deploy-host-tools.sh
@@ -253,6 +254,7 @@ jobs:
           sh scripts/test-bootstrap-pins.sh
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
+          sh scripts/test-slow-lane-merge.sh
           sh scripts/test-tag-path-dry-run.sh
           sh scripts/test-tag-path-pr-stamp-order.sh
           sh scripts/test-deploy-host-tools.sh
@@ -295,6 +297,7 @@ jobs:
             scripts/test-installer-release.sh \
             scripts/stamp-release-version.sh scripts/stamp-release-dist.sh scripts/reuse-server-check.sh \
             scripts/wait-main-run.sh scripts/test-wait-main-run.sh \
+            scripts/slow-lane-merge.sh scripts/test-slow-lane-merge.sh \
             scripts/tag-path-dry-run.sh scripts/test-tag-path-dry-run.sh \
             scripts/test-tag-path-pr-stamp-order.sh \
             scripts/read-release-json-field.sh scripts/test-release-json-field.sh \
@@ -877,6 +880,33 @@ jobs:
     with:
       tag: ${{ needs.release-plan.outputs.tag }}
     secrets: inherit
+
+  # Merges from GITHUB_TOKEN do not fire push, so a successful merge dispatches
+  # Build and package on main (workflow_dispatch) to run release and deploy again.
+  slow-lane-merge:
+    needs: [deploy]
+    if: >-
+      !cancelled() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.deploy.result == 'success'
+    # rehearsal: tag-path-dry-run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Merge next slow-lane pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: sh scripts/slow-lane-merge.sh
 
   dry-run-assets:
     needs: [reuse]
