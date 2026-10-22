@@ -122,6 +122,7 @@ jobs:
           cargo xtask test-cancel-on-failure-gate
           cargo xtask test-repo-guard
           bash scripts/test-listener-restart.sh
+          sh scripts/test-install-upgrade-failure-message.sh
           bash scripts/test-wait-for-operations-journal-v2.sh
           bash scripts/test-identity-upgrade.sh
           bash scripts/test-login-token.sh
@@ -130,6 +131,7 @@ jobs:
           sh scripts/test-bootstrap-pins.sh
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
+          sh scripts/test-slow-lane-merge.sh
           sh scripts/test-tag-path-dry-run.sh
           sh scripts/test-tag-path-pr-stamp-order.sh
           sh scripts/test-deploy-host-tools.sh
@@ -150,6 +152,7 @@ jobs:
           sh scripts/test-release-notes.sh
           sh scripts/test-fmt.sh
           sh scripts/test-check.sh
+          sh scripts/test-pre-push-hook.sh
           sh scripts/test-ssh-multiplex.sh
 
   feature-map-guard:
@@ -249,6 +252,15 @@ jobs:
             sudo apt-get update
             sudo apt-get install --no-install-recommends -y systemd iproute2
           fi
+      - name: OpenSSH server
+        if: steps.queue.outputs.skip_tests != 'true'
+        run: |
+          if [ ! -x /usr/sbin/sshd ]; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y openssh-server
+          fi
+          sudo mkdir -p /run/sshd
+          sudo chmod 755 /run/sshd
       - name: Test and lint
         if: steps.queue.outputs.skip_tests != 'true'
         env:
@@ -272,6 +284,7 @@ jobs:
           cargo xtask test-cancel-on-failure-gate
           cargo xtask test-repo-guard
           bash scripts/test-listener-restart.sh
+          sh scripts/test-install-upgrade-failure-message.sh
           bash scripts/test-wait-for-operations-journal-v2.sh
           bash scripts/test-identity-upgrade.sh
           bash scripts/test-login-token.sh
@@ -281,6 +294,7 @@ jobs:
           sh scripts/test-bootstrap-pins.sh
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
+          sh scripts/test-slow-lane-merge.sh
           sh scripts/test-tag-path-dry-run.sh
           sh scripts/test-tag-path-pr-stamp-order.sh
           sh scripts/test-deploy-host-tools.sh
@@ -301,6 +315,7 @@ jobs:
           sh scripts/test-release-notes.sh
           sh scripts/test-fmt.sh
           sh scripts/test-check.sh
+          sh scripts/test-pre-push-hook.sh
           sh scripts/test-ssh-multiplex.sh
           shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-bootstrap-pins.sh scripts/test-bootstrap-pins.sh scripts/test-caddy-endings.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/enroll-dark-forge.sh \
@@ -315,6 +330,7 @@ jobs:
             scripts/test-deploy-host-tools.sh \
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
             scripts/test-listener-restart.sh \
+            scripts/test-install-upgrade-failure-message.sh \
             scripts/test-wait-for-operations-journal-v2.sh \
             scripts/test-identity-upgrade.sh \
             scripts/test-login-token.sh \
@@ -323,6 +339,8 @@ jobs:
             scripts/test-installer-release.sh \
             scripts/stamp-release-version.sh scripts/stamp-release-dist.sh scripts/reuse-server-check.sh \
             scripts/wait-main-run.sh scripts/test-wait-main-run.sh \
+            scripts/slow-lane-merge.sh scripts/slow-lane-require-deploy.sh \
+            scripts/slow-lane-workflow-run-gate.sh scripts/test-slow-lane-merge.sh \
             scripts/tag-path-dry-run.sh scripts/test-tag-path-dry-run.sh \
             scripts/test-tag-path-pr-stamp-order.sh \
             scripts/read-release-json-field.sh scripts/test-release-json-field.sh \

@@ -24,3 +24,15 @@ test('proof capture: built preview inventory', async ({ page }) => {
     fullPage: true,
   })
 })
+
+test('proof capture: built preview box terminal tab', async ({ page }) => {
+  test.skip(!artifactDir, 'KILN_SCREENSHOT_DIR is required for proof capture')
+  await page.goto('/boxes/box-7f3a2c1e?preview=1&tab=terminal')
+  await expect(page.getByRole('heading', { name: /api-dev/i })).toBeVisible()
+  await expect(page.getByTestId('capability-terminal')).toBeVisible()
+  await page.evaluate(() => document.fonts.ready)
+  await page.screenshot({
+    path: `${artifactDir}/${phase}-dashboard-box-terminal.png`,
+    fullPage: true,
+  })
+})
