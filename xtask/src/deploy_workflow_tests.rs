@@ -621,6 +621,10 @@ fn test_door_ssh_probe_rejects_an_unauthenticated_request() {
     assert!(remote.contains("bash \"$dir/check-door-ssh.sh\""));
     assert!(remote.contains("\"$door_rc\" -eq 0"));
     assert!(probe.contains("Upgrade: kiln-ssh"));
+    assert!(probe.contains("--http1.1"));
+    assert!(probe.contains("journalctl -u kiln-door.service"));
+    assert!(probe.contains("/v1/boxes/${box_id}/ssh"));
+    assert!(!probe.contains(":8444/v1/boxes"));
     assert!(!probe.contains("Authorization:"));
     assert!(!probe.contains("admin.token"));
 
@@ -647,6 +651,21 @@ printf '%s' '{"code":"unauthorized","message":"A valid credential is required."}
 printf '%s' "${CURL_CODE:-401}"
 "#,
     );
+    write_executable(
+        &root.join("bin/journalctl"),
+        r#"#!/bin/bash
+printf '%s\n' "audit ssh outcome=unauthorized box_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+"#,
+    );
+    write_executable(
+        &root.join("bin/systemctl"),
+        r#"#!/bin/bash
+if [ "$1" = is-active ] && [ "$2" = --quiet ] && [ "$3" = kiln-door.service ]; then
+  exit 0
+fi
+exit 1
+"#,
+    );
     let script = repo().join("deploy/github/check-door-ssh.sh");
     let run = |code: &str, fail: bool, log_name: &str| {
         let log = root.join(log_name);
@@ -655,9 +674,9 @@ printf '%s' "${CURL_CODE:-401}"
         command.env("PATH", prepend_path(&root.join("bin")));
         command.env(
             "KILN_DOOR_SSH_URL",
-            "https://cli.dark-forge.dev:8444/v1/boxes/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ssh",
+            "https://cli.dark-forge.dev/v1/boxes/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ssh",
         );
-        command.env("KILN_DOOR_RESOLVE", "cli.dark-forge.dev:8444:127.0.0.1");
+        command.env("KILN_DOOR_RESOLVE", "cli.dark-forge.dev:443:127.0.0.1");
         command.env("KILN_DOOR_CA", root.join("ca.crt"));
         command.env("CURL_LOG", &log);
         command.env("CURL_CODE", code);
