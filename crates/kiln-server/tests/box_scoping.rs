@@ -181,7 +181,9 @@ async fn member_cannot_operate_on_another_accounts_inflight_create() {
     let router = host.router();
     let submit = Submit {
         id: new_id(),
-        action: Action::Delete { id: inflight.into() },
+        action: Action::Delete {
+            id: inflight.into(),
+        },
     };
     let mut request = Request::builder()
         .method("POST")
@@ -192,7 +194,11 @@ async fn member_cannot_operate_on_another_accounts_inflight_create() {
     }
     let response = router
         .clone()
-        .oneshot(request.body(Body::from(serde_json::to_vec(&submit).unwrap())).unwrap())
+        .oneshot(
+            request
+                .body(Body::from(serde_json::to_vec(&submit).unwrap()))
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(

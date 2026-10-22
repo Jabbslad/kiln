@@ -935,8 +935,7 @@ async fn plan_submit(
     })?;
     let live_ids = live_box_ids(&host.runtime_dir).map_err(Failure::internal)?;
     let live_refs: Vec<&str> = live_ids.iter().map(String::as_str).collect();
-    let create_owner = matches!(request.action, Action::Create { .. })
-        .then(|| caller.sub.as_str());
+    let create_owner = matches!(request.action, Action::Create { .. }).then(|| caller.sub.as_str());
     let accepted = db
         .accept(request, &live_refs, create_owner)
         .map_err(|error| {
