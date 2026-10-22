@@ -130,9 +130,11 @@ async fn member_tokens_fail_closed_when_revocation_feed_is_stale() {
         "login-secret".into(),
         reqwest::Client::builder().https_only(true).build().unwrap(),
     );
-    assert!(watch
-        .allow("member-b", "device-m", MemberRole::Member)
-        .is_err());
+    assert!(
+        watch
+            .allow("member-b", "device-m", MemberRole::Member)
+            .is_err()
+    );
 }
 
 #[tokio::test]
