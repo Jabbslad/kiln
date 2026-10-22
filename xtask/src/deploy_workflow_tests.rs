@@ -517,6 +517,8 @@ fn test_deploy_installs_dashboard_and_checks_the_live_bundle() {
     assert!(remote.contains("--dashboard-archive"));
     assert!(remote.contains("check-dashboard-bundle.sh"));
     assert!(remote.contains("kiln-api self-check"));
+    assert!(deploy.contains("check-installed-versions.sh"));
+    assert!(remote.contains("check-installed-versions.sh"));
     assert!(remote.contains("dashboard inputs"));
     let metrics_at = index_of(&remote, "kiln-api self-check");
     let smoke_at = index_of(&remote, "bash \"$dir/smoke.sh\"");

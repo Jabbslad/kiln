@@ -541,17 +541,25 @@ run_id
 if grep -q 'curl ' "$log"; then fail "unchanged binary probed again"; fi
 grep -q 'new-bytes' "$live" || fail "unchanged binary was replaced"
 
-# A version slot is the only difference. The live binary stays, and probes do not run.
+# Masked bytes match but the version slot differs: atomic slot update, no restart.
 prepare
 write_slotted "$live" 0.4.19
 pack_slotted "$deploy" 0.4.20
+cp "$live" "$work/before-slot"
 run_id
-[ "$rc" = 0 ] || fail "slot-only upgrade should skip: $(cat "$work/err")"
-grep -q 'identity unchanged 0.4.20' "$work/out" || fail "slot-only was installed: $(cat "$work/out")"
+[ "$rc" = 0 ] || fail "slot-only upgrade should stamp: $(cat "$work/err")"
+grep -q 'identity version 0.4.20' "$work/out" || fail "slot-only did not stamp: $(cat "$work/out")"
 if grep -q 'systemctl restart' "$log"; then fail "slot-only restarted"; fi
 if grep -q 'curl ' "$log"; then fail "slot-only probed"; fi
 live_version=$(PATH="$work/stubs:$PATH" "$live" --version)
-[ "$live_version" = "kiln-identity 0.4.19" ] || fail "slot-only replaced the binary: $live_version"
+[ "$live_version" = "kiln-identity 0.4.20" ] || fail "slot-only did not update version: $live_version"
+stage=$(mktemp -d)
+tar -xzf "$deploy"/kiln-identity-v0.4.20-x86_64-unknown-linux-gnu.tar.gz -C "$stage" bin/kiln-identity
+cmp -s "$live" "$stage/bin/kiln-identity" \
+  || fail 'live bytes differ from the packaged identity after slot update'
+cmp -s "$work/before-slot" "$stage/bin/kiln-identity" \
+  && fail 'stale live matched package; slot-only case was not exercised'
+rm -rf "$stage"
 
 # Downgrade is refused before a restart. 0.4.4 to 0.4.10 is allowed.
 prepare

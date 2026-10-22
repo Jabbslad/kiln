@@ -365,6 +365,13 @@ slot_equal() {
 }
 
 if slot_equal "$package" "$live"; then
+  if [ "$installed" != "$version" ]; then
+    atomic_copy "$package" "$live" || fail 'could not update identity version slot'
+    installed=$(read_version "$live") || fail 'installed identity version failed after stamp'
+    [ "$installed" = "$version" ] || fail "stamped identity reports $installed, want $version"
+    printf 'identity version %s\n' "$version"
+    exit 0
+  fi
   if ! process_matches; then
     restart_identity_service || fail 'identity sign-in check failed after restart'
     probe_ok || fail 'identity probe failed'
