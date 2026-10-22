@@ -2,6 +2,7 @@
 //! for the enrolled owner is forwarded as itself and round-trips through the
 //! gateway into the host harness.
 use std::{
+    net::IpAddr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -182,7 +183,12 @@ async fn stack() -> Stack {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let door_port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
     Stack {
         _root: root,
@@ -335,24 +341,94 @@ async fn door_ssh_rejects_bad_callers_and_round_trips_an_operate_jwt() {
     assert!(forwarded.iter().all(|value| !value.contains(&world.admin)));
 
     let records = world.audit.records();
-    let outcomes: Vec<_> = records.iter().map(|record| record.outcome).collect();
-    assert_eq!(
-        outcomes,
-        vec![
+    let expected = [
+        ("missing", "unauthorized", "anonymous", owner_box.as_str()),
+        ("invalid", "unauthorized", "anonymous", owner_box.as_str()),
+        (
+            "other-owner",
             "unauthorized",
-            "unauthorized",
-            "unauthorized",
+            "anonymous",
+            other_box.as_str(),
+        ),
+        (
+            "read-scope",
             "insufficient_scope",
-            "unauthorized",
-            "upgraded",
-        ]
-    );
-    assert_eq!(records[2].box_id, other_box);
-    assert_eq!(records[5].box_id, owner_box);
+            "owner-a",
+            owner_box.as_str(),
+        ),
+        ("admin", "unauthorized", "anonymous", owner_box.as_str()),
+        ("success", "upgraded", "owner-a", owner_box.as_str()),
+    ];
+    assert_eq!(records.len(), expected.len(), "{records:?}");
+    for (record, (label, outcome, caller, box_id)) in records.iter().zip(expected) {
+        assert_eq!(record.outcome, outcome, "{label}");
+        assert_eq!(record.caller, caller, "{label}");
+        assert_eq!(record.box_id, box_id, "{label}");
+        assert_eq!(record.addr, IpAddr::from([127, 0, 0, 1]), "{label}");
+    }
     assert!(
         records
             .iter()
-            .all(|record| !record.box_id.contains(&world.admin)),
+            .all(|record| !record.caller.contains(&world.admin)),
         "{records:?}"
+    );
+}
+
+#[tokio::test]
+async fn door_ssh_route_audits_stripped_upgrade_attempts() {
+    let world = stack().await;
+    let box_id = "d".repeat(32);
+
+    let stripped = reqwest::Client::builder()
+        .http1_only()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap()
+        .get(format!("{}/v1/boxes/{box_id}/ssh", world.door))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stripped.status(), StatusCode::UNAUTHORIZED);
+
+    let wrong = send(
+        reqwest::Client::builder()
+            .http1_only()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+            .get(format!("{}/v1/boxes/{box_id}/ssh", world.door))
+            .header(header::CONNECTION, "upgrade")
+            .header(header::UPGRADE, "websocket"),
+    )
+    .await;
+    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+
+    let read = token(&world.key, "owner-a", Scope::Read);
+    let invalid_upgrade = send(
+        reqwest::Client::builder()
+            .http1_only()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+            .get(format!("{}/v1/boxes/{box_id}/ssh", world.door))
+            .bearer_auth(&read)
+            .header(header::CONNECTION, "upgrade")
+            .header(header::UPGRADE, "websocket"),
+    )
+    .await;
+    assert_eq!(invalid_upgrade.status(), StatusCode::BAD_REQUEST);
+
+    let records = world.audit.records();
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].outcome, "unauthorized");
+    assert_eq!(records[0].caller, "anonymous");
+    assert_eq!(records[1].outcome, "unauthorized");
+    assert_eq!(records[1].caller, "anonymous");
+    assert_eq!(records[2].outcome, "invalid_ssh");
+    assert_eq!(records[2].caller, "owner-a");
+    assert!(
+        records
+            .iter()
+            .all(|record| record.addr == IpAddr::from([127, 0, 0, 1]))
     );
 }
