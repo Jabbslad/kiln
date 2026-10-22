@@ -441,7 +441,7 @@ impl Authenticator {
                 record_denial("key_cache_unavailable");
                 return Err(err.into());
             }
-            let mut dir = match fs::File::open(parent) {
+            let dir = match fs::File::open(parent) {
                 Ok(dir) => dir,
                 Err(err) => {
                     record_denial("key_cache_unavailable");
