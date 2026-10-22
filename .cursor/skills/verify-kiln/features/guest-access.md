@@ -1,6 +1,8 @@
 # Guest access
 
-`kiln ssh`, `kiln cp`, and `kiln ssh-config` open a guest shell or copy a file. Traffic is HTTPS to the host and vsock inside the guest. There is no public SSH port. The commands need a matching Ubuntu guest with OpenSSH.
+`kiln ssh`, `kiln cp`, and `kiln ssh-config` open a guest shell or copy a file. Traffic is HTTPS to the host and vsock inside the guest. There is no public SSH port. The commands need a matching Ubuntu guest with OpenSSH. Linux and macOS ship the client.
+
+On `https://cli.dark-forge.dev` the public door proxies `Upgrade: kiln-ssh` to loopback `GET /v1/boxes/<full id>/ssh` for an operate-scope owner JWT and forwards that JWT. It rejects a missing credential, an invalid JWT, another owner, a read-scope token, and the administrator token before dialing. See `features/public-door.md`.
 
 ## Sub-features
 
@@ -40,4 +42,4 @@ A pass prints `auth-ssh-ok` and `EXIT:0`. For a failing guest command the client
 - SSH and SFTP need the box `running`. A stopped or paused box produces the start/resume hint and does not change the box.
 - `cargo xtask central-login` refuses a direct administrator profile. It does not perform login.
 - This journey was not driven in the authoring proof. It needs KVM, an Ubuntu image, and a reachable API. CI does not run `scripts/test-network-kvm.sh` or the ignored lifecycle tests (`.github/workflows/build.yml`).
-- A laptop using the public door (`features/public-door.md`) cannot use `kiln ssh` yet: the door does not forward SSH upgrades and loopback gateway SSH is not reachable from the laptop. The dashboard Access panel matches that limitation (`features/dashboard.md`).
+- A laptop on the public door needs an operate-scope JWT from `kiln login` before `kiln ssh` succeeds; the door rejects read-scope and administrator tokens (`features/public-door.md`). The dashboard Access panel shows the matching CLI commands (`features/dashboard.md`).

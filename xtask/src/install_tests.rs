@@ -102,6 +102,11 @@ impl Fixture {
         let script = package.join("install.sh");
         fs::copy(crate::repo_root().join("deploy/install.sh"), &script).unwrap();
         set_mode(&script, 0o755);
+        fs::copy(
+            crate::repo_root().join("deploy/operations-journal.max-version"),
+            package.join("operations-journal.max-version"),
+        )
+        .unwrap();
         let fx = Self {
             log: root.join("commands.log"),
             curl_seq: root.join("curl.seq"),
@@ -1226,6 +1231,38 @@ fn test_failed_readiness_disables_services_and_keeps_state() {
         serde_json::json!({"ubuntu-4g": TEMPLATE_ID})
     );
     assert_mode(&fx.root.join("usr/local/libexec"), 0o750);
+}
+
+fn init_journal_v2(path: &Path) {
+    sqlite(
+        path,
+        "PRAGMA journal_mode=DELETE;
+         PRAGMA user_version=2;
+         DELETE FROM operations;
+         DROP TABLE IF EXISTS operations;
+         CREATE TABLE operations (
+           id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
+           is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
+           created_at INTEGER NOT NULL, finished_at INTEGER,
+           action TEXT NOT NULL DEFAULT 'unknown');
+         INSERT INTO operations(
+           id, fingerprint, box_id, is_create, running, response, created_at, finished_at, action
+         ) VALUES (
+           '0123456789abcdef0123456789abcde1', X'00', '0123456789abcdef0123456789abcdef',
+           1, 0, '{\"state\":\"succeeded\"}', 1700000000, 1700000001, 'create');",
+    );
+}
+
+fn test_v2_operation_journal_allows_binary_upgrade() {
+    let mut up = Upgrade::new();
+    init_journal_v2(&up.journal);
+    up.write_release("0.4.5", X86_64, Some("0.3.0"));
+    up.write_versions("0.4.4", "0.4.5", "", "");
+    up.fx.plan_curl(&["ok", "ok"], UPGRADE_CATALOG);
+    up.refresh_data();
+    let result = up.fx.invoke(&["--apply"], &[]);
+    result.assert_ok();
+    assert_has(&result.stdout, "0.4.4 -> 0.4.5");
 }
 
 fn test_update_preserves_configuration_identity_and_snapshot() {
@@ -2670,6 +2707,7 @@ register_cases! {
     test_packaged_door_unit_has_no_dashboard_root_and_installer_skips_caddy,
     test_apply_installs_certificates_units_and_network_without_prompt,
     test_failed_readiness_disables_services_and_keeps_state,
+    test_v2_operation_journal_allows_binary_upgrade,
     test_update_preserves_configuration_identity_and_snapshot,
     test_upgrade_disables_the_public_door_socket,
     test_dark_forge_layout_upgrades_and_rolls_back_without_release_json,

@@ -373,4 +373,4 @@ printf 'Unauthenticated https://%s/v1/templates returned 401.\n' "$public_host"
 printf 'kiln-identity.service was not edited.\n'
 printf 'This script does not change the firewall.\n'
 printf 'On the laptop, install the client, then run kiln login, kiln list, kiln create, kiln exec, and kiln delete.\n'
-printf 'Do not set KILN_IDENTITY_CA. SSH is not served by the public door.\n'
+printf 'Do not set KILN_IDENTITY_CA. kiln ssh uses the public door with an operate-scope owner JWT. The administrator token is not accepted there.\n'

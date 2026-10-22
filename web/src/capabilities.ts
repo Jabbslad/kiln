@@ -6,10 +6,10 @@ export type Capability =
 export const capabilities = {
   metrics: 'available',
   terminal: 'available',
-  ssh: 'not-yet',
+  ssh: 'available',
   httpPreview: 'not-yet',
   publicUrl: 'not-yet',
-  launchTiming: 'not-yet',
+  launchTiming: 'available',
 } as const satisfies Record<Capability, CapabilityStatus>
 
 export function capabilityAvailable(capability: Capability): boolean {

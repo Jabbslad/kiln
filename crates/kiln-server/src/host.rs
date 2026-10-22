@@ -1,17 +1,17 @@
 use crate::{
     Failure,
-    journal::{Conflict, Journal},
+    journal::{Conflict, Journal, JournalFull},
 };
 use anyhow::{Result, ensure};
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, RawQuery, State},
     http::StatusCode,
     routing::{get, post},
 };
 use kiln_api::{
-    Action, ApiError, BoxView, CheckpointView, Operation, OperationState, Outcome, Submit,
-    TemplateView, valid_alias, valid_id,
+    Action, ApiError, BoxView, CheckpointView, Operation, OperationState, OperationSubmitQuery,
+    Outcome, Submit, TemplateView, valid_alias, valid_id,
 };
 use kiln_runtime::{
     isolation,
@@ -25,6 +25,7 @@ use std::{
     os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path as FsPath, PathBuf},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 use tokio::{net::UnixListener, sync::Semaphore};
 
@@ -144,7 +145,8 @@ impl Host {
             });
         }
         let journal = Journal::open(&config.journal_dir.join("operations.sqlite"))?;
-        let mut metrics = crate::metrics::Sampler::new(crate::metrics::Paths::live());
+        let mut metrics =
+            crate::metrics::Sampler::new(crate::metrics::Paths::live(config.runtime_dir.clone()));
         metrics.prime();
         Ok(Arc::new(Self {
             runtime,
@@ -185,6 +187,30 @@ impl Host {
             return Err(Failure::missing());
         }
         Ok(())
+    }
+
+    fn box_on_disk(&self, box_id: &str) -> Result<bool, Failure> {
+        if !valid_id(box_id) {
+            return Ok(false);
+        }
+        self.runtime_dir
+            .join("boxes")
+            .join(box_id)
+            .join("box.json")
+            .try_exists()
+            .map_err(Failure::internal)
+    }
+
+    async fn create_observed_running(&self, box_id: &str) -> Result<bool, Failure> {
+        if !self.box_on_disk(box_id)? {
+            return Ok(false);
+        }
+        let record = self
+            .runtime
+            .inspect(box_id)
+            .await
+            .map_err(Failure::internal)?;
+        Ok(record.state == "running")
     }
 
     async fn execute(&self, action: Action, box_id: &str) -> kiln_runtime::Result<Outcome> {
@@ -234,6 +260,10 @@ impl Host {
         let ids = journal.managed_ids()?;
         let created = journal.create_times()?;
         let rows = journal.recent(100)?;
+        let mut launch_timings = BTreeMap::new();
+        for id in &ids {
+            launch_timings.insert(id.clone(), journal.last_launch_ms(id)?);
+        }
         drop(journal);
         let mut names = BTreeMap::new();
         let mut boxes = Vec::new();
@@ -248,11 +278,25 @@ impl Host {
             let Some(created_at) = created.get(&id).copied() else {
                 continue;
             };
-            let disk_bytes = box_disk(&self.runtime_dir, &record).and_then(file_len);
+            let disk_path = box_disk(&self.runtime_dir, &record);
+            let disk_bytes = disk_path.clone().and_then(file_len);
             names.insert(id.clone(), record.name.clone());
             let active = matches!(record.state.as_str(), "running" | "paused");
             let cgroup = self.runtime.box_cgroup(&record.run);
-            let metrics = sampler.box_metrics(cgroup.as_deref(), active);
+            let metrics = sampler.box_metrics(cgroup.as_deref(), disk_path.as_deref(), active);
+            let timing = record.last_launch.clone().or_else(|| {
+                launch_timings
+                    .get(&id)
+                    .cloned()
+                    .flatten()
+                    .map(|(method, total_ms)| {
+                        kiln_runtime::launch_timing::LaunchTiming::from_journal(
+                            &method,
+                            &record.disk_copy,
+                            total_ms,
+                        )
+                    })
+            });
             boxes.push(crate::dashboard::BoxFacts {
                 id,
                 name: record.name,
@@ -265,6 +309,7 @@ impl Host {
                 last_error: record.last_error,
                 restored_from: record.source,
                 metrics,
+                timing,
             });
         }
         let mut operations = Vec::new();
@@ -328,6 +373,26 @@ impl Host {
             },
         ))
     }
+}
+
+fn live_box_ids(runtime_dir: &FsPath) -> Result<Vec<String>> {
+    let boxes_dir = runtime_dir.join("boxes");
+    let Ok(entries) = fs::read_dir(&boxes_dir) else {
+        return Ok(Vec::new());
+    };
+    let mut ids = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if kiln_runtime::storage::valid_id(&id) && path.join("box.json").is_file() {
+            ids.push(id);
+        }
+    }
+    ids.sort();
+    Ok(ids)
 }
 
 fn read_box(runtime_dir: &FsPath, id: &str) -> Result<Option<BoxRecord>> {
@@ -522,23 +587,157 @@ async fn operation(
         .ok_or_else(Failure::missing)
 }
 
-async fn submit(
-    State(host): State<Arc<Host>>,
-    Json(request): Json<Submit>,
-) -> Result<(StatusCode, Json<Operation>), Failure> {
-    if !valid_id(&request.id) {
-        return Err(Failure::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "invalid request ID",
-        ));
+async fn wait_for_create(
+    host: Arc<Host>,
+    op_id: &str,
+    wait_seconds: u64,
+) -> Result<Operation, Failure> {
+    let deadline = Instant::now() + Duration::from_secs(wait_seconds);
+    let mut interval = Duration::from_millis(50);
+    loop {
+        let op = host
+            .journal
+            .lock()
+            .unwrap()
+            .get(op_id)
+            .map_err(Failure::internal)?
+            .ok_or_else(Failure::missing)?;
+        if op.state != OperationState::Running {
+            if matches!(op.state, OperationState::Failed | OperationState::Unknown) {
+                return Ok(op);
+            }
+            if op.state == OperationState::Succeeded
+                && host.create_observed_running(&op.box_id).await?
+            {
+                return Ok(op);
+            }
+            if Instant::now() >= deadline {
+                let message = if op.state == OperationState::Succeeded {
+                    "The control plane has not observed the new box."
+                } else {
+                    "Create did not succeed. The box is shown only after the control plane records it."
+                };
+                return Err(Failure::new(
+                    StatusCode::REQUEST_TIMEOUT,
+                    "wait_timeout",
+                    message,
+                ));
+            }
+        } else if Instant::now() >= deadline {
+            let message = format!(
+                "create {op_id} still running after {wait_seconds}s; reconnect with `kiln operation {op_id} --wait`"
+            );
+            return Err(Failure::new(
+                StatusCode::REQUEST_TIMEOUT,
+                "wait_timeout",
+                &message,
+            ));
+        }
+        tokio::time::sleep(interval).await;
+        interval = interval.mul_f64(1.5).min(Duration::from_millis(2_000));
     }
-    request
-        .action
-        .validate()
-        .map_err(|e| Failure::new(StatusCode::BAD_REQUEST, "invalid_request", e))?;
+}
+
+fn spawn_operation_worker(
+    host: Arc<Host>,
+    request: Submit,
+    mut op: Operation,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) {
+    let worker_host = host.clone();
+    let journal_host = host;
+    let is_exec = matches!(request.action, Action::Exec { .. });
+    // Detached from the HTTP request. The outer task records panics as unknown;
+    // a process crash is handled by Journal::open, never by command replay.
+    tokio::spawn(async move {
+        let _permit = permit;
+        let box_id = op.box_id.clone();
+        let result =
+            tokio::spawn(async move { worker_host.execute(request.action, &box_id).await }).await;
+        match result {
+            Ok(Ok(outcome)) => {
+                op.state = OperationState::Succeeded;
+                op.result = Some(outcome);
+            }
+            other => {
+                op.state = if is_exec || other.is_err() {
+                    OperationState::Unknown
+                } else {
+                    OperationState::Failed
+                };
+                op.error = Some(ApiError {
+                    code: "runtime_operation_failed".into(),
+                    message: "Operation did not return a confirmed result. Inspect the box before issuing another command; consult the host log for lifecycle failures.".into(),
+                });
+                // Exec inputs and output are never logged, including on error.
+                if !is_exec {
+                    eprintln!("operation {}: {other:?}", op.id);
+                }
+            }
+        }
+        if let Err(error) = journal_host.journal.lock().unwrap().finish(&op) {
+            eprintln!("could not persist operation {} outcome: {error}", op.id);
+        }
+    });
+}
+
+async fn finish_create_inline(
+    host: &Arc<Host>,
+    request: Submit,
+    mut op: Operation,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+) -> Operation {
+    let box_id = op.box_id.clone();
+    let is_exec = matches!(request.action, Action::Exec { .. });
+    let result = host.execute(request.action, &box_id).await;
+    match result {
+        Ok(outcome) => {
+            op.state = OperationState::Succeeded;
+            op.result = Some(outcome);
+        }
+        Err(error) => {
+            op.state = if is_exec {
+                OperationState::Unknown
+            } else {
+                OperationState::Failed
+            };
+            op.error = Some(ApiError {
+                code: "runtime_operation_failed".into(),
+                message: "Operation did not return a confirmed result. Inspect the box before issuing another command; consult the host log for lifecycle failures.".into(),
+            });
+            eprintln!("operation {}: {error:?}", op.id);
+        }
+    }
+    if let Err(error) = host.journal.lock().unwrap().finish(&op) {
+        eprintln!("could not persist operation {} outcome: {error}", op.id);
+    }
+    op
+}
+
+async fn submit_create_wait(
+    host: Arc<Host>,
+    request: Submit,
+    accepted: Operation,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    wait_seconds: u64,
+) -> Result<(StatusCode, Json<Operation>), Failure> {
+    let finished = finish_create_inline(&host, request, accepted, permit).await;
+    let op = wait_for_create(host, &finished.id, wait_seconds).await?;
+    Ok((StatusCode::OK, Json(op)))
+}
+
+enum SubmitPlan {
+    ReplayExisting(Operation),
+    Run {
+        request: Submit,
+        accepted: Operation,
+        permit: tokio::sync::OwnedSemaphorePermit,
+    },
+}
+
+fn plan_submit(host: &Arc<Host>, request: &Submit) -> Result<SubmitPlan, Failure> {
     let mut db = host.journal.lock().unwrap();
-    if let Some(existing) = db.existing(&request).map_err(|e| {
+    if let Some(existing) = db.existing(request).map_err(|e| {
         if e.is::<Conflict>() {
             Failure::new(
                 StatusCode::CONFLICT,
@@ -549,7 +748,7 @@ async fn submit(
             Failure::internal(e)
         }
     })? {
-        return Ok((StatusCode::OK, Json(existing)));
+        return Ok(SubmitPlan::ReplayExisting(existing));
     }
     match &request.action {
         Action::Create { template, .. } if !host.templates.contains_key(template) => {
@@ -572,41 +771,69 @@ async fn submit(
             "Eight operations are already in flight. No new operation was accepted.",
         )
     })?;
-    let accepted = db.accept(&request).map_err(Failure::internal)?;
-    let mut op = accepted.clone();
-    drop(db);
-    let worker_host = host.clone();
-    let is_exec = matches!(request.action, Action::Exec { .. });
-    // Detached from the HTTP request. The outer task records panics as unknown;
-    // a process crash is handled by Journal::open, never by command replay.
-    tokio::spawn(async move {
-        let _permit = permit;
-        let box_id = op.box_id.clone();
-        let result =
-            tokio::spawn(async move { worker_host.execute(request.action, &box_id).await }).await;
-        match result {
-            Ok(Ok(outcome)) => {
-                op.state = OperationState::Succeeded;
-                op.result = Some(outcome);
-            }
-            other => {
-                op.state = if is_exec || other.is_err() {
-                    OperationState::Unknown
-                } else {
-                    OperationState::Failed
-                };
-                op.error = Some(ApiError { code: "runtime_operation_failed".into(), message: "Operation did not return a confirmed result. Inspect the box before issuing another command; consult the host log for lifecycle failures.".into() });
-                // Exec inputs and output are never logged, including on error.
-                if !is_exec {
-                    eprintln!("operation {}: {other:?}", op.id);
-                }
-            }
+    let live_ids = live_box_ids(&host.runtime_dir).map_err(Failure::internal)?;
+    let live_refs: Vec<&str> = live_ids.iter().map(String::as_str).collect();
+    let accepted = db.accept(request, &live_refs).map_err(|error| {
+        if error.is::<JournalFull>() {
+            Failure::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "journal_full",
+                "The operation journal is full after automatic retention. Archive this installation or delete old boxes, then retry.",
+            )
+        } else {
+            Failure::internal(error)
         }
-        if let Err(error) = host.journal.lock().unwrap().finish(&op) {
-            eprintln!("could not persist operation {} outcome: {error}", op.id);
+    })?;
+    Ok(SubmitPlan::Run {
+        request: request.clone(),
+        accepted,
+        permit,
+    })
+}
+
+async fn submit(
+    State(host): State<Arc<Host>>,
+    RawQuery(raw_query): RawQuery,
+    Json(request): Json<Submit>,
+) -> Result<(StatusCode, Json<Operation>), Failure> {
+    let query = OperationSubmitQuery::parse("/v1/operations", raw_query.as_deref())
+        .map_err(|message| Failure::new(StatusCode::BAD_REQUEST, "invalid_request", message))?;
+    query
+        .validate_for_action(&request.action)
+        .map_err(|message| Failure::new(StatusCode::BAD_REQUEST, "invalid_request", message))?;
+    if !valid_id(&request.id) {
+        return Err(Failure::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "invalid request ID",
+        ));
+    }
+    request
+        .action
+        .validate()
+        .map_err(|e| Failure::new(StatusCode::BAD_REQUEST, "invalid_request", e))?;
+    let plan = plan_submit(&host, &request)?;
+    match plan {
+        SubmitPlan::ReplayExisting(existing) => {
+            if query.wait {
+                let op = wait_for_create(host.clone(), &existing.id, query.wait_seconds).await?;
+                return Ok((StatusCode::OK, Json(op)));
+            }
+            Ok((StatusCode::OK, Json(existing)))
         }
-    });
-    Ok((StatusCode::ACCEPTED, Json(accepted)))
+        SubmitPlan::Run {
+            request,
+            accepted,
+            permit,
+        } => {
+            if query.wait {
+                return submit_create_wait(host, request, accepted, permit, query.wait_seconds)
+                    .await;
+            }
+            spawn_operation_worker(host, request, accepted.clone(), permit);
+            Ok((StatusCode::ACCEPTED, Json(accepted)))
+        }
+    }
 }
 
 /// Parent directory must be operator-owned and not writable by socket clients.
@@ -643,6 +870,300 @@ pub async fn bind_socket(path: &FsPath) -> Result<UnixListener> {
 mod tests {
     use super::*;
     use axum::response::IntoResponse;
+    use kiln_api::new_id;
+
+    #[test]
+    fn first_dashboard_read_reports_host_cpu() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let host = Host::open(&Config {
+            runtime_dir: root.path().join("runtime"),
+            journal_dir: root.path().join("journal"),
+            socket: root.path().join("host.sock"),
+            isolation_config: None,
+            allow_unsafe_development: true,
+            templates: Default::default(),
+        })
+        .unwrap();
+        let value = serde_json::to_value(host.dashboard().unwrap()).unwrap();
+        assert!(value["host"]["metrics"]["cpu_percent"].as_f64().is_some());
+        assert!(value["host"]["metrics"]["memory_bytes"].as_u64().unwrap() > 0);
+        assert!(value["host"]["metrics"]["disk_bytes"].as_u64().unwrap() > 0);
+        assert!(
+            value["host"]["metrics"]["disk_total_bytes"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+    }
+
+    #[test]
+    fn stopped_box_reports_allocated_disk_image() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = root.path().join("runtime");
+        let journal = root.path().join("journal");
+        let config = Config {
+            runtime_dir: runtime.clone(),
+            journal_dir: journal.clone(),
+            socket: root.path().join("host.sock"),
+            isolation_config: None,
+            allow_unsafe_development: true,
+            templates: Default::default(),
+        };
+        drop(Host::open(&config).unwrap());
+        let id: String = "0123456789abcdef0123456789abcdef".into();
+        let run: String = "0123456789abcdef0123456789abcde0".into();
+        let directory = runtime.join("boxes").join(&id).join(&run);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            runtime.join("boxes").join(&id).join("box.json"),
+            serde_json::to_vec(&BoxRecord {
+                schema_version: 1,
+                id: id.clone(),
+                name: "stopped-disk".into(),
+                state: "stopped".into(),
+                run: run.clone(),
+                process: None,
+                image: kiln_runtime::image::Manifest {
+                    schema_version: 1,
+                    architecture: "x86_64".into(),
+                    kernel_path: "/kernel".into(),
+                    kernel_sha256: "ab".repeat(32),
+                    rootfs_path: "/rootfs".into(),
+                    rootfs_sha256: "cd".repeat(32),
+                    agent_protocol_version: 1,
+                    boot_mode: kiln_runtime::image::BootMode::Init,
+                },
+                host: "fixture-host".into(),
+                memory_mib: 256,
+                vcpus: 1,
+                source: None,
+                operation: None,
+                last_error: None,
+                disk_copy: "Copy".into(),
+                disk_layer: None,
+                jail: None,
+                network: None,
+                last_launch: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(directory.join("disk.ext4"), b"stopped-box-disk").unwrap();
+        let host = Host::open(&config).unwrap();
+        let db = rusqlite::Connection::open(journal.join("operations.sqlite")).unwrap();
+        db.execute(
+            "INSERT INTO operations(id, fingerprint, box_id, is_create, running, response, created_at)
+             VALUES (?1, ?2, ?3, 1, 0, ?4, ?5)",
+            rusqlite::params![
+                "0123456789abcdef0123456789abcde1",
+                "fixture",
+                id,
+                r#"{"id":"0123456789abcdef0123456789abcde1","box_id":"0123456789abcdef0123456789abcdef","state":"succeeded","result":{"type":"box","id":"0123456789abcdef0123456789abcdef","name":"stopped-disk","state":"stopped","memory_mib":256,"vcpus":1},"error":null}"#,
+                1_700_000_000_i64,
+            ],
+        )
+        .unwrap();
+        let value = serde_json::to_value(host.dashboard().unwrap()).unwrap();
+        let entry = value["boxes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == id)
+            .expect("stopped box");
+        assert_eq!(entry["state"], "stopped");
+        assert!(entry["metrics"]["cpu_percent"].is_null());
+        assert!(entry["metrics"]["memory_bytes"].is_null());
+        assert!(entry["metrics"]["disk_bytes"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn v1_running_box_upgrade_keeps_null_timing_and_passes_self_check() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = root.path().join("runtime");
+        let journal = root.path().join("journal");
+        fs::create_dir_all(&journal).unwrap();
+        fs::set_permissions(&journal, fs::Permissions::from_mode(0o700)).unwrap();
+        let id: String = "0123456789abcdef0123456789abcdef".into();
+        let run: String = "0123456789abcdef0123456789abcde0".into();
+        let response = serde_json::json!({
+            "id": "0123456789abcdef0123456789abcde1",
+            "box_id": id,
+            "state": "succeeded",
+            "result": {
+                "type": "box",
+                "id": id,
+                "name": "legacy-running",
+                "state": "running",
+                "memory_mib": 256,
+                "vcpus": 1
+            },
+            "error": null
+        });
+        let config = Config {
+            runtime_dir: runtime.clone(),
+            journal_dir: journal.clone(),
+            socket: root.path().join("host.sock"),
+            isolation_config: None,
+            allow_unsafe_development: true,
+            templates: Default::default(),
+        };
+        let conn = rusqlite::Connection::open(journal.join("operations.sqlite")).unwrap();
+        conn.execute_batch(
+            "PRAGMA user_version=1;
+             CREATE TABLE operations (
+               id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
+               is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
+               created_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,created_at)
+             VALUES (?1,?2,?3,1,0,?4,?5)",
+            rusqlite::params![
+                "0123456789abcdef0123456789abcde1",
+                b"fingerprint-bytes",
+                id,
+                response.to_string(),
+                1_700_000_000_i64,
+            ],
+        )
+        .unwrap();
+        drop(conn);
+        let directory = runtime.join("boxes").join(&id).join(&run);
+        fs::create_dir_all(&directory).unwrap();
+        for path in [
+            &runtime,
+            &runtime.join("boxes"),
+            &runtime.join("boxes").join(&id),
+        ] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        fs::write(
+            runtime.join("boxes").join(&id).join("box.json"),
+            serde_json::to_vec(&BoxRecord {
+                schema_version: 1,
+                id: id.clone(),
+                name: "legacy-running".into(),
+                state: "running".into(),
+                run: run.clone(),
+                process: None,
+                image: kiln_runtime::image::Manifest {
+                    schema_version: 1,
+                    architecture: "x86_64".into(),
+                    kernel_path: "/kernel".into(),
+                    kernel_sha256: "ab".repeat(32),
+                    rootfs_path: "/rootfs".into(),
+                    rootfs_sha256: "cd".repeat(32),
+                    agent_protocol_version: 1,
+                    boot_mode: kiln_runtime::image::BootMode::Init,
+                },
+                host: "fixture-host".into(),
+                memory_mib: 256,
+                vcpus: 1,
+                source: None,
+                operation: None,
+                last_error: None,
+                disk_copy: "Copy".into(),
+                disk_layer: None,
+                jail: None,
+                network: None,
+                last_launch: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let host = Host::open(&config).unwrap();
+        let value = serde_json::to_value(host.dashboard().unwrap()).unwrap();
+        assert!(value["boxes"][0]["timing"].is_null());
+        crate::dashboard_check::parse_and_validate(&serde_json::to_vec(&value).unwrap())
+            .expect("legacy running box stays exempt from the launch gate");
+    }
+
+    #[test]
+    fn measured_launch_on_box_record_satisfies_self_check() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = root.path().join("runtime");
+        let journal = root.path().join("journal");
+        let config = Config {
+            runtime_dir: runtime.clone(),
+            journal_dir: journal.clone(),
+            socket: root.path().join("host.sock"),
+            isolation_config: None,
+            allow_unsafe_development: true,
+            templates: Default::default(),
+        };
+        drop(Host::open(&config).unwrap());
+        let id: String = "0123456789abcdef0123456789abcdef".into();
+        let run: String = "0123456789abcdef0123456789abcde0".into();
+        fs::create_dir_all(runtime.join("boxes").join(&id).join(&run)).unwrap();
+        fs::write(
+            runtime.join("boxes").join(&id).join("box.json"),
+            serde_json::to_vec(&BoxRecord {
+                schema_version: 1,
+                id: id.clone(),
+                name: "measured".into(),
+                state: "running".into(),
+                run: run.clone(),
+                process: None,
+                image: kiln_runtime::image::Manifest {
+                    schema_version: 1,
+                    architecture: "x86_64".into(),
+                    kernel_path: "/kernel".into(),
+                    kernel_sha256: "ab".repeat(32),
+                    rootfs_path: "/rootfs".into(),
+                    rootfs_sha256: "cd".repeat(32),
+                    agent_protocol_version: 1,
+                    boot_mode: kiln_runtime::image::BootMode::Init,
+                },
+                host: "fixture-host".into(),
+                memory_mib: 256,
+                vcpus: 1,
+                source: None,
+                operation: None,
+                last_error: None,
+                disk_copy: "Copy".into(),
+                disk_layer: None,
+                jail: None,
+                network: None,
+                last_launch: Some(kiln_runtime::launch_timing::LaunchTiming {
+                    method: "create".into(),
+                    cache: "uncontrolled".into(),
+                    disk_copy: "Copy".into(),
+                    storage_ms: Some(10.),
+                    vmm_ms: Some(5.),
+                    restore_ms: None,
+                    agent_ms: None,
+                    init_ms: None,
+                    first_command_ms: None,
+                    total_ms: Some(42.),
+                }),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let db = rusqlite::Connection::open(journal.join("operations.sqlite")).unwrap();
+        db.execute(
+            "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,created_at,action)
+             VALUES (?1,?2,?3,1,0,?4,?5,'create')",
+            rusqlite::params![
+                "0123456789abcdef0123456789abcde1",
+                b"fingerprint-bytes",
+                id,
+                r#"{"id":"0123456789abcdef0123456789abcde1","box_id":"0123456789abcdef0123456789abcdef","state":"succeeded","result":{"type":"box","id":"0123456789abcdef0123456789abcdef","name":"measured","state":"running","memory_mib":256,"vcpus":1},"error":null}"#,
+                1_700_000_000_i64,
+            ],
+        )
+        .unwrap();
+        let host = Host::open(&config).unwrap();
+        let value = serde_json::to_value(host.dashboard().unwrap()).unwrap();
+        assert_eq!(value["boxes"][0]["timing"]["total_ms"].as_f64(), Some(42.));
+        crate::dashboard_check::parse_and_validate(&serde_json::to_vec(&value).unwrap())
+            .expect("measured launch must satisfy the gate");
+    }
 
     #[tokio::test]
     async fn ssh_key_lookup_does_not_consume_a_tunnel_permit() {
@@ -661,13 +1182,16 @@ mod tests {
             .journal
             .lock()
             .unwrap()
-            .accept(&Submit {
-                id: "c".repeat(32),
-                action: Action::Create {
-                    template: "base".into(),
-                    name: "box".into(),
+            .accept(
+                &Submit {
+                    id: "c".repeat(32),
+                    action: Action::Create {
+                        template: "base".into(),
+                        name: "box".into(),
+                    },
                 },
-            })
+                &[],
+            )
             .unwrap();
         let _held: Vec<_> = (0..32)
             .map(|_| host.sessions.clone().try_acquire_owned().unwrap())
@@ -682,5 +1206,87 @@ mod tests {
             .unwrap();
         let body = String::from_utf8_lossy(&body);
         assert!(!body.contains("ssh_busy"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn create_wait_times_out_when_create_stays_running() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let host = Host::open(&Config {
+            runtime_dir: root.path().join("runtime"),
+            journal_dir: root.path().join("journal"),
+            socket: root.path().join("host.sock"),
+            isolation_config: None,
+            allow_unsafe_development: true,
+            templates: Default::default(),
+        })
+        .unwrap();
+        let op = host
+            .journal
+            .lock()
+            .unwrap()
+            .accept(
+                &Submit {
+                    id: new_id(),
+                    action: Action::Create {
+                        template: "ubuntu".into(),
+                        name: "slow".into(),
+                    },
+                },
+                &[],
+            )
+            .unwrap();
+        let err = wait_for_create(host, &op.id, 1).await.unwrap_err();
+        assert_eq!(err.0, StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(err.1.code, "wait_timeout");
+        assert!(err.1.message.contains("still running"));
+    }
+
+    #[tokio::test]
+    async fn create_wait_reports_control_plane_timeout_after_success() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let host = Host::open(&Config {
+            runtime_dir: root.path().join("runtime"),
+            journal_dir: root.path().join("journal"),
+            socket: root.path().join("host.sock"),
+            isolation_config: None,
+            allow_unsafe_development: true,
+            templates: Default::default(),
+        })
+        .unwrap();
+        let op = host
+            .journal
+            .lock()
+            .unwrap()
+            .accept(
+                &Submit {
+                    id: new_id(),
+                    action: Action::Create {
+                        template: "ubuntu".into(),
+                        name: "ghost".into(),
+                    },
+                },
+                &[],
+            )
+            .unwrap();
+        let mut finished = op.clone();
+        finished.state = OperationState::Succeeded;
+        finished.result = Some(Outcome::Box(BoxView {
+            id: finished.box_id.clone(),
+            name: "ghost".into(),
+            state: "running".into(),
+            memory_mib: 256,
+            vcpus: 1,
+        }));
+        finished.error = None;
+        host.journal.lock().unwrap().finish(&finished).unwrap();
+        let err = wait_for_create(host, &op.id, 1).await.unwrap_err();
+        assert_eq!(err.0, StatusCode::REQUEST_TIMEOUT);
+        assert_eq!(err.1.code, "wait_timeout");
+        assert_eq!(
+            err.1.message,
+            "The control plane has not observed the new box."
+        );
     }
 }

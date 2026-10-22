@@ -332,6 +332,50 @@ svg {
   font: 10px var(--mono);
   border-left: 1px solid var(--line-strong);
   padding-left: 20px;
+  background: none;
+  border-top: none;
+  border-right: none;
+  border-bottom: none;
+  cursor: pointer;
+}
+.topbar-version:hover,
+.topbar-version:focus-visible {
+  color: var(--text);
+}
+.release-notes-body {
+  max-width: 420px;
+}
+.release-notes-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 10px;
+  color: var(--text);
+  font: 13px/1.5 var(--sans);
+}
+.release-notes-pr {
+  color: var(--muted);
+  font: 11px var(--mono);
+}
+.release-notes-empty {
+  margin: 0;
+  color: var(--muted);
+  font: 13px/1.5 var(--sans);
+}
+.release-notes-link {
+  margin: 18px 0 0;
+}
+.release-notes-link a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font: 12px var(--mono);
+  text-decoration: none;
+}
+.release-notes-link a:hover,
+.release-notes-link a:focus-visible {
+  color: var(--accent);
 }
 .sidebar {
   width: var(--sidebar);
@@ -1535,6 +1579,8 @@ tbody tr:hover {
   overflow-y: auto;
 }
 .modal::backdrop {
+  position: fixed;
+  inset: 0;
   background: #000a;
   backdrop-filter: blur(3px);
 }

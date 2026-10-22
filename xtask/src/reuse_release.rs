@@ -1913,9 +1913,13 @@ fn test_workflow_keeps_drafts_and_does_not_move_tags() {
     let text = fs::read_to_string(crate::repo_root().join(".github/workflows/build.yml")).unwrap();
     assert_eq!(text.matches("gh release create").count(), 1);
     assert!(!text.contains("--draft"));
-    assert!(text.contains("gh attestation verify"));
-    assert!(text.contains("--cert-identity-regex"));
-    assert!(text.contains("--source-ref"));
+    assert!(text.contains("verify-release-attestations.sh"));
+    let verify =
+        fs::read_to_string(crate::repo_root().join("scripts/verify-release-attestations.sh"))
+            .unwrap();
+    assert!(verify.contains("gh attestation verify"));
+    assert!(verify.contains("--cert-identity-regex"));
+    assert!(verify.contains("--source-ref"));
     assert!(text.contains("needs.attest.result == 'success'"));
     assert!(!text.contains("git push"));
     assert!(!text.contains("git tag"));

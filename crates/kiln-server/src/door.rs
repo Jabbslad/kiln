@@ -2,6 +2,9 @@
 //! The administrator token is not a JWT and never opens that dial.
 //! A dashboard cookie authorizes `GET /api/v1/dashboard`. That route sends
 //! the session JWT and does not copy the browser `Authorization` header.
+//! `GET /v1/boxes/{id}/ssh` with `Upgrade: kiln-ssh` is proxied only for an
+//! operate-scope JWT whose subject is the enrolled owner. The caller's
+//! `Authorization` header is forwarded unchanged. Every other upgrade is rejected.
 use crate::{
     Failure,
     auth::{Authenticator, Enrollment},
@@ -35,8 +38,11 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 struct Door {
     auth: Authenticator,
     client: reqwest::Client,
+    ssh_client: reqwest::Client,
     upstream: reqwest::Url,
     capacity: Arc<Semaphore>,
+    ssh_sessions: Arc<Semaphore>,
+    ssh_audit: SshAudit,
     dash: Option<Dash>,
 }
 
@@ -111,7 +117,54 @@ pub fn router_with_read_timeout(
     ca_pem: &[u8],
     read_timeout: Duration,
 ) -> Result<Router> {
-    assemble(auth, upstream, ca_pem, read_timeout, None)
+    Ok(router_with_ssh_audit(auth, upstream, ca_pem, read_timeout)?.0)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SshAuditRecord {
+    pub outcome: &'static str,
+    pub box_id: String,
+}
+
+/// In-memory copy of the SSH audit lines, capped so a public flood cannot grow it.
+#[derive(Clone)]
+pub struct SshAudit {
+    records: Arc<StdMutex<Vec<SshAuditRecord>>>,
+}
+
+impl SshAudit {
+    fn new() -> Self {
+        Self {
+            records: Arc::new(StdMutex::new(Vec::new())),
+        }
+    }
+
+    pub fn records(&self) -> Vec<SshAuditRecord> {
+        lock_map(&self.records).clone()
+    }
+
+    fn record(&self, outcome: &'static str, box_id: &str) {
+        eprintln!("audit ssh outcome={outcome} box_id={box_id}");
+        let mut records = lock_map(&self.records);
+        if records.len() == 128 {
+            records.remove(0);
+        }
+        records.push(SshAuditRecord {
+            outcome,
+            box_id: box_id.to_owned(),
+        });
+    }
+}
+
+pub fn router_with_ssh_audit(
+    auth: Authenticator,
+    upstream: &str,
+    ca_pem: &[u8],
+    read_timeout: Duration,
+) -> Result<(Router, SshAudit)> {
+    let audit = SshAudit::new();
+    let router = assemble(auth, upstream, ca_pem, read_timeout, None, audit.clone())?;
+    Ok((router, audit))
 }
 
 pub fn router_with_dashboard(
@@ -126,6 +179,7 @@ pub fn router_with_dashboard(
         ca_pem,
         READ_TIMEOUT,
         Some(open_dash(dashboard)?),
+        SshAudit::new(),
     )
 }
 
@@ -135,6 +189,7 @@ fn assemble(
     ca_pem: &[u8],
     read_timeout: Duration,
     dash: Option<Dash>,
+    ssh_audit: SshAudit,
 ) -> Result<Router> {
     let upstream = reqwest::Url::parse(upstream).context("invalid upstream URL")?;
     ensure!(
@@ -147,6 +202,7 @@ fn assemble(
             && upstream.fragment().is_none(),
         "public door upstream must be https://127.0.0.1"
     );
+    let certificate = reqwest::Certificate::from_pem(ca_pem)?;
     let client = reqwest::Client::builder()
         .https_only(true)
         .no_proxy()
@@ -154,14 +210,30 @@ fn assemble(
         .retry(reqwest::retry::never())
         .connect_timeout(Duration::from_secs(3))
         .read_timeout(read_timeout)
-        .add_root_certificate(reqwest::Certificate::from_pem(ca_pem)?)
+        .add_root_certificate(certificate.clone())
+        .tls_built_in_root_certs(false)
+        .build()?;
+    // HTTP/1.1 only. An upgraded SSH stream must not be returned to a pool,
+    // and it must not inherit the management read timeout.
+    let ssh_client = reqwest::Client::builder()
+        .https_only(true)
+        .http1_only()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .connect_timeout(Duration::from_secs(3))
+        .pool_max_idle_per_host(0)
+        .add_root_certificate(certificate)
         .tls_built_in_root_certs(false)
         .build()?;
     let state = Arc::new(Door {
         auth,
         client,
+        ssh_client,
         upstream,
         capacity: Arc::new(Semaphore::new(32)),
+        ssh_sessions: Arc::new(Semaphore::new(32)),
+        ssh_audit,
         dash,
     });
     Ok(Router::new().fallback(any(handle)).with_state(state))
@@ -292,6 +364,12 @@ fn is_api(path: &str) -> bool {
 }
 
 async fn bearer_proxy(door: &Door, request: Request) -> Response {
+    if request.method() == Method::GET
+        && ssh_box_id(request.uri().path()).is_some()
+        && kiln_ssh_upgrade(request.headers())
+    {
+        return ssh_proxy(door, request).await;
+    }
     let bearer = request
         .headers()
         .get(header::AUTHORIZATION)
@@ -301,12 +379,11 @@ async fn bearer_proxy(door: &Door, request: Request) -> Response {
     if door.auth.authenticate_central(bearer).await.is_err() {
         return unauthorized();
     }
-    if request.uri().query().is_some() {
-        return deny(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "Query parameters are not accepted.",
-        );
+    if request.uri().query().is_some()
+        && let Err(message) =
+            kiln_api::OperationSubmitQuery::parse(request.uri().path(), request.uri().query())
+    {
+        return deny(StatusCode::BAD_REQUEST, "invalid_request", message);
     }
     if request.method() != Method::GET && request.method() != Method::POST {
         return deny(
@@ -326,6 +403,155 @@ async fn bearer_proxy(door: &Door, request: Request) -> Response {
         return unauthorized();
     };
     proxy(door, request, authorization).await
+}
+
+fn ssh_box_id(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix("/v1/boxes/")?;
+    let (id, suffix) = rest.split_once('/')?;
+    (suffix == "ssh" && kiln_api::valid_id(id)).then_some(id)
+}
+
+fn kiln_ssh_upgrade(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::UPGRADE)
+        .and_then(|value| value.to_str().ok())
+        == Some(kiln_api::SSH_UPGRADE)
+}
+
+async fn ssh_proxy(door: &Door, request: Request) -> Response {
+    let box_id = ssh_box_id(request.uri().path()).unwrap_or("").to_owned();
+    let bearer = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .unwrap_or("");
+    let scope = match door.auth.authenticate_central(bearer).await {
+        Ok(scope) => scope,
+        Err(_) => {
+            door.ssh_audit.record("unauthorized", &box_id);
+            return unauthorized();
+        }
+    };
+    if scope != Scope::Operate {
+        door.ssh_audit.record("insufficient_scope", &box_id);
+        return deny(
+            StatusCode::FORBIDDEN,
+            "insufficient_scope",
+            "An operate credential is required.",
+        );
+    }
+    if request.uri().query().is_some() {
+        door.ssh_audit.record("invalid_ssh", &box_id);
+        return deny(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "Query parameters are not accepted.",
+        );
+    }
+    let key = match crate::ssh::admission(&request) {
+        Ok(key) => key,
+        Err(failure) => {
+            door.ssh_audit.record("invalid_ssh", &box_id);
+            return no_store(failure.into_response());
+        }
+    };
+    let Some(mut authorization) = request.headers().get(header::AUTHORIZATION).cloned() else {
+        door.ssh_audit.record("unauthorized", &box_id);
+        return unauthorized();
+    };
+    authorization.set_sensitive(true);
+    let Ok(permit) = door.ssh_sessions.clone().try_acquire_owned() else {
+        door.ssh_audit.record("busy", &box_id);
+        return deny(
+            StatusCode::TOO_MANY_REQUESTS,
+            "ssh_busy",
+            "SSH session capacity reached.",
+        );
+    };
+    let mut url = door.upstream.clone();
+    url.set_path(request.uri().path());
+    let upstream = match door
+        .ssh_client
+        .get(url)
+        .header(header::AUTHORIZATION, authorization)
+        .header(header::CONNECTION, "upgrade")
+        .header(header::UPGRADE, kiln_api::SSH_UPGRADE)
+        .header(kiln_api::SSH_KEY_HEADER, key)
+        .send()
+        .await
+    {
+        Ok(upstream) => upstream,
+        Err(_) => {
+            door.ssh_audit.record("upstream", &box_id);
+            return deny(
+                StatusCode::BAD_GATEWAY,
+                "host_unavailable",
+                "SSH upstream did not accept the tunnel.",
+            );
+        }
+    };
+    if upstream.status() != StatusCode::SWITCHING_PROTOCOLS {
+        door.ssh_audit.record("upstream", &box_id);
+        return ssh_refusal(upstream).await;
+    }
+    if upstream
+        .headers()
+        .get(header::UPGRADE)
+        .and_then(|value| value.to_str().ok())
+        != Some(kiln_api::SSH_UPGRADE)
+    {
+        door.ssh_audit.record("upstream", &box_id);
+        return deny(
+            StatusCode::BAD_GATEWAY,
+            "host_unavailable",
+            "SSH upstream did not accept the tunnel.",
+        );
+    }
+    let upstream = match upstream.upgrade().await {
+        Ok(upstream) => upstream,
+        Err(_) => {
+            door.ssh_audit.record("upstream", &box_id);
+            return deny(
+                StatusCode::BAD_GATEWAY,
+                "host_unavailable",
+                "SSH upstream did not accept the tunnel.",
+            );
+        }
+    };
+    door.ssh_audit.record("upgraded", &box_id);
+    crate::ssh::upgrade(request, upstream, permit)
+}
+
+async fn ssh_refusal(upstream: reqwest::Response) -> Response {
+    let status = upstream.status();
+    let bytes = match upstream.bytes().await {
+        Ok(bytes) if bytes.len() <= 8192 => bytes,
+        _ => {
+            return deny(
+                StatusCode::BAD_GATEWAY,
+                "host_unavailable",
+                "SSH upstream did not accept the tunnel.",
+            );
+        }
+    };
+    if let Ok(error) = serde_json::from_slice::<kiln_api::ApiError>(&bytes)
+        && !error.code.is_empty()
+    {
+        return no_store((status, Json(error)).into_response());
+    }
+    deny(
+        StatusCode::BAD_GATEWAY,
+        "host_unavailable",
+        "SSH upstream did not accept the tunnel.",
+    )
+}
+
+fn no_store(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 async fn cookie_proxy(door: &Door, request: Request) -> Response {
@@ -387,6 +613,12 @@ async fn forward(
 ) -> Result<Response, Failure> {
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
+    let query = request.uri().query().map(str::to_owned);
+    let wait = query.as_deref().and_then(|query| {
+        kiln_api::OperationSubmitQuery::parse(&path, Some(query))
+            .ok()
+            .filter(|parsed| parsed.wait)
+    });
     let content_type = request.headers().get(header::CONTENT_TYPE).cloned();
     if declared_length(request.headers(), kiln_api::MAX_REQUEST_BYTES) {
         return Err(Failure::new(
@@ -403,10 +635,14 @@ async fn forward(
             == Some("0");
     let mut url = door.upstream.clone();
     url.set_path(&path);
+    url.set_query(query.as_deref());
     let mut upstream = door
         .client
         .request(method.clone(), url)
         .header(header::AUTHORIZATION, authorization);
+    if let Some(wait) = wait {
+        upstream = upstream.timeout(Duration::from_secs(wait.wait_seconds.saturating_add(5)));
+    }
     if let Some(content_type) = content_type {
         upstream = upstream.header(header::CONTENT_TYPE, content_type);
     }

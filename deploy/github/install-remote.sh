@@ -16,6 +16,10 @@ cd "$dir"
 archive=$(printf '%s\n' kiln-server-*.tar.gz)
 [ -f "$archive" ] || fail 'missing release archive'
 [ -f "${archive}.sha256" ] || fail 'missing release checksum'
+release_tag=${archive#kiln-server-}
+release_tag=${release_tag%-x86_64-unknown-linux-gnu.tar.gz}
+printf '%s\n' "$release_tag" | grep -Eq '^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$' \
+  || fail "unexpected server archive name: ${archive}"
 dashboard_archive=
 dashboard_found=0
 shopt -s nullglob
@@ -201,29 +205,46 @@ else
   printf 'deploy: skipping the health check because installation failed\n' >&2
 fi
 
-smoke_rc=1
+metrics_rc=1
 if [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]; then
+  metrics_rc=0
+  /usr/local/libexec/kiln-api self-check --address "$address" || metrics_rc=$?
+else
+  printf 'deploy: skipping the dashboard metrics check because installation failed\n' >&2
+fi
+
+smoke_rc=1
+if [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] \
+  && [ "$metrics_rc" -eq 0 ]; then
   smoke_rc=0
   bash "$dir/smoke.sh" "$address" || smoke_rc=$?
 else
   printf 'deploy: skipping the guest smoke test because installation failed\n' >&2
 fi
 
-metrics_rc=1
-if [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]; then
-  metrics_rc=0
-  bash "$dir/check-dashboard-metrics.sh" "$address" || metrics_rc=$?
-else
-  printf 'deploy: skipping the dashboard metrics check because installation failed\n' >&2
-fi
-
 dashboard_rc=1
 if [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] \
-  && [ "$smoke_rc" -eq 0 ] && [ "$metrics_rc" -eq 0 ] && [ "$dashboard_found" -eq 1 ]; then
+  && [ "$metrics_rc" -eq 0 ] && [ "$smoke_rc" -eq 0 ] && [ "$dashboard_found" -eq 1 ]; then
   dashboard_rc=0
   bash "$dir/check-dashboard-bundle.sh" "$dir/$dashboard_archive" || dashboard_rc=$?
 else
   printf 'deploy: skipping the dashboard bundle check because installation failed\n' >&2
+fi
+
+door_rc=1
+if [ "$install_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]; then
+  door_rc=0
+  bash "$dir/check-door-ssh.sh" || door_rc=$?
+else
+  printf 'deploy: skipping the door ssh probe because the API is not healthy\n' >&2
+fi
+
+versions_rc=1
+if [ "$install_rc" -eq 0 ]; then
+  versions_rc=0
+  bash "$dir/check-installed-versions.sh" "$release_tag" || versions_rc=$?
+else
+  printf 'deploy: skipping the installed version check because installation failed\n' >&2
 fi
 
 printf 'kiln-api NRestarts after: %s\n' "$(restarts)"
@@ -234,4 +255,5 @@ if [ "$before" != "$after" ]; then
   exit 1
 fi
 [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] \
-  && [ "$metrics_rc" -eq 0 ] && [ "$smoke_rc" -eq 0 ] && [ "$dashboard_rc" -eq 0 ]
+  && [ "$metrics_rc" -eq 0 ] && [ "$smoke_rc" -eq 0 ] && [ "$dashboard_rc" -eq 0 ] \
+  && [ "$door_rc" -eq 0 ] && [ "$versions_rc" -eq 0 ]

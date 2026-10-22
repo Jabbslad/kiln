@@ -8,6 +8,7 @@ import {
   execCommand,
   fetchDashboard,
   formatBytes,
+  formatDiskUsedOfTotal,
   formatMetric,
   filterBoxes,
   restoreCheckpoint,
@@ -76,6 +77,7 @@ describe('dashboard boundary', () => {
     expect(formatBytes(null)).toBe('—')
     expect(formatBytes(0)).toBe('0 B')
     expect(formatBytes(1536 * 1024 * 1024)).toBe('1.5 GiB')
+    expect(formatDiskUsedOfTotal(858_993_459, 2 * 1024 ** 3)).toBe('0.8 of 2.0 GiB')
   })
 
   it('combines case-insensitive name/id search with state filters', () => {
@@ -92,6 +94,11 @@ describe('dashboard boundary', () => {
     const fetcher = vi.fn().mockResolvedValue(new Response('unavailable', { status: 503 }))
     await expect(fetchDashboard(undefined, fetcher)).rejects.toThrow('503')
     expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports unreachable servers without surfacing raw fetch errors', async () => {
+    const fetcher = vi.fn().mockRejectedValue(new TypeError('Load failed'))
+    await expect(fetchDashboard(undefined, fetcher)).rejects.toThrow("Couldn't reach the server")
   })
 
   it('rejects the SPA HTML fallback rather than presenting a connected empty workspace', async () => {
