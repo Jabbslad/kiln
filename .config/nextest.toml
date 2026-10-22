@@ -1,3 +1,7 @@
 # CI profile: fail hung or pathologically slow tests instead of blocking server-check for hours.
 [profile.ci]
+<<<<<<< HEAD
 slow-timeout = { period = "60s", terminate-after = 3 }
+=======
+slow-timeout = { period = "120s", terminate-after = 1 }
+>>>>>>> 7e6409fa523628bf914759dab87bd152e39bd1c2

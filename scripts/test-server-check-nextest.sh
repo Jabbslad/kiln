@@ -39,6 +39,14 @@ grep -q 'terminate-after = 3' "$nextest_config" \
 grep -q 'NEXTEST_PROFILE' "$runner" \
   || fail 'run-workspace-nextest.sh must run the ci nextest profile'
 
+nextest_config=$root/.config/nextest.toml
+grep -q 'slow-timeout' "$nextest_config" \
+  || fail 'nextest ci profile must set slow-timeout'
+grep -q 'terminate-after' "$nextest_config" \
+  || fail 'nextest slow-timeout must terminate hung tests'
+grep -q 'NEXTEST_PROFILE' "$runner" \
+  || fail 'run-workspace-nextest.sh must run the ci nextest profile'
+
 grep -q 'run-workspace-nextest.sh' "$check" \
   || fail 'check.sh must use run-workspace-nextest.sh'
 grep -q 'NEXTEST_SHARDS' "$runner" \
