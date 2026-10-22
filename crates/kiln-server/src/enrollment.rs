@@ -594,9 +594,22 @@ fn identity_client() -> Result<reqwest::Client> {
 }
 
 fn publish_client(issuer: &reqwest::Url) -> Result<reqwest::Client> {
+    #[cfg(feature = "loopback-identity-ca")]
+    {
+        publish_client_with_loopback_ca(issuer)
+    }
+    #[cfg(not(feature = "loopback-identity-ca"))]
+    {
+        let _ = issuer;
+        identity_client()
+    }
+}
+
+#[cfg(feature = "loopback-identity-ca")]
+fn publish_client_with_loopback_ca(issuer: &reqwest::Url) -> Result<reqwest::Client> {
     let mut builder = identity_builder();
-    // A loopback issuer in the upgrade test presents a private CA. Production
-    // issuers are never loopback, so this file cannot intercept them.
+    // Only the upgrade test's debug kiln-api compiles this. Release builds
+    // use identity_client and the bundled public roots.
     if issuer.host_str() == Some("127.0.0.1") {
         let path = Path::new(ETC).join("loopback-identity-ca.pem");
         match read(&path, 0o077, 65536) {

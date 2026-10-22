@@ -308,7 +308,8 @@ jobs:
             scripts/check-embedded-release-notes.sh scripts/test-release-notes.sh \
             scripts/test-embedded-release-notes.sh \
             scripts/capture-dashboard-release-notes-proof.sh \
-            scripts/fmt.sh scripts/test-fmt.sh scripts/check.sh scripts/test-check.sh scripts/check-docs.sh
+            scripts/fmt.sh scripts/test-fmt.sh scripts/check.sh scripts/test-check.sh scripts/check-docs.sh \
+            scripts/check-release-trust.sh
 
   # A manual dry run fetches main's packages. A push builds in this run.
   reuse:
@@ -394,10 +395,22 @@ jobs:
           cache-workspace-crates: 'true'
       - name: Build release binaries
         run: |
-          cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client
+          trust_json=$(mktemp)
+          cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client \
+            --message-format=json >"$trust_json"
+          sh scripts/check-release-trust.sh --cargo-json "$trust_json" \
+            target/release/kiln \
+            target/release/kiln-runtime \
+            target/release/kiln-host \
+            target/release/kiln-api
+          rm -f "$trust_json"
           # One cargo command unifies features and links h2 into kiln-identity.
           # lab-provider stays off this command. The release binary cannot select a substitute provider.
-          cargo build --release --locked -p kiln-identity
+          trust_json=$(mktemp)
+          cargo build --release --locked -p kiln-identity --message-format=json >"$trust_json"
+          sh scripts/check-release-trust.sh --cargo-json "$trust_json" \
+            target/release/kiln-identity
+          rm -f "$trust_json"
           target/release/kiln-host --help
           target/release/kiln-api --help
           cargo xtask release-version check-binary --version "$VERSION" -- \

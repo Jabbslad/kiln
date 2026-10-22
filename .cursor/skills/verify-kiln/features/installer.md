@@ -61,7 +61,7 @@ bash scripts/test-login-token.sh
 bash scripts/test-login-token-upgrade.sh
 ```
 
-`test-login-token.sh` is the fixture installer. `test-login-token-upgrade.sh` downloads a published server and identity archive, upgrades that install with the workspace `kiln-api`, and checks dashboard sign-in. It needs `gh`, a GitHub token, `sudo`, and Caddy. It does not use a dark-forge fixture.
+`test-login-token.sh` is the fixture installer. `test-login-token-upgrade.sh` downloads a published server and identity archive, builds a debug `kiln-api` with the non-default `loopback-identity-ca` feature, upgrades that install, and checks dashboard sign-in. Release and tag-path binaries are built without that feature and trust only the bundled roots. The script needs `gh`, a GitHub token, `sudo`, and Caddy. It does not use a dark-forge fixture.
 
 Pull-request tag-path rehearsal (`scripts/tag-path-dry-run.sh`) builds a server package from the PR, then runs `KILN_SERVER_UPGRADE_PREV_TAR` / `KILN_SERVER_UPGRADE_TO_TAR` through the same script against a v2 operation journal fixture.
 

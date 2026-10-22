@@ -2,6 +2,8 @@
 # Upgrade a host laid down from a published Kiln release that has no login.token.
 # The release archives are real GitHub release assets. This does not use a
 # dark-forge fixture and it does not print secret material.
+# The lab CA is compiled only into this test's debug kiln-api
+# (--features loopback-identity-ca). Release binaries do not include it.
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "$0")/.." && pwd)
@@ -128,6 +130,15 @@ cargo build --locked --bins -p kiln-server -p kiln-runtime -p kiln-client >/dev/
 for name in kiln kiln-runtime kiln-host kiln-api; do
   [ -x "$root/target/debug/$name" ] || fail "missing workspace binary $name"
 done
+if grep -a -F -q 'loopback-identity-ca.pem' "$root/target/debug/kiln-api"; then
+  fail "workspace kiln-api contains the lab CA path"
+fi
+cargo build --locked --bin kiln-api -p kiln-server \
+  --features loopback-identity-ca \
+  --target-dir "$work/ca-feature" >/dev/null
+[ -x "$work/ca-feature/debug/kiln-api" ] || fail "missing feature kiln-api"
+grep -a -F -q 'loopback-identity-ca.pem' "$work/ca-feature/debug/kiln-api" \
+  || fail "upgrade kiln-api was built without the lab CA"
 
 mkdir -p "$work/id/secrets"
 chmod 700 "$work/id" "$work/id/secrets"
@@ -399,6 +410,9 @@ for name in kiln kiln-runtime kiln-network kiln-host kiln-api; do
   elif [ "$name" = kiln ] || [ "$name" = kiln-runtime ]; then
     cp "$work/prev/bin/$name" "$dest"
     cp "$root/target/debug/$name" "$package/bin/$name"
+  elif [ "$name" = kiln-api ]; then
+    cp "$work/prev/bin/$name" "$dest"
+    cp "$work/ca-feature/debug/kiln-api" "$package/bin/$name"
   else
     cp "$work/prev/bin/$name" "$dest"
     cp "$root/target/debug/$name" "$package/bin/$name"
