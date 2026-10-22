@@ -8,6 +8,8 @@ fn main() {
         "merge-queue-tested" => xtask::merge_queue::cli(&rest),
         "test-merge-queue-tested" => xtask::merge_queue::cli_tests(),
         "required-gate" => xtask::required_gate::cli(&rest),
+        "cancel-on-failure-gate" => xtask::required_gate::cli_cancel(&rest),
+        "test-cancel-on-failure-gate" => xtask::required_gate::cli_tests(),
         "release" => xtask::release::cli(&rest),
         "test-release" => xtask::release::cli_tests(),
         "release-version" => xtask::release_version::cli(&rest),

@@ -86,3 +86,44 @@ pub fn cli(_args: &[String]) -> i32 {
     print!("{stdout}");
     code
 }
+
+pub fn should_cancel_workflow(raw: Option<&str>) -> bool {
+    let raw = raw.unwrap_or("");
+    if raw.trim().is_empty() {
+        return false;
+    }
+    let payload = match serde_json::from_str::<Value>(raw) {
+        Ok(payload) => payload,
+        Err(_) => return false,
+    };
+    !evaluate(&payload).ok()
+}
+
+pub fn cli_cancel(_args: &[String]) -> i32 {
+    if should_cancel_workflow(std::env::var("NEEDS_JSON").ok().as_deref()) {
+        0
+    } else {
+        1
+    }
+}
+
+fn test_should_cancel_when_a_need_failed() {
+    let payload = serde_json::json!({
+        "server-check": {"result": "failure"},
+        "client": {"result": "success"},
+    });
+    assert!(should_cancel_workflow(Some(&payload.to_string())));
+}
+
+fn test_should_not_cancel_when_all_needs_pass_or_skip() {
+    let payload = serde_json::json!({
+        "docs-check": {"result": "skipped"},
+        "server-check": {"result": "success"},
+    });
+    assert!(!should_cancel_workflow(Some(&payload.to_string())));
+}
+
+crate::register_cases! {
+    test_should_cancel_when_a_need_failed,
+    test_should_not_cancel_when_all_needs_pass_or_skip,
+}
