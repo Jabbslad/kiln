@@ -111,11 +111,7 @@ fn keys(value: &Value) -> Result<JwkSet> {
     Ok(serde_json::from_value(value.clone())?)
 }
 
-pub fn verify_identity(
-    token: &str,
-    enrollment: &Enrollment,
-    jwks: &Value,
-) -> Result<CentralIdentity> {
+pub fn verify_claims(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<ServerClaims> {
     enrollment.validate()?;
     ensure!(token.len() <= 8192, "invalid token");
     let header = decode_header(token)?;
@@ -154,6 +150,15 @@ pub fn verify_identity(
             "invalid token tenant"
         );
     }
+    Ok(c)
+}
+
+pub fn verify_identity(
+    token: &str,
+    enrollment: &Enrollment,
+    jwks: &Value,
+) -> Result<CentralIdentity> {
+    let c = verify_claims(token, enrollment, jwks)?;
     Ok(CentralIdentity {
         scope: c.scope,
         sub: c.sub,
@@ -163,7 +168,7 @@ pub fn verify_identity(
 }
 
 pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Scope> {
-    Ok(verify_identity(token, enrollment, jwks)?.scope)
+    Ok(verify_claims(token, enrollment, jwks)?.scope)
 }
 
 struct Cache {
@@ -273,15 +278,74 @@ impl Authenticator {
             .unwrap_or_default()
     }
 
-    /// Enrolled owner id when the bearer is a valid central JWT; otherwise `anonymous`.
+    /// JWT `sub` when the bearer is a valid central token; otherwise `anonymous`.
     pub async fn central_caller(&self, bearer: &str) -> String {
+        self.central_subject(bearer)
+            .await
+            .unwrap_or_else(|| "anonymous".into())
+    }
+
+    pub async fn central_subject(&self, bearer: &str) -> Option<String> {
         if bearer.is_empty() {
-            return "anonymous".into();
+            return None;
         }
-        match self.central_identity(bearer).await {
-            Ok(identity) => identity.sub,
-            Err(_) => "anonymous".into(),
+        self.central_claims(bearer).await.ok().map(|c| c.sub)
+    }
+
+    async fn central_claims(&self, bearer: &str) -> Result<ServerClaims> {
+        let (enrollment, path) = self
+            .central
+            .as_ref()
+            .context("central authentication not enrolled")?;
+        let header = decode_header(bearer)?;
+        ensure!(
+            header.alg == Algorithm::ES256
+                && header.jku.is_none()
+                && header.jwk.is_none()
+                && header.x5u.is_none()
+                && header.x5c.is_none(),
+            "invalid token header"
+        );
+        let kid = header.kid.context("missing token key id")?;
+        let mut cache = self.cache.lock().await;
+        let known = cache.jwks["keys"]
+            .as_array()
+            .is_some_and(|k| k.iter().any(|k| k["kid"] == kid));
+        if !known {
+            ensure!(
+                cache
+                    .last_fetch
+                    .is_none_or(|t| t.elapsed() >= Duration::from_secs(60)),
+                "unknown token key"
+            );
+            cache.last_fetch = Some(Instant::now());
+            let mut response = self
+                .http
+                .get(format!(
+                    "{}/.well-known/jwks.json",
+                    enrollment.issuer.trim_end_matches('/')
+                ))
+                .send()
+                .await?;
+            ensure!(response.status().is_success(), "identity keys unavailable");
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response.chunk().await? {
+                ensure!(bytes.len() + chunk.len() <= 65536, "key response too large");
+                bytes.extend_from_slice(&chunk);
+            }
+            let value: Value = serde_json::from_slice(&bytes)?;
+            keys(&value)?;
+            let parent = path.parent().context("key cache directory missing")?;
+            let mut file = tempfile::NamedTempFile::new_in(parent)?;
+            file.write_all(&serde_json::to_vec(
+                &serde_json::json!({"issuer":enrollment.issuer,"jwks":value}),
+            )?)?;
+            file.as_file().sync_all()?;
+            file.persist(path)?;
+            fs::File::open(parent)?.sync_all()?;
+            cache.jwks = value;
         }
+        verify_claims(bearer, enrollment, &cache.jwks)
     }
 
     async fn central_jwt(&self, bearer: &str) -> Result<CentralIdentity> {
@@ -298,7 +362,7 @@ impl Authenticator {
                 && header.x5c.is_none(),
             "invalid token header"
         );
-        let kid = header.kid.context("missing key id")?;
+        let kid = header.kid.context("missing token key id")?;
         let mut cache = self.cache.lock().await;
         let known = cache.jwks["keys"]
             .as_array()

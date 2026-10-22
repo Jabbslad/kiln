@@ -198,6 +198,7 @@ async fn dashboard(
             wait: false,
             wait_seconds: kiln_api::DEFAULT_OPERATION_WAIT_SECONDS,
         },
+        None,
     )
     .await
     {
@@ -266,6 +267,7 @@ async fn read_proxy(
             wait: false,
             wait_seconds: kiln_api::DEFAULT_OPERATION_WAIT_SECONDS,
         },
+        None,
     )
     .await
 }
@@ -275,6 +277,12 @@ async fn operate_proxy(
     request: Request,
 ) -> Result<Response, Failure> {
     let query = validate_uri_query(request.method(), request.uri())?;
+    let token = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .unwrap_or("");
     authenticate(
         &state,
         request.headers(),
@@ -283,13 +291,15 @@ async fn operate_proxy(
         Scope::Operate,
     )
     .await?;
-    proxy(state, request, query).await
+    let actor = state.auth.central_subject(token).await;
+    proxy(state, request, query, actor).await
 }
 
 async fn proxy(
     state: Arc<Gateway>,
     request: Request,
     query: OperationSubmitQuery,
+    actor: Option<String>,
 ) -> Result<Response, Failure> {
     let _permit = state.capacity.try_acquire().map_err(|_| {
         Failure::new(
@@ -327,6 +337,9 @@ async fn proxy(
     let mut upstream = state.client.request(method, uri).body(bytes);
     if let Some(content_type) = content_type {
         upstream = upstream.header(header::CONTENT_TYPE, content_type);
+    }
+    if let Some(actor) = actor {
+        upstream = upstream.header(kiln_api::OPERATION_ACTOR_HEADER, actor);
     }
     if query.wait {
         upstream = upstream.timeout(Duration::from_secs(query.wait_seconds.saturating_add(5)));

@@ -105,6 +105,14 @@ fn ensure_v2_columns(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn ensure_v4_columns(connection: &Connection) -> Result<()> {
+    if !table_has_column(connection, "actor")? {
+        // Nullable: legacy rows and pre-gateway accepts have no actor.
+        connection.execute("ALTER TABLE operations ADD COLUMN actor TEXT", [])?;
+    }
+    Ok(())
+}
+
 impl Journal {
     // The host holds a process-lifetime exclusive lock before opening this DB.
     pub fn open(path: &Path) -> Result<Self> {
@@ -121,7 +129,7 @@ impl Journal {
             id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
             is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
             created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-            finished_at INTEGER, action TEXT NOT NULL DEFAULT 'unknown');
+            finished_at INTEGER, action TEXT NOT NULL DEFAULT 'unknown', actor TEXT);
             CREATE INDEX IF NOT EXISTS operation_boxes ON operations(box_id, is_create);",
         )?;
         if version < 2 {
@@ -133,6 +141,9 @@ impl Journal {
         }
         if version < 3 {
             migrate_seconds_timestamps_to_ms(&tx)?;
+        }
+        if version < 4 {
+            ensure_v4_columns(&tx)?;
         }
         if version < SCHEMA_VERSION {
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -241,7 +252,12 @@ impl Journal {
         Ok(())
     }
 
-    pub fn accept(&mut self, request: &Submit, live_box_ids: &[&str]) -> Result<Operation> {
+    pub fn accept(
+        &mut self,
+        request: &Submit,
+        live_box_ids: &[&str],
+        actor: Option<&str>,
+    ) -> Result<Operation> {
         let now = unix_now_ms();
         self.make_room(now, live_box_ids)?;
         let op = Operation {
@@ -256,8 +272,8 @@ impl Journal {
             error: None,
         };
         self.0.execute(
-            "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,action,created_at)
-             VALUES (?1,?2,?3,?4,1,?5,?6,?7)",
+            "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,action,created_at,actor)
+             VALUES (?1,?2,?3,?4,1,?5,?6,?7,?8)",
             params![
                 op.id,
                 Self::fingerprint(request)?,
@@ -266,6 +282,7 @@ impl Journal {
                 serde_json::to_string(&op)?,
                 launch_action(&request.action),
                 now,
+                actor,
             ],
         )?;
         Ok(op)
@@ -474,7 +491,7 @@ mod tests {
             },
         };
         let mut db = Journal::open(&path).unwrap();
-        let op = db.accept(&request, &[]).unwrap();
+        let op = db.accept(&request, &[], None).unwrap();
         assert_eq!(op.state, OperationState::Running);
         assert!(db.owns(&op.box_id).unwrap());
         assert!(!db.owns(&new_id()).unwrap());
@@ -512,7 +529,7 @@ mod tests {
                 },
             },
         };
-        let mut op = db.accept(&request, &[]).unwrap();
+        let mut op = db.accept(&request, &[], None).unwrap();
         op.state = OperationState::Succeeded;
         op.result = Some(Outcome::Exec(kiln_api::ExecResult {
             stdout: vec![0, 255, 17],
@@ -622,7 +639,7 @@ mod tests {
                 name: "after-prune".into(),
             },
         };
-        db.accept(&request, &[]).unwrap();
+        db.accept(&request, &[], None).unwrap();
         assert!(db.count().unwrap() < HIGH_WATER_MARK);
         assert!(db.existing(&request).unwrap().is_some());
     }
@@ -676,6 +693,7 @@ mod tests {
         assert_eq!(version, SCHEMA_VERSION);
         assert!(table_has_column(&Connection::open(&path).unwrap(), "finished_at").unwrap());
         assert!(table_has_column(&Connection::open(&path).unwrap(), "action").unwrap());
+        assert!(table_has_column(&Connection::open(&path).unwrap(), "actor").unwrap());
         drop(Journal::open(&path).unwrap());
         let version: u32 = Connection::open(&path)
             .unwrap()
@@ -804,7 +822,7 @@ mod tests {
                 name: "box".into(),
             },
         };
-        let mut op = db.accept(&request, &[]).unwrap();
+        let mut op = db.accept(&request, &[], None).unwrap();
         op.state = OperationState::Succeeded;
         std::thread::sleep(std::time::Duration::from_secs(1));
         db.finish(&op).unwrap();
@@ -942,6 +960,58 @@ mod tests {
                 name: "blocked".into(),
             },
         };
-        assert!(db.accept(&request, &[]).is_err());
+        assert!(db.accept(&request, &[], None).is_err());
+    }
+
+    #[test]
+    fn v3_upgrade_adds_actor_column_with_null_on_legacy_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("ops.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "PRAGMA user_version=3;
+             CREATE TABLE operations (
+               id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
+               is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
+               created_at INTEGER NOT NULL, finished_at INTEGER,
+               action TEXT NOT NULL DEFAULT 'unknown');",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,created_at,action)
+             VALUES ('op1', x'00', 'box1', 1, 0, '{\"state\":\"succeeded\"}', 1700000000000, 'create')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let mut db = Journal::open(&path).unwrap();
+        assert_eq!(
+            db.0.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        let actor: Option<String> =
+            db.0.query_row("SELECT actor FROM operations WHERE id='op1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(actor.is_none());
+        let request = Submit {
+            id: new_id(),
+            action: Action::Create {
+                template: "ubuntu".into(),
+                name: "owned".into(),
+            },
+        };
+        let owner = "0123456789abcdef0123456789abcdef";
+        let op = db.accept(&request, &[], Some(owner)).unwrap();
+        let actor: String =
+            db.0.query_row(
+                "SELECT actor FROM operations WHERE id=?1",
+                [&op.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(actor, owner);
     }
 }
