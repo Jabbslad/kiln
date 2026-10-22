@@ -1,5 +1,5 @@
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{Role, Scope, ServerClaims};
+use kiln_api::auth::{MemberRole, Scope, ServerClaims};
 use kiln_server::auth::{Enrollment, verify};
 
 fn fixture() -> (EncodingKey, serde_json::Value) {
@@ -18,78 +18,40 @@ fn fixture() -> (EncodingKey, serde_json::Value) {
     )
 }
 
-fn claims(enrollment: &Enrollment, sub: &str, role: Role, scope: Scope, now: u64) -> ServerClaims {
-    ServerClaims {
+#[test]
+fn issuer_owner_audience_time_and_scope_are_enforced() {
+    let (key, jwks) = fixture();
+    let enrollment = Enrollment {
+        version: 1,
+        issuer: "https://identity.example.test".into(),
+        owner_id: "owner-a".into(),
+        server_id: "server-b".into(),
+    };
+    let now = jsonwebtoken::get_current_timestamp();
+    let claims = ServerClaims {
         iss: enrollment.issuer.clone(),
-        sub: sub.into(),
-        aud: format!("kiln:server:{}", enrollment.server_id),
-        tenant_id: Some(enrollment.tenant_id().into()),
+        sub: enrollment.owner_id.clone(),
+        aud: "kiln:server:server-b".into(),
+        tenant_id: Some("ten_test".into()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-c".into(),
-        scope,
-        role: Some(role),
-    }
-}
-
-#[test]
-fn legacy_token_without_tenant_id_claim_uses_sub_as_tenant() {
-    let (key, jwks) = fixture();
-    let enrollment = Enrollment {
-        version: 1,
-        issuer: "https://identity.example.test".into(),
-        owner_id: "owner-a".into(),
-        server_id: "server-b".into(),
-        tenant_id: None,
+        scope: Scope::Read,
+        role: Some(MemberRole::Owner),
     };
-    let now = jsonwebtoken::get_current_timestamp();
-    let mut claims = claims(&enrollment, "owner-a", Role::Owner, Scope::Read, now);
-    claims.tenant_id = None;
-    claims.role = None;
-    let mut header = Header::new(Algorithm::ES256);
-    header.kid = Some("first".into());
-    let token = jsonwebtoken::encode(&header, &claims, &key).unwrap();
-    let grant = verify(&token, &enrollment, &jwks).unwrap();
-    assert_eq!(grant.caller.tenant_id, "owner-a");
-    assert_eq!(grant.caller.role, Role::Owner);
-}
-
-#[test]
-fn legacy_enrollment_without_tenant_id_uses_owner_as_tenant() {
-    let json = r#"{"version":1,"issuer":"https://identity.example.test","owner_id":"owner-a","server_id":"server-b"}"#;
-    let enrollment: Enrollment = serde_json::from_str(json).unwrap();
-    enrollment.validate().unwrap();
-    assert_eq!(enrollment.tenant_id(), "owner-a");
-}
-
-#[test]
-fn issuer_tenant_audience_time_and_scope_are_enforced() {
-    let (key, jwks) = fixture();
-    let enrollment = Enrollment {
-        version: 1,
-        issuer: "https://identity.example.test".into(),
-        owner_id: "owner-a".into(),
-        server_id: "server-b".into(),
-        tenant_id: Some("tenant-t".into()),
-    };
-    let now = jsonwebtoken::get_current_timestamp();
-    let token_claims = claims(&enrollment, "owner-a", Role::Owner, Scope::Read, now);
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
     let encode = |c: &ServerClaims| jsonwebtoken::encode(&header, c, &key).unwrap();
-    let grant = verify(&encode(&token_claims), &enrollment, &jwks).unwrap();
-    assert_eq!(grant.scope, Scope::Read);
-    assert_eq!(grant.caller.sub, "owner-a");
-    assert_eq!(grant.caller.tenant_id, "tenant-t");
-    assert_eq!(grant.caller.role, Role::Owner);
-    for field in [
-        "issuer", "tenant", "server", "expired", "future", "lifetime",
-    ] {
-        let mut bad = token_claims.clone();
+    assert_eq!(
+        verify(&encode(&claims), &enrollment, &jwks).unwrap(),
+        Scope::Read
+    );
+    for field in ["issuer", "owner", "server", "expired", "future", "lifetime"] {
+        let mut bad = claims.clone();
         match field {
             "issuer" => bad.iss.push_str("/other"),
-            "tenant" => bad.tenant_id = Some("tenant-other".into()),
+            "owner" => bad.sub = "owner-d".into(),
             "server" => bad.aud = "kiln:server:server-e".into(),
             "expired" => {
                 bad.iat = now - 400;
@@ -112,73 +74,12 @@ fn issuer_tenant_audience_time_and_scope_are_enforced() {
     header.jku = Some("https://attacker.example.test/keys".into());
     assert!(
         verify(
-            &jsonwebtoken::encode(&header, &token_claims, &key).unwrap(),
+            &jsonwebtoken::encode(&header, &claims, &key).unwrap(),
             &enrollment,
             &jwks
         )
         .is_err()
     );
-}
-
-#[test]
-fn tenant_member_is_accepted_when_tenant_id_matches() {
-    let (key, jwks) = fixture();
-    let enrollment = Enrollment {
-        version: 1,
-        issuer: "https://identity.example.test".into(),
-        owner_id: "owner-a".into(),
-        server_id: "server-b".into(),
-        tenant_id: Some("tenant-t".into()),
-    };
-    let now = jsonwebtoken::get_current_timestamp();
-    let token_claims = claims(&enrollment, "member-z", Role::Member, Scope::Read, now);
-    let mut header = Header::new(Algorithm::ES256);
-    header.kid = Some("first".into());
-    let token = jsonwebtoken::encode(&header, &token_claims, &key).unwrap();
-    let grant = verify(&token, &enrollment, &jwks).unwrap();
-    assert_eq!(grant.caller.sub, "member-z");
-    assert_eq!(grant.caller.role, Role::Member);
-    assert_eq!(grant.caller.tenant_id, "tenant-t");
-    let mut other_tenant = token_claims.clone();
-    other_tenant.tenant_id = Some("tenant-other".into());
-    assert!(
-        verify(
-            &jsonwebtoken::encode(&header, &other_tenant, &key).unwrap(),
-            &enrollment,
-            &jwks
-        )
-        .is_err()
-    );
-}
-
-#[tokio::test]
-async fn central_caller_returns_the_authenticated_sub() {
-    let (key, jwks) = fixture();
-    let root = tempfile::tempdir().unwrap();
-    let cache = root.path().join("keys.json");
-    let enrollment = Enrollment {
-        version: 1,
-        issuer: "https://identity.example.test".into(),
-        owner_id: "owner-a".into(),
-        server_id: "server-b".into(),
-        tenant_id: Some("tenant-t".into()),
-    };
-    std::fs::write(
-        &cache,
-        serde_json::to_vec(&serde_json::json!({"issuer":enrollment.issuer,"jwks":jwks})).unwrap(),
-    )
-    .unwrap();
-    let auth = kiln_server::auth::Authenticator::central_only(enrollment.clone(), cache).unwrap();
-    let now = jsonwebtoken::get_current_timestamp();
-    let mut header = Header::new(Algorithm::ES256);
-    header.kid = Some("first".into());
-    let token = jsonwebtoken::encode(
-        &header,
-        &claims(&enrollment, "member-z", Role::Member, Scope::Read, now),
-        &key,
-    )
-    .unwrap();
-    assert_eq!(auth.central_caller(&token).await, "member-z");
 }
 
 #[tokio::test]
@@ -196,7 +97,6 @@ async fn read_scope_cannot_reach_operations_or_ssh() {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: None,
     };
     std::fs::write(
         &cache,
@@ -209,14 +109,21 @@ async fn read_scope_cannot_reach_operations_or_ssh() {
     let router =
         kiln_server::gateway::router_with_auth(&root.path().join("missing.sock"), auth).unwrap();
     let now = jsonwebtoken::get_current_timestamp();
+    let c = ServerClaims {
+        iss: enrollment.issuer,
+        sub: enrollment.owner_id,
+        aud: "kiln:server:server-b".into(),
+        tenant_id: Some("ten_test".into()),
+        iat: now,
+        nbf: now,
+        exp: now + 300,
+        credential_id: "device-c".into(),
+        scope: Scope::Read,
+        role: Some(MemberRole::Owner),
+    };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
-    let token = jsonwebtoken::encode(
-        &header,
-        &claims(&enrollment, "owner-a", Role::Owner, Scope::Read, now),
-        &key,
-    )
-    .unwrap();
+    let token = jsonwebtoken::encode(&header, &c, &key).unwrap();
     for (method, path, status) in [
         ("GET", "/v1/templates", StatusCode::BAD_GATEWAY),
         ("GET", "/v1/boxes", StatusCode::BAD_GATEWAY),
@@ -250,33 +157,34 @@ fn refused_request_records_the_failed_check_without_the_token_or_url() {
         issuer: "https://audit-fixture.example".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: Some("tenant-t".into()),
     };
     let now = jsonwebtoken::get_current_timestamp();
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
-    let encode = |claims: &ServerClaims| jsonwebtoken::encode(&header, claims, &key).unwrap();
-    let mut expired = claims(&enrollment, "owner-a", Role::Owner, Scope::Read, now);
-    expired.iat = now.saturating_sub(400);
-    expired.nbf = expired.iat;
-    expired.exp = now.saturating_sub(100);
-    let expired_token = encode(&expired);
-    let mut other_tenant = claims(&enrollment, "owner-a", Role::Owner, Scope::Operate, now);
-    other_tenant.tenant_id = Some("tenant-other".into());
-    let mismatched = encode(&other_tenant);
+    let expired = ServerClaims {
+        iss: enrollment.issuer.clone(),
+        sub: enrollment.owner_id.clone(),
+        aud: "kiln:server:server-b".into(),
+        tenant_id: Some("ten_test".into()),
+        iat: now.saturating_sub(400),
+        nbf: now.saturating_sub(400),
+        exp: now.saturating_sub(100),
+        credential_id: "device-c".into(),
+        scope: Scope::Read,
+        role: Some(MemberRole::Owner),
+    };
+    let expired_token = jsonwebtoken::encode(&header, &expired, &key).unwrap();
     let before = kiln_server::auth::denial_records().len();
     assert!(verify(&expired_token, &enrollment, &jwks).is_err());
-    assert!(verify(&mismatched, &enrollment, &jwks).is_err());
     let lines: Vec<String> = kiln_server::auth::denial_records()[before..]
         .iter()
         .map(|reason| format!("auth deny reason={reason}"))
         .collect();
     let text = lines.join("\n");
     assert!(text.contains("auth deny reason=expired_token"), "{text}");
-    assert!(text.contains("auth deny reason=tenant_mismatch"), "{text}");
+    assert!(!text.contains("tenant_mismatch"), "{text}");
     for secret in [
         expired_token.as_str(),
-        mismatched.as_str(),
         "https://audit-fixture.example",
         "/.well-known/jwks.json",
         "code=known-oauth-code",
@@ -300,7 +208,6 @@ async fn refused_operate_request_records_insufficient_scope() {
         issuer: "https://audit-fixture.example".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: Some("tenant-t".into()),
     };
     std::fs::write(
         &cache,
@@ -315,7 +222,18 @@ async fn refused_operate_request_records_insufficient_scope() {
     header.kid = Some("first".into());
     let token = jsonwebtoken::encode(
         &header,
-        &claims(&enrollment, "owner-a", Role::Owner, Scope::Read, now),
+        &ServerClaims {
+            iss: enrollment.issuer.clone(),
+            sub: enrollment.owner_id.clone(),
+            aud: "kiln:server:server-b".into(),
+            tenant_id: Some("ten_test".into()),
+            iat: now,
+            nbf: now,
+            exp: now + 300,
+            credential_id: "device-c".into(),
+            scope: Scope::Read,
+            role: Some(MemberRole::Owner),
+        },
         &key,
     )
     .unwrap();

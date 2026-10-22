@@ -466,16 +466,16 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
     let box_id = ssh_box_id(request.uri().path()).unwrap_or("").to_owned();
     let bearer = ssh_bearer(&request);
     let addr = ssh_audit_addr(&request);
-    let grant = match door.auth.authenticate_central(bearer).await {
-        Ok(grant) => grant,
+    let scope = match door.auth.authenticate_central(bearer).await {
+        Ok(scope) => scope,
         Err(_) => {
             door.ssh_audit
                 .record("unauthorized", &box_id, "anonymous", addr);
             return unauthorized();
         }
     };
-    let caller = grant.caller.sub.clone();
-    if grant.scope != Scope::Operate {
+    let caller = door.auth.central_caller(bearer).await;
+    if scope != Scope::Operate {
         let _ = crate::auth::deny("insufficient_scope");
         door.ssh_audit
             .record("insufficient_scope", &box_id, &caller, addr);
@@ -891,7 +891,7 @@ async fn approve(door: &Door, dash: &Dash, tokens: DeviceTokens) -> Approve {
     };
     if !matches!(
         door.auth.authenticate_central(&grant.access_token).await,
-        Ok(grant) if grant.scope == Scope::Operate
+        Ok(Scope::Operate)
     ) {
         let _ = revoke_device(dash, &device_id, &central).await;
         return Approve::Denied;
@@ -1068,7 +1068,7 @@ async fn operate_jwt(door: &Door, dash: &Dash, slot: &SessionSlot) -> Jwt {
     };
     if !matches!(
         door.auth.authenticate_central(&grant.access_token).await,
-        Ok(central) if central.scope == Scope::Operate
+        Ok(Scope::Operate)
     ) || !(1..=300).contains(&grant.expires_in)
     {
         kill(dash, &mut session);

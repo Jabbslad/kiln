@@ -1,7 +1,7 @@
 //! Local enrollment remains the authority for issuer, owner and server audience.
 use anyhow::{Context, Result, ensure};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
-use kiln_api::auth::{AuthGrant, Caller, Role, Scope, ServerClaims};
+use kiln_api::auth::{Scope, ServerClaims};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -42,6 +42,30 @@ pub fn denial_records() -> Vec<&'static str> {
         .clone()
 }
 
+fn keys_reason(err: &anyhow::Error) -> &'static str {
+    if err.to_string() == "invalid verification key" {
+        "invalid_verification_key"
+    } else {
+        "invalid_jwks"
+    }
+}
+
+fn jwt_reason(err: &jsonwebtoken::errors::Error) -> &'static str {
+    use jsonwebtoken::errors::ErrorKind;
+    match err.kind() {
+        ErrorKind::ExpiredSignature => "expired_token",
+        ErrorKind::ImmatureSignature => "token_not_yet_valid",
+        ErrorKind::InvalidAudience => "audience_mismatch",
+        ErrorKind::InvalidIssuer => "issuer_mismatch",
+        ErrorKind::InvalidSubject => "invalid_subject",
+        ErrorKind::InvalidSignature => "invalid_signature",
+        ErrorKind::InvalidAlgorithm
+        | ErrorKind::MissingAlgorithm
+        | ErrorKind::InvalidAlgorithmName => "invalid_token_header",
+        _ => "invalid_token",
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Enrollment {
@@ -49,8 +73,6 @@ pub struct Enrollment {
     pub issuer: String,
     pub owner_id: String,
     pub server_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tenant_id: Option<String>,
 }
 
 impl Enrollment {
@@ -74,22 +96,7 @@ impl Enrollment {
                 && self.server_id.len() <= 128,
             "invalid enrollment identity"
         );
-        if let Some(tenant_id) = &self.tenant_id {
-            ensure!(
-                !tenant_id.is_empty() && tenant_id.len() <= 128,
-                "invalid enrollment tenant"
-            );
-        }
         Ok(())
-    }
-
-    /// Effective tenant for this server. Legacy enrollments without `tenant_id`
-    /// treat the enrolled owner as the sole tenant owner.
-    pub fn tenant_id(&self) -> &str {
-        self.tenant_id
-            .as_deref()
-            .filter(|id| !id.is_empty())
-            .unwrap_or(&self.owner_id)
     }
 
     pub fn load(path: &Path) -> Result<Option<Self>> {
@@ -140,106 +147,81 @@ fn keys(value: &Value) -> Result<JwkSet> {
 }
 
 pub fn verify_claims(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<ServerClaims> {
-    verify_claims_inner(token, enrollment, jwks).map_err(deny)
-}
-
-fn verify_claims_inner(
-    token: &str,
-    enrollment: &Enrollment,
-    jwks: &Value,
-) -> Result<ServerClaims, &'static str> {
-    enrollment.validate().map_err(|_| "invalid_enrollment")?;
+    if let Err(err) = enrollment.validate() {
+        record_denial("invalid_enrollment");
+        return Err(err);
+    }
     if token.len() > 8192 {
-        return Err("invalid_token");
+        record_denial("invalid_token");
     }
-    let header = decode_header(token).map_err(|_| "invalid_token_header")?;
-    if header.alg != Algorithm::ES256
-        || header.jku.is_some()
-        || header.jwk.is_some()
-        || header.x5u.is_some()
-        || header.x5c.is_some()
-    {
-        return Err("invalid_token_header");
+    ensure!(token.len() <= 8192, "invalid token");
+    let header = match decode_header(token) {
+        Ok(header) => header,
+        Err(err) => {
+            record_denial("invalid_token_header");
+            return Err(err.into());
+        }
+    };
+    let header_ok = header.alg == Algorithm::ES256
+        && header.jku.is_none()
+        && header.jwk.is_none()
+        && header.x5u.is_none()
+        && header.x5c.is_none();
+    if !header_ok {
+        record_denial("invalid_token_header");
     }
-    let kid = header.kid.as_deref().ok_or("missing_key_id")?;
-    let set = keys(jwks).map_err(|_| "invalid_jwks")?;
-    let jwk = set.find(kid).ok_or("unknown_token_key")?;
-    let key = DecodingKey::from_jwk(jwk).map_err(|_| "invalid_verification_key")?;
+    ensure!(header_ok, "invalid token header");
+    if header.kid.is_none() {
+        record_denial("missing_key_id");
+    }
+    let kid = header.kid.context("missing token key id")?;
+    let set = match keys(jwks) {
+        Ok(set) => set,
+        Err(err) => {
+            record_denial(keys_reason(&err));
+            return Err(err);
+        }
+    };
+    if set.find(&kid).is_none() {
+        record_denial("unknown_token_key");
+    }
+    let key = match DecodingKey::from_jwk(set.find(&kid).context("unknown token key")?) {
+        Ok(key) => key,
+        Err(err) => {
+            record_denial("invalid_verification_key");
+            return Err(err.into());
+        }
+    };
     let mut validation = Validation::new(Algorithm::ES256);
     validation.set_required_spec_claims(&["exp", "nbf", "iss", "aud", "sub"]);
     validation.set_issuer(&[&enrollment.issuer]);
     validation.set_audience(&[format!("kiln:server:{}", enrollment.server_id)]);
     validation.validate_nbf = true;
     validation.leeway = 30;
-    let c = decode::<ServerClaims>(token, &key, &validation)
-        .map_err(jwt_reason)?
-        .claims;
-    let tenant_id = c
-        .tenant_id
-        .clone()
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| c.sub.clone());
-    if tenant_id != enrollment.tenant_id() {
-        return Err("tenant_mismatch");
+    let c = match decode::<ServerClaims>(token, &key, &validation) {
+        Ok(data) => data.claims,
+        Err(err) => {
+            record_denial(jwt_reason(&err));
+            return Err(err.into());
+        }
+    };
+    let authority_ok = c.sub == enrollment.owner_id
+        && !c.credential_id.is_empty()
+        && c.credential_id.len() <= 128
+        && c.exp > c.iat
+        && c.exp - c.iat <= 300
+        && c.nbf >= c.iat
+        && c.nbf < c.exp
+        && c.iat <= jsonwebtoken::get_current_timestamp().saturating_add(30);
+    if !authority_ok {
+        record_denial("invalid_token_authority");
     }
-    if c.credential_id.is_empty() || c.credential_id.len() > 128 {
-        return Err("invalid_credential");
-    }
-    if c.exp <= c.iat || c.exp - c.iat > 300 || c.nbf < c.iat || c.nbf >= c.exp {
-        return Err("invalid_lifetime");
-    }
-    if c.iat > jsonwebtoken::get_current_timestamp().saturating_add(30) {
-        return Err("token_not_yet_valid");
-    }
+    ensure!(authority_ok, "invalid token authority or lifetime");
     Ok(c)
 }
 
-fn jwt_reason(err: jsonwebtoken::errors::Error) -> &'static str {
-    use jsonwebtoken::errors::ErrorKind;
-    match err.kind() {
-        ErrorKind::ExpiredSignature => "expired_token",
-        ErrorKind::ImmatureSignature => "token_not_yet_valid",
-        ErrorKind::InvalidAudience => "audience_mismatch",
-        ErrorKind::InvalidIssuer => "issuer_mismatch",
-        ErrorKind::InvalidSubject => "invalid_subject",
-        ErrorKind::InvalidSignature => "invalid_signature",
-        ErrorKind::InvalidAlgorithm
-        | ErrorKind::MissingAlgorithm
-        | ErrorKind::InvalidAlgorithmName => "invalid_token_header",
-        ErrorKind::Json(_) => "invalid_scope",
-        _ => "invalid_token",
-    }
-}
-
-fn auth_grant_from_claims(c: &ServerClaims, enrollment: &Enrollment) -> AuthGrant {
-    let sub = c.sub.clone();
-    let tenant_id = c
-        .tenant_id
-        .clone()
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| sub.clone());
-    let role = c.role.unwrap_or_else(|| {
-        if sub == enrollment.owner_id {
-            Role::Owner
-        } else {
-            Role::Member
-        }
-    });
-    AuthGrant {
-        caller: Caller {
-            sub,
-            tenant_id,
-            role,
-        },
-        scope: c.scope,
-    }
-}
-
-pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<AuthGrant> {
-    Ok(auth_grant_from_claims(
-        &verify_claims(token, enrollment, jwks)?,
-        enrollment,
-    ))
+pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Scope> {
+    Ok(verify_claims(token, enrollment, jwks)?.scope)
 }
 
 struct Cache {
@@ -298,35 +280,25 @@ impl Authenticator {
         Ok(auth)
     }
 
-    pub async fn authenticate(&self, bearer: &str) -> Result<AuthGrant> {
+    pub async fn authenticate(&self, bearer: &str) -> Result<Scope> {
         if bearer.len() > 8192 {
-            return Err(deny("invalid_token"));
+            record_denial("invalid_token");
         }
+        ensure!(bearer.len() <= 8192, "invalid token");
         if let Some(admin_hash) = self.admin_hash {
             let supplied: [u8; 32] = Sha256::digest(bearer.as_bytes()).into();
             if bool::from(supplied.ct_eq(&admin_hash)) {
-                let tenant_id = self
-                    .central
-                    .as_ref()
-                    .map(|(enrollment, _)| enrollment.tenant_id().to_owned())
-                    .unwrap_or_default();
-                return Ok(AuthGrant {
-                    caller: Caller {
-                        sub: "administrator".into(),
-                        tenant_id,
-                        role: Role::Owner,
-                    },
-                    scope: Scope::Operate,
-                });
+                return Ok(Scope::Operate);
             }
         }
         self.central_jwt(bearer).await
     }
 
-    pub async fn authenticate_central(&self, bearer: &str) -> Result<AuthGrant> {
+    pub async fn authenticate_central(&self, bearer: &str) -> Result<Scope> {
         if bearer.len() > 8192 {
-            return Err(deny("invalid_token"));
+            record_denial("invalid_token");
         }
+        ensure!(bearer.len() <= 8192, "invalid token");
         self.central_jwt(bearer).await
     }
 
@@ -344,39 +316,48 @@ impl Authenticator {
         self.central_claims(bearer).await.ok().map(|c| c.sub)
     }
 
-    async fn central_jwt(&self, bearer: &str) -> Result<AuthGrant> {
-        let (enrollment, _) = self.central.as_ref().ok_or_else(|| deny("not_enrolled"))?;
-        Ok(auth_grant_from_claims(
-            &self.central_claims(bearer).await?,
-            enrollment,
-        ))
-    }
-
     async fn central_claims(&self, bearer: &str) -> Result<ServerClaims> {
-        let (enrollment, path) = self.central.as_ref().ok_or_else(|| deny("not_enrolled"))?;
-        let header = decode_header(bearer).map_err(|_| deny("invalid_token_header"))?;
-        if header.alg != Algorithm::ES256
-            || header.jku.is_some()
-            || header.jwk.is_some()
-            || header.x5u.is_some()
-            || header.x5c.is_some()
-        {
-            return Err(deny("invalid_token_header"));
+        let (enrollment, path) = match self.central.as_ref() {
+            Some(central) => central,
+            None => {
+                record_denial("not_enrolled");
+                anyhow::bail!("central authentication not enrolled");
+            }
+        };
+        let header = match decode_header(bearer) {
+            Ok(header) => header,
+            Err(err) => {
+                record_denial("invalid_token_header");
+                return Err(err.into());
+            }
+        };
+        let header_ok = header.alg == Algorithm::ES256
+            && header.jku.is_none()
+            && header.jwk.is_none()
+            && header.x5u.is_none()
+            && header.x5c.is_none();
+        if !header_ok {
+            record_denial("invalid_token_header");
         }
-        let kid = header.kid.ok_or_else(|| deny("missing_key_id"))?;
+        ensure!(header_ok, "invalid token header");
+        if header.kid.is_none() {
+            record_denial("missing_key_id");
+        }
+        let kid = header.kid.context("missing token key id")?;
         let mut cache = self.cache.lock().await;
         let known = cache.jwks["keys"]
             .as_array()
             .is_some_and(|k| k.iter().any(|k| k["kid"] == kid));
         if !known {
-            if cache
+            let key_fetch_allowed = cache
                 .last_fetch
-                .is_some_and(|t| t.elapsed() < Duration::from_secs(60))
-            {
-                return Err(deny("unknown_token_key"));
+                .is_none_or(|t| t.elapsed() >= Duration::from_secs(60));
+            if !key_fetch_allowed {
+                record_denial("unknown_token_key");
             }
+            ensure!(key_fetch_allowed, "unknown token key");
             cache.last_fetch = Some(Instant::now());
-            let mut response = self
+            let mut response = match self
                 .http
                 .get(format!(
                     "{}/.well-known/jwks.json",
@@ -384,33 +365,99 @@ impl Authenticator {
                 ))
                 .send()
                 .await
-                .map_err(|_| deny("identity_keys_unavailable"))?;
-            if !response.status().is_success() {
-                return Err(deny("identity_keys_unavailable"));
-            }
-            let mut bytes = Vec::new();
-            while let Some(chunk) = response
-                .chunk()
-                .await
-                .map_err(|_| deny("identity_keys_unavailable"))?
             {
-                if bytes.len() + chunk.len() > 65536 {
-                    return Err(deny("invalid_jwks"));
+                Ok(response) => response,
+                Err(err) => {
+                    record_denial("identity_keys_unavailable");
+                    return Err(err.into());
                 }
+            };
+            if !response.status().is_success() {
+                record_denial("identity_keys_unavailable");
+            }
+            ensure!(response.status().is_success(), "identity keys unavailable");
+            let mut bytes = Vec::new();
+            loop {
+                let chunk = match response.chunk().await {
+                    Ok(chunk) => chunk,
+                    Err(err) => {
+                        record_denial("identity_keys_unavailable");
+                        return Err(err.into());
+                    }
+                };
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                let fits = bytes.len() + chunk.len() <= 65536;
+                if !fits {
+                    record_denial("key_response_too_large");
+                }
+                ensure!(fits, "key response too large");
                 bytes.extend_from_slice(&chunk);
             }
-            let value: Value = serde_json::from_slice(&bytes).map_err(|_| deny("invalid_jwks"))?;
-            keys(&value).map_err(|_| deny("invalid_jwks"))?;
-            let parent = path.parent().context("key cache directory missing")?;
-            let mut file = tempfile::NamedTempFile::new_in(parent)?;
-            file.write_all(&serde_json::to_vec(
+            let value: Value = match serde_json::from_slice(&bytes) {
+                Ok(value) => value,
+                Err(err) => {
+                    record_denial("invalid_jwks");
+                    return Err(err.into());
+                }
+            };
+            if let Err(err) = keys(&value) {
+                record_denial(keys_reason(&err));
+                return Err(err);
+            }
+            let parent = match path.parent() {
+                Some(parent) => parent,
+                None => {
+                    record_denial("key_cache_directory_missing");
+                    anyhow::bail!("key cache directory missing");
+                }
+            };
+            let mut file = match tempfile::NamedTempFile::new_in(parent) {
+                Ok(file) => file,
+                Err(err) => {
+                    record_denial("key_cache_unavailable");
+                    return Err(err.into());
+                }
+            };
+            let body = match serde_json::to_vec(
                 &serde_json::json!({"issuer":enrollment.issuer,"jwks":value}),
-            )?)?;
-            file.as_file().sync_all()?;
-            file.persist(path)?;
-            fs::File::open(parent)?.sync_all()?;
+            ) {
+                Ok(body) => body,
+                Err(err) => {
+                    record_denial("key_cache_unavailable");
+                    return Err(err.into());
+                }
+            };
+            if let Err(err) = file.write_all(&body) {
+                record_denial("key_cache_unavailable");
+                return Err(err.into());
+            }
+            if let Err(err) = file.as_file().sync_all() {
+                record_denial("key_cache_unavailable");
+                return Err(err.into());
+            }
+            if let Err(err) = file.persist(path) {
+                record_denial("key_cache_unavailable");
+                return Err(err.into());
+            }
+            let mut dir = match fs::File::open(parent) {
+                Ok(dir) => dir,
+                Err(err) => {
+                    record_denial("key_cache_unavailable");
+                    return Err(err.into());
+                }
+            };
+            if let Err(err) = dir.sync_all() {
+                record_denial("key_cache_unavailable");
+                return Err(err.into());
+            }
             cache.jwks = value;
         }
         verify_claims(bearer, enrollment, &cache.jwks)
+    }
+
+    async fn central_jwt(&self, bearer: &str) -> Result<Scope> {
+        Ok(self.central_claims(bearer).await?.scope)
     }
 }

@@ -1,4 +1,4 @@
-use kiln_api::auth::{Role, Scope, ServerClaims};
+use kiln_api::auth::{Scope, ServerClaims};
 use serde_json::json;
 
 #[test]
@@ -20,15 +20,13 @@ fn scope_never_defaults_or_accepts_administrator() {
 fn server_claims_require_every_authority_and_time_field() {
     let value = json!({
         "iss": "https://identity.example.test", "sub": "owner-a",
-        "aud": "kiln:server:server-b", "tenant_id": "tenant-t",
+        "aud": "kiln:server:server-b", "tenant_id": "ten-a",
         "iat": 1900000000_u64, "nbf": 1900000000_u64, "exp": 1900000300_u64,
         "credential_id": "device-c", "scope": "read", "role": "owner"
     });
     let claims: ServerClaims = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(claims.aud, "kiln:server:server-b");
     assert_eq!(claims.scope, Scope::Read);
-    assert_eq!(claims.role, Some(Role::Owner));
-    assert_eq!(claims.tenant_id.as_deref(), Some("tenant-t"));
     for field in [
         "iss",
         "sub",

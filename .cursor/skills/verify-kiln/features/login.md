@@ -65,4 +65,4 @@ kiln-identity doctor --database /var/lib/kiln-identity/identity.db \
 
 `kiln-identity admin` takes the same flags and prints the same JSON array. `--account` is required. `--since` and `--until` are inclusive UTC timestamps with milliseconds. This does not change `kiln --help` or token lifetimes, cookies, redirects, or error bodies.
 
-When `kiln-server` refuses a bearer, it records the check that failed (`tenant_mismatch`, `expired_token`, `insufficient_scope`, and the other verifier checks) as `auth deny reason=<check>` on stderr. The line is the check name only: no token, code, or URL.
+When `kiln-server` refuses a bearer, it records the check that failed (`expired_token`, `invalid_token_authority`, `insufficient_scope`, and the other checks on that path) as `auth deny reason=<check>` on stderr. The line is the check name only: no token, code, or URL.
