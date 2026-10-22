@@ -1,8 +1,7 @@
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{Scope, ServerClaims, TokenRole};
+use kiln_api::auth::{MemberRole, Scope, ServerClaims};
 use kiln_api::{Caller, Role};
-use kiln_server::auth::verify_caller;
-use kiln_server::auth::{Enrollment, verify};
+use kiln_server::auth::{Enrollment, verify, verify_caller};
 
 fn fixture() -> (EncodingKey, serde_json::Value) {
     use base64::Engine;
@@ -35,13 +34,13 @@ fn issuer_owner_audience_time_and_scope_are_enforced() {
         iss: enrollment.issuer.clone(),
         sub: enrollment.owner_id.clone(),
         aud: "kiln:server:server-b".into(),
+        tenant_id: None,
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-c".into(),
         scope: Scope::Read,
-        tenant_id: None,
-        role: None,
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -106,7 +105,7 @@ fn tenant_member_token_is_accepted_when_tenant_matches() {
         credential_id: "device-m".into(),
         scope: Scope::Operate,
         tenant_id: Some("tenant-a".into()),
-        role: Some(TokenRole::Member),
+        role: Some(MemberRole::Member),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -155,13 +154,13 @@ async fn read_scope_cannot_reach_operations_or_ssh() {
         iss: enrollment.issuer,
         sub: enrollment.owner_id,
         aud: "kiln:server:server-b".into(),
+        tenant_id: None,
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-c".into(),
         scope: Scope::Read,
-        tenant_id: None,
-        role: None,
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

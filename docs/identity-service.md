@@ -112,15 +112,40 @@ Use `kiln auth status`, `kiln auth devices list`, and
 attempts remote revocation before removing local credentials and reports if remote
 revocation was not confirmed. It does not remove direct administrator profiles.
 
+## Tenants, members, and automation accounts
+
+Each enrolled owner receives a tenant. Servers enrolled under the same owner
+attach to that tenant. Tenant membership is tenant-wide: adding a member grants
+them every server in the tenant. Roles are `owner` (the enrolled owner) or
+`member` (additional accounts with their own boxes only on servers).
+
+Owners manage members with:
+
+```sh
+kiln tenant members add --name automation
+kiln tenant members list
+kiln tenant members remove --name automation
+kiln tenant servers list
+```
+
+Pass `--tenant TENANT_ID` when the signed-in account belongs to more than one
+tenant. Member names are unique per tenant, lowercase, and use letters, digits,
+and hyphens. Members may sign in with OAuth or use a local automation account
+with no provider identity. Only the tenant owner can add or remove members.
+
 Create a noninteractive credential with
 `kiln auth keys create --server SERVER_ID --scope read --output /PRIVATE/key`.
-Then configure a separate automation profile using
+For a member automation account, pass `--account NAME` matching the member name
+from `tenant members add`. Then configure a separate automation profile using
 `kiln --profile ci --issuer https://YOUR-IDENTITY-ORIGIN login --auth-token-file /PRIVATE/key`.
 The original key remains in its private file and is exchanged for short-lived
 server tokens. `read` permits inventory only, never SSH or stored operation/exec
 output. `operate` permits VM operations but cannot manage accounts or credentials.
 Keys are bound to one server, default to 90-day expiry, and can be revoked through
 `kiln auth keys revoke KEY_ID`.
+
+Enrolled servers can read the tenant member list with the directory credential
+for discovery sync during enrollment.
 
 ## Revocation, outages and key rotation
 
@@ -131,6 +156,8 @@ cross-process lock. A crash or ambiguous exchange invalidates the local session
 instead of replaying a potentially spent secret.
 
 Server ES256 tokens last five minutes with at most 30 seconds of clock skew.
+Each token carries the caller account id in `sub`, the tenant id in `tenant_id`,
+and a `role` claim (`owner` or `member`).
 Central revocation prevents new tokens immediately; already issued server tokens
 can remain usable for that bounded interval. Existing SSH streams and guests do
 not depend on continued identity-service availability. Cached server tokens work

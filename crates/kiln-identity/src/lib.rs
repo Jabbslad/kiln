@@ -14,7 +14,9 @@ pub use config::{
     Config, GITHUB_AUTHORIZE_URL, GITHUB_TOKEN_URL, GITHUB_USER_URL, PRODUCTION_IDENTITY_ORIGIN,
     unix_now,
 };
-use kiln_api::auth::{DeviceTokens, Registration, Scope, ServerClaims};
+use kiln_api::auth::{
+    DeviceTokens, MemberRole, Registration, Scope, ServerClaims, TenantMember, TenantSummary,
+};
 pub use providers::{Provider, ProviderIdentity};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -24,7 +26,7 @@ use std::{
     sync::Arc,
 };
 pub use store::Store;
-use store::{hash, secret};
+use store::{ensure_owner_tenant, hash, secret, set_default_server};
 use subtle::ConstantTimeEq;
 
 #[derive(Clone)]
@@ -146,6 +148,16 @@ pub fn router(mut cfg: Config, store: Store) -> anyhow::Result<Router> {
         .route("/v1/keys", get(keys).post(create_key))
         .route("/v1/keys/{id}", delete(revoke_key))
         .route("/v1/key-token", post(key_token))
+        .route("/v1/tenants", get(tenant_list))
+        .route(
+            "/v1/tenants/{id}/members",
+            get(list_tenant_members).post(add_tenant_member),
+        )
+        .route(
+            "/v1/tenants/{id}/members/{name}",
+            delete(remove_tenant_member),
+        )
+        .route("/v1/tenants/{id}/servers", get(tenant_servers))
         .with_state(app)
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))
         .layer(axum::middleware::from_fn(
@@ -453,12 +465,14 @@ async fn me(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
     })
 }
 async fn servers(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
-    authorized(&a, &h, |tx, owner, _| {
+    authorized(&a, &h, |tx, account, _| {
         let mut q = tx.prepare(
-            "SELECT id,name,origin,ca_pem,revision FROM servers WHERE owner_id=?1 AND active=1",
+            "SELECT s.id,s.name,s.origin,s.ca_pem,s.revision FROM servers s
+             JOIN tenant_members m ON m.tenant_id=s.tenant_id
+             WHERE m.account_id=?1 AND s.active=1 ORDER BY s.created_at",
         )?;
         let values = q
-            .query_map([owner], |r| {
+            .query_map([account], |r| {
                 Ok(kiln_api::auth::ServerDescriptor {
                     id: r.get(0)?,
                     name: r.get(1)?,
@@ -471,33 +485,113 @@ async fn servers(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
         Ok(Json(values).into_response())
     })
 }
+fn member_role(raw: &str) -> Option<MemberRole> {
+    match raw {
+        "owner" => Some(MemberRole::Owner),
+        "member" => Some(MemberRole::Member),
+        _ => None,
+    }
+}
+fn local_member_name(name: &str) -> bool {
+    (1..=32).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && name
+            .as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_lowercase())
+}
+fn tenant_owner(
+    tx: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+    account: &str,
+) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tenant_members WHERE tenant_id=?1 AND account_id=?2 AND role='owner')",
+        params![tenant_id, account],
+        |r| r.get(0),
+    )
+}
+fn tenant_member_rows(
+    tx: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+) -> rusqlite::Result<Vec<TenantMember>> {
+    let mut q = tx.prepare(
+        "SELECT account_id,role,local_name FROM tenant_members WHERE tenant_id=?1 ORDER BY role,local_name,account_id",
+    )?;
+    q.query_map([tenant_id], |r| {
+        let role: String = r.get(1)?;
+        Ok(TenantMember {
+            account_id: r.get(0)?,
+            role: member_role(&role).unwrap_or(MemberRole::Member),
+            name: r.get(2)?,
+        })
+    })?
+    .collect()
+}
+fn tenant_servers_rows(
+    tx: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+) -> rusqlite::Result<Vec<kiln_api::auth::ServerDescriptor>> {
+    let mut q = tx.prepare(
+        "SELECT id,name,origin,ca_pem,revision FROM servers WHERE tenant_id=?1 AND active=1 ORDER BY created_at",
+    )?;
+    q.query_map([tenant_id], |r| {
+        Ok(kiln_api::auth::ServerDescriptor {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            origin: r.get(2)?,
+            ca_pem: r.get(3)?,
+            revision: r.get::<_, i64>(4)? as u64,
+        })
+    })?
+    .collect()
+}
+fn directory_in_tenant(
+    tx: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+    raw: &str,
+) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM servers WHERE tenant_id=?1 AND directory_hash=?2 AND active=1)",
+        params![tenant_id, hash(raw)],
+        |r| r.get(0),
+    )
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AccessReq {
     server_id: String,
 }
 async fn access(State(a): State<Arc<App>>, h: HeaderMap, Json(f): Json<AccessReq>) -> Response {
-    authorized(&a, &h, |tx, owner, did| {
-        let owns: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM servers WHERE id=?1 AND owner_id=?2 AND active=1)",
-            params![f.server_id, owner],
-            |r| r.get(0),
-        )?;
-        if !owns {
+    authorized(&a, &h, |tx, account, did| {
+        let row: Option<(String, String)> = tx
+            .query_row(
+                "SELECT s.tenant_id,m.role FROM servers s JOIN tenant_members m ON m.tenant_id=s.tenant_id AND m.account_id=?2 WHERE s.id=?1 AND s.active=1",
+                params![f.server_id, account],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((tenant_id, role_raw)) = row else {
             return Ok(err(StatusCode::NOT_FOUND, "not_found"));
-        }
+        };
+        let Some(role) = member_role(&role_raw) else {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        };
         let now = (a.cfg.now)() as u64;
         let claims = ServerClaims {
             iss: a.cfg.public_origin.clone(),
-            sub: owner,
+            sub: account,
             aud: format!("kiln:server:{}", f.server_id),
+            tenant_id: Some(tenant_id),
             iat: now,
             nbf: now,
             exp: now + 300,
             credential_id: did,
             scope: Scope::Operate,
-            tenant_id: None,
-            role: None,
+            role: Some(role),
         };
         let token = a.signer.issue(&claims)?;
         Ok(Json(tokens::Grant {
@@ -1087,7 +1181,22 @@ async fn registration_poll(State(a): State<Arc<App>>, Json(f): Json<SecretReq>) 
     }
     let sid = format!("srv_{}", uuid::Uuid::new_v4().simple());
     let dir = secret();
-    let ok=tx.execute("INSERT INTO servers(id,owner_id,name,origin,ca_pem,revision,active,directory_hash,created_at)VALUES(?1,?2,?3,?4,?5,1,0,?6,?7)",params![sid,owner,name,origin,ca,hash(&dir),now]).and_then(|_|tx.execute("UPDATE pending_registrations SET poll_consumed=1 WHERE secret_hash=?1 AND poll_consumed=0",[hash(&f.registration_code)]));
+    let tenant = match ensure_owner_tenant(&tx, &owner, now) {
+        Ok(tenant) => tenant,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let ok = tx
+        .execute(
+            "INSERT INTO servers(id,owner_id,tenant_id,name,origin,ca_pem,revision,active,directory_hash,created_at)VALUES(?1,?2,?3,?4,?5,?6,1,0,?7,?8)",
+            params![sid, owner, tenant, name, origin, ca, hash(&dir), now],
+        )
+        .and_then(|_| set_default_server(&tx, &tenant, &sid))
+        .and_then(|_| {
+            tx.execute(
+                "UPDATE pending_registrations SET poll_consumed=1 WHERE secret_hash=?1 AND poll_consumed=0",
+                [hash(&f.registration_code)],
+            )
+        });
     if ok.is_err() || tx.commit().is_err() {
         return err(StatusCode::BAD_REQUEST, "invalid_grant");
     }
@@ -1164,12 +1273,216 @@ async fn delete_server(
     }
 }
 
+async fn tenant_list(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
+    authorized(&a, &h, |tx, account, _| {
+        let mut q = tx.prepare(
+            "SELECT t.id,m.role,t.default_server_id FROM tenants t
+             JOIN tenant_members m ON m.tenant_id=t.id
+             WHERE m.account_id=?1 ORDER BY t.created_at",
+        )?;
+        let tenants = q
+            .query_map([account], |r| {
+                Ok(TenantSummary {
+                    id: r.get(0)?,
+                    role: member_role(&r.get::<_, String>(1)?).unwrap_or(MemberRole::Member),
+                    default_server_id: r.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Json(tenants).into_response())
+    })
+}
+
+#[derive(Serialize)]
+struct TenantMembersResponse {
+    tenant_id: String,
+    members: Vec<TenantMember>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddTenantMemberReq {
+    name: String,
+}
+
+async fn list_tenant_members(
+    State(a): State<Arc<App>>,
+    h: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if id.is_empty() || id.len() > 128 {
+        return err(StatusCode::NOT_FOUND, "not_found");
+    }
+    let Some(raw) = bearer(&h) else {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
+    let mut c = match a.store.db.lock() {
+        Ok(c) => c,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let tx = match c.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred) {
+        Ok(tx) => tx,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let directory = match directory_in_tenant(&tx, &id, raw) {
+        Ok(v) => v,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    if directory {
+        let members = match tenant_member_rows(&tx, &id) {
+            Ok(v) => v,
+            Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        };
+        if tx.commit().is_err() {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+        }
+        return nostore(
+            Json(TenantMembersResponse {
+                tenant_id: id,
+                members,
+            })
+            .into_response(),
+        );
+    }
+    drop(tx);
+    drop(c);
+    authorized(&a, &h, |tx, caller, _| {
+        if !tenant_owner(tx, &id, &caller)? {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        }
+        Ok(nostore(
+            Json(TenantMembersResponse {
+                tenant_id: id.clone(),
+                members: tenant_member_rows(tx, &id)?,
+            })
+            .into_response(),
+        ))
+    })
+}
+
+async fn add_tenant_member(
+    State(a): State<Arc<App>>,
+    h: HeaderMap,
+    Path(id): Path<String>,
+    Json(f): Json<AddTenantMemberReq>,
+) -> Response {
+    if id.is_empty() || id.len() > 128 {
+        return err(StatusCode::NOT_FOUND, "not_found");
+    }
+    if !local_member_name(&f.name) {
+        return err(StatusCode::BAD_REQUEST, "invalid_name");
+    }
+    authorized(&a, &h, |tx, caller, _| {
+        if !tenant_owner(tx, &id, &caller)? {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        }
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tenant_members WHERE tenant_id=?1 AND local_name=?2)",
+            params![id, f.name],
+            |r| r.get(0),
+        )?;
+        if exists {
+            return Ok(err(StatusCode::CONFLICT, "name_in_use"));
+        }
+        let account = format!("acct_{}", uuid::Uuid::new_v4().simple());
+        let now = (a.cfg.now)();
+        tx.execute(
+            "INSERT INTO accounts(id,created_at)VALUES(?1,?2)",
+            params![account, now],
+        )?;
+        tx.execute(
+            "INSERT INTO tenant_members(tenant_id,account_id,role,local_name)VALUES(?1,?2,'member',?3)",
+            params![id, account, f.name],
+        )?;
+        tx.execute(
+            "INSERT INTO audit_events(event,actor_id,resource_id,outcome,created_at) VALUES('tenant_member_added',?1,?2,'success',?3)",
+            params![caller, account, now],
+        )?;
+        Ok(Json(serde_json::json!({
+            "tenant_id": id,
+            "account_id": account,
+            "name": f.name,
+            "role": "member",
+        }))
+        .into_response())
+    })
+}
+
+async fn remove_tenant_member(
+    State(a): State<Arc<App>>,
+    h: HeaderMap,
+    Path((id, name)): Path<(String, String)>,
+) -> Response {
+    if id.is_empty() || id.len() > 128 || !local_member_name(&name) {
+        return err(StatusCode::NOT_FOUND, "not_found");
+    }
+    authorized(&a, &h, |tx, caller, _| {
+        if !tenant_owner(tx, &id, &caller)? {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        }
+        let account: Option<String> = tx
+            .query_row(
+                "SELECT account_id FROM tenant_members WHERE tenant_id=?1 AND local_name=?2 AND role='member'",
+                params![id, name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(account) = account else {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        };
+        let now = (a.cfg.now)();
+        tx.execute(
+            "UPDATE automation_keys SET revoked_at=?1 WHERE owner_id=?2 AND server_id IN (SELECT id FROM servers WHERE tenant_id=?3) AND revoked_at IS NULL",
+            params![now, account, id],
+        )?;
+        tx.execute(
+            "DELETE FROM automation_keys WHERE owner_id=?1 AND server_id IN (SELECT id FROM servers WHERE tenant_id=?2)",
+            params![account, id],
+        )?;
+        tx.execute(
+            "DELETE FROM tenant_members WHERE tenant_id=?1 AND account_id=?2",
+            params![id, account],
+        )?;
+        tx.execute(
+            "DELETE FROM accounts WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM provider_identities WHERE account_id=?1) AND NOT EXISTS(SELECT 1 FROM devices WHERE account_id=?1)",
+            [&account],
+        )?;
+        tx.execute(
+            "INSERT INTO audit_events(event,actor_id,resource_id,outcome,created_at) VALUES('tenant_member_removed',?1,?2,'success',?3)",
+            params![caller, account, now],
+        )?;
+        Ok(StatusCode::NO_CONTENT.into_response())
+    })
+}
+
+async fn tenant_servers(
+    State(a): State<Arc<App>>,
+    h: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if id.is_empty() || id.len() > 128 {
+        return err(StatusCode::NOT_FOUND, "not_found");
+    }
+    authorized(&a, &h, |tx, account, _| {
+        let member: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tenant_members WHERE tenant_id=?1 AND account_id=?2)",
+            params![id, account],
+            |r| r.get(0),
+        )?;
+        if !member {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        }
+        Ok(Json(tenant_servers_rows(tx, &id)?).into_response())
+    })
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NewKey {
     server_id: String,
     scope: Scope,
     expires_in: Option<u64>,
+    account: Option<String>,
 }
 async fn keys(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
     authorized(&a, &h, |tx, owner, _| {
@@ -1180,6 +1493,37 @@ async fn keys(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
 }
 async fn create_key(State(a): State<Arc<App>>, h: HeaderMap, Json(f): Json<NewKey>) -> Response {
     authorized(&a, &h, |tx, owner, _| {
+        let tenant_id: Option<String> = tx
+            .query_row(
+                "SELECT tenant_id FROM servers WHERE id=?1 AND active=1",
+                [&f.server_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(tenant_id) = tenant_id else {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        };
+        if !tenant_owner(tx, &tenant_id, &owner)? {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        }
+        let key_account = if let Some(name) = f.account.as_deref() {
+            if !local_member_name(name) {
+                return Ok(err(StatusCode::BAD_REQUEST, "invalid_name"));
+            }
+            match tx
+                .query_row(
+                    "SELECT account_id FROM tenant_members WHERE tenant_id=?1 AND local_name=?2 AND role='member'",
+                    params![tenant_id, name],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?
+            {
+                Some(account) => account,
+                None => return Ok(err(StatusCode::NOT_FOUND, "not_found")),
+            }
+        } else {
+            owner.clone()
+        };
         let raw = secret();
         let id = format!("key_{}", uuid::Uuid::new_v4().simple());
         let now = (a.cfg.now)();
@@ -1191,7 +1535,20 @@ async fn create_key(State(a): State<Arc<App>>, h: HeaderMap, Json(f): Json<NewKe
             Scope::Read => "read",
             Scope::Operate => "operate",
         };
-        let n=tx.execute("INSERT INTO automation_keys(id,owner_id,server_id,hash,scope,expires_at) SELECT ?1,?2,id,?3,?4,?5 FROM servers WHERE id=?6 AND owner_id=?2 AND active=1",params![id,owner,hash(&raw),scope,now+life as i64,f.server_id])?;
+        let n = tx.execute(
+            "INSERT INTO automation_keys(id,owner_id,server_id,hash,scope,expires_at)
+             SELECT ?1,?2,s.id,?3,?4,?5 FROM servers s
+             JOIN tenant_members m ON m.tenant_id=s.tenant_id AND m.account_id=?2
+             WHERE s.id=?6 AND s.active=1",
+            params![
+                id,
+                key_account,
+                hash(&raw),
+                scope,
+                now + life as i64,
+                f.server_id
+            ],
+        )?;
         if n != 1 {
             return Ok(err(StatusCode::NOT_FOUND, "not_found"));
         }
@@ -1224,6 +1581,21 @@ async fn key_token(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
     let Some((kid, owner, sid, scope, name, origin, ca, rev)) = row else {
         return err(StatusCode::UNAUTHORIZED, "invalid_token");
     };
+    let row: Option<(String, String)> = tx
+        .query_row(
+            "SELECT s.tenant_id,m.role FROM servers s JOIN tenant_members m ON m.tenant_id=s.tenant_id AND m.account_id=?2 WHERE s.id=?1 AND s.active=1",
+            params![sid, owner],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    let Some((tenant_id, role_raw)) = row else {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
+    let Some(role) = member_role(&role_raw) else {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
     let scope = match scope.as_str() {
         "read" => Scope::Read,
         "operate" => Scope::Operate,
@@ -1234,13 +1606,13 @@ async fn key_token(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
         iss: a.cfg.public_origin.clone(),
         sub: owner,
         aud: format!("kiln:server:{sid}"),
+        tenant_id: Some(tenant_id),
         iat: n,
         nbf: n,
         exp: n + 300,
         credential_id: kid,
         scope,
-        tenant_id: None,
-        role: None,
+        role: Some(role),
     }) {
         Ok(x) => x,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
@@ -1358,7 +1730,13 @@ fn insert_server_code(
     )?;
     Ok(raw)
 }
-fn issue_app(a: &App, owner: &str, server: &str, now: i64) -> anyhow::Result<String> {
+fn issue_app(
+    a: &App,
+    owner: &str,
+    server: &str,
+    tenant_id: &str,
+    now: i64,
+) -> anyhow::Result<String> {
     let credential = format!("app_{server}");
     anyhow::ensure!(credential.len() <= 128, "invalid server id");
     let now = u64::try_from(now)?;
@@ -1366,13 +1744,13 @@ fn issue_app(a: &App, owner: &str, server: &str, now: i64) -> anyhow::Result<Str
         iss: a.cfg.public_origin.clone(),
         sub: owner.to_owned(),
         aud: format!("kiln:server:{server}"),
+        tenant_id: Some(tenant_id.to_owned()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: credential,
         scope: Scope::Operate,
-        tenant_id: None,
-        role: None,
+        role: Some(MemberRole::Owner),
     })
 }
 async fn oauth_server(
@@ -1630,8 +2008,16 @@ async fn server_token(State(a): State<Arc<App>>, h: HeaderMap, body: String) -> 
         let _ = tx.commit();
         return err(StatusCode::BAD_REQUEST, "invalid_grant");
     }
+    let tenant_id: String = match tx.query_row(
+        "SELECT tenant_id FROM servers WHERE id=?1 AND active=1",
+        [&server],
+        |r| r.get(0),
+    ) {
+        Ok(v) => v,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
     let reader = secret();
-    let jwt = match issue_app(&a, &account, &server, now) {
+    let jwt = match issue_app(&a, &account, &server, &tenant_id, now) {
         Ok(jwt) => jwt,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
     };
@@ -1673,7 +2059,15 @@ fn reader_token(a: &App, reader: &str, presented: &str) -> Response {
     let Some((server, account)) = row else {
         return err(StatusCode::UNAUTHORIZED, "invalid_token");
     };
-    let jwt = match issue_app(a, &account, &server, now) {
+    let tenant_id: String = match tx.query_row(
+        "SELECT tenant_id FROM servers WHERE id=?1 AND active=1",
+        [&server],
+        |r| r.get(0),
+    ) {
+        Ok(v) => v,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let jwt = match issue_app(a, &account, &server, &tenant_id, now) {
         Ok(jwt) => jwt,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
     };

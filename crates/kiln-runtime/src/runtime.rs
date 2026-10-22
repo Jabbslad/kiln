@@ -1188,22 +1188,29 @@ impl Runtime {
             return Err(Error::Invalid("box must be stopped before starting".into()));
         }
         let previous = record.clone();
-        if self.is_isolated() {
-            self.terminate(&mut record)?;
-            record.run = self::id()?;
-            if record.disk_layer.is_none() {
-                storage::copy_disk(
-                    &self.run(&previous)?.join("disk.ext4"),
-                    &self.run(&record)?.join("disk.ext4"),
-                    Instant::now() + Duration::from_secs(120),
-                )?;
-            }
-        }
         record.operation = Some("start".into());
         self.save(&record)?;
         let started = Instant::now();
         let (result, phases) = scoped(async {
-            let result = self.boot(&mut record, None, true).await;
+            let result = async {
+                if self.is_isolated() {
+                    self.terminate(&mut record)?;
+                    record.run = self::id()?;
+                    if record.disk_layer.is_none() {
+                        let phase = Phase::start("disk_copy");
+                        let method = storage::copy_disk(
+                            &self.run(&previous)?.join("disk.ext4"),
+                            &self.run(&record)?.join("disk.ext4"),
+                            Instant::now() + Duration::from_secs(120),
+                        )?;
+                        record.disk_copy = format!("{method:?}");
+                        self.save(&record)?;
+                        drop(phase);
+                    }
+                }
+                self.boot(&mut record, None, true).await
+            }
+            .await;
             (result, take_phases())
         })
         .await;

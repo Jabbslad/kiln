@@ -12,7 +12,7 @@ use axum::{
 };
 use futures_util::{StreamExt, stream};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{Scope, ServerClaims};
+use kiln_api::auth::{MemberRole, Scope, ServerClaims};
 use kiln_server::{
     auth::{Authenticator, Enrollment},
     door,
@@ -34,13 +34,13 @@ fn token(key: &EncodingKey, sub: &str, audience: &str) -> String {
         iss: "https://identity.example.test".into(),
         sub: sub.into(),
         aud: audience.into(),
+        tenant_id: None,
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-1".into(),
         scope: Scope::Operate,
-        tenant_id: None,
-        role: None,
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

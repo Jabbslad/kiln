@@ -3,7 +3,7 @@ use anyhow::{Context, Result, bail, ensure};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
 use kiln_api::{
     Caller, Role,
-    auth::{Scope, ServerClaims, TokenRole},
+    auth::{MemberRole, Scope, ServerClaims},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -127,8 +127,8 @@ fn token_tenant(claims: &ServerClaims, enrollment: &Enrollment) -> Result<String
 fn token_role(claims: &ServerClaims, enrollment: &Enrollment) -> Result<Role> {
     if let Some(role) = claims.role {
         return Ok(match role {
-            TokenRole::Owner => Role::Owner,
-            TokenRole::Member => Role::Member,
+            MemberRole::Owner => Role::Owner,
+            MemberRole::Member => Role::Member,
         });
     }
     if claims.sub == enrollment.owner_id {
@@ -137,11 +137,7 @@ fn token_role(claims: &ServerClaims, enrollment: &Enrollment) -> Result<Role> {
     bail!("invalid token authority")
 }
 
-pub fn verify_caller(
-    token: &str,
-    enrollment: &Enrollment,
-    jwks: &Value,
-) -> Result<(Caller, Scope)> {
+pub fn verify_claims(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<ServerClaims> {
     enrollment.validate()?;
     ensure!(token.len() <= 8192, "invalid token");
     let header = decode_header(token)?;
@@ -173,6 +169,15 @@ pub fn verify_caller(
             && c.iat <= jsonwebtoken::get_current_timestamp().saturating_add(30),
         "invalid token authority or lifetime"
     );
+    Ok(c)
+}
+
+pub fn verify_caller(
+    token: &str,
+    enrollment: &Enrollment,
+    jwks: &Value,
+) -> Result<(Caller, Scope)> {
+    let c = verify_claims(token, enrollment, jwks)?;
     let tenant_id = token_tenant(&c, enrollment)?;
     ensure!(
         tenant_id == enrollment.enrolled_tenant_id(),
@@ -305,18 +310,21 @@ impl Authenticator {
         self.tenant_owner()
     }
 
-    /// Caller subject when the bearer is a valid central JWT; otherwise `anonymous`.
+    /// JWT `sub` when the bearer is a valid central token; otherwise `anonymous`.
     pub async fn central_caller(&self, bearer: &str) -> String {
-        if bearer.is_empty() {
-            return "anonymous".into();
-        }
-        match self.authenticate_caller(bearer).await {
-            Ok((caller, _)) => caller.sub,
-            Err(_) => "anonymous".into(),
-        }
+        self.central_subject(bearer)
+            .await
+            .unwrap_or_else(|| "anonymous".into())
     }
 
-    async fn central_jwt(&self, bearer: &str) -> Result<(Caller, Scope)> {
+    pub async fn central_subject(&self, bearer: &str) -> Option<String> {
+        if bearer.is_empty() {
+            return None;
+        }
+        self.central_claims(bearer).await.ok().map(|c| c.sub)
+    }
+
+    async fn central_claims(&self, bearer: &str) -> Result<ServerClaims> {
         let (enrollment, path) = self
             .central
             .as_ref()
@@ -369,6 +377,28 @@ impl Authenticator {
             fs::File::open(parent)?.sync_all()?;
             cache.jwks = value;
         }
-        verify_caller(bearer, enrollment, &cache.jwks)
+        verify_claims(bearer, enrollment, &cache.jwks)
+    }
+
+    async fn central_jwt(&self, bearer: &str) -> Result<(Caller, Scope)> {
+        let c = self.central_claims(bearer).await?;
+        let (enrollment, _) = self
+            .central
+            .as_ref()
+            .context("central authentication not enrolled")?;
+        let tenant_id = token_tenant(&c, enrollment)?;
+        ensure!(
+            tenant_id == enrollment.enrolled_tenant_id(),
+            "invalid token authority"
+        );
+        let role = token_role(&c, enrollment)?;
+        Ok((
+            Caller {
+                sub: c.sub,
+                tenant_id,
+                role,
+            },
+            c.scope,
+        ))
     }
 }

@@ -15,7 +15,7 @@ use axum::{
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use kiln_api::{
     ApiError, BoxView, ExecResult, Operation, OperationState, Outcome,
-    auth::{Scope, ServerClaims},
+    auth::{MemberRole, Scope, ServerClaims},
 };
 use kiln_runtime::{
     image::{BootMode, Manifest},
@@ -462,13 +462,13 @@ fn read_jwt(key: &EncodingKey) -> String {
         iss: "https://identity.example.test".into(),
         sub: "owner-a".into(),
         aud: format!("kiln:server:{WORKSPACE}"),
+        tenant_id: None,
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-1".into(),
         scope: Scope::Read,
-        tenant_id: None,
-        role: None,
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -639,7 +639,7 @@ async fn read_scope_and_admin_token_receive_schema_version_one() {
 
 #[tokio::test]
 async fn tenant_member_dashboard_lists_only_owned_boxes() {
-    use kiln_api::auth::TokenRole;
+    use kiln_api::auth::MemberRole;
     let (fixture, hits) = fixture().await;
     let (auth, key) = enrollment(&fixture.root.path().join("jwks.json"));
     let router = gateway::router_with_workspace(&fixture.socket, auth, WORKSPACE.into()).unwrap();
@@ -655,7 +655,7 @@ async fn tenant_member_dashboard_lists_only_owned_boxes() {
             credential_id: "device-member".into(),
             scope: Scope::Read,
             tenant_id: Some("owner-a".into()),
-            role: Some(TokenRole::Member),
+            role: Some(MemberRole::Member),
         };
         let mut header = Header::new(Algorithm::ES256);
         header.kid = Some("first".into());

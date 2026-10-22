@@ -6,7 +6,7 @@ use anyhow::{Result, ensure};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, RawQuery, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     routing::{get, post},
 };
 use kiln_api::{
@@ -305,7 +305,7 @@ impl Host {
                 memory_mib: record.memory_mib,
                 vcpus: record.vcpus,
                 disk_bytes,
-                created_at,
+                created_at: crate::journal::journal_stored_secs(created_at),
                 last_operation: record.operation,
                 last_error: record.last_error,
                 restored_from: record.source,
@@ -737,7 +737,21 @@ enum SubmitPlan {
     },
 }
 
-fn plan_submit(host: &Arc<Host>, request: &Submit) -> Result<SubmitPlan, Failure> {
+fn operation_actor(headers: &HeaderMap) -> Option<&str> {
+    let value = headers
+        .get(kiln_api::OPERATION_ACTOR_HEADER)
+        .and_then(|v| v.to_str().ok())?;
+    if value.is_empty() || value.len() > 128 {
+        return None;
+    }
+    Some(value)
+}
+
+fn plan_submit(
+    host: &Arc<Host>,
+    request: &Submit,
+    actor: Option<&str>,
+) -> Result<SubmitPlan, Failure> {
     let mut db = host.journal.lock().unwrap();
     if let Some(existing) = db.existing(request).map_err(|e| {
         if e.is::<Conflict>() {
@@ -775,7 +789,9 @@ fn plan_submit(host: &Arc<Host>, request: &Submit) -> Result<SubmitPlan, Failure
     })?;
     let live_ids = live_box_ids(&host.runtime_dir).map_err(Failure::internal)?;
     let live_refs: Vec<&str> = live_ids.iter().map(String::as_str).collect();
-    let accepted = db.accept(request, &live_refs).map_err(|error| {
+    let accepted = db
+        .accept(request, &live_refs, actor)
+        .map_err(|error| {
         if error.is::<JournalFull>() {
             Failure::new(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -796,6 +812,7 @@ fn plan_submit(host: &Arc<Host>, request: &Submit) -> Result<SubmitPlan, Failure
 async fn submit(
     State(host): State<Arc<Host>>,
     RawQuery(raw_query): RawQuery,
+    headers: HeaderMap,
     Json(request): Json<Submit>,
 ) -> Result<(StatusCode, Json<Operation>), Failure> {
     let query = OperationSubmitQuery::parse("/v1/operations", raw_query.as_deref())
@@ -814,7 +831,7 @@ async fn submit(
         .action
         .validate()
         .map_err(|e| Failure::new(StatusCode::BAD_REQUEST, "invalid_request", e))?;
-    let plan = plan_submit(&host, &request)?;
+    let plan = plan_submit(&host, &request, operation_actor(&headers))?;
     match plan {
         SubmitPlan::ReplayExisting(existing) => {
             if query.wait {
@@ -1196,6 +1213,7 @@ mod tests {
                     },
                 },
                 &[],
+                None,
             )
             .unwrap();
         let _held: Vec<_> = (0..32)
@@ -1239,6 +1257,7 @@ mod tests {
                     },
                 },
                 &[],
+                None,
             )
             .unwrap();
         let err = wait_for_create(host, &op.id, 1).await.unwrap_err();
@@ -1273,6 +1292,7 @@ mod tests {
                     },
                 },
                 &[],
+                None,
             )
             .unwrap();
         let mut finished = op.clone();
