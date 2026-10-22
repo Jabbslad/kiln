@@ -40,8 +40,9 @@ case "$mode" in
       -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
       -v /dev/kvm:/dev/kvm \
       "$IMAGE" >/dev/null
-    deadline=$((SECONDS + 120))
-    while [ "$SECONDS" -lt "$deadline" ]; do
+    start=$(date +%s)
+    deadline=$((start + 120))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
       if docker_cmd exec "$CONTAINER" systemctl is-system-running >/dev/null 2>&1; then
         break
       fi

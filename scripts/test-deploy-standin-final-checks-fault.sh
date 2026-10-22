@@ -14,7 +14,10 @@ if ! command -v openssl >/dev/null 2>&1; then
   fail 'openssl is required'
 fi
 
-if ! docker info >/dev/null 2>&1 && ! command -v dockerd >/dev/null 2>&1; then
+if ! docker info >/dev/null 2>&1; then
+  sudo systemctl start docker >/dev/null 2>&1 || true
+fi
+if ! docker info >/dev/null 2>&1; then
   printf 'test-deploy-standin-final-checks-fault: skipped (docker unavailable)\n'
   exit 0
 fi

@@ -131,7 +131,6 @@ jobs:
           sh scripts/test-check.sh
           sh scripts/test-ssh-multiplex.sh
           sh scripts/test-deploy-standin-final-checks.sh
-          sh scripts/test-deploy-standin-final-checks-fault.sh
 
   feature-map-guard:
     if: github.event_name == 'pull_request'
@@ -946,6 +945,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-workspace-crates: 'true'
+      - name: Docker
+        run: sudo systemctl start docker
       - name: Stand-in deploy final checks
         run: sh scripts/deploy-standin-final-checks.sh
       - name: Fault injection (650f541-class Caddy miss)

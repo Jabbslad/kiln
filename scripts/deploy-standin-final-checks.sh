@@ -34,10 +34,14 @@ else
 fi
 
 if ! docker info >/dev/null 2>&1; then
+  sudo systemctl start docker >/dev/null 2>&1 || true
+fi
+if ! docker info >/dev/null 2>&1; then
   if command -v dockerd >/dev/null 2>&1; then
     sudo dockerd >/tmp/kiln-dockerd.log 2>&1 &
-    deadline=$((SECONDS + 60))
-    while [ "$SECONDS" -lt "$deadline" ]; do
+    start=$(date +%s)
+    deadline=$((start + 60))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
       docker info >/dev/null 2>&1 && break
       sleep 1
     done
