@@ -9,7 +9,10 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use kiln_api::{OperationSubmitQuery, auth::Scope};
+use kiln_api::{
+    OperationSubmitQuery,
+    auth::{CALLER_ROLE_HEADER, CALLER_SUB_HEADER, CALLER_TENANT_HEADER, Caller, Role, Scope},
+};
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
@@ -85,19 +88,26 @@ fn validate_uri_query(
     }
 }
 
+fn caller_role_header(role: Role) -> &'static str {
+    match role {
+        Role::Owner => "owner",
+        Role::Member => "member",
+    }
+}
+
 async fn authenticate(
     state: &Gateway,
     headers: &HeaderMap,
     method: &axum::http::Method,
     uri: &Uri,
     required: Scope,
-) -> Result<(), Failure> {
+) -> Result<Caller, Failure> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
-    let scope = state.auth.authenticate(token).await.map_err(|_| {
+    let (scope, caller) = state.auth.authenticate_caller(token).await.map_err(|_| {
         Failure::new(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
@@ -112,14 +122,14 @@ async fn authenticate(
         ));
     }
     validate_uri_query(method, uri)?;
-    Ok(())
+    Ok(caller)
 }
 
 async fn ssh_tunnel(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    authenticate(
+    let caller = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -139,6 +149,9 @@ async fn ssh_tunnel(
         .header(header::CONNECTION, "upgrade")
         .header(header::UPGRADE, kiln_api::SSH_UPGRADE)
         .header(kiln_api::SSH_KEY_HEADER, key)
+        .header(CALLER_SUB_HEADER, &caller.sub)
+        .header(CALLER_TENANT_HEADER, &caller.tenant_id)
+        .header(CALLER_ROLE_HEADER, caller_role_header(caller.role))
         .send()
         .await
         .map_err(|_| upstream_error())?;
@@ -161,7 +174,7 @@ async fn dashboard(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    authenticate(
+    let caller = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -177,6 +190,7 @@ async fn dashboard(
             wait: false,
             wait_seconds: kiln_api::DEFAULT_OPERATION_WAIT_SECONDS,
         },
+        &caller,
     )
     .await
     {
@@ -230,7 +244,7 @@ async fn read_proxy(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    authenticate(
+    let caller = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -245,6 +259,7 @@ async fn read_proxy(
             wait: false,
             wait_seconds: kiln_api::DEFAULT_OPERATION_WAIT_SECONDS,
         },
+        &caller,
     )
     .await
 }
@@ -254,7 +269,7 @@ async fn operate_proxy(
     request: Request,
 ) -> Result<Response, Failure> {
     let query = validate_uri_query(request.method(), request.uri())?;
-    authenticate(
+    let caller = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -262,13 +277,14 @@ async fn operate_proxy(
         Scope::Operate,
     )
     .await?;
-    proxy(state, request, query).await
+    proxy(state, request, query, &caller).await
 }
 
 async fn proxy(
     state: Arc<Gateway>,
     request: Request,
     query: OperationSubmitQuery,
+    caller: &Caller,
 ) -> Result<Response, Failure> {
     let _permit = state.capacity.try_acquire().map_err(|_| {
         Failure::new(
@@ -303,7 +319,13 @@ async fn proxy(
             "Request body exceeds 128 KiB.",
         )
     })?;
-    let mut upstream = state.client.request(method, uri).body(bytes);
+    let mut upstream = state
+        .client
+        .request(method, uri)
+        .body(bytes)
+        .header(CALLER_SUB_HEADER, &caller.sub)
+        .header(CALLER_TENANT_HEADER, &caller.tenant_id)
+        .header(CALLER_ROLE_HEADER, caller_role_header(caller.role));
     if let Some(content_type) = content_type {
         upstream = upstream.header(header::CONTENT_TYPE, content_type);
     }

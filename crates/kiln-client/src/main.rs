@@ -21,6 +21,9 @@ struct Cli {
     config: Option<PathBuf>,
     #[arg(long, global = true)]
     profile: Option<String>,
+    /// Target server in the tenant; omit to use the tenant default.
+    #[arg(long, global = true)]
+    server: Option<String>,
     /// Override the identity service (default: https://dark-forge.dev).
     #[arg(long, global = true)]
     issuer: Option<String>,
@@ -585,6 +588,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 .into_iter()
                 .collect(),
             };
+            let default_server_id = key.server.id.clone();
             profile::save_login(
                 &path,
                 &profile_name,
@@ -594,6 +598,7 @@ async fn run(cli: Cli) -> Result<i32> {
                     credential_file,
                     door_trust: profile::DoorTrust::Pin,
                     server_chosen: true,
+                    default_server_id: Some(default_server_id),
                 },
                 &credentials,
             )?;
@@ -646,6 +651,7 @@ async fn run(cli: Cli) -> Result<i32> {
                     credential_file: credential_file.clone(),
                     door_trust: profile::DoorTrust::Pin,
                     server_chosen: false,
+                    default_server_id: Some(servers[0].id.clone()),
                 },
                 &credentials,
             )?;
@@ -657,10 +663,11 @@ async fn run(cli: Cli) -> Result<i32> {
                 &profile_name,
                 profile::Profile::Central(profile::CentralProfile {
                     issuer,
-                    server: selected,
+                    server: selected.clone(),
                     credential_file,
                     door_trust: profile::DoorTrust::Pin,
                     server_chosen: true,
+                    default_server_id: Some(selected.id.clone()),
                 }),
             )?;
         } else {
@@ -669,10 +676,11 @@ async fn run(cli: Cli) -> Result<i32> {
                 &profile_name,
                 profile::CentralProfile {
                     issuer,
-                    server: selected,
+                    server: selected.clone(),
                     credential_file,
                     door_trust: profile::DoorTrust::Pin,
                     server_chosen: true,
+                    default_server_id: Some(selected.id),
                 },
                 &credentials,
             )?;
@@ -802,13 +810,20 @@ async fn run(cli: Cli) -> Result<i32> {
             _ => unreachable!(),
         }
     }
-    if let profile::Profile::Central(central) = selected {
-        anyhow::ensure!(
-            central.server_chosen,
-            "server is not chosen; run `kiln login --server SERVER_ID`"
-        );
-    }
-    let client = selected.client()?;
+    let client = if let profile::Profile::Central(central) = selected {
+        let mut central = central.clone();
+        profile::resolve_server_placement(&mut central, cli.server.as_deref())?;
+        if central.server_chosen {
+            profile::set(
+                &path,
+                &profile_name,
+                profile::Profile::Central(central.clone()),
+            )?;
+        }
+        profile::Profile::Central(central).client()?
+    } else {
+        selected.client()?
+    };
     match &cli.command {
         Command::SshProxy { id } => {
             let (_, public) = ssh::ensure_key(&path, &profile_name)?;

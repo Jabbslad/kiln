@@ -369,6 +369,7 @@ mod tests {
                 credential_file: root.path().join("private/credential.json"),
                 door_trust: crate::profile::DoorTrust::Pin,
                 server_chosen: true,
+                default_server_id: None,
             },
             &credentials,
         )

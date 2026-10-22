@@ -1453,6 +1453,8 @@ async fn serve_operations() -> ServedOperations {
         isolation_config: None,
         allow_unsafe_development: true,
         templates: Default::default(),
+        tenant_owner_id: String::new(),
+        member_box_quota: kiln_api::auth::DEFAULT_MEMBER_BOX_QUOTA,
     };
     drop(Host::open(&config).unwrap());
     let template = new_id();
@@ -2479,6 +2481,8 @@ async fn a_signed_in_operate_session_reaches_the_host() {
         isolation_config: None,
         allow_unsafe_development: true,
         templates: Default::default(),
+        tenant_owner_id: String::new(),
+        member_box_quota: kiln_api::auth::DEFAULT_MEMBER_BOX_QUOTA,
     };
     drop(Host::open(&config).unwrap());
     let template = new_id();

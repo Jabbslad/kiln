@@ -39,6 +39,8 @@ async fn authentication_precedes_proxying_and_credentials_never_reach_the_host()
         templates: Default::default(),
         isolation_config: None,
         allow_unsafe_development: true,
+        tenant_owner_id: String::new(),
+        member_box_quota: kiln_api::auth::DEFAULT_MEMBER_BOX_QUOTA,
     };
     let router = Host::open(&config)
         .unwrap()

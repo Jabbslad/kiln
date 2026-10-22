@@ -18,6 +18,68 @@ pub enum Scope {
     Operate,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    #[default]
+    Owner,
+    Member,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Caller {
+    pub sub: String,
+    pub tenant_id: String,
+    pub role: Role,
+}
+
+/// Per-server member box cap; enforced locally on each server (not tenant-wide).
+pub const DEFAULT_MEMBER_BOX_QUOTA: u32 = 4;
+pub const SERVER_BOX_QUOTA: u32 = 8;
+
+pub const CALLER_SUB_HEADER: &str = "x-kiln-account";
+pub const CALLER_TENANT_HEADER: &str = "x-kiln-tenant";
+pub const CALLER_ROLE_HEADER: &str = "x-kiln-account-role";
+
+pub fn caller_may_access_box(caller: &Caller, box_owner: &str) -> bool {
+    match caller.role {
+        Role::Owner => true,
+        Role::Member => caller.sub == box_owner,
+    }
+}
+
+pub fn filter_visible_boxes<'a>(
+    caller: &Caller,
+    box_owners: impl IntoIterator<Item = &'a str>,
+) -> impl Iterator<Item = &'a str> {
+    box_owners
+        .into_iter()
+        .filter(move |owner| caller_may_access_box(caller, owner))
+}
+
+pub fn parse_caller_headers(
+    sub: Option<&str>,
+    tenant_id: Option<&str>,
+    role: Option<&str>,
+) -> Option<Caller> {
+    let sub = sub?;
+    let tenant_id = tenant_id?;
+    if sub.is_empty() || sub.len() > 128 || tenant_id.is_empty() || tenant_id.len() > 128 {
+        return None;
+    }
+    let role = match role {
+        Some("member") => Role::Member,
+        Some("owner") | None => Role::Owner,
+        Some(_) => return None,
+    };
+    Some(Caller {
+        sub: sub.into(),
+        tenant_id: tenant_id.into(),
+        role,
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerDescriptor {
@@ -82,4 +144,8 @@ pub struct ServerClaims {
     pub exp: u64,
     pub credential_id: String,
     pub scope: Scope,
+    #[serde(default)]
+    pub role: Role,
+    #[serde(default)]
+    pub tenant_id: String,
 }

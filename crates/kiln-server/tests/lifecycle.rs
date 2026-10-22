@@ -149,6 +149,8 @@ async fn https_lifecycle_and_crashed_host_never_replay_exec() {
         isolation_config: isolation.clone(),
         allow_unsafe_development: isolation.is_none(),
         templates: [("test".into(), template.id.clone())].into(),
+        tenant_owner_id: String::new(),
+        member_box_quota: kiln_api::auth::DEFAULT_MEMBER_BOX_QUOTA,
     };
     fs::write(root.join("host.json"), serde_json::to_vec(&config).unwrap()).unwrap();
     fixture.start();

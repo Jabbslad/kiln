@@ -85,6 +85,7 @@ impl Runtime {
                     let runtime = Runtime {
                         root: self.root.clone(),
                         isolation: self.isolation.clone(),
+                        tenant_owner: self.tenant_owner.clone(),
                     };
                     let image = image.to_owned();
                     let template = template.to_owned();
@@ -94,7 +95,15 @@ impl Runtime {
                     workers.spawn(async move {
                         let start = Instant::now();
                         let (launched, phases) = PHASES.scope(RefCell::new(BTreeMap::new()), async {
-                            let launched = if mode == "cold_boot" { runtime.create(&image, &name, memory_mib, vcpus, false).await } else { runtime.clone_template(&template, &name).await };
+                            let launched = if mode == "cold_boot" {
+                                runtime
+                                    .create(&image, &name, memory_mib, vcpus, false, "", None)
+                                    .await
+                            } else {
+                                runtime
+                                    .clone_template(&template, &name, "", None)
+                                    .await
+                            };
                             (launched, PHASES.with(|phases| phases.take()))
                         }).await;
                         let launch_ms = start.elapsed().as_secs_f64()*1000.;

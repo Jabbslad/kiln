@@ -1,7 +1,7 @@
 //! Local enrollment remains the authority for issuer, owner and server audience.
 use anyhow::{Context, Result, ensure};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
-use kiln_api::auth::{Scope, ServerClaims};
+use kiln_api::auth::{Caller, Role, Scope, ServerClaims};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -194,11 +194,35 @@ impl Authenticator {
                 return Ok(Scope::Operate);
             }
         }
-        self.central_jwt(bearer).await
+        Ok(self.central_jwt(bearer).await?.0)
     }
 
     pub async fn authenticate_central(&self, bearer: &str) -> Result<Scope> {
         ensure!(bearer.len() <= 8192, "invalid token");
+        Ok(self.central_jwt(bearer).await?.0)
+    }
+
+    pub async fn authenticate_caller(&self, bearer: &str) -> Result<(Scope, Caller)> {
+        ensure!(bearer.len() <= 8192, "invalid token");
+        if let Some(admin_hash) = self.admin_hash {
+            let supplied: [u8; 32] = Sha256::digest(bearer.as_bytes()).into();
+            if bool::from(supplied.ct_eq(&admin_hash)) {
+                let caller = self
+                    .central
+                    .as_ref()
+                    .map(|(enrollment, _)| Caller {
+                        sub: enrollment.owner_id.clone(),
+                        tenant_id: String::new(),
+                        role: Role::Owner,
+                    })
+                    .unwrap_or(Caller {
+                        sub: String::new(),
+                        tenant_id: String::new(),
+                        role: Role::Owner,
+                    });
+                return Ok((Scope::Operate, caller));
+            }
+        }
         self.central_jwt(bearer).await
     }
 
@@ -216,7 +240,7 @@ impl Authenticator {
         "anonymous".into()
     }
 
-    async fn central_jwt(&self, bearer: &str) -> Result<Scope> {
+    async fn central_jwt(&self, bearer: &str) -> Result<(Scope, Caller)> {
         let (enrollment, path) = self
             .central
             .as_ref()
@@ -269,6 +293,30 @@ impl Authenticator {
             fs::File::open(parent)?.sync_all()?;
             cache.jwks = value;
         }
-        verify(bearer, enrollment, &cache.jwks)
+        let scope = verify(bearer, enrollment, &cache.jwks)?;
+        let header = decode_header(bearer)?;
+        let kid = header.kid.context("missing key id")?;
+        let set = keys(&cache.jwks)?;
+        let key = DecodingKey::from_jwk(set.find(&kid).context("unknown token key")?)?;
+        let mut validation = Validation::new(Algorithm::ES256);
+        validation.set_required_spec_claims(&["exp", "nbf", "iss", "aud", "sub"]);
+        validation.set_issuer(&[&enrollment.issuer]);
+        validation.set_audience(&[format!("kiln:server:{}", enrollment.server_id)]);
+        validation.validate_nbf = true;
+        validation.leeway = 30;
+        let claims = decode::<ServerClaims>(bearer, &key, &validation)?.claims;
+        let tenant_id = if claims.tenant_id.is_empty() {
+            enrollment.owner_id.clone()
+        } else {
+            claims.tenant_id
+        };
+        Ok((
+            scope,
+            Caller {
+                sub: claims.sub,
+                tenant_id,
+                role: claims.role,
+            },
+        ))
     }
 }

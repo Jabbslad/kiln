@@ -3,15 +3,23 @@ use crate::{
     journal::{Conflict, Journal, JournalFull},
 };
 use anyhow::{Result, ensure};
+use axum::http::HeaderMap;
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, RawQuery, State},
+    extract::{DefaultBodyLimit, Extension, Path, RawQuery, Request, State},
     http::StatusCode,
+    middleware::{self, Next},
+    response::Response,
     routing::{get, post},
 };
 use kiln_api::{
     Action, ApiError, BoxView, CheckpointView, Operation, OperationState, OperationSubmitQuery,
-    Outcome, Submit, TemplateView, valid_alias, valid_id,
+    Outcome, Submit, TemplateView,
+    auth::{
+        CALLER_ROLE_HEADER, CALLER_SUB_HEADER, CALLER_TENANT_HEADER, Caller,
+        DEFAULT_MEMBER_BOX_QUOTA, Role, caller_may_access_box, parse_caller_headers,
+    },
+    valid_alias, valid_id,
 };
 use kiln_runtime::{
     isolation,
@@ -29,6 +37,20 @@ use std::{
 };
 use tokio::{net::UnixListener, sync::Semaphore};
 
+fn default_member_box_quota() -> u32 {
+    DEFAULT_MEMBER_BOX_QUOTA
+}
+
+async fn inject_caller(
+    State(host): State<Arc<Host>>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let caller = host.caller_from_headers(request.headers());
+    request.extensions_mut().insert(caller);
+    next.run(request).await
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -39,6 +61,12 @@ pub struct Config {
     #[serde(default)]
     pub allow_unsafe_development: bool,
     pub templates: BTreeMap<String, String>,
+    /// Tenant owner account id for upgrading legacy box records without `owner`.
+    #[serde(default)]
+    pub tenant_owner_id: String,
+    /// Per-server cap on boxes owned by one member account.
+    #[serde(default = "default_member_box_quota")]
+    pub member_box_quota: u32,
 }
 
 pub struct Host {
@@ -50,6 +78,8 @@ pub struct Host {
     capacity: Arc<Semaphore>,
     sessions: Arc<Semaphore>,
     metrics: Mutex<crate::metrics::Sampler>,
+    tenant_owner_id: String,
+    member_box_quota: u32,
     _locks: [File; 2],
 }
 
@@ -90,7 +120,8 @@ impl Host {
             }
         }
         let runtime =
-            Runtime::open_with_isolation(&config.runtime_dir, config.isolation_config.as_deref())?;
+            Runtime::open_with_isolation(&config.runtime_dir, config.isolation_config.as_deref())?
+                .with_tenant_owner(config.tenant_owner_id.clone());
         ensure!(
             runtime.is_isolated() || config.allow_unsafe_development,
             "isolated runtime required; development needs explicit allow_unsafe_development"
@@ -157,8 +188,76 @@ impl Host {
             capacity: Arc::new(Semaphore::new(8)),
             sessions: Arc::new(Semaphore::new(32)),
             metrics: Mutex::new(metrics),
+            tenant_owner_id: config.tenant_owner_id.clone(),
+            member_box_quota: config.member_box_quota,
             _locks: [runtime_lock, journal_lock],
         }))
+    }
+
+    fn default_caller(&self) -> Caller {
+        Caller {
+            sub: self.tenant_owner_id.clone(),
+            tenant_id: String::new(),
+            role: Role::Owner,
+        }
+    }
+
+    fn caller_from_headers(&self, headers: &HeaderMap) -> Caller {
+        parse_caller_headers(
+            headers
+                .get(CALLER_SUB_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            headers
+                .get(CALLER_TENANT_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            headers
+                .get(CALLER_ROLE_HEADER)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .unwrap_or_else(|| self.default_caller())
+    }
+
+    fn account_box_limit(&self, caller: &Caller) -> Option<u32> {
+        match caller.role {
+            Role::Owner => None,
+            Role::Member => Some(self.member_box_quota),
+        }
+    }
+
+    async fn load_box_record(&self, id: &str) -> Result<BoxRecord, Failure> {
+        let record = self.runtime.read_sync(id).map_err(Failure::internal)?;
+        if record.state == "running" {
+            self.runtime.inspect(id).await.map_err(Failure::internal)
+        } else {
+            Ok(record)
+        }
+    }
+
+    async fn find_box_record(&self, target: &str) -> Result<BoxRecord, Failure> {
+        if valid_id(target) && self.box_on_disk(target)? {
+            return self.load_box_record(target).await;
+        }
+        for id in live_box_ids(&self.runtime_dir).map_err(Failure::internal)? {
+            let record = self.load_box_record(&id).await?;
+            if record.name == target {
+                return Ok(record);
+            }
+        }
+        Err(Failure::missing())
+    }
+
+    fn ensure_box_access(&self, caller: &Caller, record: &BoxRecord) -> Result<(), Failure> {
+        if caller_may_access_box(caller, &record.owner) {
+            Ok(())
+        } else {
+            Err(Failure::missing())
+        }
+    }
+
+    async fn resolve_box(&self, caller: &Caller, target: &str) -> Result<BoxRecord, Failure> {
+        let record = self.find_box_record(target).await?;
+        self.ensure_box_access(caller, &record)?;
+        Ok(record)
     }
 
     pub fn router(self: &Arc<Self>) -> Router {
@@ -172,6 +271,7 @@ impl Host {
             .route("/v1/operations/{id}", get(operation))
             .route("/v1/operations", post(submit))
             .layer(DefaultBodyLimit::max(kiln_api::MAX_REQUEST_BYTES))
+            .layer(middleware::from_fn_with_state(self.clone(), inject_caller))
             .with_state(self.clone())
     }
 
@@ -213,11 +313,24 @@ impl Host {
         Ok(record.state == "running")
     }
 
-    async fn execute(&self, action: Action, box_id: &str) -> kiln_runtime::Result<Outcome> {
+    async fn execute(
+        &self,
+        action: Action,
+        box_id: &str,
+        caller: &Caller,
+    ) -> kiln_runtime::Result<Outcome> {
+        let account_limit = self.account_box_limit(caller);
+        let owner = caller.sub.as_str();
         let record = match action {
             Action::Create { template, name } => {
                 self.runtime
-                    .clone_template_with_id(&self.templates[&template], &name, box_id)
+                    .clone_template_with_id(
+                        &self.templates[&template],
+                        &name,
+                        box_id,
+                        owner,
+                        account_limit,
+                    )
                     .await?
             }
             Action::Pause { id } => self.runtime.set_paused(&id, true).await?,
@@ -496,11 +609,13 @@ async fn templates(State(host): State<Arc<Host>>) -> Json<Vec<TemplateView>> {
 
 async fn ssh_key(
     State(host): State<Arc<Host>>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<String>,
 ) -> Result<Json<kiln_api::SshReady>, Failure> {
-    host.owns(&id)?;
+    let record = host.resolve_box(&caller, &id).await?;
+    host.owns(&record.id)?;
     host.runtime
-        .ssh_host_key(&id)
+        .ssh_host_key(&record.id)
         .await
         .map(Json)
         .map_err(Failure::internal)
@@ -508,10 +623,12 @@ async fn ssh_key(
 
 async fn ssh_tunnel(
     State(host): State<Arc<Host>>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<String>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, Failure> {
-    host.owns(&id)?;
+    let record = host.resolve_box(&caller, &id).await?;
+    host.owns(&record.id)?;
     let key = crate::ssh::admission(&request)?;
     let permit = host
         .sessions
@@ -520,13 +637,16 @@ async fn ssh_tunnel(
         .map_err(|_| crate::ssh::busy())?;
     let stream = host
         .runtime
-        .ssh_connect(&id, &key)
+        .ssh_connect(&record.id, &key)
         .await
         .map_err(Failure::internal)?;
     Ok(crate::ssh::upgrade(request, stream, permit))
 }
 
-async fn boxes(State(host): State<Arc<Host>>) -> Result<Json<Vec<BoxView>>, Failure> {
+async fn boxes(
+    State(host): State<Arc<Host>>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Json<Vec<BoxView>>, Failure> {
     let ids = host
         .journal
         .lock()
@@ -543,9 +663,10 @@ async fn boxes(State(host): State<Arc<Host>>) -> Result<Json<Vec<BoxView>>, Fail
             .try_exists()
             .map_err(Failure::internal)?
         {
-            records.push(view(
-                host.runtime.inspect(&id).await.map_err(Failure::internal)?,
-            ));
+            let record = host.load_box_record(&id).await?;
+            if caller_may_access_box(&caller, &record.owner) {
+                records.push(view(record));
+            }
         }
     }
     Ok(Json(records))
@@ -553,22 +674,12 @@ async fn boxes(State(host): State<Arc<Host>>) -> Result<Json<Vec<BoxView>>, Fail
 
 async fn inspect(
     State(host): State<Arc<Host>>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<String>,
 ) -> Result<Json<BoxView>, Failure> {
-    host.owns(&id)?;
-    if !host
-        .runtime_dir
-        .join("boxes")
-        .join(&id)
-        .join("box.json")
-        .try_exists()
-        .map_err(Failure::internal)?
-    {
-        return Err(Failure::missing());
-    }
-    Ok(Json(view(
-        host.runtime.inspect(&id).await.map_err(Failure::internal)?,
-    )))
+    let record = host.resolve_box(&caller, &id).await?;
+    host.owns(&record.id)?;
+    Ok(Json(view(record)))
 }
 
 async fn operation(
@@ -643,6 +754,7 @@ fn spawn_operation_worker(
     request: Submit,
     mut op: Operation,
     permit: tokio::sync::OwnedSemaphorePermit,
+    caller: Caller,
 ) {
     let worker_host = host.clone();
     let journal_host = host;
@@ -653,7 +765,10 @@ fn spawn_operation_worker(
         let _permit = permit;
         let box_id = op.box_id.clone();
         let result =
-            tokio::spawn(async move { worker_host.execute(request.action, &box_id).await }).await;
+            tokio::spawn(
+                async move { worker_host.execute(request.action, &box_id, &caller).await },
+            )
+            .await;
         match result {
             Ok(Ok(outcome)) => {
                 op.state = OperationState::Succeeded;
@@ -686,10 +801,11 @@ async fn finish_create_inline(
     request: Submit,
     mut op: Operation,
     _permit: tokio::sync::OwnedSemaphorePermit,
+    caller: &Caller,
 ) -> Operation {
     let box_id = op.box_id.clone();
     let is_exec = matches!(request.action, Action::Exec { .. });
-    let result = host.execute(request.action, &box_id).await;
+    let result = host.execute(request.action, &box_id, caller).await;
     match result {
         Ok(outcome) => {
             op.state = OperationState::Succeeded;
@@ -720,8 +836,9 @@ async fn submit_create_wait(
     accepted: Operation,
     permit: tokio::sync::OwnedSemaphorePermit,
     wait_seconds: u64,
+    caller: Caller,
 ) -> Result<(StatusCode, Json<Operation>), Failure> {
-    let finished = finish_create_inline(&host, request, accepted, permit).await;
+    let finished = finish_create_inline(&host, request, accepted, permit, &caller).await;
     let op = wait_for_create(host, &finished.id, wait_seconds).await?;
     Ok((StatusCode::OK, Json(op)))
 }
@@ -735,7 +852,43 @@ enum SubmitPlan {
     },
 }
 
-fn plan_submit(host: &Arc<Host>, request: &Submit) -> Result<SubmitPlan, Failure> {
+async fn plan_submit(
+    host: &Arc<Host>,
+    request: &Submit,
+    caller: &Caller,
+) -> Result<SubmitPlan, Failure> {
+    let box_target = {
+        let db = host.journal.lock().unwrap();
+        if let Some(existing) = db.existing(request).map_err(|e| {
+            if e.is::<Conflict>() {
+                Failure::new(
+                    StatusCode::CONFLICT,
+                    "id_conflict",
+                    "Request ID already used for a different action.",
+                )
+            } else {
+                Failure::internal(e)
+            }
+        })? {
+            return Ok(SubmitPlan::ReplayExisting(existing));
+        }
+        match &request.action {
+            Action::Create { template, .. } if !host.templates.contains_key(template) => {
+                return Err(Failure::missing());
+            }
+            action if action.box_id().is_some() => {
+                let target = action.box_id().unwrap();
+                if !db.owns(target).map_err(Failure::internal)? {
+                    return Err(Failure::missing());
+                }
+                Some(target.to_string())
+            }
+            _ => None,
+        }
+    };
+    if let Some(target) = box_target {
+        host.resolve_box(caller, &target).await?;
+    }
     let mut db = host.journal.lock().unwrap();
     if let Some(existing) = db.existing(request).map_err(|e| {
         if e.is::<Conflict>() {
@@ -749,20 +902,6 @@ fn plan_submit(host: &Arc<Host>, request: &Submit) -> Result<SubmitPlan, Failure
         }
     })? {
         return Ok(SubmitPlan::ReplayExisting(existing));
-    }
-    match &request.action {
-        Action::Create { template, .. } if !host.templates.contains_key(template) => {
-            return Err(Failure::missing());
-        }
-        action
-            if action.box_id().is_some()
-                && !db
-                    .owns(action.box_id().unwrap())
-                    .map_err(Failure::internal)? =>
-        {
-            return Err(Failure::missing());
-        }
-        _ => {}
     }
     let permit = host.capacity.clone().try_acquire_owned().map_err(|_| {
         Failure::new(
@@ -793,26 +932,27 @@ fn plan_submit(host: &Arc<Host>, request: &Submit) -> Result<SubmitPlan, Failure
 
 async fn submit(
     State(host): State<Arc<Host>>,
+    Extension(caller): Extension<Caller>,
     RawQuery(raw_query): RawQuery,
-    Json(request): Json<Submit>,
+    Json(submit): Json<Submit>,
 ) -> Result<(StatusCode, Json<Operation>), Failure> {
     let query = OperationSubmitQuery::parse("/v1/operations", raw_query.as_deref())
         .map_err(|message| Failure::new(StatusCode::BAD_REQUEST, "invalid_request", message))?;
     query
-        .validate_for_action(&request.action)
+        .validate_for_action(&submit.action)
         .map_err(|message| Failure::new(StatusCode::BAD_REQUEST, "invalid_request", message))?;
-    if !valid_id(&request.id) {
+    if !valid_id(&submit.id) {
         return Err(Failure::new(
             StatusCode::BAD_REQUEST,
             "invalid_request",
             "invalid request ID",
         ));
     }
-    request
+    submit
         .action
         .validate()
         .map_err(|e| Failure::new(StatusCode::BAD_REQUEST, "invalid_request", e))?;
-    let plan = plan_submit(&host, &request)?;
+    let plan = plan_submit(&host, &submit, &caller).await?;
     match plan {
         SubmitPlan::ReplayExisting(existing) => {
             if query.wait {
@@ -822,15 +962,22 @@ async fn submit(
             Ok((StatusCode::OK, Json(existing)))
         }
         SubmitPlan::Run {
-            request,
+            request: work,
             accepted,
             permit,
         } => {
             if query.wait {
-                return submit_create_wait(host, request, accepted, permit, query.wait_seconds)
-                    .await;
+                return submit_create_wait(
+                    host,
+                    work,
+                    accepted,
+                    permit,
+                    query.wait_seconds,
+                    caller,
+                )
+                .await;
             }
-            spawn_operation_worker(host, request, accepted.clone(), permit);
+            spawn_operation_worker(host, work, accepted.clone(), permit, caller);
             Ok((StatusCode::ACCEPTED, Json(accepted)))
         }
     }
@@ -883,6 +1030,8 @@ mod tests {
             isolation_config: None,
             allow_unsafe_development: true,
             templates: Default::default(),
+            tenant_owner_id: String::new(),
+            member_box_quota: DEFAULT_MEMBER_BOX_QUOTA,
         })
         .unwrap();
         let value = serde_json::to_value(host.dashboard().unwrap()).unwrap();
@@ -910,6 +1059,8 @@ mod tests {
             isolation_config: None,
             allow_unsafe_development: true,
             templates: Default::default(),
+            tenant_owner_id: String::new(),
+            member_box_quota: DEFAULT_MEMBER_BOX_QUOTA,
         };
         drop(Host::open(&config).unwrap());
         let id: String = "0123456789abcdef0123456789abcdef".into();
@@ -946,6 +1097,7 @@ mod tests {
                 jail: None,
                 network: None,
                 last_launch: None,
+                owner: String::new(),
             })
             .unwrap(),
         )
@@ -1009,6 +1161,8 @@ mod tests {
             isolation_config: None,
             allow_unsafe_development: true,
             templates: Default::default(),
+            tenant_owner_id: String::new(),
+            member_box_quota: DEFAULT_MEMBER_BOX_QUOTA,
         };
         let conn = rusqlite::Connection::open(journal.join("operations.sqlite")).unwrap();
         conn.execute_batch(
@@ -1071,6 +1225,7 @@ mod tests {
                 jail: None,
                 network: None,
                 last_launch: None,
+                owner: String::new(),
             })
             .unwrap(),
         )
@@ -1095,6 +1250,8 @@ mod tests {
             isolation_config: None,
             allow_unsafe_development: true,
             templates: Default::default(),
+            tenant_owner_id: String::new(),
+            member_box_quota: DEFAULT_MEMBER_BOX_QUOTA,
         };
         drop(Host::open(&config).unwrap());
         let id: String = "0123456789abcdef0123456789abcdef".into();
@@ -1129,6 +1286,7 @@ mod tests {
                 disk_layer: None,
                 jail: None,
                 network: None,
+                owner: String::new(),
                 last_launch: Some(kiln_runtime::launch_timing::LaunchTiming {
                     method: "create".into(),
                     cache: "uncontrolled".into(),
@@ -1176,6 +1334,8 @@ mod tests {
             isolation_config: None,
             allow_unsafe_development: true,
             templates: Default::default(),
+            tenant_owner_id: String::new(),
+            member_box_quota: DEFAULT_MEMBER_BOX_QUOTA,
         })
         .unwrap();
         let operation = host
@@ -1196,10 +1356,14 @@ mod tests {
         let _held: Vec<_> = (0..32)
             .map(|_| host.sessions.clone().try_acquire_owned().unwrap())
             .collect();
-        let response = ssh_key(State(host), Path(operation.box_id))
-            .await
-            .unwrap_err()
-            .into_response();
+        let response = ssh_key(
+            State(host.clone()),
+            Extension(host.caller_from_headers(&HeaderMap::new())),
+            Path(operation.box_id),
+        )
+        .await
+        .unwrap_err()
+        .into_response();
         assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await
@@ -1219,6 +1383,8 @@ mod tests {
             isolation_config: None,
             allow_unsafe_development: true,
             templates: Default::default(),
+            tenant_owner_id: String::new(),
+            member_box_quota: DEFAULT_MEMBER_BOX_QUOTA,
         })
         .unwrap();
         let op = host
@@ -1253,6 +1419,8 @@ mod tests {
             isolation_config: None,
             allow_unsafe_development: true,
             templates: Default::default(),
+            tenant_owner_id: String::new(),
+            member_box_quota: DEFAULT_MEMBER_BOX_QUOTA,
         })
         .unwrap();
         let op = host

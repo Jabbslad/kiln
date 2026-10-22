@@ -180,6 +180,8 @@ async fn fixture() -> (Fixture, Arc<AtomicUsize>) {
         isolation_config: None,
         allow_unsafe_development: true,
         templates: Default::default(),
+        tenant_owner_id: String::new(),
+        member_box_quota: kiln_api::auth::DEFAULT_MEMBER_BOX_QUOTA,
     };
     drop(Host::open(&config).unwrap());
     let ready = hid(3);
@@ -215,6 +217,7 @@ async fn fixture() -> (Fixture, Arc<AtomicUsize>) {
             jail: None,
             network: None,
             last_launch: None,
+            owner: String::new(),
         },
         None,
     );
@@ -239,6 +242,7 @@ async fn fixture() -> (Fixture, Arc<AtomicUsize>) {
             disk_layer: None,
             jail: None,
             network: None,
+            owner: String::new(),
             last_launch: Some(kiln_runtime::launch_timing::LaunchTiming {
                 method: "start".into(),
                 cache: "uncontrolled".into(),
