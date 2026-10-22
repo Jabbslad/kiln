@@ -416,7 +416,17 @@ pub fn fetch(
     let listed = run_list(repo, sha, env)?;
     let enriched = with_paths(repo, listed, env)?;
     let runs = parse_runs(&Value::Array(enriched))?;
-    let chosen = select_run(&runs, sha)?;
+    let pinned_run_id = optional_reuse_run_id(env)?;
+    let pinned_from_api = if pinned_run_id.is_some() {
+        match pinned_run_id {
+            Some(run_id) if runs.iter().any(|run| run.run_id == run_id) => None,
+            Some(run_id) => Some(fetch_run_meta(repo, run_id, env)?),
+            None => None,
+        }
+    } else {
+        None
+    };
+    let chosen = chosen_run_for_fetch(&runs, sha, pinned_run_id, pinned_from_api)?;
     let now = now_utc();
     let artifacts = parse_artifacts(&artifact_page(repo, chosen.run_id, env)?, &now)?;
     require_artifacts(&artifacts, &now)?;
@@ -679,6 +689,42 @@ fn with_paths(
         enriched.push(Value::Object(obj));
     }
     Ok(enriched)
+}
+
+fn optional_reuse_run_id(env: &HashMap<String, String>) -> Result<Option<i64>, ReleaseError> {
+    let Some(raw) = env.get("REUSE_RUN_ID").filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let run_id = raw
+        .parse::<i64>()
+        .map_err(|_| refused("REUSE_RUN_ID is not a workflow run id"))?;
+    if run_id <= 0 {
+        return Err(refused("REUSE_RUN_ID is not a workflow run id"));
+    }
+    Ok(Some(run_id))
+}
+
+fn fetch_run_meta(
+    repo: &str,
+    run_id: i64,
+    env: &HashMap<String, String>,
+) -> Result<WorkflowRun, ReleaseError> {
+    let text = gh_text(
+        &[
+            "api".to_string(),
+            format!("repos/{repo}/actions/runs/{run_id}"),
+            "--jq".to_string(),
+            "{databaseId,headSha:.head_sha,headBranch:.head_branch,event,conclusion,status,path}"
+                .to_string(),
+        ],
+        env,
+        "could not read workflow run",
+    )?;
+    let value = parse_json(text.trim(), "workflow run was not json")?;
+    let runs = parse_runs(&Value::Array(vec![value]))?;
+    runs.into_iter()
+        .next()
+        .ok_or_else(|| refused("workflow run payload was empty"))
 }
 
 fn run_list(
