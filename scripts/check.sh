@@ -76,6 +76,8 @@ run_feature_map_guard() {
 
 run_check feature-map-guard run_feature_map_guard
 
+run_check batch-merge sh scripts/test-batch-merge.sh
+
 if [ "$docs" = 1 ]; then
   run_check docs-check sh scripts/check-docs.sh
 fi
