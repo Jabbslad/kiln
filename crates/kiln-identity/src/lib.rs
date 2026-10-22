@@ -14,7 +14,7 @@ pub use config::{
     Config, GITHUB_AUTHORIZE_URL, GITHUB_TOKEN_URL, GITHUB_USER_URL, PRODUCTION_IDENTITY_ORIGIN,
     unix_now,
 };
-use kiln_api::auth::{DeviceTokens, Registration, Scope, ServerClaims};
+use kiln_api::auth::{DeviceTokens, Registration, Role, Scope, ServerClaims};
 pub use providers::{Provider, ProviderIdentity};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -489,13 +489,15 @@ async fn access(State(a): State<Arc<App>>, h: HeaderMap, Json(f): Json<AccessReq
         let now = (a.cfg.now)() as u64;
         let claims = ServerClaims {
             iss: a.cfg.public_origin.clone(),
-            sub: owner,
+            sub: owner.clone(),
             aud: format!("kiln:server:{}", f.server_id),
             iat: now,
             nbf: now,
             exp: now + 300,
             credential_id: did,
             scope: Scope::Operate,
+            role: Role::Owner,
+            tenant_id: owner,
         };
         let token = a.signer.issue(&claims)?;
         Ok(Json(tokens::Grant {
@@ -1230,13 +1232,15 @@ async fn key_token(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
     let n = now as u64;
     let jwt = match a.signer.issue(&ServerClaims {
         iss: a.cfg.public_origin.clone(),
-        sub: owner,
+        sub: owner.clone(),
         aud: format!("kiln:server:{sid}"),
         iat: n,
         nbf: n,
         exp: n + 300,
         credential_id: kid,
         scope,
+        role: Role::Owner,
+        tenant_id: owner,
     }) {
         Ok(x) => x,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
@@ -1367,6 +1371,8 @@ fn issue_app(a: &App, owner: &str, server: &str, now: i64) -> anyhow::Result<Str
         exp: now + 300,
         credential_id: credential,
         scope: Scope::Operate,
+        role: Role::Owner,
+        tenant_id: owner.to_owned(),
     })
 }
 async fn oauth_server(

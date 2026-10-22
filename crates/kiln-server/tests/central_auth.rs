@@ -1,5 +1,5 @@
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{Scope, ServerClaims};
+use kiln_api::auth::{Role, Scope, ServerClaims};
 use kiln_server::auth::{Enrollment, verify};
 
 fn fixture() -> (EncodingKey, serde_json::Value) {
@@ -37,6 +37,8 @@ fn issuer_owner_audience_time_and_scope_are_enforced() {
         exp: now + 300,
         credential_id: "device-c".into(),
         scope: Scope::Read,
+        role: Role::Owner,
+        tenant_id: String::new(),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -116,6 +118,8 @@ async fn read_scope_cannot_reach_operations_or_ssh() {
         exp: now + 300,
         credential_id: "device-c".into(),
         scope: Scope::Read,
+        role: Role::Owner,
+        tenant_id: String::new(),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
