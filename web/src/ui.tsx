@@ -123,10 +123,12 @@ export function CapabilitySurface({
   capability,
   children,
   className,
+  notYetFallback,
 }: {
   capability: Capability
   children: ReactNode
   className?: string
+  notYetFallback?: ReactNode
 }) {
   const status = capabilities[capability]
   return (
@@ -136,7 +138,7 @@ export function CapabilitySurface({
       data-capability-state={status}
       data-testid={`capability-${capability}`}
     >
-      {status === 'not-yet' ? <NotAvailableYet /> : children}
+      {status === 'not-yet' ? (notYetFallback ?? <NotAvailableYet />) : children}
     </div>
   )
 }
