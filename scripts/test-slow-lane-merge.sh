@@ -262,7 +262,8 @@ run_merge
 assert_skip 'behind main'
 
 reset_prs
-setup_pr 13 ddd4444444444444444444444444444444444444444 2026-01-04T00:00:00Z false $'title\nDo Not Merge\n' \
+body_dnm=$(printf 'title\nDo Not Merge\n')
+setup_pr 13 ddd4444444444444444444444444444444444444444 2026-01-04T00:00:00Z false "$body_dnm" \
   '{"labels":[]}' '[{"status":"completed","conclusion":"success"}]' 0 README.md
 run_merge
 assert_skip 'do not merge'
@@ -280,8 +281,9 @@ run_merge
 assert_skip 'hold or gated'
 
 reset_prs
+diff_py=$(printf 'README.md\nscripts/foo.py')
 setup_pr 16 aaa7777777777777777777777777777777777777777 2026-01-07T00:00:00Z false ok \
-  '{"labels":[]}' '[{"status":"completed","conclusion":"success"}]' 0 $'README.md\nscripts/foo.py'
+  '{"labels":[]}' '[{"status":"completed","conclusion":"success"}]' 0 "$diff_py"
 run_merge
 assert_skip '.py file'
 
