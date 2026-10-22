@@ -121,6 +121,7 @@ jobs:
           cargo xtask test-cancel-on-failure-gate
           cargo xtask test-repo-guard
           bash scripts/test-listener-restart.sh
+          sh scripts/test-install-upgrade-failure-message.sh
           bash scripts/test-wait-for-operations-journal-v2.sh
           bash scripts/test-identity-upgrade.sh
           bash scripts/test-login-token.sh
@@ -270,6 +271,7 @@ jobs:
           cargo xtask test-cancel-on-failure-gate
           cargo xtask test-repo-guard
           bash scripts/test-listener-restart.sh
+          sh scripts/test-install-upgrade-failure-message.sh
           bash scripts/test-wait-for-operations-journal-v2.sh
           bash scripts/test-identity-upgrade.sh
           bash scripts/test-login-token.sh
@@ -315,6 +317,7 @@ jobs:
             scripts/test-deploy-host-tools.sh \
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
             scripts/test-listener-restart.sh \
+            scripts/test-install-upgrade-failure-message.sh \
             scripts/test-wait-for-operations-journal-v2.sh \
             scripts/test-identity-upgrade.sh \
             scripts/test-login-token.sh \

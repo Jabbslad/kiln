@@ -350,7 +350,8 @@ run_install 0 --keep-curl-seq --apply
 grep -q 'install step failed: healthcheck after binary swap' "$work/err" \
   || fail "missing step name: $(cat "$work/err")$(cat "$work/out")"
 grep -q 'exit code: 1' "$work/err" || fail "missing exit code: $(cat "$work/err")"
-grep -q 'update failed (command)' "$work/err" || fail "missing rollback message: $(cat "$work/err")"
+grep -q 'update failed during binary swap; install step details are on stderr' "$work/err" \
+  || fail "missing rollback message: $(cat "$work/err")"
 
 rm -rf "$work"
 trap - EXIT
