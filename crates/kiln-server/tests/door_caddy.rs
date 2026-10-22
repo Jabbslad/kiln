@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-static DOOR_CADDY_PORTS: Mutex<()> = Mutex::new(());
+static DOOR_CADDY_PORTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 use axum::{
     body::{Body, Bytes},
@@ -579,7 +579,7 @@ async fn door_on_loopback(root: &Path, door_cert: &Path, door_key: &Path) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kiln_ssh_upgrade_through_caddy_needs_http11_upstream() {
-    let _ports = DOOR_CADDY_PORTS.lock().unwrap();
+    let _ports = DOOR_CADDY_PORTS.lock().await;
     which_caddy();
     let root = tempfile::tempdir().unwrap();
     write_jwks(root.path());
@@ -644,7 +644,7 @@ async fn kiln_ssh_upgrade_through_caddy_needs_http11_upstream() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exec_poll_reads_stdout_through_caddy_and_rejected_tokens_do_not_dial() {
-    let _ports = DOOR_CADDY_PORTS.lock().unwrap();
+    let _ports = DOOR_CADDY_PORTS.lock().await;
     which_caddy();
     let root = tempfile::tempdir().unwrap();
     let key = write_jwks(root.path());
