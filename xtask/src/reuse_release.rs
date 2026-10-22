@@ -121,26 +121,67 @@ impl DateTime {
     }
 }
 
+pub fn run_eligible_for_reuse(run: &WorkflowRun, sha: &str) -> bool {
+    run.head_sha == sha
+        && run.head_branch == "main"
+        && run.event == "push"
+        && run.path == WORKFLOW_PATH
+        && run.conclusion == "success"
+        && run.status == "completed"
+}
+
 pub fn select_run(runs: &[WorkflowRun], sha: &str) -> Result<WorkflowRun, ReuseRefused> {
     if !sha_ok(sha) {
         return Err(ReuseRefused("commit sha is not 40 hex characters".into()));
     }
     let mut chosen: Option<&WorkflowRun> = None;
     for run in runs {
-        let matches = run.head_sha == sha
-            && run.head_branch == "main"
-            && run.event == "push"
-            && run.path == WORKFLOW_PATH
-            && run.conclusion == "success"
-            && run.status == "completed";
         let newer = chosen.as_ref().is_none_or(|best| run.run_id > best.run_id);
-        if matches && newer {
+        if run_eligible_for_reuse(run, sha) && newer {
             chosen = Some(run);
         }
     }
     chosen.cloned().ok_or_else(|| {
         ReuseRefused("no successful main push of this workflow for that commit".into())
     })
+}
+
+pub fn chosen_run_for_fetch(
+    runs: &[WorkflowRun],
+    sha: &str,
+    pinned_run_id: Option<i64>,
+    pinned_from_api: Option<WorkflowRun>,
+) -> Result<WorkflowRun, ReuseRefused> {
+    if !sha_ok(sha) {
+        return Err(ReuseRefused("commit sha is not 40 hex characters".into()));
+    }
+    if let Some(run_id) = pinned_run_id {
+        if let Some(run) = runs.iter().find(|run| run.run_id == run_id) {
+            if run_eligible_for_reuse(run, sha) {
+                return Ok(run.clone());
+            }
+            return Err(ReuseRefused(
+                "REUSE_RUN_ID is not an eligible main push run for this commit".into(),
+            ));
+        }
+        if let Some(run) = pinned_from_api {
+            if run.run_id != run_id {
+                return Err(ReuseRefused(
+                    "REUSE_RUN_ID does not match the fetched run".into(),
+                ));
+            }
+            if run_eligible_for_reuse(&run, sha) {
+                return Ok(run);
+            }
+            return Err(ReuseRefused(
+                "REUSE_RUN_ID is not an eligible main push run for this commit".into(),
+            ));
+        }
+        return Err(ReuseRefused(
+            "REUSE_RUN_ID was not found in the commit run list".into(),
+        ));
+    }
+    select_run(runs, sha)
 }
 
 pub fn require_artifacts(
@@ -1706,6 +1747,17 @@ fn write_tar_gz(path: &Path, name: &str, data: &[u8]) {
     encoder.finish().unwrap();
 }
 
+fn test_pinned_run_resolves_when_commit_list_is_empty() {
+    let pinned = sample_run(8888);
+    let chosen = chosen_run_for_fetch(&[], SHA, Some(8888), Some(pinned.clone())).unwrap();
+    assert_eq!(chosen.run_id, 8888);
+    assert!(chosen_run_for_fetch(&[], SHA, Some(8888), None).is_err());
+    assert!(chosen_run_for_fetch(&[], SHA, None, None).is_err());
+    let mut in_progress = sample_run(8888);
+    in_progress.status = "in_progress".to_string();
+    assert!(chosen_run_for_fetch(&[], SHA, Some(8888), Some(in_progress)).is_err());
+}
+
 fn test_selects_the_latest_successful_main_push() {
     let older = sample_run(3);
     let newer = sample_run(9);
@@ -2025,6 +2077,7 @@ fn test_fetch_refusal_sets_fallback_without_publishing() {
 }
 
 register_cases! {
+    test_pinned_run_resolves_when_commit_list_is_empty,
     test_selects_the_latest_successful_main_push,
     test_refuses_a_run_that_is_not_this_workflow_on_main,
     test_refuses_missing_extra_or_expired_artifacts,
