@@ -55,6 +55,7 @@ Pause, resume, stop, and start are the same binary with that id. They were not r
 - State directory mode must be `0700` and must not be a symlink. Memory is 128–4096 MiB, vCPUs 1–4, at most 8 boxes and 16384 MiB in one store (`crates/kiln-runtime/src/runtime.rs`).
 - `--profile isolated` without a matching store returns `refusing unjailed fallback`. Root refuses `allow_unsafe_development`.
 - Client create/exec go through the host journal. `Journal::accept` refuses a 10,001st row and nothing deletes old rows (`crates/kiln-server/src/journal.rs:73-80`, `docs/remote-client.md` "10,000 requests"). Direct `kiln-runtime` does not use that journal.
+- `list` is read-only on disk: it observes live state for output but never rewrites `box.json`. `inspect` still persists recovery from interrupted launch or checkpoint operations, and refreshes `box.json` when observed state differs from the record on disk.
 - After a host crash, `inspect` adopts a running guest only when `record.network.is_none()` (`crates/kiln-runtime/src/runtime.rs:481`). Networked boxes are covered in `guest-networking.md`.
 - CI does not boot guests. Ignored tests start at `crates/kiln-runtime/tests/lifecycle.rs:226`. `.github/workflows/build.yml` runs `cargo test --workspace --all-features --locked` with no `--ignored` and no KVM job.
 - The interrupted-jailer unit test waits until `/bin/sleep` is visible in procfs before it records the pid (`crates/kiln-runtime/src/runtime.rs` around the `sleep fixture did not finish exec` loop). That flake is closed. It is not a reason to skip this journey.
