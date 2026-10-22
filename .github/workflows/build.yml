@@ -108,18 +108,24 @@ jobs:
           sh scripts/test-wait-main-run.sh
           sh scripts/test-tag-path-dry-run.sh
           sh scripts/test-tag-path-pr-stamp-order.sh
+          sh scripts/test-deploy-host-tools.sh
+          sh scripts/test-release-json-field.sh
           sh scripts/test-check-dashboard-bundle.sh
           cargo test -p kiln-server --test dashboard_self_check --locked
+          sh scripts/test-check-installed-versions.sh
           sh scripts/test-releasable.sh
           sh scripts/test-next-release-tag.sh
           sh scripts/test-plan-release.sh
           sh scripts/test-check-stamped-clients.sh
           sh scripts/test-release-budget.sh
+          sh scripts/test-verify-release-attestations.sh
           sh scripts/test-check-dropped-platform.sh
           sh scripts/test-feature-map-guard.sh
           sh scripts/test-check-pr-proof.sh
           sh scripts/test-operations-journal-version-sync.sh
+          sh scripts/test-release-notes.sh
           sh scripts/test-fmt.sh
+          sh scripts/test-check.sh
 
   feature-map-guard:
     if: github.event_name == 'pull_request'
@@ -246,44 +252,63 @@ jobs:
           sh scripts/test-wait-main-run.sh
           sh scripts/test-tag-path-dry-run.sh
           sh scripts/test-tag-path-pr-stamp-order.sh
+          sh scripts/test-deploy-host-tools.sh
+          sh scripts/test-release-json-field.sh
           sh scripts/test-check-dashboard-bundle.sh
           cargo test -p kiln-server --test dashboard_self_check --locked
+          sh scripts/test-check-installed-versions.sh
           sh scripts/test-releasable.sh
           sh scripts/test-next-release-tag.sh
           sh scripts/test-plan-release.sh
           sh scripts/test-check-stamped-clients.sh
           sh scripts/test-release-budget.sh
+          sh scripts/test-verify-release-attestations.sh
           sh scripts/test-check-dropped-platform.sh
           sh scripts/test-feature-map-guard.sh
+          sh scripts/test-check-pr-proof.sh
           sh scripts/test-operations-journal-version-sync.sh
+          sh scripts/test-release-notes.sh
           sh scripts/test-fmt.sh
+          sh scripts/test-check.sh
           shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-bootstrap-pins.sh scripts/test-bootstrap-pins.sh scripts/test-caddy-endings.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/enroll-dark-forge.sh \
             deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
             deploy/github/require-release.sh \
             deploy/github/install-remote.sh deploy/github/install-identity.sh deploy/github/smoke.sh \
             deploy/github/check-dashboard-bundle.sh \
+            deploy/github/check-installed-versions.sh \
             scripts/test-check-dashboard-bundle.sh \
+            scripts/test-check-installed-versions.sh \
+            scripts/test-deploy-host-tools.sh \
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
             scripts/test-listener-restart.sh \
             scripts/test-wait-for-operations-journal-v2.sh \
             scripts/test-identity-upgrade.sh \
             scripts/test-login-token.sh \
             scripts/test-login-token-upgrade.sh \
+            scripts/test-identity-slot-rehearsal.sh \
             scripts/test-installer-release.sh \
             scripts/stamp-release-version.sh scripts/stamp-release-dist.sh scripts/reuse-server-check.sh \
             scripts/wait-main-run.sh scripts/test-wait-main-run.sh \
             scripts/tag-path-dry-run.sh scripts/test-tag-path-dry-run.sh \
             scripts/test-tag-path-pr-stamp-order.sh \
+            scripts/read-release-json-field.sh scripts/test-release-json-field.sh \
             scripts/releasable.sh scripts/test-releasable.sh \
             scripts/next-release-tag.sh scripts/test-next-release-tag.sh \
             scripts/plan-release.sh scripts/test-plan-release.sh \
             scripts/check-stamped-clients.sh scripts/test-check-stamped-clients.sh \
             scripts/check-dropped-platform.sh scripts/test-check-dropped-platform.sh \
             scripts/test-release-budget.sh \
+            scripts/verify-release-attestations.sh scripts/test-verify-release-attestations.sh \
             scripts/check-feature-map.sh             scripts/test-feature-map-guard.sh \
             scripts/test-operations-journal-version-sync.sh \
-            scripts/fmt.sh scripts/test-fmt.sh
+            scripts/previous-release-tag.sh scripts/previous-release-notes-from.sh \
+            scripts/published-release-tags.sh scripts/release-notes-mode.sh \
+            scripts/release-notes-json.sh scripts/release-notes-markdown.sh scripts/write-release-notes.sh \
+            scripts/check-embedded-release-notes.sh scripts/test-release-notes.sh \
+            scripts/test-embedded-release-notes.sh \
+            scripts/capture-dashboard-release-notes-proof.sh \
+            scripts/fmt.sh scripts/test-fmt.sh scripts/check.sh scripts/test-check.sh scripts/check-docs.sh
 
   # A manual dry run fetches main's packages. A push builds in this run.
   reuse:
@@ -555,6 +580,13 @@ jobs:
       - name: Build dashboard
         working-directory: web
         run: npm run build
+      - name: Check embedded release notes
+        if: steps.queue.outputs.skip_tests != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          KILN_RELEASE_NOTES_PUBLISHED_BASE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
+        run: sh scripts/check-embedded-release-notes.sh "$VERSION"
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         if: steps.queue.outputs.skip_tests != 'true' && !startsWith(github.ref, 'refs/tags/v')
         with:
@@ -793,28 +825,16 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.release-plan.outputs.tag }}
           VERSION: ${{ needs.release-plan.outputs.tag }}
+          KILN_RELEASE_NOTES_STRICT: "1"
+          KILN_RELEASE_NOTES_PUBLISHED_BASE: "1"
         run: |
           started=$(date +%s)
           cargo xtask reuse-release finish --version "$VERSION" --dist dist
           (cd dist && sha256sum -c ./*.sha256)
-          source_ref=refs/heads/main
-          regex='^https://github\.com/Jabbslad/kiln/\.github/workflows/build\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$'
-          found=0
-          pids=
-          for archive in dist/*.tar.gz; do
-            [ -f "$archive" ] || continue
-            found=1
-            gh attestation verify "$archive" --repo Jabbslad/kiln --cert-identity-regex "$regex" --source-ref "$source_ref" &
-            pids="$pids $!"
-          done
-          [ "$found" = 1 ]
-          fail=0
-          for pid in $pids; do
-            wait "$pid" || fail=1
-          done
-          [ "$fail" = 0 ]
+          sh scripts/verify-release-attestations.sh dist
+          notes=$(sh scripts/release-notes-markdown.sh "$TAG")
           gh release create "$TAG" dist/* --verify-tag --target "$GITHUB_SHA" --title "$TAG" \
-            --notes 'Trusted-workload pilot. Native client tests and Linux build checks passed. The unattended installer requires Ubuntu 24.04 or 26.04 x86-64/KVM for servers. Checksums and attestations were verified in this job before publish. Binaries are not signed or notarized.'
+            --notes "$notes"
           if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
             seconds=$(( $(date +%s) - started ))
             printf '| Stage | Seconds |\n| --- | ---: |\n| publish | %s |\n' "$seconds" >> "$GITHUB_STEP_SUMMARY"

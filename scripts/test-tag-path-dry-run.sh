@@ -95,16 +95,31 @@ exit 99
 EOF
 cp "$work/bin/ssh" "$work/bin/curl"
 chmod 755 "$work/bin/ssh" "$work/bin/curl"
-cat >"$work/deploy/bin/kiln-identity" <<'EOF'
+write_version_bin() {
+  path=$1
+  name=$2
+  version=$3
+  cat >"$path" <<EOF
 #!/bin/sh
-printf '%s\n' 'kiln-identity 0.4.18'
+if [ "\${1:-}" = --version ]; then
+  printf '%s %s\n' '$name' '$version'
+  exit 0
+fi
+exit 2
 EOF
-chmod 755 "$work/deploy/bin/kiln-identity"
+  chmod 755 "$path"
+}
+write_version_bin "$work/deploy/bin/kiln-identity" kiln-identity 0.4.18
+write_version_bin "$work/deploy/bin/kiln" kiln 0.4.18
+write_version_bin "$work/deploy/bin/kiln-runtime" kiln-runtime 0.4.18
+write_version_bin "$work/deploy/bin/kiln-host" kiln-server 0.4.18
+write_version_bin "$work/deploy/bin/kiln-api" kiln-server 0.4.18
 printf '%s\n' "$want_identity" >"$work/deploy/release.json"
 printf 'install\n' >"$work/deploy/install.sh"
 mkdir -p "$work/deploy-dist"
 tar -C "$work/deploy" -czf "$work/deploy-dist/kiln-identity-v0.4.18-x86_64-unknown-linux-gnu.tar.gz" release.json bin/kiln-identity
-tar -C "$work/deploy" -czf "$work/deploy-dist/kiln-server-v0.4.18-x86_64-unknown-linux-gnu.tar.gz" install.sh
+tar -C "$work/deploy" -czf "$work/deploy-dist/kiln-server-v0.4.18-x86_64-unknown-linux-gnu.tar.gz" \
+  install.sh bin/kiln bin/kiln-runtime bin/kiln-host bin/kiln-api
 mkdir -p "$work/dashboard/assets"
 printf '<script type="module" crossorigin src="/assets/index-dryrun.js"></script>\n' \
   >"$work/dashboard/index.html"
@@ -139,4 +154,6 @@ grep -q 'dashboard inputs kiln-dashboard-v0.4.18.tar.gz' "$work/deploy-out" \
   || fail 'dashboard inputs were not checked'
 grep -q 'dashboard live index-dryrun.js' "$work/deploy-out" \
   || fail 'dashboard bundle check did not run'
+grep -q 'packaged versions v0.4.18' "$work/deploy-out" \
+  || fail 'deploy dry-run did not check packaged binary versions'
 [ ! -s "$work/ssh.log" ] || fail 'dry-run called ssh or curl'

@@ -517,6 +517,8 @@ fn test_deploy_installs_dashboard_and_checks_the_live_bundle() {
     assert!(remote.contains("--dashboard-archive"));
     assert!(remote.contains("check-dashboard-bundle.sh"));
     assert!(remote.contains("kiln-api self-check"));
+    assert!(deploy.contains("check-installed-versions.sh"));
+    assert!(remote.contains("check-installed-versions.sh"));
     assert!(remote.contains("dashboard inputs"));
     let metrics_at = index_of(&remote, "kiln-api self-check");
     let smoke_at = index_of(&remote, "bash \"$dir/smoke.sh\"");
@@ -533,6 +535,32 @@ fn test_deploy_installs_dashboard_and_checks_the_live_bundle() {
         !deploy.contains("check-dashboard-metrics.sh"),
         "deploy must not ship shell JSON metrics scripts"
     );
+}
+
+fn test_deploy_host_scripts_do_not_invoke_jq() {
+    let dir = crate::repo_root().join("deploy/github");
+    for entry in fs::read_dir(&dir).expect("deploy/github") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("sh") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .expect("script name")
+            .to_string_lossy()
+            .into_owned();
+        let text = fs::read_to_string(&path).unwrap_or_else(|err| panic!("{name}: {err}"));
+        for line in text.lines() {
+            assert!(
+                !line.contains(" jq ") && !line.contains("|jq") && !line.contains("command -v jq"),
+                "{name}: {line}"
+            );
+        }
+        assert!(
+            !text.contains("check-dashboard-metrics.sh"),
+            "{name} still references check-dashboard-metrics.sh"
+        );
+    }
 }
 
 fn test_smoke_deletes_the_box_when_exec_or_output_fails() {
@@ -1220,5 +1248,6 @@ register_cases! {
     test_apt_installs_missing_packages_without_upgrading,
     test_sqlite3_install_is_exact_and_skipped_when_present,
     test_deploy_installs_dashboard_and_checks_the_live_bundle,
+    test_deploy_host_scripts_do_not_invoke_jq,
     test_smoke_deletes_the_box_when_exec_or_output_fails,
 }
