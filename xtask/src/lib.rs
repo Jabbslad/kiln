@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 pub mod central_login;
 pub mod ci_docs_only;
+pub mod ci_job_paths;
 pub mod merge_queue;
 pub mod release;
 pub mod release_version;
