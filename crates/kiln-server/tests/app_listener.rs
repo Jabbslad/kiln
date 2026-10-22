@@ -16,7 +16,7 @@ use axum::{
 };
 use futures_util::stream;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::{Action, Submit, auth::MemberRole, auth::Scope, auth::ServerClaims, new_id};
+use kiln_api::{Action, Role, Scope, ServerClaims, Submit, new_id};
 use kiln_server::{
     app_listener::{self, BIND},
     auth::{Authenticator, Enrollment},
@@ -87,7 +87,7 @@ fn tenant_token(
     sub: &str,
     scope: Scope,
     tenant_id: &str,
-    role: MemberRole,
+    role: Role,
 ) -> String {
     let now = jsonwebtoken::get_current_timestamp();
     let claims = ServerClaims {
@@ -109,7 +109,7 @@ fn tenant_token(
 
 fn token_with(key: &EncodingKey, sub: &str, scope: Scope, credential_id: &str) -> String {
     let now = jsonwebtoken::get_current_timestamp();
-    let role = (sub == "owner-a").then_some(MemberRole::Owner);
+    let role = (sub == "owner-a").then_some(Role::Owner);
     let claims = ServerClaims {
         iss: "https://identity.example.test".into(),
         sub: sub.into(),
@@ -1142,7 +1142,7 @@ async fn read_grant_is_checked_and_another_server_is_rejected() {
     assert!(matches!(
         auth.authenticate_central(&token(&key, "owner-a", Scope::Read))
             .await,
-        Ok(Scope::Read)
+        Ok(grant) if grant.scope == Scope::Read && grant.caller.sub == "owner-a"
     ));
     assert!(
         auth.authenticate_central(&token(&key, "someone-else", Scope::Read))
@@ -1164,7 +1164,7 @@ async fn read_grant_is_checked_and_another_server_is_rejected() {
             exp: now + 300,
             credential_id: "app_other".into(),
             scope: Scope::Read,
-            role: Some(MemberRole::Owner),
+            role: Some(Role::Owner),
         },
         &key,
     )
@@ -1562,7 +1562,7 @@ async fn serve_operations() -> ServedOperations {
             "member-b",
             Scope::Operate,
             "tenant-a",
-            MemberRole::Member,
+            Role::Member,
         ),
     )
     .unwrap();

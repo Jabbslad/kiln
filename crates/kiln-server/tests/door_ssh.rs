@@ -20,7 +20,7 @@ use axum::{
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use kiln_api::{
     BoxView,
-    auth::{MemberRole, Scope, ServerClaims},
+    auth::{Role, Scope, ServerClaims},
 };
 use kiln_server::{
     auth::{Authenticator, Enrollment},
@@ -40,7 +40,7 @@ fn tenant_token(
     sub: &str,
     scope: Scope,
     tenant_id: Option<&str>,
-    role: Option<MemberRole>,
+    role: Option<Role>,
 ) -> String {
     let now = jsonwebtoken::get_current_timestamp();
     let claims = ServerClaims {
@@ -53,7 +53,7 @@ fn tenant_token(
         exp: now + 300,
         credential_id: "device-1".into(),
         scope,
-        role: role.or((sub == "owner-a").then_some(MemberRole::Owner)),
+        role: role.or((sub == "owner-a").then_some(Role::Owner)),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -273,14 +273,14 @@ async fn door_ssh_rejects_bad_callers_and_round_trips_an_operate_jwt() {
         "member-b",
         Scope::Operate,
         Some("tenant-a"),
-        Some(MemberRole::Member),
+        Some(Role::Member),
     );
     let wrong_tenant = tenant_token(
         &world.key,
         "member-b",
         Scope::Operate,
         Some("tenant-other"),
-        Some(MemberRole::Member),
+        Some(Role::Member),
     );
     let read = token(&world.key, "owner-a", Scope::Read);
     let cases = [

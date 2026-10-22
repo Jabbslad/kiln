@@ -351,7 +351,11 @@ pub async fn run(options: Options) -> Result<()> {
         Enrollment::load(&options.enrollment_file)?.context("server is not enrolled")?;
     let server_id = enrollment.server_id.clone();
     let authorize_origin = enrollment.issuer.clone();
-    let auth = Authenticator::central_only(enrollment, options.jwks_cache)?;
+    let auth = Authenticator::central_with_enrollment_file(
+        enrollment,
+        options.jwks_cache,
+        Some(options.enrollment_file),
+    )?;
     let ca = fs::read(&options.upstream_ca).context("upstream CA required")?;
     let login_secret = read_login_secret(Path::new("/etc/kiln/login.token"))?;
     let router = router_with(
@@ -438,7 +442,9 @@ async fn open_terminal(app: Arc<App>, peer: SocketAddr, id: String, request: Req
         return unauthorized();
     };
     match app.auth.authenticate_central(&jwt).await {
-        Ok(Scope::Operate) => {}
+        Ok(grant) if grant.scope == Scope::Operate => {
+            let _caller = grant.caller;
+        }
         Ok(_) => {
             audit_terminal(&app, "insufficient_scope", &id);
             return deny(
@@ -1251,7 +1257,7 @@ async fn finish_login(app: &App, request: Request) -> Response {
         .authenticate_central(&jwt)
         .await
         .ok()
-        .filter(|scope| dashboard_grant(*scope))
+        .filter(|grant| dashboard_grant(grant.scope))
         .is_none()
     {
         return deny(
@@ -1376,7 +1382,7 @@ async fn refresh_reader(app: &App, reader: &str) -> Result<(String, u64)> {
         .authenticate_central(&jwt)
         .await
         .ok()
-        .filter(|scope| dashboard_grant(*scope))
+        .filter(|grant| dashboard_grant(grant.scope))
         .is_none()
     {
         anyhow::bail!("refreshed token was not a dashboard grant");

@@ -39,5 +39,8 @@ x509-parser = "0.18"
 [dev-dependencies]
 rcgen = "0.14"
 kiln-client = { path = "../kiln-client" }
+kiln-identity = { path = "../kiln-identity" }
 p256 = { version = "0.13", features = ["pem", "pkcs8"] }
+sha2.workspace = true
+url = "2"
 tokio-tungstenite = "0.29"

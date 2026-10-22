@@ -425,6 +425,7 @@ pub async fn run(options: Options) -> Result<()> {
                 issuer,
                 owner_id: registration.owner_id,
                 server_id: registration.server_id,
+                tenant_id: None,
             },
             origin: url,
             ca_pem: ca,

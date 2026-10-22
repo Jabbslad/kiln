@@ -1,17 +1,5 @@
-//! Caller identity and box visibility shared by the server edge and host API.
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Role {
-    Owner,
-    Member,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Caller {
-    pub sub: String,
-    pub tenant_id: String,
-    pub role: Role,
-}
+//! Box visibility for the server edge and host API.
+use crate::auth::{Caller, Role};
 
 /// Whether `caller` may use door SSH, the browser terminal, or see a box on the dashboard.
 pub fn may_access_box(caller: &Caller, box_owner: Option<&str>, tenant_owner: &str) -> bool {
@@ -29,6 +17,7 @@ pub fn may_access_box(caller: &Caller, box_owner: Option<&str>, tenant_owner: &s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::Role;
 
     fn member(sub: &str, tenant: &str) -> Caller {
         Caller {
