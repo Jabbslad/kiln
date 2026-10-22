@@ -238,26 +238,20 @@ mod tests {
 
     #[test]
     fn refuses_stale_identity_and_reaps_owned_process() {
-        let root = tempfile::tempdir().unwrap();
-        let executable = fs::canonicalize("/bin/sleep").unwrap();
-        let mut child = std::process::Command::new(&executable)
+        let mut child = std::process::Command::new("sleep")
             .arg("10")
-            .current_dir(root.path())
             .spawn()
             .unwrap();
-        let identity = match identify(child.id()) {
-            Ok(identity) => identity,
-            Err(_) => {
-                child.kill().unwrap();
-                child.wait().unwrap();
-                panic!("could not identify child process");
-            }
-        };
+        let actual = identify(child.id());
+        if actual.is_err() {
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
+        let identity = actual.unwrap();
         let mut stale = identity.clone();
         stale.start_ticks += 1;
         assert!(terminate(&stale).is_err());
         assert!(child.try_wait().unwrap().is_none());
-        let identity = identify(child.id()).unwrap();
         terminate(&identity).unwrap();
         child.wait().unwrap();
         assert!(identify(identity.pid).is_err());
