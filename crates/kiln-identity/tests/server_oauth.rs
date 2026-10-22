@@ -5,7 +5,7 @@ use axum::{
     http::{HeaderMap, Request, StatusCode},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use kiln_api::auth::{APP_OAUTH_REDIRECT, Scope, ServerClaims};
+use kiln_api::auth::{APP_OAUTH_REDIRECT, MemberRole, Scope, ServerClaims};
 use kiln_identity::{Config, Store};
 use p256::pkcs8::EncodePrivateKey;
 use serde_json::{Value, json};
@@ -183,7 +183,7 @@ fn version_one_migrates_to_two_and_leaves_the_redirect_empty() {
     let version: i64 = db
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
     let redirect: Option<String> = db
         .query_row(
             "SELECT redirect_uri FROM servers WHERE id='srv_old'",
@@ -200,6 +200,21 @@ fn version_one_migrates_to_two_and_leaves_the_redirect_empty() {
         )
         .unwrap();
     assert!(secret.is_none());
+    let tenant: String = db
+        .query_row(
+            "SELECT tenant_id FROM servers WHERE id='srv_old'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let owners: i64 = db
+        .query_row(
+            "SELECT count(*) FROM tenant_members WHERE tenant_id=?1 AND role='owner'",
+            [&tenant],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(owners, 1);
     drop(db);
     Store::open(&path).unwrap();
 
@@ -226,7 +241,7 @@ async fn server_oauth_is_single_use_and_split_from_the_directory_token() {
         .db()
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
     let owner = f
         .store
         .seed_account("github", "101", "owner", now())
@@ -436,6 +451,8 @@ async fn server_oauth_is_single_use_and_split_from_the_directory_token() {
     assert_eq!(decoded.sub, owner);
     assert_eq!(decoded.aud, format!("kiln:server:{server}"));
     assert_eq!(decoded.scope, Scope::Operate);
+    assert_eq!(decoded.role, MemberRole::Owner);
+    assert!(!decoded.tenant_id.is_empty());
     assert_eq!(decoded.credential_id, format!("app_{server}"));
     assert_eq!(decoded.exp - decoded.iat, 300);
     let (status, _, body) = f

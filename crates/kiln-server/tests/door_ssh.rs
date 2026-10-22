@@ -18,7 +18,7 @@ use axum::{
     response::IntoResponse,
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{Scope, ServerClaims};
+use kiln_api::auth::{MemberRole, Scope, ServerClaims};
 use kiln_server::{
     auth::{Authenticator, Enrollment},
     door, gateway,
@@ -34,11 +34,13 @@ fn token(key: &EncodingKey, sub: &str, scope: Scope) -> String {
         iss: "https://identity.example.test".into(),
         sub: sub.into(),
         aud: "kiln:server:server-b".into(),
+        tenant_id: "ten_test".into(),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-1".into(),
         scope,
+        role: MemberRole::Owner,
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

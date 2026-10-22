@@ -15,7 +15,7 @@ use axum::{
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use kiln_api::{
     ApiError, BoxView, ExecResult, Operation, OperationState, Outcome,
-    auth::{Scope, ServerClaims},
+    auth::{MemberRole, Scope, ServerClaims},
 };
 use kiln_runtime::{
     image::{BootMode, Manifest},
@@ -458,11 +458,13 @@ fn read_jwt(key: &EncodingKey) -> String {
         iss: "https://identity.example.test".into(),
         sub: "owner-a".into(),
         aud: format!("kiln:server:{WORKSPACE}"),
+        tenant_id: "ten_test".into(),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-1".into(),
         scope: Scope::Read,
+        role: MemberRole::Owner,
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
