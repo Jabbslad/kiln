@@ -133,13 +133,19 @@ pub fn verify_claims(token: &str, enrollment: &Enrollment, jwks: &Value) -> Resu
     validation.validate_nbf = true;
     validation.leeway = 30;
     let c = decode::<ServerClaims>(token, &key, &validation)?.claims;
-    let tenant_id = c
+    let claim_tenant = c
         .tenant_id
         .clone()
         .filter(|id| !id.is_empty())
         .unwrap_or_else(|| c.sub.clone());
+    let enrolled_tenant = enrollment.tenant_id();
+    let tenant_ok = claim_tenant == enrolled_tenant
+        || (enrollment.tenant_id.is_none()
+            && c.sub == enrollment.owner_id
+            && c.role.unwrap_or(Role::Owner) == Role::Owner
+            && c.tenant_id.is_some());
     ensure!(
-        tenant_id == enrollment.tenant_id()
+        tenant_ok
             && !c.credential_id.is_empty()
             && c.credential_id.len() <= 128
             && c.exp > c.iat
