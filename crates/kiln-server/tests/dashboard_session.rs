@@ -17,9 +17,7 @@ use axum::{
 };
 use base64::Engine;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{
-    AccessToken, DeviceAuthorization, DeviceTokens, Role, Scope, ServerClaims,
-};
+use kiln_api::auth::{AccessToken, DeviceAuthorization, DeviceTokens, Role, Scope, ServerClaims};
 use kiln_server::{
     auth::{Authenticator, Enrollment},
     door::{self, Dashboard},
