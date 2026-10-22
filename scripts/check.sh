@@ -48,9 +48,9 @@ run_check() {
 run_check fmt sh scripts/fmt.sh --check
 
 run_server_check() {
-  cargo fmt --all -- --check
-  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-  sh scripts/run-workspace-nextest.sh
+  cargo fmt --all -- --check &&
+  cargo clippy --workspace --all-targets --all-features --locked -- -D warnings &&
+  sh scripts/run-workspace-nextest.sh &&
   if command -v shellcheck >/dev/null 2>&1; then
     shellcheck -S error scripts/check.sh scripts/test-check.sh scripts/check-docs.sh
   else
