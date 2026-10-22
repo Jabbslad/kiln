@@ -15,6 +15,8 @@ grep -q 'dist-proved-package-server' "$tag_script" \
   || fail 'tag-path-dry-run must stage dist-proved-package-server on pull requests'
 grep -q 'scripts/package-server-release.sh' "$tag_script" \
   || fail 'tag-path-dry-run must call package-server-release.sh on pull requests'
+grep -q 'SKIP_RELEASE_BUILD=1' "$tag_script" \
+  || fail 'tag-path-dry-run must skip rebuilding release binaries for proved package-server'
 
 block=$(
   awk '/^  tag-path-dry-run:/{flag=1} flag && /^  [a-z].*:/ && !/^  tag-path-dry-run:/{exit} flag{print}' \

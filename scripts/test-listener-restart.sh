@@ -153,6 +153,13 @@ INSERT INTO operations(
 SQL
 }
 
+init_journal_v4() {
+  rm -f "$var/journal/operations.sqlite"
+  sqlite3 "$var/journal/operations.sqlite" \
+    'PRAGMA journal_mode=DELETE; PRAGMA user_version=4; CREATE TABLE operations(running INTEGER); INSERT INTO operations VALUES(0);' \
+    >/dev/null
+}
+
 init_journal_v2() {
   rm -f "$var/journal/operations.sqlite"
   sqlite3 "$var/journal/operations.sqlite" <<'SQL'
