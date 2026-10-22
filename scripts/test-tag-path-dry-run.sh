@@ -22,6 +22,10 @@ server_json=$fixture/server-release.json
 if grep -n -E 'gh release|git push|git tag|ssh ' "$root/scripts/tag-path-dry-run.sh" >/dev/null; then
   fail 'dry-run script publishes, tags, or uses ssh'
 fi
+grep -q 'scripts/check-release-trust.sh' "$root/scripts/tag-path-dry-run.sh" \
+  || fail 'dry-run must guard release binaries'
+grep -q 'scripts/check-release-trust.sh' "$root/.github/workflows/build.yml" \
+  || fail 'release build must guard release binaries'
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

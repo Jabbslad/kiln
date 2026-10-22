@@ -52,6 +52,9 @@ enum Command {
         #[arg(long, default_value = "/var/lib/kiln-api/dashboard-session")]
         session_dir: PathBuf,
     },
+    /// Create /etc/kiln/login.token when that path is absent.
+    #[command(hide = true)]
+    PublishLoginToken,
     /// Validate live host dashboard metrics over loopback kiln-api.
     SelfCheck {
         #[arg(long)]
@@ -90,6 +93,20 @@ async fn main() -> Result<()> {
     if let Some(command) = args.command {
         return match command {
             Command::Enroll(options) => kiln_server::enrollment::run(options).await,
+            Command::PublishLoginToken => match kiln_server::enrollment::publish_login().await {
+                Ok(kiln_server::enrollment::LoginPublish::Created) => {
+                    println!("created");
+                    Ok(())
+                }
+                Ok(kiln_server::enrollment::LoginPublish::Unchanged) => {
+                    println!("unchanged");
+                    Ok(())
+                }
+                Err(error) => {
+                    eprintln!("login-token: {error}");
+                    std::process::exit(1);
+                }
+            },
             Command::Door {
                 listen,
                 upstream,

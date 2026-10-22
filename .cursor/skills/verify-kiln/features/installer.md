@@ -14,6 +14,7 @@ Tagged deploy and auto-release also ship `kiln-identity-*.tar.gz` and `kiln-dash
 - Checksums are pinned in the `assets` function of `install.sh`. The version variable is set in `main`. Current server packages ship `operations-journal.max-version` beside `install.sh`; bootstrap accepts older archives that omit it and requires the file when present.
 - Binary updates call `wait_for_operations` on `/var/lib/kiln/journal/operations.sqlite` before stopping `kiln-host`. The max supported schema version is pinned in `deploy/operations-journal.max-version` (also shipped beside `install.sh` and included by `crates/kiln-server/src/journal.rs`). The installer accepts versions `1` through that max; anything else fails with the sqlite command, the found version, and the accepted range. Any failed update step prints its name, command, exit code, and the last twenty output lines.
 - Identity upgrade on deploy: `deploy/github/install-identity.sh` replaces `/usr/local/libexec/kiln-identity` from the release tarball with rollback probes. After an intentional `systemctl restart kiln-identity.service`, the installer checks `systemctl is-active`, loopback `http://127.0.0.1:8091/login` (HTTP 200), and that `NRestarts` is unchanged over a short settle window; failures print step name, command, exit code, and trailing output (`identity_step_fail` in `deploy/github/install-identity.sh`). Unchanged bytes skip the restart and these checks.
+- An `--apply` upgrade creates `/etc/kiln/login.token` when that path is missing and `identity.json` already names an issuer and server. An existing file is left unchanged, including its owner and mode. The step uses the same failure report as other update steps and still runs the later upgrade work, then the upgrade exits non-zero.
 
 ## How to get to it (user POV)
 
@@ -52,6 +53,15 @@ Identity-only upgrade logic:
 bash scripts/test-identity-upgrade.sh
 sh scripts/test-check-installed-versions.sh
 ```
+
+Dashboard login token backfill:
+
+```sh
+bash scripts/test-login-token.sh
+bash scripts/test-login-token-upgrade.sh
+```
+
+`test-login-token.sh` is the fixture installer. `test-login-token-upgrade.sh` downloads a published server and identity archive, builds a debug `kiln-api` with the non-default `loopback-identity-ca` feature, upgrades that install, and checks dashboard sign-in. Release and tag-path binaries are built without that feature and trust only the bundled roots. The script needs `gh`, a GitHub token, `sudo`, and Caddy. It does not use a dark-forge fixture.
 
 Pull-request tag-path rehearsal (`scripts/tag-path-dry-run.sh`) builds a server package from the PR, then runs `KILN_SERVER_UPGRADE_PREV_TAR` / `KILN_SERVER_UPGRADE_TO_TAR` through the same script against a v2 operation journal fixture.
 

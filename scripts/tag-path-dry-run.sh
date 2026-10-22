@@ -121,7 +121,11 @@ if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
   VERSION=${tag#v}
   export VERSION
   cargo xtask release-version resolve --ref-type tag --ref-name "$tag"
-  cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client
+  trust_json=$(mktemp)
+  trust_bins=$(mktemp -d)
+  trap 'rm -rf "$dist" "$output" "$trust_json" "$trust_bins"' EXIT
+  cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client \
+    --message-format=json >"$trust_json"
   cargo xtask release-version check-binary --version "$tag" -- \
     target/release/kiln \
     target/release/kiln-runtime \
@@ -139,6 +143,18 @@ if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
     break
   done
   [ -n "$next_archive" ] || fail 'PR server package was not assembled'
+  tar -xzf "$next_archive" -C "$trust_bins" \
+    bin/kiln bin/kiln-runtime bin/kiln-host bin/kiln-api
+  sh scripts/check-release-trust.sh --cargo-json "$trust_json" \
+    target/release/kiln \
+    target/release/kiln-runtime \
+    target/release/kiln-host \
+    target/release/kiln-api \
+    "$trust_bins/bin/kiln" \
+    "$trust_bins/bin/kiln-runtime" \
+    "$trust_bins/bin/kiln-host" \
+    "$trust_bins/bin/kiln-api"
+  rm -rf "$trust_json" "$trust_bins"
   KILN_SERVER_UPGRADE_PREV_TAR=$prev_archive \
     KILN_SERVER_UPGRADE_TO_TAR=$next_archive \
     bash scripts/test-identity-upgrade.sh
