@@ -486,37 +486,43 @@ https://127.0.0.1:{port} {{
 
 fn curl_kiln_ssh_upgrade(dir: &Path, port: u16, caddy_cert: &Path, box_id: &str) -> (u16, String) {
     let body = dir.join("ssh-upgrade.body");
-    let completed = Command::new("curl")
-        .args([
-            "--silent",
-            "--show-error",
-            "--http1.1",
-            "--connect-timeout",
-            "3",
-            "--max-time",
-            "5",
-            "--cacert",
-        ])
-        .arg(caddy_cert)
-        .arg("--output")
-        .arg(&body)
-        .args(["--write-out", "%{http_code}"])
-        .args(["--header", "Connection: Upgrade"])
-        .args(["--header", "Upgrade: kiln-ssh"])
-        .args(["--header", &format!("x-kiln-ssh-key: {SSH_PROBE_KEY}")])
-        .arg(format!("https://127.0.0.1:{port}/v1/boxes/{box_id}/ssh"))
-        .output()
-        .unwrap();
-    assert!(
-        completed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&completed.stderr)
-    );
-    let code = String::from_utf8_lossy(&completed.stdout)
-        .trim()
-        .parse::<u16>()
-        .unwrap();
-    (code, fs::read_to_string(&body).unwrap_or_default())
+    let url = format!("https://127.0.0.1:{port}/v1/boxes/{box_id}/ssh");
+    let key_header = format!("x-kiln-ssh-key: {SSH_PROBE_KEY}");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut last = String::new();
+    while Instant::now() < deadline {
+        let completed = Command::new("curl")
+            .args([
+                "--silent",
+                "--show-error",
+                "--http1.1",
+                "--connect-timeout",
+                "3",
+                "--max-time",
+                "5",
+                "--cacert",
+            ])
+            .arg(caddy_cert)
+            .arg("--output")
+            .arg(&body)
+            .args(["--write-out", "%{http_code}"])
+            .args(["--header", "Connection: Upgrade"])
+            .args(["--header", "Upgrade: kiln-ssh"])
+            .args(["--header", &key_header])
+            .arg(&url)
+            .output()
+            .unwrap();
+        if completed.status.success() {
+            let code = String::from_utf8_lossy(&completed.stdout)
+                .trim()
+                .parse::<u16>()
+                .unwrap();
+            return (code, fs::read_to_string(&body).unwrap_or_default());
+        }
+        last = String::from_utf8_lossy(&completed.stderr).into_owned();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("curl did not finish the ssh upgrade probe to {url}: {last}");
 }
 
 async fn door_on_loopback(root: &Path, door_cert: &Path, door_key: &Path) {
