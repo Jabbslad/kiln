@@ -18,7 +18,7 @@ use axum::{
 use base64::Engine;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use kiln_api::auth::{
-    AccessToken, DeviceAuthorization, DeviceTokens, MemberRole, Scope, ServerClaims,
+    AccessToken, DeviceAuthorization, DeviceTokens, Role, Scope, ServerClaims,
 };
 use kiln_server::{
     auth::{Authenticator, Enrollment},
@@ -506,7 +506,7 @@ async fn world(with_root: bool) -> World {
         issuer: issuer.clone(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: String::new(),
+        tenant_id: None,
     };
     let cache = tmp.path().join("jwks.json");
     std::fs::write(
@@ -762,7 +762,7 @@ fn mint_with(key: &EncodingKey, issuer: &str, sub: &str) -> String {
         exp: now + 300,
         credential_id: "dev_dashboard".into(),
         scope: Scope::Operate,
-        role: Some(MemberRole::Owner),
+        role: Some(Role::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

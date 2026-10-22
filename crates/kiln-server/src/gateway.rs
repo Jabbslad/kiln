@@ -98,18 +98,14 @@ async fn authenticate(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
-    let (caller, scope) = state
-        .auth
-        .authenticate_with_caller(token)
-        .await
-        .map_err(|_| {
-            Failure::new(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "A valid credential is required.",
-            )
-        })?;
-    if required == Scope::Operate && scope != Scope::Operate {
+    let grant = state.auth.authenticate(token).await.map_err(|_| {
+        Failure::new(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "A valid credential is required.",
+        )
+    })?;
+    if required == Scope::Operate && grant.scope != Scope::Operate {
         return Err(Failure::new(
             StatusCode::FORBIDDEN,
             "insufficient_scope",
@@ -119,7 +115,10 @@ async fn authenticate(
     validate_uri_query(method, uri)?;
     let authorization =
         HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| Failure::missing())?;
-    Ok((caller, authorization))
+    Ok((
+        crate::box_access::access_caller(&grant.caller),
+        authorization,
+    ))
 }
 
 async fn ensure_box_access(

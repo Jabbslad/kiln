@@ -13,6 +13,35 @@ fail() {
   exit 1
 }
 
+green_main_run() {
+  repo=$1
+  row=$(
+    gh run list --repo "$repo" --workflow build.yml --branch main --event push \
+      --status success --limit 1 \
+      --json databaseId,headSha,event,conclusion,headBranch,status \
+      --jq '.[0] | select(.conclusion == "success" and .event == "push" and .headBranch == "main" and .status == "completed") | "\(.databaseId)\t\(.headSha)"'
+  )
+  green_main_run_id=${row%%	*}
+  green_main_sha=${row#*	}
+  printf '%s\n' "$green_main_sha" | grep -Eq '^[0-9a-f]{40}$' || return 1
+  printf '%s\n' "$green_main_run_id" | grep -Eq '^[0-9]+$' || return 1
+  return 0
+}
+
+if [ "${TAG_PATH_GREEN_MAIN_RUN_TEST:-}" = 1 ]; then
+  repo=${GH_REPO:-Jabbslad/kiln}
+  case $repo in
+    */*) ;;
+    *) fail "repository is not owner/name" ;;
+  esac
+  if [ -z "${GH_TOKEN:-}" ]; then
+    fail 'GH_TOKEN is required'
+  fi
+  green_main_run "$repo" || fail 'no green main run'
+  printf 'green main run %s %s\n' "$green_main_run_id" "$green_main_sha"
+  exit 0
+fi
+
 sh scripts/test-releasable.sh
 sh scripts/test-next-release-tag.sh
 sh scripts/test-plan-release.sh
@@ -28,13 +57,8 @@ if [ -z "${GH_TOKEN:-}" ]; then
   fail 'GH_TOKEN is required'
 fi
 
-sha=$(
-  gh run list --repo "$repo" --workflow build.yml --branch main --event push \
-    --status success --limit 1 \
-    --json headSha,event,conclusion,headBranch,status \
-    --jq '.[0] | select(.conclusion == "success" and .event == "push" and .headBranch == "main" and .status == "completed") | .headSha'
-)
-printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{40}$' || fail 'no green main run'
+green_main_run "$repo" || fail 'no green main run'
+sha=$green_main_sha
 
 dist=$(mktemp -d)
 output=$(mktemp)
@@ -44,6 +68,7 @@ env -u REUSE_VERSION \
   GITHUB_OUTPUT="$output" \
   REUSE_EVENT=workflow_dispatch \
   REUSE_SHA_INPUT="$sha" \
+  REUSE_RUN_ID="$green_main_run_id" \
   GH_REPO="$repo" \
   GH_TOKEN="$GH_TOKEN" \
   cargo xtask reuse-release fetch --dist "$dist"

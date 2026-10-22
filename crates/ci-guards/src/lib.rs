@@ -367,6 +367,7 @@ enum Value {
     Ref,
     NeedResult(String),
     NeedOutput(String, String),
+    InputDryRun,
     Lit(String),
 }
 
@@ -403,6 +404,15 @@ fn eval_eq(left: &Value, right: &Value, ctx: &Ctx<'_>) -> Result<bool, String> {
             };
             Ok(job_output(jobs, job, name) == expected)
         }
+        (Value::InputDryRun, Value::Lit(expected)) => Ok(match expected.as_str() {
+            "false" => true,
+            "true" => false,
+            other => {
+                return Err(format!(
+                    "inputs.dry_run is only checked against true or false, got {other}"
+                ));
+            }
+        }),
         _ => Err("comparison is outside the attest event check".to_string()),
     }
 }
@@ -598,6 +608,12 @@ impl<'a> Parser<'a> {
         {
             return Ok(Value::Lit(self.string()?));
         }
+        if self.eat("false") {
+            return Ok(Value::Lit("false".to_string()));
+        }
+        if self.eat("true") {
+            return Ok(Value::Lit("true".to_string()));
+        }
         named_value(&self.ident()?)
     }
 
@@ -664,6 +680,9 @@ fn named_value(ident: &str) -> Result<Value, String> {
     }
     if ident == "github.ref" {
         return Ok(Value::Ref);
+    }
+    if ident == "inputs.dry_run" {
+        return Ok(Value::InputDryRun);
     }
     if let Some(rest) = ident.strip_prefix("needs.") {
         if let Some((job, output)) = rest.split_once(".outputs.")
