@@ -1,7 +1,7 @@
 //! Local enrollment remains the authority for issuer, owner and server audience.
 use anyhow::{Context, Result, ensure};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
-use kiln_api::auth::{Scope, ServerClaims};
+use kiln_api::auth::{AuthGrant, Caller, Role, Scope, ServerClaims};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -21,6 +21,8 @@ pub struct Enrollment {
     pub issuer: String,
     pub owner_id: String,
     pub server_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
 }
 
 impl Enrollment {
@@ -44,7 +46,22 @@ impl Enrollment {
                 && self.server_id.len() <= 128,
             "invalid enrollment identity"
         );
+        if let Some(tenant_id) = &self.tenant_id {
+            ensure!(
+                !tenant_id.is_empty() && tenant_id.len() <= 128,
+                "invalid enrollment tenant"
+            );
+        }
         Ok(())
+    }
+
+    /// Effective tenant for this server. Legacy enrollments without `tenant_id`
+    /// treat the enrolled owner as the sole tenant owner.
+    pub fn tenant_id(&self) -> &str {
+        self.tenant_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .unwrap_or(&self.owner_id)
     }
 
     pub fn load(path: &Path) -> Result<Option<Self>> {
@@ -94,7 +111,7 @@ fn keys(value: &Value) -> Result<JwkSet> {
     Ok(serde_json::from_value(value.clone())?)
 }
 
-pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Scope> {
+pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<AuthGrant> {
     enrollment.validate()?;
     ensure!(token.len() <= 8192, "invalid token");
     let header = decode_header(token)?;
@@ -117,7 +134,7 @@ pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Scop
     validation.leeway = 30;
     let c = decode::<ServerClaims>(token, &key, &validation)?.claims;
     ensure!(
-        c.sub == enrollment.owner_id
+        c.tenant_id == enrollment.tenant_id()
             && !c.credential_id.is_empty()
             && c.credential_id.len() <= 128
             && c.exp > c.iat
@@ -127,7 +144,14 @@ pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Scop
             && c.iat <= jsonwebtoken::get_current_timestamp().saturating_add(30),
         "invalid token authority or lifetime"
     );
-    Ok(c.scope)
+    Ok(AuthGrant {
+        caller: Caller {
+            sub: c.sub,
+            tenant_id: c.tenant_id,
+            role: c.role,
+        },
+        scope: c.scope,
+    })
 }
 
 struct Cache {
@@ -186,37 +210,49 @@ impl Authenticator {
         Ok(auth)
     }
 
-    pub async fn authenticate(&self, bearer: &str) -> Result<Scope> {
+    pub async fn authenticate(&self, bearer: &str) -> Result<AuthGrant> {
         ensure!(bearer.len() <= 8192, "invalid token");
         if let Some(admin_hash) = self.admin_hash {
             let supplied: [u8; 32] = Sha256::digest(bearer.as_bytes()).into();
             if bool::from(supplied.ct_eq(&admin_hash)) {
-                return Ok(Scope::Operate);
+                let tenant_id = self
+                    .central
+                    .as_ref()
+                    .map(|(enrollment, _)| enrollment.tenant_id().to_owned())
+                    .unwrap_or_default();
+                return Ok(AuthGrant {
+                    caller: Caller {
+                        sub: "administrator".into(),
+                        tenant_id,
+                        role: Role::Owner,
+                    },
+                    scope: Scope::Operate,
+                });
             }
         }
         self.central_jwt(bearer).await
     }
 
-    pub async fn authenticate_central(&self, bearer: &str) -> Result<Scope> {
+    pub async fn authenticate_central(&self, bearer: &str) -> Result<AuthGrant> {
         ensure!(bearer.len() <= 8192, "invalid token");
         self.central_jwt(bearer).await
     }
 
-    /// Enrolled owner id when the bearer is a valid central JWT; otherwise `anonymous`.
+    /// Enrolled caller id when the bearer is a valid central JWT; otherwise `anonymous`.
     pub async fn central_caller(&self, bearer: &str) -> String {
         if bearer.is_empty() {
             return "anonymous".into();
         }
-        let Some((enrollment, _)) = self.central.as_ref() else {
+        if self.central.is_none() {
             return "anonymous".into();
-        };
-        if self.authenticate_central(bearer).await.is_ok() {
-            return enrollment.owner_id.clone();
         }
-        "anonymous".into()
+        match self.authenticate_central(bearer).await {
+            Ok(grant) => grant.caller.sub,
+            Err(_) => "anonymous".into(),
+        }
     }
 
-    async fn central_jwt(&self, bearer: &str) -> Result<Scope> {
+    async fn central_jwt(&self, bearer: &str) -> Result<AuthGrant> {
         let (enrollment, path) = self
             .central
             .as_ref()
