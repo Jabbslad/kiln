@@ -171,18 +171,11 @@ impl Document {
         })
     }
 
-    pub(crate) fn named_box_missing_launch_total_ms(&self, identifier: &str) -> Option<bool> {
-        let box_body = self
-            .boxes
+    pub(crate) fn named_box_timing(&self, identifier: &str) -> Option<Option<LaunchTiming>> {
+        self.boxes
             .iter()
-            .find(|box_body| box_body.id == identifier || box_body.name == identifier)?;
-        Some(
-            box_body
-                .timing
-                .as_ref()
-                .and_then(|timing| timing.total_ms)
-                .is_none(),
-        )
+            .find(|box_body| box_body.id == identifier || box_body.name == identifier)
+            .map(|box_body| box_body.timing.clone())
     }
 }
 
