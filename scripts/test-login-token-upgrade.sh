@@ -94,8 +94,17 @@ download_release() {
 }
 
 pick_tag() {
-  local tags tag version
-  tags=$(gh release list --repo "$repo" --exclude-drafts --exclude-pre-releases --limit 40 \
+  local tags tag version preferred=v${workspace_version}
+  if gh release view "$preferred" --repo "$repo" --json assets \
+    --jq '.assets[].name' 2>/dev/null \
+    | grep -qx "kiln-server-${preferred}-x86_64-unknown-linux-gnu.tar.gz" \
+    && gh release view "$preferred" --repo "$repo" --json assets \
+      --jq '.assets[].name' | grep -qx "kiln-identity-${preferred}-x86_64-unknown-linux-gnu.tar.gz"
+  then
+    printf '%s\n' "$preferred"
+    return 0
+  fi
+  tags=$(gh release list --repo "$repo" --exclude-drafts --exclude-pre-releases --limit 100 \
     | awk '{print $1}')
   [ -n "$tags" ] || fail "no published releases"
   while IFS= read -r tag; do

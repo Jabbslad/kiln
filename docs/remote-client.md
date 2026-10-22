@@ -275,6 +275,15 @@ initialization and persist on the box disk. Authentication authorizes root
 access inside the selected box. The administrator token is never sent to the
 guest; terminal/file payloads do not enter the operation journal.
 
+On `https://cli.dark-forge.dev`, `kiln ssh` and `kiln ssh-config` use the full
+box id and send `Upgrade: kiln-ssh` to `GET /v1/boxes/<id>/ssh`. The public door
+accepts that upgrade only for an operate-scope identity JWT whose subject is the
+enrolled owner, then proxies the byte stream to loopback `kiln-api` with that
+same JWT. It does not accept the administrator token and does not add one. A
+missing credential, an invalid JWT, a read-scope token, or another owner's JWT
+is rejected before the door dials loopback. Each accepted session is audited.
+Linux and macOS ship this client. There is still no public port 22.
+
 SSH sessions are separate from buffered `exec`: Ctrl-C and terminal resizing
 work through OpenSSH, with no automatic command replay or session reconnect.
 There are at most 32 tunnels per service, eight sessions per guest, and a 24-hour

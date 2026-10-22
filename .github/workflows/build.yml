@@ -278,6 +278,7 @@ jobs:
             deploy/github/require-release.sh \
             deploy/github/install-remote.sh deploy/github/install-identity.sh deploy/github/smoke.sh \
             deploy/github/check-dashboard-bundle.sh \
+            deploy/github/check-door-ssh.sh \
             deploy/github/check-installed-versions.sh \
             scripts/test-check-dashboard-bundle.sh \
             scripts/test-check-installed-versions.sh \

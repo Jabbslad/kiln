@@ -183,6 +183,7 @@ if [ "$tag" = "v0.4.4" ]; then
 fi
 put "$script_dir/install-remote.sh" "$remote/install-remote.sh"
 put "$script_dir/smoke.sh" "$remote/smoke.sh"
+put "$script_dir/check-door-ssh.sh" "$remote/check-door-ssh.sh"
 if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
   KILN_IDENTITY_CHECK_ONLY=1 bash "$remote/install-identity.sh" "$remote"
   KILN_INSTALL_CHECK_ONLY=1 bash "$remote/install-remote.sh" "$remote"
