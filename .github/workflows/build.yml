@@ -229,7 +229,9 @@ jobs:
         run: rustup show
       - name: Install cargo-nextest
         if: steps.queue.outputs.skip_tests != 'true'
-        uses: taiki-e/install-action@cargo-nextest@0.9.104
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.104
       # Tag builds ship binaries, so they do not restore or save a cache.
       # Keep the kiln crates in the cache so a warm run reuses them.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

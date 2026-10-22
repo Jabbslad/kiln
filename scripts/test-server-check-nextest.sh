@@ -18,7 +18,7 @@ block=$(
   awk '/^  server-check:/{flag=1} flag && /^  [a-z].*:/ && !/^  server-check:/{exit} flag{print}' \
     "$workflow"
 )
-printf '%s\n' "$block" | grep -q 'install-action@cargo-nextest' \
+printf '%s\n' "$block" | grep -q 'tool: cargo-nextest' \
   || fail 'server-check must install cargo-nextest'
 printf '%s\n' "$block" | grep -q 'run-workspace-nextest.sh' \
   || fail 'server-check must run workspace tests through run-workspace-nextest.sh'
