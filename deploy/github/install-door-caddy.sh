@@ -1,5 +1,7 @@
 #!/bin/bash
-# Install deploy/door.Caddyfile into the Caddy config volume snippet and reload.
+# Option (c): install deploy/door.Caddyfile into the Kiln snippet only.
+# Deploy never writes /opt/paseo/Caddyfile (read-only grep for the import line).
+# Block-replace of the shared Caddyfile is not wired from deploy.
 set -euo pipefail
 
 fail() { printf 'install-door-caddy: %s\n' "$*" >&2; exit 1; }
