@@ -150,6 +150,7 @@ jobs:
           sh scripts/test-release-notes.sh
           sh scripts/test-fmt.sh
           sh scripts/test-check.sh
+          sh scripts/test-server-check-nextest.sh
           sh scripts/test-pre-push-hook.sh
           sh scripts/test-ssh-multiplex.sh
 
@@ -226,6 +227,9 @@ jobs:
       - name: Toolchain
         if: steps.queue.outputs.skip_tests != 'true'
         run: rustup show
+      - name: Install cargo-nextest
+        if: steps.queue.outputs.skip_tests != 'true'
+        uses: taiki-e/install-action@cargo-nextest@0.9.104
       # Tag builds ship binaries, so they do not restore or save a cache.
       # Keep the kiln crates in the cache so a warm run reuses them.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -255,7 +259,7 @@ jobs:
         run: |
           cargo fmt --all -- --check
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-          cargo test --workspace --all-features --locked --exclude xtask
+          NEXTEST_SHARDS=3 sh scripts/run-workspace-nextest.sh
           cargo xtask test-release-version
           cargo xtask test-release
           cargo xtask test-install
@@ -300,6 +304,7 @@ jobs:
           sh scripts/test-release-notes.sh
           sh scripts/test-fmt.sh
           sh scripts/test-check.sh
+          sh scripts/test-server-check-nextest.sh
           sh scripts/test-pre-push-hook.sh
           sh scripts/test-ssh-multiplex.sh
           shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-bootstrap-pins.sh scripts/test-bootstrap-pins.sh scripts/test-caddy-endings.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \

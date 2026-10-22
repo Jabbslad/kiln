@@ -43,3 +43,4 @@ sh scripts/test-operations-journal-version-sync.sh
 sh scripts/test-release-notes.sh
 sh scripts/test-fmt.sh
 sh scripts/test-check.sh
+sh scripts/test-server-check-nextest.sh
