@@ -2093,7 +2093,7 @@ fn test_workflow_keeps_drafts_and_does_not_move_tags() {
     assert_eq!(
         text.matches("!startsWith(github.ref, 'refs/tags/v')")
             .count(),
-        6
+        7
     );
     assert!(!text.contains("--auto"));
     assert_eq!(job_graph(), expected_jobs());
