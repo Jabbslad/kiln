@@ -8,7 +8,7 @@ A green push to `main` can publish the next patch release and deploy it to dark-
 - `release-plan`: `scripts/plan-release.sh` with `PLAN_RELEASE_APPLY=1` decides `release=true|false` and the next `vX.Y.Z` tag from the push diff.
 - `version-guard`: when `release=true`, stamps artifacts to the planned tag and runs `scripts/check-stamped-clients.sh`.
 - `attest`: build provenance on `dist/*.tar.gz` and `dist/*.zip` for main pushes.
-- `draft-release`: verifies checksums and attestations, then `gh release create` for the planned tag.
+- `draft-release`: verifies checksums and attestations (`scripts/verify-release-attestations.sh` retries Sigstore verifier init flakes), then `gh release create` for the planned tag.
 - `deploy`: reusable `deploy.yml` with `tag: ${{ needs.release-plan.outputs.tag }}`.
 - Post-checks on the host (`deploy/github/install-remote.sh`): `install.sh --healthcheck`, `kiln-api self-check` (typed dashboard metrics right after restart), `smoke.sh`, `check-dashboard-bundle.sh` against live `kiln-app` HTML, and a kiln-identity stamp guard.
 
@@ -25,6 +25,7 @@ Rehearse without publishing:
 ```sh
 sh scripts/test-plan-release.sh
 sh scripts/test-tag-path-dry-run.sh
+sh scripts/test-tag-path-pr-stamp-order.sh
 sh scripts/test-releasable.sh
 cargo xtask test-deploy-workflow
 cargo xtask test-reuse-release
@@ -32,7 +33,7 @@ cargo xtask test-reuse-release
 
 A pass is exit 0 from each command. Save combined output in `$VERIFY_EVIDENCE/auto-release-harness.txt`.
 
-The tag-path dry run on pull requests stamps packages to a `-dryrun` tag locally and runs the same attest and reuse checks the release jobs use, without `gh release create` or deploy.
+The tag-path dry run on pull requests stamps packages to a `-dryrun` tag locally and runs the same attest and reuse checks the release jobs use, without `gh release create` or deploy. On pull requests it also resolves the dry-run tag, builds release binaries, and runs `check-binary` before assembling a server upgrade tarball; `scripts/test-tag-path-pr-stamp-order.sh` fails if resolve/build/check order or the `v`-prefixed tag drifts.
 
 ## Gotchas
 

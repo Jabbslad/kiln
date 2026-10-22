@@ -28,6 +28,35 @@ it('shows the server-reported version in the header', async () => {
   expect(await screen.findByText('v0.4.99')).toBeVisible()
 })
 
+it('opens embedded release notes when the version control is activated', async () => {
+  open()
+  const user = userEvent.setup()
+  const version = await screen.findByRole('button', {
+    name: new RegExp(`^Release notes for v${__KILN_BUILD_VERSION__.replace(/^v/, '')}$`),
+  })
+  await user.click(version)
+  const dialog = screen.getByRole('dialog')
+  expect(within(dialog).getByRole('heading', { level: 2 })).toHaveTextContent(/^v/)
+  expect(within(dialog).getByRole('link', { name: /View on GitHub/i })).toHaveAttribute(
+    'href',
+    expect.stringMatching(/github\.com\/Jabbslad\/kiln\/releases\/tag\/v/),
+  )
+  expect(within(dialog).getAllByRole('listitem').length).toBeGreaterThan(0)
+  await user.click(within(dialog).getByRole('button', { name: 'Close dialog' }))
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+})
+
+it('shows a plain empty message when the running version has no embedded notes', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockResolvedValue(Response.json({ ...previewDashboard, version: '9.9.9' })),
+  )
+  open('/boxes')
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: 'Release notes for v9.9.9' }))
+  expect(screen.getByText('No release notes for v9.9.9')).toBeVisible()
+})
+
 it('keeps the public page independent of the host and makes preview an explicit choice', async () => {
   const request = vi.fn().mockRejectedValue(new Error('Host unavailable'))
   vi.stubGlobal('fetch', request)
@@ -58,6 +87,23 @@ it('combines search and filters without mutating fixture state or fetching', asy
   expect(screen.getByRole('link', { name: 'api-dev' })).toBeVisible()
   expect(request).not.toHaveBeenCalled()
   expect(previewDashboard.boxes[1].state).toBe('paused')
+})
+
+it('shows a clear unreachable message, retry, and recovery after network failure', async () => {
+  let calls = 0
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => {
+      calls += 1
+      if (calls === 1) throw new TypeError('Load failed')
+      return Response.json(previewDashboard)
+    }),
+  )
+  open('/boxes')
+  expect(await screen.findByText("Couldn't reach the server")).toBeVisible()
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Retry connection' }))
+  expect(await screen.findByRole('heading', { name: 'Boxes' })).toBeVisible()
+  expect(calls).toBeGreaterThanOrEqual(2)
 })
 
 it('never substitutes examples when the service is down', async () => {

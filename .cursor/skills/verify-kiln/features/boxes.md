@@ -9,6 +9,7 @@ A box is a persistent microVM. On the host, `kiln-runtime` creates it from an im
 - Development profile: unjailed Firecracker, no guest NIC, `--allow-unsafe-development` required.
 - Isolated profile: jailer, per-box uid/gid, cgroup v2. Needs an empty state dir and `--isolation-config`.
 - Client create picks the only published template and generates a name when those flags are omitted.
+- `kiln create --wait` (and `POST /v1/operations?wait=true` on create) blocks until the operation is terminal and a running box is on disk, reusing the operation journal rather than a separate wait API. Timeout surfaces as HTTP 408 / CLI error `wait_timeout`.
 
 ## How to get to it (user POV)
 
