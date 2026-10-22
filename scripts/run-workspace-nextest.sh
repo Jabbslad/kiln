@@ -8,9 +8,10 @@ case "$shards" in
 esac
 
 # kiln-server integration tests bind ports and host services; run them after sharded crates.
+profile=${NEXTEST_PROFILE:-ci}
 pids=
 for shard in $(seq 1 "$shards"); do
-  cargo nextest run --workspace --all-features --locked --exclude xtask --exclude kiln-server \
+  cargo nextest run --profile "$profile" --workspace --all-features --locked --exclude xtask --exclude kiln-server \
     --partition "count:${shard}/${shards}" &
   pids="$pids $!"
 done
@@ -22,7 +23,7 @@ for pid in $pids; do
   fi
 done
 
-if ! cargo nextest run -p kiln-server --all-features --locked --test-threads=1; then
+if ! cargo nextest run --profile "$profile" -p kiln-server --all-features --locked --test-threads=1; then
   fail=1
 fi
 exit "$fail"
