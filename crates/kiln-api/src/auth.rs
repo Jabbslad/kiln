@@ -18,6 +18,13 @@ pub enum Scope {
     Operate,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    Owner,
+    Member,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerDescriptor {
@@ -82,4 +89,19 @@ pub struct ServerClaims {
     pub exp: u64,
     pub credential_id: String,
     pub scope: Scope,
+    pub tenant_id: String,
+    pub role: Role,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevocationQuery {
+    pub tenant_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RevocationSet {
+    pub accounts: Vec<String>,
+    pub credentials: Vec<String>,
 }

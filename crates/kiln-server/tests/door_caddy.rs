@@ -86,6 +86,8 @@ fn token(key: &EncodingKey) -> String {
         exp: now + 300,
         credential_id: "device-1".into(),
         scope: Scope::Operate,
+        tenant_id: "owner-a".into(),
+        role: kiln_api::auth::Role::Owner,
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -98,6 +100,7 @@ fn enrollment() -> Enrollment {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
+        tenant_id: None,
     }
 }
 

@@ -14,7 +14,9 @@ pub use config::{
     Config, GITHUB_AUTHORIZE_URL, GITHUB_TOKEN_URL, GITHUB_USER_URL, PRODUCTION_IDENTITY_ORIGIN,
     unix_now,
 };
-use kiln_api::auth::{DeviceTokens, Registration, Scope, ServerClaims};
+use kiln_api::auth::{
+    DeviceTokens, Registration, RevocationQuery, RevocationSet, Role, Scope, ServerClaims,
+};
 pub use providers::{Provider, ProviderIdentity};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -135,6 +137,7 @@ pub fn router(mut cfg: Config, store: Store) -> anyhow::Result<Router> {
         .route("/v1/servers/{id}/app-login", post(app_login))
         .route("/v1/access", post(access))
         .route("/v1/server-status", post(server_status))
+        .route("/v1/revocations", post(revocations))
         .route("/v1/devices", get(devices))
         .route("/v1/devices/{id}", delete(revoke_device))
         .route(
@@ -487,6 +490,7 @@ async fn access(State(a): State<Arc<App>>, h: HeaderMap, Json(f): Json<AccessReq
             return Ok(err(StatusCode::NOT_FOUND, "not_found"));
         }
         let now = (a.cfg.now)() as u64;
+        let tenant_id = tenant_id_for_server(tx, &f.server_id)?;
         let claims = ServerClaims {
             iss: a.cfg.public_origin.clone(),
             sub: owner,
@@ -496,6 +500,8 @@ async fn access(State(a): State<Arc<App>>, h: HeaderMap, Json(f): Json<AccessReq
             exp: now + 300,
             credential_id: did,
             scope: Scope::Operate,
+            tenant_id,
+            role: Role::Owner,
         };
         let token = a.signer.issue(&claims)?;
         Ok(Json(tokens::Grant {
@@ -1228,6 +1234,10 @@ async fn key_token(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
         _ => return err(StatusCode::UNAUTHORIZED, "invalid_token"),
     };
     let n = now as u64;
+    let tenant_id = match tenant_id_for_server(&tx, &sid) {
+        Ok(id) => id,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
     let jwt = match a.signer.issue(&ServerClaims {
         iss: a.cfg.public_origin.clone(),
         sub: owner,
@@ -1237,6 +1247,8 @@ async fn key_token(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
         exp: n + 300,
         credential_id: kid,
         scope,
+        tenant_id,
+        role: Role::Owner,
     }) {
         Ok(x) => x,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
@@ -1354,10 +1366,17 @@ fn insert_server_code(
     )?;
     Ok(raw)
 }
-fn issue_app(a: &App, owner: &str, server: &str, now: i64) -> anyhow::Result<String> {
+fn issue_app(
+    a: &App,
+    tx: &rusqlite::Transaction<'_>,
+    owner: &str,
+    server: &str,
+    now: i64,
+) -> anyhow::Result<String> {
     let credential = format!("app_{server}");
     anyhow::ensure!(credential.len() <= 128, "invalid server id");
     let now = u64::try_from(now)?;
+    let tenant_id = tenant_id_for_server(tx, server)?;
     a.signer.issue(&ServerClaims {
         iss: a.cfg.public_origin.clone(),
         sub: owner.to_owned(),
@@ -1367,6 +1386,8 @@ fn issue_app(a: &App, owner: &str, server: &str, now: i64) -> anyhow::Result<Str
         exp: now + 300,
         credential_id: credential,
         scope: Scope::Operate,
+        tenant_id,
+        role: Role::Owner,
     })
 }
 async fn oauth_server(
@@ -1625,7 +1646,7 @@ async fn server_token(State(a): State<Arc<App>>, h: HeaderMap, body: String) -> 
         return err(StatusCode::BAD_REQUEST, "invalid_grant");
     }
     let reader = secret();
-    let jwt = match issue_app(&a, &account, &server, now) {
+    let jwt = match issue_app(&a, &tx, &account, &server, now) {
         Ok(jwt) => jwt,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
     };
@@ -1667,7 +1688,7 @@ fn reader_token(a: &App, reader: &str, presented: &str) -> Response {
     let Some((server, account)) = row else {
         return err(StatusCode::UNAUTHORIZED, "invalid_token");
     };
-    let jwt = match issue_app(a, &account, &server, now) {
+    let jwt = match issue_app(a, &tx, &account, &server, now) {
         Ok(jwt) => jwt,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
     };
@@ -1711,6 +1732,176 @@ async fn revoke_reader(
         Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
     }
 }
+fn schema_has(tx: &rusqlite::Transaction<'_>, table: &str) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get(0),
+    )
+}
+
+fn servers_have_tenant_id(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('servers') WHERE name='tenant_id')",
+        [],
+        |row| row.get(0),
+    )
+}
+
+fn tenant_id_for_server(
+    tx: &rusqlite::Transaction<'_>,
+    server_id: &str,
+) -> rusqlite::Result<String> {
+    if servers_have_tenant_id(tx)? {
+        tx.query_row(
+            "SELECT COALESCE(tenant_id, owner_id) FROM servers WHERE id=?1",
+            [server_id],
+            |row| row.get(0),
+        )
+    } else {
+        tx.query_row(
+            "SELECT owner_id FROM servers WHERE id=?1",
+            [server_id],
+            |row| row.get(0),
+        )
+    }
+}
+
+fn tenant_accounts(
+    tx: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+) -> rusqlite::Result<Vec<String>> {
+    let mut ids = Vec::new();
+    if schema_has(tx, "tenants")? {
+        if let Ok(owner) = tx.query_row(
+            "SELECT owner_id FROM tenants WHERE id=?1",
+            [tenant_id],
+            |row| row.get::<_, String>(0),
+        ) {
+            ids.push(owner);
+        }
+    }
+    if schema_has(tx, "tenant_members")? {
+        let mut q = tx.prepare(
+            "SELECT account_id FROM tenant_members WHERE tenant_id=?1 AND removed_at IS NULL",
+        )?;
+        ids.extend(
+            q.query_map([tenant_id], |row| row.get::<_, String>(0))?
+                .filter_map(Result::ok),
+        );
+    } else {
+        ids.push(tenant_id.to_owned());
+    }
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+fn tenant_revocation_set(
+    tx: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+) -> rusqlite::Result<RevocationSet> {
+    let accounts = tenant_accounts(tx, tenant_id)?;
+    let mut revoked_accounts = Vec::new();
+    for id in &accounts {
+        let live: bool = tx.query_row(
+            "SELECT revoked_at IS NULL FROM accounts WHERE id=?1",
+            [id.as_str()],
+            |row| row.get(0),
+        )?;
+        if !live {
+            revoked_accounts.push(id.clone());
+        }
+    }
+    if schema_has(tx, "tenant_members")? {
+        let mut q = tx.prepare(
+            "SELECT account_id FROM tenant_members WHERE tenant_id=?1 AND removed_at IS NOT NULL",
+        )?;
+        revoked_accounts.extend(
+            q.query_map([tenant_id], |row| row.get::<_, String>(0))?
+                .filter_map(Result::ok),
+        );
+    }
+    let mut revoked_credentials = Vec::new();
+    if !accounts.is_empty() {
+        let placeholders = accounts.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let device_sql = format!(
+            "SELECT id FROM devices WHERE revoked_at IS NOT NULL AND account_id IN ({placeholders})"
+        );
+        let params: Vec<&str> = accounts.iter().map(String::as_str).collect();
+        if let Ok(mut q) = tx.prepare(&device_sql) {
+            revoked_credentials.extend(
+                q.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                    row.get::<_, String>(0)
+                })?
+                .filter_map(Result::ok),
+            );
+        }
+    }
+    let key_sql = if servers_have_tenant_id(tx)? {
+        "SELECT k.id FROM automation_keys k JOIN servers s ON s.id=k.server_id WHERE k.revoked_at IS NOT NULL AND s.tenant_id=?1"
+    } else {
+        "SELECT k.id FROM automation_keys k JOIN servers s ON s.id=k.server_id WHERE k.revoked_at IS NOT NULL AND s.owner_id=?1"
+    };
+    if let Ok(mut q) = tx.prepare(key_sql) {
+        revoked_credentials.extend(
+            q.query_map([tenant_id], |row| row.get::<_, String>(0))?
+                .filter_map(Result::ok),
+        );
+    }
+    revoked_accounts.sort();
+    revoked_accounts.dedup();
+    revoked_credentials.sort();
+    revoked_credentials.dedup();
+    Ok(RevocationSet {
+        accounts: revoked_accounts,
+        credentials: revoked_credentials,
+    })
+}
+
+async fn revocations(
+    State(a): State<Arc<App>>,
+    h: HeaderMap,
+    Json(f): Json<RevocationQuery>,
+) -> Response {
+    let Some(secret) = bearer(&h) else {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
+    if f.tenant_id.is_empty() || f.tenant_id.len() > 128 {
+        return err(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    let c = match a.store.db.lock() {
+        Ok(c) => c,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let tx = match c.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let authorized: bool = if servers_have_tenant_id(&tx).unwrap_or(false) {
+        tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM servers WHERE login_secret_hash=?1 AND active=1 AND tenant_id=?2)",
+            params![hash(secret), f.tenant_id],
+            |row| row.get(0),
+        )
+    } else {
+        tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM servers WHERE login_secret_hash=?1 AND active=1 AND owner_id=?2)",
+            params![hash(secret), f.tenant_id],
+            |row| row.get(0),
+        )
+    }
+    .unwrap_or(false);
+    if !authorized {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    }
+    let set = match tenant_revocation_set(&tx, &f.tenant_id) {
+        Ok(set) => set,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    nostore(Json(set).into_response())
+}
+
 async fn server_status(
     State(a): State<Arc<App>>,
     h: HeaderMap,

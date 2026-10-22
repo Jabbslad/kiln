@@ -351,7 +351,8 @@ pub async fn run(options: Options) -> Result<()> {
         Enrollment::load(&options.enrollment_file)?.context("server is not enrolled")?;
     let server_id = enrollment.server_id.clone();
     let authorize_origin = enrollment.issuer.clone();
-    let auth = Authenticator::central_only(enrollment, options.jwks_cache)?;
+    let auth = Authenticator::central_only(enrollment, options.jwks_cache)?
+        .attach_login_secret_file(Path::new("/etc/kiln/login.token"))?;
     let ca = fs::read(&options.upstream_ca).context("upstream CA required")?;
     let login_secret = read_login_secret(Path::new("/etc/kiln/login.token"))?;
     let router = router_with(
@@ -437,8 +438,8 @@ async fn open_terminal(app: Arc<App>, peer: SocketAddr, id: String, request: Req
         audit_terminal(&app, "unauthorized", &id);
         return unauthorized();
     };
-    match app.auth.authenticate_central(&jwt).await {
-        Ok(Scope::Operate) => {}
+    let identity = match app.auth.central_identity(&jwt).await {
+        Ok(identity) if identity.scope == Scope::Operate => identity,
         Ok(_) => {
             audit_terminal(&app, "insufficient_scope", &id);
             return deny(
@@ -451,7 +452,8 @@ async fn open_terminal(app: Arc<App>, peer: SocketAddr, id: String, request: Req
             audit_terminal(&app, "unauthorized", &id);
             return unauthorized();
         }
-    }
+    };
+    let cancel = app.auth.track_stream(&identity);
     if request.uri().query().is_some() {
         audit_terminal(&app, "rejected", &id);
         return deny(
@@ -531,6 +533,7 @@ async fn open_terminal(app: Arc<App>, peer: SocketAddr, id: String, request: Req
                 session,
                 crate::terminal::IDLE,
                 crate::terminal::MAX_SESSION,
+                cancel,
             )
         })
 }

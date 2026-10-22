@@ -1,7 +1,7 @@
 //! Local enrollment remains the authority for issuer, owner and server audience.
 use anyhow::{Context, Result, ensure};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
-use kiln_api::auth::{Scope, ServerClaims};
+use kiln_api::auth::{Role, Scope, ServerClaims};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -9,10 +9,13 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
+
+use crate::revocation::{RevocationWatch, StreamCancel};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,9 +24,15 @@ pub struct Enrollment {
     pub issuer: String,
     pub owner_id: String,
     pub server_id: String,
+    #[serde(default)]
+    pub tenant_id: Option<String>,
 }
 
 impl Enrollment {
+    pub fn tenant_id(&self) -> &str {
+        self.tenant_id.as_deref().unwrap_or(&self.owner_id)
+    }
+
     pub fn validate(&self) -> Result<()> {
         let url = reqwest::Url::parse(&self.issuer)?;
         ensure!(
@@ -64,6 +73,14 @@ impl Enrollment {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CentralIdentity {
+    pub scope: Scope,
+    pub sub: String,
+    pub credential_id: String,
+    pub role: Role,
+}
+
 fn keys(value: &Value) -> Result<JwkSet> {
     let entries = value
         .get("keys")
@@ -94,7 +111,11 @@ fn keys(value: &Value) -> Result<JwkSet> {
     Ok(serde_json::from_value(value.clone())?)
 }
 
-pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Scope> {
+pub fn verify_identity(
+    token: &str,
+    enrollment: &Enrollment,
+    jwks: &Value,
+) -> Result<CentralIdentity> {
     enrollment.validate()?;
     ensure!(token.len() <= 8192, "invalid token");
     let header = decode_header(token)?;
@@ -118,6 +139,7 @@ pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Scop
     let c = decode::<ServerClaims>(token, &key, &validation)?.claims;
     ensure!(
         c.sub == enrollment.owner_id
+            && c.tenant_id == enrollment.tenant_id()
             && !c.credential_id.is_empty()
             && c.credential_id.len() <= 128
             && c.exp > c.iat
@@ -127,7 +149,16 @@ pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Scop
             && c.iat <= jsonwebtoken::get_current_timestamp().saturating_add(30),
         "invalid token authority or lifetime"
     );
-    Ok(c.scope)
+    Ok(CentralIdentity {
+        scope: c.scope,
+        sub: c.sub,
+        credential_id: c.credential_id,
+        role: c.role,
+    })
+}
+
+pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Scope> {
+    Ok(verify_identity(token, enrollment, jwks)?.scope)
 }
 
 struct Cache {
@@ -139,6 +170,7 @@ pub struct Authenticator {
     central: Option<(Enrollment, PathBuf)>,
     cache: Mutex<Cache>,
     http: reqwest::Client,
+    revocations: Option<Arc<RevocationWatch>>,
 }
 
 impl Authenticator {
@@ -176,6 +208,7 @@ impl Authenticator {
                 .connect_timeout(Duration::from_secs(3))
                 .timeout(Duration::from_secs(10))
                 .build()?,
+            revocations: None,
         })
     }
 
@@ -186,6 +219,27 @@ impl Authenticator {
         Ok(auth)
     }
 
+    pub fn with_login_secret(mut self, login_secret: String) -> Result<Self> {
+        let (enrollment, _) = self
+            .central
+            .as_ref()
+            .context("revocation polling requires central enrollment")?
+            .clone();
+        self.revocations = Some(RevocationWatch::new(
+            enrollment,
+            login_secret,
+            self.http.clone(),
+        ));
+        Ok(self)
+    }
+
+    pub fn attach_login_secret_file(mut self, path: &Path) -> Result<Self> {
+        if let Some(secret) = crate::revocation::read_login_secret(path)? {
+            self = self.with_login_secret(secret)?;
+        }
+        Ok(self)
+    }
+
     pub async fn authenticate(&self, bearer: &str) -> Result<Scope> {
         ensure!(bearer.len() <= 8192, "invalid token");
         if let Some(admin_hash) = self.admin_hash {
@@ -194,12 +248,24 @@ impl Authenticator {
                 return Ok(Scope::Operate);
             }
         }
-        self.central_jwt(bearer).await
+        Ok(self.central_jwt(bearer).await?.scope)
     }
 
     pub async fn authenticate_central(&self, bearer: &str) -> Result<Scope> {
         ensure!(bearer.len() <= 8192, "invalid token");
+        Ok(self.central_jwt(bearer).await?.scope)
+    }
+
+    pub async fn central_identity(&self, bearer: &str) -> Result<CentralIdentity> {
+        ensure!(bearer.len() <= 8192, "invalid token");
         self.central_jwt(bearer).await
+    }
+
+    pub fn track_stream(&self, identity: &CentralIdentity) -> StreamCancel {
+        self.revocations
+            .as_ref()
+            .map(|watch| watch.track(&identity.sub, &identity.credential_id))
+            .unwrap_or_default()
     }
 
     /// Enrolled owner id when the bearer is a valid central JWT; otherwise `anonymous`.
@@ -207,16 +273,13 @@ impl Authenticator {
         if bearer.is_empty() {
             return "anonymous".into();
         }
-        let Some((enrollment, _)) = self.central.as_ref() else {
-            return "anonymous".into();
-        };
-        if self.authenticate_central(bearer).await.is_ok() {
-            return enrollment.owner_id.clone();
+        match self.central_identity(bearer).await {
+            Ok(identity) => identity.sub,
+            Err(_) => "anonymous".into(),
         }
-        "anonymous".into()
     }
 
-    async fn central_jwt(&self, bearer: &str) -> Result<Scope> {
+    async fn central_jwt(&self, bearer: &str) -> Result<CentralIdentity> {
         let (enrollment, path) = self
             .central
             .as_ref()
@@ -269,6 +332,11 @@ impl Authenticator {
             fs::File::open(parent)?.sync_all()?;
             cache.jwks = value;
         }
-        verify(bearer, enrollment, &cache.jwks)
+        let identity = verify_identity(bearer, enrollment, &cache.jwks)?;
+        drop(cache);
+        if let Some(watch) = &self.revocations {
+            watch.allow(&identity.sub, &identity.credential_id, identity.role)?;
+        }
+        Ok(identity)
     }
 }

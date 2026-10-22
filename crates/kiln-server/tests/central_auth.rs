@@ -1,5 +1,5 @@
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{Scope, ServerClaims};
+use kiln_api::auth::{Role, Scope, ServerClaims};
 use kiln_server::auth::{Enrollment, verify};
 
 fn fixture() -> (EncodingKey, serde_json::Value) {
@@ -26,6 +26,7 @@ fn issuer_owner_audience_time_and_scope_are_enforced() {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
+        tenant_id: None,
     };
     let now = jsonwebtoken::get_current_timestamp();
     let claims = ServerClaims {
@@ -37,6 +38,8 @@ fn issuer_owner_audience_time_and_scope_are_enforced() {
         exp: now + 300,
         credential_id: "device-c".into(),
         scope: Scope::Read,
+        tenant_id: enrollment.owner_id.clone(),
+        role: Role::Owner,
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -95,6 +98,7 @@ async fn read_scope_cannot_reach_operations_or_ssh() {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
+        tenant_id: None,
     };
     std::fs::write(
         &cache,
@@ -116,6 +120,8 @@ async fn read_scope_cannot_reach_operations_or_ssh() {
         exp: now + 300,
         credential_id: "device-c".into(),
         scope: Scope::Read,
+        tenant_id: "owner-a".into(),
+        role: Role::Owner,
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

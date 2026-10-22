@@ -16,7 +16,7 @@ use axum::{
 };
 use futures_util::stream;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::{Action, Submit, auth::Scope, auth::ServerClaims, new_id};
+use kiln_api::{Action, Submit, auth::Role, auth::Scope, auth::ServerClaims, new_id};
 use kiln_server::{
     app_listener::{self, BIND},
     auth::{Authenticator, Enrollment},
@@ -64,6 +64,7 @@ fn auth(dir: &Path) -> (Authenticator, EncodingKey) {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
+        tenant_id: None,
     };
     let cache = dir.join("jwks.json");
     std::fs::write(
@@ -93,6 +94,8 @@ fn token_with(key: &EncodingKey, sub: &str, scope: Scope, credential_id: &str) -
         exp: now + 300,
         credential_id: credential_id.into(),
         scope,
+        tenant_id: sub.to_string(),
+        role: Role::Owner,
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -1135,6 +1138,8 @@ async fn read_grant_is_checked_and_another_server_is_rejected() {
             exp: now + 300,
             credential_id: "app_other".into(),
             scope: Scope::Read,
+            tenant_id: "owner-a".into(),
+            role: Role::Owner,
         },
         &key,
     )
@@ -2417,6 +2422,7 @@ fn central(dir: &Path) -> Authenticator {
             issuer: "https://identity.example.test".into(),
             owner_id: "owner-a".into(),
             server_id: "server-b".into(),
+            tenant_id: None,
         },
         dir.join("jwks.json"),
     )
