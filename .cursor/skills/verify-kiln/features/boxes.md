@@ -9,6 +9,7 @@ A box is a persistent microVM. On the host, `kiln-runtime` creates it from an im
 - Development profile: unjailed Firecracker, no guest NIC, `--allow-unsafe-development` required.
 - Isolated profile: jailer, per-box uid/gid, cgroup v2. Needs an empty state dir and `--isolation-config`.
 - Client create picks the only published template and generates a name when those flags are omitted.
+- `kiln create --wait` (and `POST /v1/operations?wait=true` on create) blocks until the operation is terminal and a running box is on disk, reusing the operation journal rather than a separate wait API. Timeout surfaces as HTTP 408 / CLI error `wait_timeout`.
 
 ## How to get to it (user POV)
 
@@ -54,6 +55,7 @@ Pause, resume, stop, and start are the same binary with that id. They were not r
 - State directory mode must be `0700` and must not be a symlink. Memory is 128–4096 MiB, vCPUs 1–4, at most 8 boxes and 16384 MiB in one store (`crates/kiln-runtime/src/runtime.rs`).
 - `--profile isolated` without a matching store returns `refusing unjailed fallback`. Root refuses `allow_unsafe_development`.
 - Client create/exec go through the host journal. At 10,000 rows, `kiln-host` prunes old terminal operations before accepting more; create rows for live boxes are kept (`crates/kiln-server/src/journal.rs`, `docs/remote-client.md`). Direct `kiln-runtime` does not use that journal.
+- `list` is read-only on disk: it observes live state for output but never rewrites `box.json`. `inspect` still persists recovery from interrupted launch or checkpoint operations, and refreshes `box.json` when observed state differs from the record on disk.
 - After a host crash, `inspect` adopts a running guest only when `record.network.is_none()` (`crates/kiln-runtime/src/runtime.rs:481`). Networked boxes are covered in `guest-networking.md`.
 - CI does not boot guests. Ignored tests start at `crates/kiln-runtime/tests/lifecycle.rs:226`. `.github/workflows/build.yml` runs `cargo test --workspace --all-features --locked` with no `--ignored` and no KVM job.
 - The interrupted-jailer unit test waits until `/bin/sleep` is visible in procfs before it records the pid (`crates/kiln-runtime/src/runtime.rs` around the `sleep fixture did not finish exec` loop). That flake is closed. It is not a reason to skip this journey.

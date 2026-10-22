@@ -167,8 +167,8 @@ impl Session {
             "session renewal was interrupted; log in again"
         );
         let url = origin(&self.inner.profile.issuer)?.join("oauth/token")?;
-        // Persist an invalid session before transmission. Atomic write-through
-        // replacement also works on Windows, where unlink has no directory fsync.
+        // Persist an invalid session before transmission so a crash cannot
+        // replay the refresh token.
         let mut invalidated = c.clone();
         invalidated.refresh_token.clear();
         invalidated.access_token.clear();

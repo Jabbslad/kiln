@@ -83,83 +83,75 @@ fn reject_unsafe(path: &Path, directory: bool) -> Result<()> {
 }
 
 pub fn ensure_key(config: &Path, profile: &str) -> Result<(PathBuf, String)> {
-    #[cfg(not(unix))]
-    {
-        let _ = (config, profile);
-        anyhow::bail!("SSH, SCP and ssh-config are supported only on Linux and macOS");
-    }
-    #[cfg(unix)]
-    {
-        safe_profile(profile)?;
-        let parent = config.parent().unwrap_or(Path::new("."));
-        reject_unsafe(parent, true)?;
-        let ssh_root = parent.join("ssh");
-        if let Err(error) = fs::create_dir(&ssh_root) {
-            if error.kind() != std::io::ErrorKind::AlreadyExists {
-                return Err(error.into());
-            }
-        } else {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&ssh_root, fs::Permissions::from_mode(0o700))?;
+    safe_profile(profile)?;
+    let parent = config.parent().unwrap_or(Path::new("."));
+    reject_unsafe(parent, true)?;
+    let ssh_root = parent.join("ssh");
+    if let Err(error) = fs::create_dir(&ssh_root) {
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(error.into());
         }
-        reject_unsafe(&ssh_root, true)?;
-        let dir = parent.join("ssh").join(profile);
-        if !dir.exists() {
-            let mut builder = fs::DirBuilder::new();
-            use std::os::unix::fs::DirBuilderExt;
-            builder.recursive(true).mode(0o700).create(&dir)?;
-        }
-        reject_unsafe(&dir, true)?;
-        let lock_path = dir.join(".key.lock");
-        ensure!(
-            !lock_path.is_symlink(),
-            "refusing symbolic-link SSH lock path"
-        );
-        let lock = fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&lock_path)?;
+    } else {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o600))?;
-        lock.lock()?;
-        let private = dir.join("id_ed25519");
-        ensure!(
-            !private.is_symlink(),
-            "refusing symbolic-link SSH secret path"
-        );
-        ensure!(
-            !private.with_extension("pub").is_symlink(),
-            "refusing symbolic-link SSH public key path"
-        );
-        if !private.exists() {
-            let status = Command::new("ssh-keygen")
-                .args(["-q", "-t", "ed25519", "-N", "", "-C", "", "-f"])
-                .arg(&private)
-                .status()
-                .context("could not run ssh-keygen")?;
-            ensure!(status.success(), "ssh-keygen failed with {status}");
-        }
-        reject_unsafe(&private, false)?;
-        let output = Command::new("ssh-keygen")
-            .args(["-y", "-f"])
-            .arg(&private)
-            .output()?;
-        ensure!(output.status.success(), "could not read SSH public key");
-        let public = String::from_utf8(output.stdout)?;
-        let parts: Vec<_> = public.split_whitespace().collect();
-        ensure!(
-            parts.len() >= 2,
-            "ssh-keygen produced an invalid public key"
-        );
-        let public = format!("{} {}", parts[0], parts[1]);
-        ensure!(
-            kiln_api::valid_ssh_public_key(&public),
-            "ssh-keygen produced a non-Ed25519 key"
-        );
-        Ok((private, public))
+        fs::set_permissions(&ssh_root, fs::Permissions::from_mode(0o700))?;
     }
+    reject_unsafe(&ssh_root, true)?;
+    let dir = parent.join("ssh").join(profile);
+    if !dir.exists() {
+        let mut builder = fs::DirBuilder::new();
+        use std::os::unix::fs::DirBuilderExt;
+        builder.recursive(true).mode(0o700).create(&dir)?;
+    }
+    reject_unsafe(&dir, true)?;
+    let lock_path = dir.join(".key.lock");
+    ensure!(
+        !lock_path.is_symlink(),
+        "refusing symbolic-link SSH lock path"
+    );
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o600))?;
+    lock.lock()?;
+    let private = dir.join("id_ed25519");
+    ensure!(
+        !private.is_symlink(),
+        "refusing symbolic-link SSH secret path"
+    );
+    ensure!(
+        !private.with_extension("pub").is_symlink(),
+        "refusing symbolic-link SSH public key path"
+    );
+    if !private.exists() {
+        let status = Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-C", "", "-f"])
+            .arg(&private)
+            .status()
+            .context("could not run ssh-keygen")?;
+        ensure!(status.success(), "ssh-keygen failed with {status}");
+    }
+    reject_unsafe(&private, false)?;
+    let output = Command::new("ssh-keygen")
+        .args(["-y", "-f"])
+        .arg(&private)
+        .output()?;
+    ensure!(output.status.success(), "could not read SSH public key");
+    let public = String::from_utf8(output.stdout)?;
+    let parts: Vec<_> = public.split_whitespace().collect();
+    ensure!(
+        parts.len() >= 2,
+        "ssh-keygen produced an invalid public key"
+    );
+    let public = format!("{} {}", parts[0], parts[1]);
+    ensure!(
+        kiln_api::valid_ssh_public_key(&public),
+        "ssh-keygen produced a non-Ed25519 key"
+    );
+    Ok((private, public))
 }
 
 pub fn write_known_hosts(config: &Path, profile: &str, alias: &str, key: &str) -> Result<PathBuf> {

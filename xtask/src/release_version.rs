@@ -163,10 +163,9 @@ pub fn resolve(repo: &Path, ref_type: &str, ref_name: &str) -> Result<ReleaseVer
 
 pub fn clap_line(binary: &Path, version: &ReleaseVersion) -> Result<String, String> {
     let name = file_name(binary);
-    let stem = name.strip_suffix(".exe").unwrap_or(&name);
     let command = CLAP_COMMANDS
         .iter()
-        .find(|(key, _)| *key == stem)
+        .find(|(key, _)| *key == name)
         .map(|(_, command)| *command)
         .ok_or_else(|| format!("unknown binary {name}"))?;
     Ok(format!("{command} {}", version.cargo()))
@@ -368,6 +367,7 @@ pub fn dispatch(args: &[String], env: &HashMap<String, String>) -> Result<String
         "resolve" => dispatch_resolve(&args[1..], env),
         "check-binary" => dispatch_check_binary(&args[1..]),
         "check-archives" => dispatch_check_archives(&args[1..]),
+        "read-json-field" => dispatch_read_json_field(&args[1..]),
         "attach-bootstrap" => dispatch_attach(&args[1..]),
         other => Err(format!("unknown command {other}")),
     }
@@ -423,6 +423,40 @@ fn dispatch_check_binary(args: &[String]) -> Result<String, String> {
     let binaries: Vec<PathBuf> = parsed.positionals.iter().map(PathBuf::from).collect();
     check_binary(&version, &binaries)?;
     Ok(String::new())
+}
+
+fn dispatch_read_json_field(args: &[String]) -> Result<String, String> {
+    let strip_v = args.iter().any(|arg| arg == "--strip-v");
+    let filtered: Vec<String> = args
+        .iter()
+        .filter(|arg| arg.as_str() != "--strip-v")
+        .cloned()
+        .collect();
+    let parsed = parse_flags(&filtered, &["--field"])?;
+    let field = required(&parsed.options, "--field")?;
+    let mut data = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut data)
+        .map_err(|err| err.to_string())?;
+    let text = read_json_field(&data, field, strip_v)?;
+    Ok(format!("{text}\n"))
+}
+
+fn read_json_field(data: &[u8], field: &str, strip_v: bool) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(data).map_err(|_| "release.json is not valid JSON".to_string())?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "release.json root must be an object".to_string())?;
+    let raw = object
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("release.json field {field:?} is missing or not a string"))?;
+    if strip_v {
+        Ok(raw.strip_prefix('v').unwrap_or(raw).to_string())
+    } else {
+        Ok(raw.to_string())
+    }
 }
 
 fn dispatch_check_archives(args: &[String]) -> Result<String, String> {
@@ -859,8 +893,6 @@ fn release_json(path: &Path) -> Result<Option<serde_json::Value>, String> {
     let name = file_name(path);
     let read = if name.ends_with(".tar.gz") {
         tar_release_json(path, &name)
-    } else if name.ends_with(".zip") {
-        zip_release_json(path, &name)
     } else {
         return Err(format!("unexpected archive {name}"));
     };
@@ -892,34 +924,6 @@ fn tar_release_json(
         }
         let kind = entry.header().entry_type();
         if kind.is_symlink() || kind == tar::EntryType::Link || !kind.is_file() {
-            return Err(ArchiveRead::Invalid(format!(
-                "{archive_name} release.json is not a regular file"
-            )));
-        }
-        let mut data = Vec::new();
-        entry
-            .read_to_end(&mut data)
-            .map_err(|_| ArchiveRead::Unreadable)?;
-        let payload = serde_json::from_slice(&data).map_err(|_| ArchiveRead::Unreadable)?;
-        return Ok(Some(payload));
-    }
-    Ok(None)
-}
-
-fn zip_release_json(
-    path: &Path,
-    archive_name: &str,
-) -> Result<Option<serde_json::Value>, ArchiveRead> {
-    let file = File::open(path).map_err(|_| ArchiveRead::Unreadable)?;
-    let mut archive = zip::ZipArchive::new(file).map_err(|_| ArchiveRead::Unreadable)?;
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|_| ArchiveRead::Unreadable)?;
-        if entry.name() != "release.json" {
-            continue;
-        }
-        if entry.is_dir() {
             return Err(ArchiveRead::Invalid(format!(
                 "{archive_name} release.json is not a regular file"
             )));
@@ -1046,7 +1050,7 @@ fn atomic_write(path: &Path, data: &[u8], mode: Option<u32>) -> Result<(), Strin
 fn dist_pattern(version: &ReleaseVersion) -> Result<Regex, String> {
     let tag = regex::escape(&version.tag());
     Regex::new(&format!(
-        r"^kiln(-[A-Za-z0-9]+)*-{tag}(-[A-Za-z0-9_]+)*\.(tar\.gz|zip)(\.sha256)?$"
+        r"^kiln(-[A-Za-z0-9]+)*-{tag}(-[A-Za-z0-9_]+)*\.tar\.gz(\.sha256)?$"
     ))
     .map_err(|err| err.to_string())
 }
@@ -1427,6 +1431,7 @@ const ASSET_KEYS: &[&str] = &[
 
 const PACKAGE_FILES: &[&str] = &[
     "deploy/install.sh",
+    "deploy/operations-journal.max-version",
     "deploy/kiln-network",
     "deploy/kiln-host.service",
     "deploy/kiln-api.service",
@@ -1538,7 +1543,12 @@ fn write_named(root: &Path, names: &[&str]) {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).unwrap();
         }
-        fs::write(path, name).unwrap();
+        let body = if *name == "deploy/operations-journal.max-version" {
+            "2\n"
+        } else {
+            name
+        };
+        fs::write(path, body).unwrap();
     }
 }
 
@@ -1764,7 +1774,7 @@ fn test_packaged_names_round_trip_through_check_archives() {
     fs::create_dir(&repo).unwrap();
     fs::create_dir(&bins).unwrap();
     fs::create_dir(&image).unwrap();
-    for name in ["kiln", "kiln.exe", "kiln-runtime", "kiln-host", "kiln-api"] {
+    for name in ["kiln", "kiln-runtime", "kiln-host", "kiln-api"] {
         fs::write(bins.join(name), format!("binary-{name}")).unwrap();
     }
     write_named(&repo, PACKAGE_FILES);
@@ -1772,26 +1782,13 @@ fn test_packaged_names_round_trip_through_check_archives() {
         fs::write(image.join(name), name).unwrap();
     }
     let version = parse_release_tag("v9.9.9").unwrap();
-    crate::release::package(
-        &repo,
-        &bins,
-        &dist,
-        "v9.9.9",
+    for target in [
         "x86_64-unknown-linux-gnu",
-        "client",
-        None,
-    )
-    .unwrap();
-    crate::release::package(
-        &repo,
-        &bins,
-        &dist,
-        "v9.9.9",
-        "x86_64-pc-windows-msvc",
-        "client",
-        None,
-    )
-    .unwrap();
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+    ] {
+        crate::release::package(&repo, &bins, &dist, "v9.9.9", target, "client", None).unwrap();
+    }
     let server = crate::release::package(
         &repo,
         &bins,
@@ -2411,8 +2408,30 @@ fn rewrite_release_json(archive: &Path, version: &str) {
     encoder.finish().unwrap();
 }
 
+fn test_read_json_field_returns_version_not_other_semvers() {
+    let json =
+        br#"{"min_upgrade_from":"0.3.0","target":"x86_64-unknown-linux-gnu","version":"v0.4.40"}"#;
+    assert_eq!(read_json_field(json, "version", false).unwrap(), "v0.4.40");
+    assert_eq!(read_json_field(json, "version", true).unwrap(), "0.4.40");
+    assert!(
+        read_json_field(json, "min_upgrade_from", false)
+            .unwrap()
+            .starts_with("0.3")
+    );
+}
+
+fn test_read_json_field_rejects_non_object_and_missing_field() {
+    let err = read_json_field(b"[]", "version", false).unwrap_err();
+    assert!(err.contains("object"), "{err}");
+    let json = br#"{"target":"x86_64-unknown-linux-gnu"}"#;
+    let err = read_json_field(json, "version", false).unwrap_err();
+    assert!(err.contains("version"), "{err}");
+}
+
 register_cases! {
     test_rejects_prerelease_build_metadata_leading_zeros_and_bare_cargo,
+    test_read_json_field_returns_version_not_other_semvers,
+    test_read_json_field_rejects_non_object_and_missing_field,
     test_plan_stamp_rewrites_only_member_path_versions,
     test_plan_stamp_is_idempotent,
     test_branch_resolve_does_not_write,

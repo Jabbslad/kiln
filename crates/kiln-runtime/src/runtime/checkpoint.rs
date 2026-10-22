@@ -245,8 +245,13 @@ impl Runtime {
         record.source = Some(snapshot_id.into());
         record.state = "restoring".into();
         self.save(&record)?;
-        let result = self.boot(&mut record, Some(&snapshot), false).await;
-        self.finish_launch(&mut record, result)?;
+        let started = std::time::Instant::now();
+        let (result, phases) = super::benchmark::scoped(async {
+            let result = self.boot(&mut record, Some(&snapshot), false).await;
+            (result, super::benchmark::take_phases())
+        })
+        .await;
+        self.finish_launch(&mut record, started, "restore", result, phases)?;
         fs::remove_dir_all(self.directory(box_id)?.join(previous.run))?;
         self.cleanup_disk_layers(&record, record.disk_layer.as_deref())?;
         fs::remove_file(self.directory(box_id)?.join("restore.previous.json"))?;
@@ -327,6 +332,7 @@ impl Runtime {
             } else {
                 None
             },
+            last_launch: None,
         };
         use std::os::unix::fs::DirBuilderExt;
         fs::DirBuilder::new()
@@ -340,17 +346,22 @@ impl Runtime {
         // Expensive checksums can now run alongside other box allocations.
         drop(allocation);
         drop(phase);
-        let result = async {
-            self.verify_snapshot(&snapshot)?;
-            let phase = Phase::start("disk_copy");
-            self.prepare_snapshot_disk(&mut record, &snapshot)?;
-            self.save(&record)?;
-            failpoint("after-layer-publication");
-            drop(phase);
-            self.boot(&mut record, Some(&snapshot), true).await
-        }
+        let started = std::time::Instant::now();
+        let (result, phases) = super::benchmark::scoped(async {
+            let result = async {
+                self.verify_snapshot(&snapshot)?;
+                let phase = Phase::start("disk_copy");
+                self.prepare_snapshot_disk(&mut record, &snapshot)?;
+                self.save(&record)?;
+                failpoint("after-layer-publication");
+                drop(phase);
+                self.boot(&mut record, Some(&snapshot), true).await
+            }
+            .await;
+            (result, super::benchmark::take_phases())
+        })
         .await;
-        self.finish_launch(&mut record, result)?;
+        self.finish_launch(&mut record, started, "create", result, phases)?;
         Ok(record)
     }
 }
@@ -451,6 +462,7 @@ mod tests {
             vcpus: 1,
             source: None,
             operation: None,
+            last_launch: None,
             last_error: None,
             disk_copy: String::new(),
             disk_layer: None,

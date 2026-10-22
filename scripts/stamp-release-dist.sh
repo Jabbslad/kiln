@@ -95,7 +95,7 @@ stamp_tree() {
       /*|*..*) fail "refusing path ${rel}" ;;
     esac
     case $rel in
-      kiln|kiln.exe|bin/kiln|bin/kiln-runtime|bin/kiln-host|bin/kiln-api|bin/kiln-identity)
+      kiln|bin/kiln|bin/kiln-runtime|bin/kiln-host|bin/kiln-api|bin/kiln-identity)
         sh "$script_dir/stamp-release-version.sh" "$path" "$version" || exit 1
         ;;
     esac
@@ -118,18 +118,6 @@ pack_tar() {
   rm -f "$list"
 }
 
-pack_zip() {
-  work=$1
-  dest=$2
-  list=$(mktemp)
-  (cd "$work" && find . -type f | sed 's|^\./||' | sort) >"$list"
-  (
-    cd "$work" || exit 1
-    zip -X -q "$dest" -@ <"$list"
-  )
-  rm -f "$list"
-}
-
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 count=0
@@ -138,7 +126,7 @@ for archive in "$dist"/*; do
   name=$(basename "$archive")
   case $name in
     *.sha256) continue ;;
-    *.tar.gz|*.zip) ;;
+    *.tar.gz) ;;
     *) fail "unexpected dist file ${name}" ;;
   esac
   case $name in
@@ -151,10 +139,7 @@ for archive in "$dist"/*; do
   esac
   newname=${name%%"$from"*}${to}${rest}
   work=$(mktemp -d)
-  case $name in
-    *.tar.gz) tar -xzf "$archive" -C "$work" ;;
-    *.zip) unzip -q "$archive" -d "$work" ;;
-  esac
+  tar -xzf "$archive" -C "$work"
   if find "$work" -type l | grep -q .; then
     rm -rf "$work"
     fail "${name} contains a symlink"
@@ -164,10 +149,7 @@ for archive in "$dist"/*; do
     exit 1
   }
   dest="$out/$newname"
-  case $name in
-    *.tar.gz) pack_tar "$work" "$dest" ;;
-    *.zip) pack_zip "$work" "$dest" ;;
-  esac
+  pack_tar "$work" "$dest"
   rm -rf "$work"
   digest=$(sha256sum "$dest" | awk 'NR == 1 { print $1 }')
   printf '%s  %s\n' "$digest" "$newname" >"$out/$newname.sha256"
@@ -176,5 +158,5 @@ done
 if [ "$count" = 0 ]; then
   fail "dist has no archives"
 fi
-find "$dist" -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.sha256' \) -exec rm -f {} +
+find "$dist" -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec rm -f {} +
 mv "$out"/* "$dist"/

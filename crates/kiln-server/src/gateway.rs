@@ -9,7 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use kiln_api::auth::Scope;
+use kiln_api::{OperationSubmitQuery, auth::Scope};
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
@@ -60,9 +60,35 @@ pub fn router_with_workspace(
         .with_state(state))
 }
 
+fn validate_uri_query(
+    method: &axum::http::Method,
+    uri: &Uri,
+) -> Result<OperationSubmitQuery, Failure> {
+    match OperationSubmitQuery::parse(uri.path(), uri.query()) {
+        Ok(query) => {
+            if uri.query().is_some()
+                && !(method == axum::http::Method::POST && uri.path() == "/v1/operations")
+            {
+                return Err(Failure::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "Query parameters are not accepted.",
+                ));
+            }
+            Ok(query)
+        }
+        Err(message) => Err(Failure::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            message,
+        )),
+    }
+}
+
 async fn authenticate(
     state: &Gateway,
     headers: &HeaderMap,
+    method: &axum::http::Method,
     uri: &Uri,
     required: Scope,
 ) -> Result<(), Failure> {
@@ -85,13 +111,7 @@ async fn authenticate(
             "An operate credential is required.",
         ));
     }
-    if uri.query().is_some() {
-        return Err(Failure::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "Query parameters are not accepted.",
-        ));
-    }
+    validate_uri_query(method, uri)?;
     Ok(())
 }
 
@@ -99,7 +119,14 @@ async fn ssh_tunnel(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    authenticate(&state, request.headers(), request.uri(), Scope::Operate).await?;
+    authenticate(
+        &state,
+        request.headers(),
+        request.method(),
+        request.uri(),
+        Scope::Operate,
+    )
+    .await?;
     let key = crate::ssh::admission(&request)?;
     let permit = state
         .sessions
@@ -134,9 +161,25 @@ async fn dashboard(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    authenticate(&state, request.headers(), request.uri(), Scope::Read).await?;
+    authenticate(
+        &state,
+        request.headers(),
+        request.method(),
+        request.uri(),
+        Scope::Read,
+    )
+    .await?;
     let observed_at = crate::dashboard::utc_timestamp(crate::dashboard::unix_now());
-    match proxy(Arc::clone(&state), request).await {
+    match proxy(
+        Arc::clone(&state),
+        request,
+        OperationSubmitQuery {
+            wait: false,
+            wait_seconds: kiln_api::DEFAULT_OPERATION_WAIT_SECONDS,
+        },
+    )
+    .await
+    {
         Ok(response) if response.status().is_success() => {
             stamp(response, &state.workspace, &observed_at).await
         }
@@ -146,6 +189,7 @@ async fn dashboard(
                 &state.workspace,
                 &observed_at,
                 "offline",
+                crate::metrics::Snapshot::default(),
                 &crate::dashboard::Inventory::default(),
             ),
         )),
@@ -186,19 +230,46 @@ async fn read_proxy(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    authenticate(&state, request.headers(), request.uri(), Scope::Read).await?;
-    proxy(state, request).await
+    authenticate(
+        &state,
+        request.headers(),
+        request.method(),
+        request.uri(),
+        Scope::Read,
+    )
+    .await?;
+    proxy(
+        state,
+        request,
+        OperationSubmitQuery {
+            wait: false,
+            wait_seconds: kiln_api::DEFAULT_OPERATION_WAIT_SECONDS,
+        },
+    )
+    .await
 }
 
 async fn operate_proxy(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    authenticate(&state, request.headers(), request.uri(), Scope::Operate).await?;
-    proxy(state, request).await
+    let query = validate_uri_query(request.method(), request.uri())?;
+    authenticate(
+        &state,
+        request.headers(),
+        request.method(),
+        request.uri(),
+        Scope::Operate,
+    )
+    .await?;
+    proxy(state, request, query).await
 }
 
-async fn proxy(state: Arc<Gateway>, request: Request) -> Result<Response, Failure> {
+async fn proxy(
+    state: Arc<Gateway>,
+    request: Request,
+    query: OperationSubmitQuery,
+) -> Result<Response, Failure> {
     let _permit = state.capacity.try_acquire().map_err(|_| {
         Failure::new(
             StatusCode::TOO_MANY_REQUESTS,
@@ -207,7 +278,11 @@ async fn proxy(state: Arc<Gateway>, request: Request) -> Result<Response, Failur
         )
     })?;
     let method = request.method().clone();
-    let uri = format!("http://localhost{}", request.uri().path());
+    let mut uri = format!("http://localhost{}", request.uri().path());
+    if let Some(query) = request.uri().query() {
+        uri.push('?');
+        uri.push_str(query);
+    }
     let content_type = request.headers().get(header::CONTENT_TYPE).cloned();
     let bytes = tokio::time::timeout(
         Duration::from_secs(5),
@@ -231,6 +306,9 @@ async fn proxy(state: Arc<Gateway>, request: Request) -> Result<Response, Failur
     let mut upstream = state.client.request(method, uri).body(bytes);
     if let Some(content_type) = content_type {
         upstream = upstream.header(header::CONTENT_TYPE, content_type);
+    }
+    if query.wait {
+        upstream = upstream.timeout(Duration::from_secs(query.wait_seconds.saturating_add(5)));
     }
     let mut response = upstream.send().await.map_err(|_| upstream_error())?;
     let status = response.status();

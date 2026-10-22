@@ -22,8 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap
 Supports Apple Silicon/Intel macOS and x86-64 Linux with glibc 2.39+. Installs
 `~/.local/bin/kiln` without sudo. Add that directory to PATH if it is not present. No
 GitHub CLI, Python, Rust, or JSON parser is required. Standard shell tools, curl,
-tar and a SHA-256 utility must be present. Native Windows users should download
-the `kiln` zip from the public release instead; this is not a PowerShell installer.
+tar and a SHA-256 utility must be present.
 
 The script downloads a versioned release over HTTPS and verifies its pinned
 SHA-256 checksum. It never asks for credentials or reads answers from stdin.
@@ -205,8 +204,8 @@ Its `CONNECT.txt` configures a direct profile without central login. It contains
 an administrator token: never upload it to a repository, issue or chat. Keep
 extracted credential files because direct profiles reference them. Version 0.2.0 adds
 interactive SSH, SFTP and editor SSH configuration over the same HTTPS endpoint;
-no port 22 exposure is needed. Linux/macOS need OpenSSH (`ssh`, `scp`, `ssh-keygen`).
-Windows supports management commands only. Existing servers/templates need a
+no port 22 exposure is needed. Linux and macOS need OpenSSH (`ssh`, `scp`, `ssh-keygen`).
+Existing servers/templates need a
 controlled update; reinstalling the client alone does not update guest images.
 Server certificates need manual renewal within one year.
 
@@ -227,7 +226,7 @@ The bootstrap takes its version from the release tag, checks the published SHA-2
 and downloads without authentication. Redirects are HTTPS-only and user curl
 configuration is disabled. Temporary files are removed on normal exit and handled
 signals. A checksum protects integrity under trust in this bootstrap publisher;
-it is not independent signing. macOS/Windows binaries are not signed/notarized.
+it is not independent signing. macOS binaries are not signed or notarized.
 
 To review rather than pipe directly into a shell:
 

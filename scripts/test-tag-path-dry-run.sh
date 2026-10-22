@@ -22,6 +22,10 @@ server_json=$fixture/server-release.json
 if grep -n -E 'gh release|git push|git tag|ssh ' "$root/scripts/tag-path-dry-run.sh" >/dev/null; then
   fail 'dry-run script publishes, tags, or uses ssh'
 fi
+grep -q 'scripts/check-release-trust.sh' "$root/scripts/tag-path-dry-run.sh" \
+  || fail 'dry-run must guard release binaries'
+grep -q 'scripts/check-release-trust.sh' "$root/.github/workflows/build.yml" \
+  || fail 'release build must guard release binaries'
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -78,6 +82,15 @@ printf '%s\n' "$want_server" >"$work/want-server"
 cmp -s "$work/got-identity" "$work/want-identity" || fail 'identity release.json was not stamped'
 cmp -s "$work/got-server" "$work/want-server" || fail 'server release.json was not stamped'
 
+mkdir -p "$work/zipdist"
+printf 'x\n' >"$work/zipdist/kiln-v0.4.17-x86_64-pc-windows-msvc.zip"
+if sh "$root/scripts/stamp-release-dist.sh" "$work/zipdist" v0.4.17 v0.4.18 \
+  >"$work/zip-out" 2>"$work/zip-err"; then
+  fail 'stamp accepted a windows zip'
+fi
+grep -q 'unexpected dist file kiln-v0.4.17-x86_64-pc-windows-msvc.zip' "$work/zip-err" \
+  || fail "stamp did not reject the windows zip: $(cat "$work/zip-err")"
+
 mkdir -p "$work/bin" "$work/deploy/bin"
 cat >"$work/bin/ssh" <<EOF
 #!/bin/sh
@@ -86,16 +99,31 @@ exit 99
 EOF
 cp "$work/bin/ssh" "$work/bin/curl"
 chmod 755 "$work/bin/ssh" "$work/bin/curl"
-cat >"$work/deploy/bin/kiln-identity" <<'EOF'
+write_version_bin() {
+  path=$1
+  name=$2
+  version=$3
+  cat >"$path" <<EOF
 #!/bin/sh
-printf '%s\n' 'kiln-identity 0.4.18'
+if [ "\${1:-}" = --version ]; then
+  printf '%s %s\n' '$name' '$version'
+  exit 0
+fi
+exit 2
 EOF
-chmod 755 "$work/deploy/bin/kiln-identity"
+  chmod 755 "$path"
+}
+write_version_bin "$work/deploy/bin/kiln-identity" kiln-identity 0.4.18
+write_version_bin "$work/deploy/bin/kiln" kiln 0.4.18
+write_version_bin "$work/deploy/bin/kiln-runtime" kiln-runtime 0.4.18
+write_version_bin "$work/deploy/bin/kiln-host" kiln-server 0.4.18
+write_version_bin "$work/deploy/bin/kiln-api" kiln-server 0.4.18
 printf '%s\n' "$want_identity" >"$work/deploy/release.json"
 printf 'install\n' >"$work/deploy/install.sh"
 mkdir -p "$work/deploy-dist"
 tar -C "$work/deploy" -czf "$work/deploy-dist/kiln-identity-v0.4.18-x86_64-unknown-linux-gnu.tar.gz" release.json bin/kiln-identity
-tar -C "$work/deploy" -czf "$work/deploy-dist/kiln-server-v0.4.18-x86_64-unknown-linux-gnu.tar.gz" install.sh
+tar -C "$work/deploy" -czf "$work/deploy-dist/kiln-server-v0.4.18-x86_64-unknown-linux-gnu.tar.gz" \
+  install.sh bin/kiln bin/kiln-runtime bin/kiln-host bin/kiln-api
 mkdir -p "$work/dashboard/assets"
 printf '<script type="module" crossorigin src="/assets/index-dryrun.js"></script>\n' \
   >"$work/dashboard/index.html"
@@ -125,9 +153,13 @@ GITHUB_EVENT_NAME=pull_request \
 grep -q 'identity inputs 0.4.18' "$work/deploy-out" || fail 'identity inputs were not checked'
 grep -q 'server inputs kiln-server-v0.4.18-x86_64-unknown-linux-gnu.tar.gz' "$work/deploy-out" \
   || fail 'server inputs were not checked'
+grep -q 'ssh-session: dry-run control path' "$work/deploy-out" \
+  || fail 'deploy dry-run did not set up the multiplex session'
 grep -q 'deploy inputs v0.4.18' "$work/deploy-out" || fail 'deploy inputs were not reported'
 grep -q 'dashboard inputs kiln-dashboard-v0.4.18.tar.gz' "$work/deploy-out" \
   || fail 'dashboard inputs were not checked'
 grep -q 'dashboard live index-dryrun.js' "$work/deploy-out" \
   || fail 'dashboard bundle check did not run'
+grep -q 'packaged versions v0.4.18' "$work/deploy-out" \
+  || fail 'deploy dry-run did not check packaged binary versions'
 [ ! -s "$work/ssh.log" ] || fail 'dry-run called ssh or curl'

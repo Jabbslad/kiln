@@ -1,6 +1,6 @@
 # Guest access
 
-`kiln ssh`, `kiln cp`, and `kiln ssh-config` open a guest shell or copy a file. Traffic is HTTPS to the host and vsock inside the guest. There is no public SSH port. The commands need a matching Ubuntu guest with OpenSSH. Windows builds are management-only.
+`kiln ssh`, `kiln cp`, and `kiln ssh-config` open a guest shell or copy a file. Traffic is HTTPS to the host and vsock inside the guest. There is no public SSH port. The commands need a matching Ubuntu guest with OpenSSH.
 
 ## Sub-features
 
@@ -40,3 +40,4 @@ A pass prints `auth-ssh-ok` and `EXIT:0`. For a failing guest command the client
 - SSH and SFTP need the box `running`. A stopped or paused box produces the start/resume hint and does not change the box.
 - `cargo xtask central-login` refuses a direct administrator profile. It does not perform login.
 - This journey was not driven in the authoring proof. It needs KVM, an Ubuntu image, and a reachable API. CI does not run `scripts/test-network-kvm.sh` or the ignored lifecycle tests (`.github/workflows/build.yml`).
+- A laptop using the public door (`features/public-door.md`) cannot use `kiln ssh` yet: the door does not forward SSH upgrades and loopback gateway SSH is not reachable from the laptop. The dashboard Access panel matches that limitation (`features/dashboard.md`).

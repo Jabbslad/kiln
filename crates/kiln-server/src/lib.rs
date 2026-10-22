@@ -1,11 +1,13 @@
 pub mod app_listener;
 pub mod auth;
 mod dashboard;
+pub mod dashboard_check;
 pub mod door;
 pub mod enrollment;
 pub mod gateway;
 pub mod host;
 mod journal;
+mod metrics;
 mod ssh;
 
 use axum::{

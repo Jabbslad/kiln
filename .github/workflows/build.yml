@@ -99,18 +99,68 @@ jobs:
           cargo xtask test-merge-queue-tested
           cargo xtask test-repo-guard
           bash scripts/test-listener-restart.sh
+          bash scripts/test-wait-for-operations-journal-v2.sh
           bash scripts/test-identity-upgrade.sh
+          bash scripts/test-login-token.sh
           sh scripts/test-caddy-endings.sh
           sh scripts/test-bootstrap-pins.sh
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
           sh scripts/test-tag-path-dry-run.sh
+          sh scripts/test-tag-path-pr-stamp-order.sh
+          sh scripts/test-deploy-host-tools.sh
+          sh scripts/test-release-json-field.sh
           sh scripts/test-check-dashboard-bundle.sh
+          cargo test -p kiln-server --test dashboard_self_check --locked
+          sh scripts/test-check-installed-versions.sh
           sh scripts/test-releasable.sh
           sh scripts/test-next-release-tag.sh
           sh scripts/test-plan-release.sh
           sh scripts/test-check-stamped-clients.sh
           sh scripts/test-release-budget.sh
+          sh scripts/test-verify-release-attestations.sh
+          sh scripts/test-check-dropped-platform.sh
+          sh scripts/test-feature-map-guard.sh
+          sh scripts/test-check-pr-proof.sh
+          sh scripts/test-operations-journal-version-sync.sh
+          sh scripts/test-release-notes.sh
+          sh scripts/test-fmt.sh
+          sh scripts/test-check.sh
+          sh scripts/test-ssh-multiplex.sh
+
+  feature-map-guard:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Feature map rule
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          git diff --name-only --no-renames "$PR_BASE_SHA" HEAD \
+            | sh scripts/check-feature-map.sh
+
+  pr-proof-guard:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: PR proof rule
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          git diff --name-only --no-renames "$PR_BASE_SHA" HEAD \
+            | sh scripts/check-pr-proof.sh
 
   # A verified tag reuse already ran this job on main for the same commit.
   # A fallback, a main push, and a heavy pull request still run it.
@@ -193,37 +243,76 @@ jobs:
           cargo xtask test-merge-queue-tested
           cargo xtask test-repo-guard
           bash scripts/test-listener-restart.sh
+          bash scripts/test-wait-for-operations-journal-v2.sh
           bash scripts/test-identity-upgrade.sh
+          bash scripts/test-login-token.sh
+          bash scripts/test-login-token-upgrade.sh
           sh scripts/test-caddy-endings.sh
           sh scripts/test-bootstrap-pins.sh
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
           sh scripts/test-tag-path-dry-run.sh
+          sh scripts/test-tag-path-pr-stamp-order.sh
+          sh scripts/test-deploy-host-tools.sh
+          sh scripts/test-release-json-field.sh
           sh scripts/test-check-dashboard-bundle.sh
+          cargo test -p kiln-server --test dashboard_self_check --locked
+          sh scripts/test-check-installed-versions.sh
           sh scripts/test-releasable.sh
           sh scripts/test-next-release-tag.sh
           sh scripts/test-plan-release.sh
           sh scripts/test-check-stamped-clients.sh
           sh scripts/test-release-budget.sh
+          sh scripts/test-verify-release-attestations.sh
+          sh scripts/test-check-dropped-platform.sh
+          sh scripts/test-feature-map-guard.sh
+          sh scripts/test-check-pr-proof.sh
+          sh scripts/test-operations-journal-version-sync.sh
+          sh scripts/test-release-notes.sh
+          sh scripts/test-fmt.sh
+          sh scripts/test-check.sh
+          sh scripts/test-ssh-multiplex.sh
           shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-bootstrap-pins.sh scripts/test-bootstrap-pins.sh scripts/test-caddy-endings.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/enroll-dark-forge.sh \
-            deploy/github/guard.sh deploy/github/ssh.sh deploy/github/deploy.sh \
+            deploy/github/guard.sh deploy/github/ssh.sh deploy/github/ssh-session.sh deploy/github/deploy.sh \
             deploy/github/require-release.sh \
             deploy/github/install-remote.sh deploy/github/install-identity.sh deploy/github/smoke.sh \
             deploy/github/check-dashboard-bundle.sh \
+            deploy/github/check-installed-versions.sh \
             scripts/test-check-dashboard-bundle.sh \
+            scripts/test-check-installed-versions.sh \
+            scripts/test-deploy-host-tools.sh \
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
             scripts/test-listener-restart.sh \
+            scripts/test-wait-for-operations-journal-v2.sh \
             scripts/test-identity-upgrade.sh \
+            scripts/test-login-token.sh \
+            scripts/test-login-token-upgrade.sh \
+            scripts/test-identity-slot-rehearsal.sh \
             scripts/test-installer-release.sh \
             scripts/stamp-release-version.sh scripts/stamp-release-dist.sh scripts/reuse-server-check.sh \
             scripts/wait-main-run.sh scripts/test-wait-main-run.sh \
             scripts/tag-path-dry-run.sh scripts/test-tag-path-dry-run.sh \
+            scripts/test-tag-path-pr-stamp-order.sh \
+            scripts/read-release-json-field.sh scripts/test-release-json-field.sh \
             scripts/releasable.sh scripts/test-releasable.sh \
             scripts/next-release-tag.sh scripts/test-next-release-tag.sh \
             scripts/plan-release.sh scripts/test-plan-release.sh \
             scripts/check-stamped-clients.sh scripts/test-check-stamped-clients.sh \
-            scripts/test-release-budget.sh
+            scripts/check-dropped-platform.sh scripts/test-check-dropped-platform.sh \
+            scripts/test-release-budget.sh \
+            scripts/verify-release-attestations.sh scripts/test-verify-release-attestations.sh \
+            scripts/check-feature-map.sh             scripts/test-feature-map-guard.sh \
+            scripts/test-operations-journal-version-sync.sh \
+            scripts/previous-release-tag.sh scripts/previous-release-notes-from.sh \
+            scripts/published-release-tags.sh scripts/release-notes-mode.sh \
+            scripts/release-notes-json.sh scripts/release-notes-markdown.sh scripts/write-release-notes.sh \
+            scripts/check-embedded-release-notes.sh scripts/test-release-notes.sh \
+            scripts/test-embedded-release-notes.sh \
+            scripts/capture-dashboard-release-notes-proof.sh \
+            scripts/fmt.sh scripts/test-fmt.sh scripts/check.sh scripts/test-check.sh scripts/check-docs.sh \
+            scripts/test-ssh-multiplex.sh \
+            scripts/check-release-trust.sh
 
   # A manual dry run fetches main's packages. A push builds in this run.
   reuse:
@@ -309,10 +398,22 @@ jobs:
           cache-workspace-crates: 'true'
       - name: Build release binaries
         run: |
-          cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client
+          trust_json=$(mktemp)
+          cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client \
+            --message-format=json >"$trust_json"
+          sh scripts/check-release-trust.sh --cargo-json "$trust_json" \
+            target/release/kiln \
+            target/release/kiln-runtime \
+            target/release/kiln-host \
+            target/release/kiln-api
+          rm -f "$trust_json"
           # One cargo command unifies features and links h2 into kiln-identity.
           # lab-provider stays off this command. The release binary cannot select a substitute provider.
-          cargo build --release --locked -p kiln-identity
+          trust_json=$(mktemp)
+          cargo build --release --locked -p kiln-identity --message-format=json >"$trust_json"
+          sh scripts/check-release-trust.sh --cargo-json "$trust_json" \
+            target/release/kiln-identity
+          rm -f "$trust_json"
           target/release/kiln-host --help
           target/release/kiln-api --help
           cargo xtask release-version check-binary --version "$VERSION" -- \
@@ -366,13 +467,8 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            suffix: ''
           - os: macos-15
             target: aarch64-apple-darwin
-            suffix: ''
-          - os: windows-2025
-            target: x86_64-pc-windows-msvc
-            suffix: .exe
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
@@ -406,7 +502,7 @@ jobs:
         if: steps.queue.outputs.skip_tests != 'true'
         run: cargo test --locked -p kiln-api -p kiln-client --target ${{ matrix.target }}
       - name: Native shell bootstrap tests
-        if: runner.os != 'Windows' && steps.queue.outputs.skip_tests != 'true'
+        if: steps.queue.outputs.skip_tests != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: cargo xtask test-bootstrap
@@ -415,9 +511,9 @@ jobs:
         run: |
           cargo build --release --locked -p kiln-client --bin kiln --target ${{ matrix.target }}
           cargo xtask release-version check-binary --version "$VERSION" -- \
-            target/${{ matrix.target }}/release/kiln${{ matrix.suffix }}
+            target/${{ matrix.target }}/release/kiln
       - name: Test release packaging
-        if: runner.os == 'Windows' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: cargo xtask test-release
       - name: Package client
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
@@ -500,6 +596,13 @@ jobs:
       - name: Build dashboard
         working-directory: web
         run: npm run build
+      - name: Check embedded release notes
+        if: steps.queue.outputs.skip_tests != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          KILN_RELEASE_NOTES_PUBLISHED_BASE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
+        run: sh scripts/check-embedded-release-notes.sh "$VERSION"
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         if: steps.queue.outputs.skip_tests != 'true' && !startsWith(github.ref, 'refs/tags/v')
         with:
@@ -511,6 +614,11 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
           npm run test:browser
+      - name: Proof smoke
+        if: steps.queue.outputs.skip_tests != 'true'
+        env:
+          KILN_PROOF_SKIP_KILN_APP: 1
+        run: sh scripts/test-proof.sh
       - name: Package static dashboard
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: |
@@ -556,9 +664,7 @@ jobs:
           merge-multiple: true
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
-          subject-path: |
-            dist/*.tar.gz
-            dist/*.zip
+          subject-path: dist/*.tar.gz
 
   # A main release names the next patch and creates that tag before this
   # job returns, so the next queued release sees it. A docs-only push sets
@@ -603,7 +709,7 @@ jobs:
         run: sh scripts/plan-release.sh
 
   # Stamp this run's packages onto the planned tag and check every client.
-  # The Linux client is executed. macOS and Windows are checked by the slot.
+  # The Linux client is executed. macOS is checked by the slot.
   version-guard:
     needs: [release-plan, server-package, client, dashboard]
     if: >-
@@ -661,9 +767,7 @@ jobs:
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         if: steps.stamp.outputs.stamped == 'true'
         with:
-          subject-path: |
-            dist/*.tar.gz
-            dist/*.zip
+          subject-path: dist/*.tar.gz
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.stamp.outputs.stamped == 'true'
         with:
@@ -677,7 +781,7 @@ jobs:
   # always() still runs when a dependency fails or is skipped. Without it,
   # GitHub skips this job and the check never reports.
   required:
-    needs: [changes, docs-check, server-check, client, dashboard]
+    needs: [changes, docs-check, feature-map-guard, server-check, client, dashboard]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -737,28 +841,16 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.release-plan.outputs.tag }}
           VERSION: ${{ needs.release-plan.outputs.tag }}
+          KILN_RELEASE_NOTES_STRICT: "1"
+          KILN_RELEASE_NOTES_PUBLISHED_BASE: "1"
         run: |
           started=$(date +%s)
           cargo xtask reuse-release finish --version "$VERSION" --dist dist
           (cd dist && sha256sum -c ./*.sha256)
-          source_ref=refs/heads/main
-          regex='^https://github\.com/Jabbslad/kiln/\.github/workflows/build\.yml@refs/(heads/main|tags/v[0-9]+\.[0-9]+\.[0-9]+)$'
-          found=0
-          pids=
-          for archive in dist/*.tar.gz dist/*.zip; do
-            [ -f "$archive" ] || continue
-            found=1
-            gh attestation verify "$archive" --repo Jabbslad/kiln --cert-identity-regex "$regex" --source-ref "$source_ref" &
-            pids="$pids $!"
-          done
-          [ "$found" = 1 ]
-          fail=0
-          for pid in $pids; do
-            wait "$pid" || fail=1
-          done
-          [ "$fail" = 0 ]
+          sh scripts/verify-release-attestations.sh dist
+          notes=$(sh scripts/release-notes-markdown.sh "$TAG")
           gh release create "$TAG" dist/* --verify-tag --target "$GITHUB_SHA" --title "$TAG" \
-            --notes 'Trusted-workload pilot. Native client tests and Linux build checks passed. The unattended installer requires Ubuntu 24.04 or 26.04 x86-64/KVM for servers. Checksums and attestations were verified in this job before publish. Binaries are not signed or notarized.'
+            --notes "$notes"
           if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
             seconds=$(( $(date +%s) - started ))
             printf '| Stage | Seconds |\n| --- | ---: |\n| publish | %s |\n' "$seconds" >> "$GITHUB_STEP_SUMMARY"
@@ -844,8 +936,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Toolchain
+        if: github.event_name == 'pull_request'
+        run: rustup show
       - name: Dry-run the tag path
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: sh scripts/tag-path-dry-run.sh

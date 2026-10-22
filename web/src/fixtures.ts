@@ -3,12 +3,29 @@ import type { Dashboard } from './data'
 // Explicit design fixtures. These are never a fallback for a failed live request,
 // never written to localStorage, and never mutated by UI lifecycle actions.
 const GiB = 1024 ** 3
-const unknownMetrics = { cpu_percent: null, memory_bytes: null, disk_bytes: null }
+const unknownMetrics = {
+  cpu_percent: null,
+  memory_bytes: null,
+  disk_bytes: null,
+  disk_total_bytes: null,
+}
+const hostMetrics = {
+  cpu_percent: 18.4,
+  memory_bytes: 6 * GiB + 512 * 1024 ** 2,
+  disk_bytes: 120 * GiB,
+  disk_total_bytes: 500 * GiB,
+}
+const activeBoxMetrics = {
+  cpu_percent: 42.6,
+  memory_bytes: 1 * GiB + 256 * 1024 ** 2,
+  disk_bytes: Math.round(0.8 * 20 * GiB),
+  disk_total_bytes: null,
+}
 export const previewDashboard: Dashboard = {
   schema_version: 1,
   observed_at: '2026-10-01T09:42:00Z',
   workspace: 'Personal',
-  host: { name: 'host-01', state: 'online', metrics: unknownMetrics },
+  host: { name: 'host-01', state: 'online', metrics: hostMetrics },
   boxes: [
     {
       id: 'box-7f3a2c1e',
@@ -16,12 +33,23 @@ export const previewDashboard: Dashboard = {
       state: 'running',
       image: 'Ubuntu 24.04',
       resources: { vcpus: 2, memory_bytes: 4 * GiB, disk_bytes: 20 * GiB },
-      metrics: unknownMetrics,
+      metrics: activeBoxMetrics,
       created_at: '2026-09-30T10:15:00Z',
       last_operation: 'Restored from before-upgrade',
       last_error: null,
       restored_from: 'before-upgrade',
-      timing: null,
+      timing: {
+        method: 'restore',
+        cache: 'uncontrolled',
+        disk_copy: 'Snapshot',
+        storage_ms: 1200,
+        vmm_ms: 800,
+        restore_ms: 2400,
+        agent_ms: 450,
+        init_ms: 320,
+        first_command_ms: null,
+        total_ms: 5170,
+      },
     },
     {
       id: 'box-9c4d8e7b',
@@ -29,12 +57,28 @@ export const previewDashboard: Dashboard = {
       state: 'paused',
       image: 'Ubuntu 24.04',
       resources: { vcpus: 2, memory_bytes: 2 * GiB, disk_bytes: 12 * GiB },
-      metrics: unknownMetrics,
+      metrics: {
+        cpu_percent: 0.2,
+        memory_bytes: 900 * 1024 ** 2,
+        disk_bytes: 400 * 1024 ** 3,
+        disk_total_bytes: null,
+      },
       created_at: '2026-09-30T12:40:00Z',
       last_operation: 'Paused by administrator',
       last_error: null,
       restored_from: null,
-      timing: null,
+      timing: {
+        method: 'create',
+        cache: 'uncontrolled',
+        disk_copy: 'Copy',
+        storage_ms: 900,
+        vmm_ms: 600,
+        restore_ms: null,
+        agent_ms: 200,
+        init_ms: 180,
+        first_command_ms: null,
+        total_ms: 1880,
+      },
     },
     {
       id: 'box-a1b2c3d4',
@@ -42,7 +86,12 @@ export const previewDashboard: Dashboard = {
       state: 'stopped',
       image: 'Ubuntu 24.04',
       resources: { vcpus: 1, memory_bytes: 2 * GiB, disk_bytes: 10 * GiB },
-      metrics: unknownMetrics,
+      metrics: {
+        cpu_percent: null,
+        memory_bytes: null,
+        disk_bytes: Math.round(0.3 * 10 * GiB),
+        disk_total_bytes: null,
+      },
       created_at: '2026-09-29T08:20:00Z',
       last_operation: 'Stopped by administrator',
       last_error: null,

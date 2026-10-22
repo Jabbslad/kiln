@@ -433,7 +433,7 @@ Isometric references: `inference-stack.svg`, `dedicated-inference.svg`, `lora-ho
 
 #### Product screenshots
 
-App previews are a mixture of HTML and inline SVG, not a set of downloadable screenshots. Use near-black panels, tiny 10–14px text, thin dividers, clipped scroll regions, and no device frame. Preserve real text and controls where practical; don't turn all previews into generic code windows.
+App previews are a mixture of HTML and inline SVG, not a set of downloadable screenshots. Use near-black panels, tiny 10–14px text, thin dividers, clipped scroll regions, and no device frame. Preserve real text and controls where practical; don't turn all previews into generic code panes.
 
 #### Source asset manifest
 

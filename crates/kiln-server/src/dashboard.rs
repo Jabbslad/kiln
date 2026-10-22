@@ -1,5 +1,6 @@
 use kiln_api::{Operation, OperationState};
-use serde::Serialize;
+use kiln_runtime::launch_timing::LaunchTiming;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 #[derive(Default)]
@@ -29,6 +30,8 @@ pub(crate) struct BoxFacts {
     pub last_operation: Option<String>,
     pub last_error: Option<String>,
     pub restored_from: Option<String>,
+    pub metrics: crate::metrics::Snapshot,
+    pub timing: Option<LaunchTiming>,
 }
 
 pub(crate) struct TemplateFacts {
@@ -49,9 +52,10 @@ pub(crate) struct OperationFacts {
     pub operation: Operation,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct Document {
     schema_version: u32,
+    version: String,
     observed_at: String,
     workspace: String,
     host: HostBody,
@@ -61,54 +65,47 @@ pub(crate) struct Document {
     operations: Vec<OperationBody>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct HostBody {
     name: String,
-    state: &'static str,
-    metrics: Metrics,
+    state: String,
+    metrics: crate::metrics::Snapshot,
 }
 
-#[derive(Serialize)]
-struct Metrics {
-    cpu_percent: Option<f64>,
-    memory_bytes: Option<u64>,
-    disk_bytes: Option<u64>,
-}
-
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct Resources {
     vcpus: u32,
     memory_bytes: u64,
     disk_bytes: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct BoxBody {
     id: String,
     name: String,
-    state: &'static str,
-    image: &'static str,
+    state: String,
+    image: String,
     resources: Option<Resources>,
-    metrics: Metrics,
+    metrics: crate::metrics::Snapshot,
     created_at: String,
     last_operation: Option<String>,
     last_error: Option<String>,
     restored_from: Option<String>,
-    timing: Option<Value>,
+    timing: Option<LaunchTiming>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct TemplateBody {
     id: String,
     name: String,
-    version: &'static str,
-    description: &'static str,
+    version: String,
+    description: String,
     compatible: bool,
     development_only: bool,
     resources: Resources,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct CheckpointBody {
     id: String,
     box_id: String,
@@ -118,13 +115,13 @@ struct CheckpointBody {
     compatible: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct OperationBody {
     id: String,
     box_id: String,
     box_name: String,
-    kind: &'static str,
-    state: &'static str,
+    kind: String,
+    state: String,
     created_at: String,
     detail: String,
     steps: Vec<Value>,
@@ -159,10 +156,34 @@ fn published_workspace(name: &str) -> &str {
     }
 }
 
+impl Document {
+    pub(crate) fn host_metrics(&self) -> crate::metrics::Snapshot {
+        self.host.metrics
+    }
+
+    pub(crate) fn running_without_launch_timing(&self) -> bool {
+        self.boxes.iter().any(|box_body| {
+            box_body.state == "running"
+                && box_body
+                    .timing
+                    .as_ref()
+                    .is_some_and(|timing| timing.total_ms.is_none())
+        })
+    }
+
+    pub(crate) fn named_box_timing(&self, identifier: &str) -> Option<Option<LaunchTiming>> {
+        self.boxes
+            .iter()
+            .find(|box_body| box_body.id == identifier || box_body.name == identifier)
+            .map(|box_body| box_body.timing.clone())
+    }
+}
+
 pub(crate) fn document(
     workspace: &str,
     observed_at: &str,
     host_state: &'static str,
+    host_metrics: crate::metrics::Snapshot,
     inventory: &Inventory,
 ) -> Document {
     let workspace = published_workspace(workspace).to_owned();
@@ -175,8 +196,12 @@ pub(crate) fn document(
             id: row.id.clone(),
             box_id: row.box_id.clone(),
             box_name: row.box_name.clone(),
-            kind: if row.is_create { "create" } else { "unknown" },
-            state,
+            kind: if row.is_create {
+                "create".to_string()
+            } else {
+                "unknown".to_string()
+            },
+            state: state.to_string(),
             created_at: utc_timestamp(row.created_at),
             detail: client_detail(&row.operation),
             steps: Vec::new(),
@@ -184,12 +209,13 @@ pub(crate) fn document(
     }
     Document {
         schema_version: 1,
+        version: kiln_api::release_version().to_owned(),
         observed_at: observed_at.to_owned(),
         workspace: workspace.clone(),
         host: HostBody {
             name: workspace,
-            state: host_state,
-            metrics: Metrics::empty(),
+            state: host_state.to_string(),
+            metrics: host_metrics,
         },
         boxes: inventory.boxes.iter().map(box_body).collect(),
         templates: inventory
@@ -207,6 +233,7 @@ pub(crate) fn stamp_value(value: &mut Value, workspace: &str, observed_at: &str)
         return;
     }
     let workspace = published_workspace(workspace);
+    value["version"] = json!(kiln_api::release_version());
     value["observed_at"] = json!(observed_at);
     value["workspace"] = json!(workspace);
     if let Some(host) = value.get_mut("host") {
@@ -218,15 +245,15 @@ fn box_body(facts: &BoxFacts) -> BoxBody {
     BoxBody {
         id: facts.id.clone(),
         name: facts.name.clone(),
-        state: box_state(&facts.state),
-        image: "",
+        state: box_state(&facts.state).to_string(),
+        image: String::new(),
         resources: resources(facts.vcpus, facts.memory_mib, facts.disk_bytes),
-        metrics: Metrics::empty(),
+        metrics: facts.metrics,
         created_at: utc_timestamp(facts.created_at),
         last_operation: facts.last_operation.clone(),
         last_error: public_error(facts.last_error.as_deref()),
         restored_from: facts.restored_from.clone(),
-        timing: None,
+        timing: facts.timing.clone(),
     }
 }
 
@@ -245,8 +272,8 @@ fn template_body(facts: &TemplateFacts) -> Option<TemplateBody> {
     Some(TemplateBody {
         id: facts.id.clone(),
         name: facts.name.clone(),
-        version: "",
-        description: "",
+        version: String::new(),
+        description: String::new(),
         compatible: true,
         development_only: facts.development_only,
         resources: resources(facts.vcpus, facts.memory_mib, facts.disk_bytes)?,
@@ -295,16 +322,6 @@ fn public_error(value: Option<&str>) -> Option<String> {
         return None;
     }
     Some(value.to_owned())
-}
-
-impl Metrics {
-    fn empty() -> Self {
-        Self {
-            cpu_percent: None,
-            memory_bytes: None,
-            disk_bytes: None,
-        }
-    }
 }
 
 fn civil_date(days_since_epoch: i64) -> (i32, u32, u32) {
