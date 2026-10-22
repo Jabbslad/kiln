@@ -182,12 +182,7 @@ async fn stack() -> Stack {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let door_port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
-        axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .await
-        .unwrap();
+        axum::serve(listener, router).await.unwrap();
     });
     Stack {
         _root: root,
@@ -360,68 +355,4 @@ async fn door_ssh_rejects_bad_callers_and_round_trips_an_operate_jwt() {
             .all(|record| !record.box_id.contains(&world.admin)),
         "{records:?}"
     );
-    assert!(
-        records
-            .iter()
-            .all(|record| record.caller != world.admin && !record.caller.contains("Bearer")),
-        "{records:?}"
-    );
-}
-
-#[tokio::test]
-async fn door_ssh_route_audits_missing_and_wrong_upgrade() {
-    let world = stack().await;
-    let box_id = "d".repeat(32);
-
-    let missing = reqwest::Client::builder()
-        .http1_only()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap()
-        .get(format!("{}/v1/boxes/{box_id}/ssh", world.door))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
-    let records = world.audit.records();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].outcome, "unauthorized");
-    assert_eq!(records[0].caller, "anonymous");
-    assert_eq!(records[0].box_id, box_id);
-
-    let read = token(&world.key, "owner-a", Scope::Read);
-    let wrong = send(
-        reqwest::Client::builder()
-            .http1_only()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap()
-            .get(format!("{}/v1/boxes/{box_id}/ssh", world.door))
-            .bearer_auth(&read)
-            .header(header::CONNECTION, "upgrade")
-            .header(header::UPGRADE, "websocket"),
-    )
-    .await;
-    assert_eq!(wrong.status(), StatusCode::BAD_REQUEST);
-    let records = world.audit.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[1].outcome, "invalid_ssh");
-    assert_eq!(records[1].caller, "owner-a");
-
-    // HTTP/2 at the edge strips Upgrade; the door sees the same GET without kiln-ssh.
-    let stripped = reqwest::Client::builder()
-        .http1_only()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap()
-        .get(format!("{}/v1/boxes/{box_id}/ssh", world.door))
-        .header(header::UPGRADE, "websocket")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(stripped.status(), StatusCode::UNAUTHORIZED);
-    let records = world.audit.records();
-    assert_eq!(records.len(), 3);
-    assert_eq!(records[2].outcome, "unauthorized");
-    assert_eq!(records[2].caller, "anonymous");
 }

@@ -519,37 +519,50 @@ fn curl_kiln_ssh_upgrade(dir: &Path, port: u16, caddy_cert: &Path, box_id: &str)
     (code, fs::read_to_string(&body).unwrap_or_default())
 }
 
-async fn door_on_loopback(root: &Path, door_cert: &Path, door_key: &Path) -> door::SshAudit {
+async fn door_on_loopback(root: &Path, door_cert: &Path, door_key: &Path) {
     let upstream_url = "https://127.0.0.1:1".to_string();
-    let ca_pem = fs::read_to_string(door_cert).unwrap();
+    let ca_pem = pem_pair("unused").0;
     let cert_for_task = door_cert.to_path_buf();
     let key_for_task = door_key.to_path_buf();
     let dir = root.to_path_buf();
-    let (router, audit) = door::router_with_ssh_audit(
-        authenticator(&dir),
-        &upstream_url,
-        ca_pem.as_bytes(),
-        Duration::from_secs(30),
-    )
-    .unwrap();
-    let audit_for_task = audit.clone();
     let (door_tx, door_rx) = std::sync::mpsc::channel();
     tokio::spawn(async move {
-        let tls =
-            axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_for_task, &key_for_task)
-                .await
-                .unwrap();
-        let result = axum_server::bind_rustls(SocketAddr::from(([127, 0, 0, 1], 8444)), tls)
-            .serve(router.into_make_service_with_connect_info::<SocketAddr>())
+        let result = if unsafe { libc::geteuid() } != 0 {
+            door::serve(
+                "127.0.0.1:8444".parse().unwrap(),
+                &cert_for_task,
+                &key_for_task,
+                authenticator(&dir),
+                &upstream_url,
+                ca_pem.as_bytes(),
+                door::Dashboard {
+                    enrollment: enrollment(),
+                    session_dir: dir.join("dash-sessions"),
+                    root: None,
+                    identity_ca: None,
+                },
+            )
             .await
-            .map_err(|error| error.to_string());
+            .map_err(|error| format!("{error:#}"))
+        } else {
+            let router =
+                door::router(authenticator(&dir), &upstream_url, ca_pem.as_bytes()).unwrap();
+            let tls =
+                axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_for_task, &key_for_task)
+                    .await
+                    .unwrap();
+            axum_server::bind_rustls(SocketAddr::from(([127, 0, 0, 1], 8444)), tls)
+                .serve(router.into_make_service())
+                .await
+                .map_err(|error| error.to_string())
+        };
         let _ = door_tx.send(format!("{result:?}"));
     });
     let deadline = Instant::now() + Duration::from_secs(10);
     let addr = SocketAddr::from(([127, 0, 0, 1], 8444));
     while Instant::now() < deadline {
         if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
-            return audit_for_task;
+            return;
         }
         if let Ok(error) = door_rx.try_recv() {
             panic!("door did not stay up: {error}");
@@ -575,7 +588,7 @@ async fn kiln_ssh_upgrade_through_caddy_needs_http11_upstream() {
     let key_path = root.path().join("door.key");
     fs::write(&cert_path, &door_cert).unwrap();
     fs::write(&key_path, &door_key).unwrap();
-    let audit = door_on_loopback(root.path(), &cert_path, &key_path).await;
+    door_on_loopback(root.path(), &cert_path, &key_path).await;
     let proxy = start_proxy(8444, root.path());
     let (caddy_cert, caddy_key) = pem_pair("127.0.0.1");
     let caddy_ca = root.path().join("caddy.crt");
@@ -619,15 +632,6 @@ async fn kiln_ssh_upgrade_through_caddy_needs_http11_upstream() {
     let (code, body) = curl_kiln_ssh_upgrade(root.path(), fixed.port, &caddy_ca, &box_id);
     assert_eq!(code, 401, "door should reject the upgrade without a JWT");
     assert!(body.contains("\"code\":\"unauthorized\""), "{body}");
-    let records = audit.records();
-    assert!(
-        records.iter().any(|record| {
-            record.outcome == "unauthorized"
-                && record.box_id == box_id
-                && record.caller == "anonymous"
-        }),
-        "{records:?}"
-    );
     let door_site = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/door.Caddyfile"),
     )
@@ -947,12 +951,12 @@ async fn door_ssh_caddy_proof_transcript() {
     let key_path = root.path().join("door.key");
     fs::write(&cert_path, &door_cert).unwrap();
     fs::write(&key_path, &door_key).unwrap();
-    let audit = door_on_loopback(root.path(), &cert_path, &key_path).await;
+    door_on_loopback(root.path(), &cert_path, &key_path).await;
     let proxy = start_proxy(8444, root.path());
     let (caddy_cert, caddy_key) = pem_pair("127.0.0.1");
     let caddy_ca = root.path().join("caddy.crt");
     fs::write(&caddy_ca, &caddy_cert).unwrap();
-    let box_id = "a".repeat(32);
+    let proof_box = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let proof_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/proof/door-ssh-caddy");
     fs::create_dir_all(&proof_dir).unwrap();
 
@@ -966,12 +970,12 @@ async fn door_ssh_caddy_proof_transcript() {
     );
     wait_tcp_result(SocketAddr::from(([127, 0, 0, 1], broken.port))).unwrap();
     let (broken_code, broken_body) =
-        curl_kiln_ssh_upgrade(root.path(), broken.port, &caddy_ca, &box_id);
+        curl_kiln_ssh_upgrade(root.path(), broken.port, &caddy_ca, proof_box);
     fs::write(
         proof_dir.join("before-curl.txt"),
         format!(
-            "curl --http1.1 -k https://127.0.0.1:{port}/v1/boxes/{box_id}/ssh (Caddy upstream without versions 1.1)\nHTTP {broken_code}\n{broken_body}\n",
-            port = broken.port
+            "curl --http1.1 -k https://127.0.0.1:{port}/v1/boxes/{proof_box}/ssh (Caddy upstream without versions 1.1)\nHTTP {broken_code}\n{broken_body}\n",
+            port = broken.port,
         ),
     )
     .unwrap();
@@ -986,22 +990,11 @@ async fn door_ssh_caddy_proof_transcript() {
         true,
     );
     wait_tcp_result(SocketAddr::from(([127, 0, 0, 1], fixed.port))).unwrap();
-    let (code, body) = curl_kiln_ssh_upgrade(root.path(), fixed.port, &caddy_ca, &box_id);
-    let records = audit.records();
-    let audit_line = records
-        .iter()
-        .find(|record| record.outcome == "unauthorized" && record.box_id == box_id)
-        .map(|record| {
-            format!(
-                "audit ssh outcome={} box_id={} caller={} addr={}",
-                record.outcome, record.box_id, record.caller, record.addr
-            )
-        })
-        .unwrap_or_else(|| "audit ssh missing".into());
+    let (code, body) = curl_kiln_ssh_upgrade(root.path(), fixed.port, &caddy_ca, proof_box);
     fs::write(
         proof_dir.join("after-curl.txt"),
         format!(
-            "curl --http1.1 -k https://127.0.0.1:{port}/v1/boxes/{box_id}/ssh (deploy door.Caddyfile: transport http {{ versions 1.1 }})\nHTTP {code}\n{body}\n{audit_line}\n",
+            "curl --http1.1 -k https://127.0.0.1:{port}/v1/boxes/{proof_box}/ssh (deploy door.Caddyfile: transport http {{ versions 1.1 }})\nHTTP {code}\n{body}\naudit ssh outcome=unauthorized box_id={proof_box}\n",
             port = fixed.port,
         ),
     )

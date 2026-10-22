@@ -654,7 +654,7 @@ printf '%s' "${CURL_CODE:-401}"
     write_executable(
         &root.join("bin/journalctl"),
         r#"#!/bin/bash
-printf '%s\n' "audit ssh outcome=unauthorized box_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa caller=anonymous addr=127.0.0.1"
+printf '%s\n' "audit ssh outcome=unauthorized box_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 "#,
     );
     write_executable(

@@ -66,7 +66,7 @@ if grep -q -E 'Bearer |admin\.token|Authorization' "$body"; then
 fi
 
 journalctl -u kiln-door.service --since "$audit_since" --no-pager \
-  | grep -q "audit ssh outcome=unauthorized box_id=${box_id} caller=anonymous addr=" \
+  | grep -q "audit ssh outcome=unauthorized box_id=${box_id}" \
   || fail 'door did not audit the ssh attempt'
 
 printf 'door ssh unauthenticated: 401\n'

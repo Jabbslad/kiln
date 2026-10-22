@@ -202,20 +202,6 @@ impl Authenticator {
         self.central_jwt(bearer).await
     }
 
-    /// Enrolled owner id when the bearer is a valid central JWT; otherwise `anonymous`.
-    pub async fn central_caller(&self, bearer: &str) -> String {
-        if bearer.is_empty() {
-            return "anonymous".into();
-        }
-        let Some((enrollment, _)) = self.central.as_ref() else {
-            return "anonymous".into();
-        };
-        if self.authenticate_central(bearer).await.is_ok() {
-            return enrollment.owner_id.clone();
-        }
-        "anonymous".into()
-    }
-
     async fn central_jwt(&self, bearer: &str) -> Result<Scope> {
         let (enrollment, path) = self
             .central
