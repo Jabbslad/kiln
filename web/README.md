@@ -80,4 +80,6 @@ npm run test:browser
 npx prettier --check .
 ```
 
+The dashboard CI job caches this Chromium download. A hit installs OS packages only.
+
 For an already-installed Chromium binary, set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` to its absolute path. Set `KILN_SCREENSHOT_DIR` to an existing artifact directory to capture the exercised desktop/mobile states. Browser tests use controlled API responses or explicit preview mode and do not launch VMs. They test actual navigation, validation, disabled mutation gates, dialog focus/Escape, deep links, mobile overflow, and automated WCAG checks. Screenshots are design evidence, not runtime-operation verification.

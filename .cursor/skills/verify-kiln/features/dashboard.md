@@ -175,4 +175,5 @@ npm test -- capabilities.test.tsx BoxDetail.test.tsx
 - `Connect terminal` stays disabled in preview, on a stopped box, and while the host is offline. A live console enables it when the host is online and the box is running.
 - The terminal is a session. Leave it out of `OPERATION_ACTION_TYPES` and the operation tracker. Identity still issues the dashboard cookie at read scope, so a signed-in console cannot open the shell until that session can operate.
 - CI job `dashboard` runs `npm test`, Prettier, `npm run build`, and `npm run test:browser` without Firecracker. The PTY echo test runs in `server-check`.
+- That job caches Playwright browsers at `~/.cache/ms-playwright`. The cache key is the runner OS plus the `playwright` version resolved from `web/package-lock.json`. A hit runs `npx playwright install-deps chromium`. A miss runs `npx playwright install --with-deps chromium`. The install stops after 300 seconds and retries once so a stalled apt download does not use the whole 15 minute job timeout.
 - Record status codes and field names. Leave `Authorization` and session cookies out of the evidence directory.
