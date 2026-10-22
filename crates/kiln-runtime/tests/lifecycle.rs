@@ -774,6 +774,16 @@ fn prepared_clones_have_private_identity_disks_and_lifetimes() {
     success(state.path(), &["stop", aid]);
     let restarted = success(state.path(), &["start", aid]);
     assert_eq!(restarted["disk_layer"], a["disk_layer"]);
+    if std::env::var("KILN_TEST_ISOLATION_CONFIG").is_ok() {
+        let launch = restarted["last_launch"].as_object().expect("last_launch");
+        assert!(
+            launch
+                .get("storage_ms")
+                .and_then(|value| value.as_f64())
+                .is_some_and(|value| value > 0.),
+            "start should record storage_ms: {launch:?}"
+        );
+    }
     assert_eq!(
         success(
             state.path(),

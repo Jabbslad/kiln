@@ -136,6 +136,13 @@ INSERT INTO operations(
 SQL
 }
 
+init_journal_v4() {
+  rm -f "$var/journal/operations.sqlite"
+  sqlite3 "$var/journal/operations.sqlite" \
+    'PRAGMA journal_mode=DELETE; PRAGMA user_version=4; CREATE TABLE operations(running INTEGER); INSERT INTO operations VALUES(0);' \
+    >/dev/null
+}
+
 init_journal_v2() {
   rm -f "$var/journal/operations.sqlite"
   sqlite3 "$var/journal/operations.sqlite" <<'SQL'
@@ -312,20 +319,31 @@ run_install 2 --apply
 [ "$rc" = 0 ] || fail "v2 journal upgrade failed: $(cat "$work/err")"
 grep -q '0.4.4 -> 0.4.5' "$work/out" || fail "missing upgrade banner: $(cat "$work/out")"
 
-# Unsupported journal schema versions fail with the sqlite command and version range.
+# A v3 operation journal must not block binary swap on an installed host.
 prepare
 write_release 0.4.5
 write_bin 0.4.4 0.4.5
 init_journal_v3
+mark kiln-app.service 4100
+mark kiln-door.service 4200
+run_install 2 --apply
+[ "$rc" = 0 ] || fail "v3 journal upgrade failed: $(cat "$work/err")"
+grep -q '0.4.4 -> 0.4.5' "$work/out" || fail "missing upgrade banner: $(cat "$work/out")"
+
+# Unsupported journal schema versions fail with the sqlite command and version range.
+prepare
+write_release 0.4.5
+write_bin 0.4.4 0.4.5
+init_journal_v4
 mark kiln-app.service 4100
 run_install 1 --apply
 [ "$rc" != 0 ] || fail "unsupported journal version should fail the swap"
 grep -q 'install step failed: wait for journal idle' "$work/err" \
   || fail "missing step name: $(cat "$work/err")"
 grep -q "PRAGMA user_version;" "$work/err" || fail "missing journal command: $(cat "$work/err")"
-grep -q 'found operation journal schema version 3' "$work/err" \
+grep -q 'found operation journal schema version 4' "$work/err" \
   || fail "missing found version: $(cat "$work/err")"
-grep -q 'installer accepts 1 through 2' "$work/err" \
+grep -q 'installer accepts 1 through 3' "$work/err" \
   || fail "missing expected range: $(cat "$work/err")"
 grep -q 'exit code: 1' "$work/err" || fail "missing exit code: $(cat "$work/err")"
 

@@ -202,7 +202,7 @@ pub(crate) fn document(
                 "unknown".to_string()
             },
             state: state.to_string(),
-            created_at: utc_timestamp(row.created_at),
+            created_at: utc_timestamp(crate::journal::journal_stored_secs(row.created_at)),
             detail: client_detail(&row.operation),
             steps: Vec::new(),
         });

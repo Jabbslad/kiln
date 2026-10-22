@@ -905,7 +905,7 @@ operations_journal_max_version() {
     return 0
   fi
   # Match kiln-server SCHEMA_VERSION when the pin is not yet beside install.sh.
-  printf '%s\n' 2
+  printf '%s\n' 3
 }
 
 operations_journal_version_supported() {
