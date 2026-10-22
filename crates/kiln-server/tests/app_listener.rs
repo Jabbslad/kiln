@@ -16,7 +16,7 @@ use axum::{
 };
 use futures_util::stream;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::{Action, Submit, auth::Role, auth::Scope, auth::ServerClaims, new_id};
+use kiln_api::{Action, Submit, auth::MemberRole, auth::Scope, auth::ServerClaims, new_id};
 use kiln_server::{
     app_listener::{self, BIND},
     auth::{Authenticator, Enrollment},
@@ -25,6 +25,9 @@ use kiln_server::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tower::ServiceExt;
+
+#[path = "common.rs"]
+mod common;
 
 const CSP: &str = "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 const HTML: &str = "<!doctype html><html><body>kiln</body></html>";
@@ -64,7 +67,7 @@ fn auth(dir: &Path) -> (Authenticator, EncodingKey) {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: None,
+        tenant_id: common::fixture_tenant_id(),
     };
     let cache = dir.join("jwks.json");
     std::fs::write(
@@ -89,13 +92,13 @@ fn token_with(key: &EncodingKey, sub: &str, scope: Scope, credential_id: &str) -
         iss: "https://identity.example.test".into(),
         sub: sub.into(),
         aud: "kiln:server:server-b".into(),
+        tenant_id: common::fixture_tenant_id(),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: credential_id.into(),
         scope,
-        tenant_id: sub.to_string(),
-        role: Role::Owner,
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -1133,13 +1136,13 @@ async fn read_grant_is_checked_and_another_server_is_rejected() {
             iss: "https://identity.example.test".into(),
             sub: "owner-a".into(),
             aud: "kiln:server:other".into(),
+            tenant_id: Some("ten_other".into()),
             iat: now,
             nbf: now,
             exp: now + 300,
             credential_id: "app_other".into(),
             scope: Scope::Read,
-            tenant_id: "owner-a".into(),
-            role: Role::Owner,
+            role: Some(MemberRole::Owner),
         },
         &key,
     )
@@ -2422,7 +2425,6 @@ fn central(dir: &Path) -> Authenticator {
             issuer: "https://identity.example.test".into(),
             owner_id: "owner-a".into(),
             server_id: "server-b".into(),
-            tenant_id: None,
         },
         dir.join("jwks.json"),
     )

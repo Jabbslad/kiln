@@ -1,7 +1,7 @@
 //! Local enrollment remains the authority for issuer, owner and server audience.
 use anyhow::{Context, Result, ensure};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
-use kiln_api::auth::{Role, Scope, ServerClaims};
+use kiln_api::auth::{MemberRole, Scope, ServerClaims};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -78,7 +78,7 @@ pub struct CentralIdentity {
     pub scope: Scope,
     pub sub: String,
     pub credential_id: String,
-    pub role: Role,
+    pub role: MemberRole,
 }
 
 fn keys(value: &Value) -> Result<JwkSet> {
@@ -139,7 +139,6 @@ pub fn verify_identity(
     let c = decode::<ServerClaims>(token, &key, &validation)?.claims;
     ensure!(
         c.sub == enrollment.owner_id
-            && c.tenant_id == enrollment.tenant_id()
             && !c.credential_id.is_empty()
             && c.credential_id.len() <= 128
             && c.exp > c.iat
@@ -149,11 +148,17 @@ pub fn verify_identity(
             && c.iat <= jsonwebtoken::get_current_timestamp().saturating_add(30),
         "invalid token authority or lifetime"
     );
+    if let Some(enrolled) = &enrollment.tenant_id {
+        ensure!(
+            c.tenant_id.as_deref() == Some(enrolled.as_str()),
+            "invalid token tenant"
+        );
+    }
     Ok(CentralIdentity {
         scope: c.scope,
         sub: c.sub,
         credential_id: c.credential_id,
-        role: c.role,
+        role: c.role.unwrap_or(MemberRole::Owner),
     })
 }
 

@@ -1,7 +1,11 @@
 use axum::{Json, Router, routing::post};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{RevocationQuery, RevocationSet, Role, Scope, ServerClaims};
+use kiln_api::auth::{MemberRole, RevocationQuery, RevocationSet, Scope, ServerClaims};
 use kiln_server::auth::{Authenticator, Enrollment};
+
+#[path = "common.rs"]
+mod common;
+
 use std::{
     sync::{
         Arc,
@@ -33,13 +37,13 @@ fn jwt(key: &EncodingKey, enrollment: &Enrollment, credential_id: &str) -> Strin
         iss: enrollment.issuer.clone(),
         sub: enrollment.owner_id.clone(),
         aud: format!("kiln:server:{}", enrollment.server_id),
+        tenant_id: enrollment.tenant_id.clone(),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: credential_id.into(),
         scope: Scope::Operate,
-        tenant_id: enrollment.tenant_id().to_owned(),
-        role: Role::Owner,
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -60,7 +64,7 @@ async fn tenant_revocation_feed_rejects_within_one_refresh_cycle() {
             let fetches = fetches.clone();
             move |Json(body): Json<RevocationQuery>| {
                 fetches.fetch_add(1, Ordering::SeqCst);
-                assert_eq!(body.tenant_id, "owner-a");
+                assert_eq!(body.tenant_id, common::FIXTURE_TENANT_ID);
                 async move {
                     let set = revocations.lock().await.clone();
                     Json(set)
@@ -90,7 +94,7 @@ async fn tenant_revocation_feed_rejects_within_one_refresh_cycle() {
         issuer: format!("https://127.0.0.1:{port}"),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: None,
+        tenant_id: common::fixture_tenant_id(),
     };
     let http = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
@@ -99,14 +103,19 @@ async fn tenant_revocation_feed_rejects_within_one_refresh_cycle() {
         .unwrap();
     let watch =
         kiln_server::revocation::RevocationWatch::new(enrollment, "login-secret".into(), http);
-    watch.allow("owner-a", "device-live", Role::Owner).unwrap();
+    watch
+        .allow("owner-a", "device-live", MemberRole::Owner)
+        .unwrap();
     *revocations.lock().await = RevocationSet {
         accounts: vec![],
         credentials: vec!["device-live".into()],
     };
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(300)).await;
-        if watch.allow("owner-a", "device-live", Role::Owner).is_err() {
+        if watch
+            .allow("owner-a", "device-live", MemberRole::Owner)
+            .is_err()
+        {
             return;
         }
     }
@@ -121,12 +130,14 @@ async fn member_tokens_fail_closed_when_revocation_feed_is_stale() {
             issuer: "https://identity.example.test".into(),
             owner_id: "owner-a".into(),
             server_id: "server-b".into(),
-            tenant_id: None,
+            tenant_id: common::fixture_tenant_id(),
         },
         "login-secret".into(),
         reqwest::Client::builder().https_only(true).build().unwrap(),
     );
-    assert!(watch.allow("member-b", "device-m", Role::Member).is_err());
+    assert!(watch
+        .allow("member-b", "device-m", MemberRole::Member)
+        .is_err());
 }
 
 #[tokio::test]
@@ -139,7 +150,7 @@ async fn authenticator_checks_the_tenant_revocation_feed() {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: None,
+        tenant_id: common::fixture_tenant_id(),
     };
     std::fs::write(
         &cache,

@@ -1,6 +1,9 @@
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{Role, Scope, ServerClaims};
-use kiln_server::auth::{Enrollment, verify};
+use kiln_api::auth::{MemberRole, Scope, ServerClaims};
+use kiln_server::auth::{Enrollment, verify, verify_identity};
+
+#[path = "common.rs"]
+mod common;
 
 fn fixture() -> (EncodingKey, serde_json::Value) {
     use base64::Engine;
@@ -19,6 +22,68 @@ fn fixture() -> (EncodingKey, serde_json::Value) {
 }
 
 #[test]
+fn enrolled_server_rejects_jwt_with_mismatched_tenant_id() {
+    let (key, jwks) = fixture();
+    let enrollment = Enrollment {
+        version: 1,
+        issuer: "https://identity.example.test".into(),
+        owner_id: "owner-a".into(),
+        server_id: "server-b".into(),
+        tenant_id: common::fixture_tenant_id(),
+    };
+    let now = jsonwebtoken::get_current_timestamp();
+    let mut claims = ServerClaims {
+        iss: enrollment.issuer.clone(),
+        sub: enrollment.owner_id.clone(),
+        aud: "kiln:server:server-b".into(),
+        tenant_id: Some("ten_other".into()),
+        iat: now,
+        nbf: now,
+        exp: now + 300,
+        credential_id: "device-c".into(),
+        scope: Scope::Read,
+        role: Some(MemberRole::Owner),
+    };
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some("first".into());
+    let token = jsonwebtoken::encode(&header, &claims, &key).unwrap();
+    assert!(verify(&token, &enrollment, &jwks).is_err());
+    claims.tenant_id = common::fixture_tenant_id();
+    let token = jsonwebtoken::encode(&header, &claims, &key).unwrap();
+    assert_eq!(verify(&token, &enrollment, &jwks).unwrap(), Scope::Read);
+}
+
+#[test]
+#[ignore = "A2: enrolled server must reject central JWTs that omit tenant_id once member acceptance lands"]
+fn enrolled_server_rejects_jwt_without_tenant_id() {
+    let (key, jwks) = fixture();
+    let enrollment = Enrollment {
+        version: 1,
+        issuer: "https://identity.example.test".into(),
+        owner_id: "owner-a".into(),
+        server_id: "server-b".into(),
+        tenant_id: common::fixture_tenant_id(),
+    };
+    let now = jsonwebtoken::get_current_timestamp();
+    let claims = ServerClaims {
+        iss: enrollment.issuer.clone(),
+        sub: enrollment.owner_id.clone(),
+        aud: "kiln:server:server-b".into(),
+        tenant_id: None,
+        iat: now,
+        nbf: now,
+        exp: now + 300,
+        credential_id: "device-c".into(),
+        scope: Scope::Read,
+        role: Some(MemberRole::Owner),
+    };
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some("first".into());
+    let token = jsonwebtoken::encode(&header, &claims, &key).unwrap();
+    assert!(verify_identity(&token, &enrollment, &jwks).is_err());
+}
+
+#[test]
 fn issuer_owner_audience_time_and_scope_are_enforced() {
     let (key, jwks) = fixture();
     let enrollment = Enrollment {
@@ -33,13 +98,13 @@ fn issuer_owner_audience_time_and_scope_are_enforced() {
         iss: enrollment.issuer.clone(),
         sub: enrollment.owner_id.clone(),
         aud: "kiln:server:server-b".into(),
+        tenant_id: common::fixture_tenant_id(),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-c".into(),
         scope: Scope::Read,
-        tenant_id: enrollment.owner_id.clone(),
-        role: Role::Owner,
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -98,7 +163,7 @@ async fn read_scope_cannot_reach_operations_or_ssh() {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: None,
+        tenant_id: common::fixture_tenant_id(),
     };
     std::fs::write(
         &cache,
@@ -115,13 +180,13 @@ async fn read_scope_cannot_reach_operations_or_ssh() {
         iss: enrollment.issuer,
         sub: enrollment.owner_id,
         aud: "kiln:server:server-b".into(),
+        tenant_id: common::fixture_tenant_id(),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-c".into(),
         scope: Scope::Read,
-        tenant_id: "owner-a".into(),
-        role: Role::Owner,
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

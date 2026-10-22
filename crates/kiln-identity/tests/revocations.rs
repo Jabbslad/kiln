@@ -86,10 +86,10 @@ async fn tenant_wide_revocation_set_lists_removed_devices_and_keys() {
     let db = f.db();
     db.execute_batch(
         "INSERT INTO accounts(id,created_at) VALUES('owner-a',1),('member-b',1);
-         CREATE TABLE tenant_members(tenant_id TEXT NOT NULL,account_id TEXT NOT NULL,role TEXT NOT NULL,removed_at INTEGER,PRIMARY KEY(tenant_id,account_id));
-         INSERT INTO tenant_members(tenant_id,account_id,role,removed_at) VALUES('owner-a','owner-a','owner',NULL),('owner-a','member-b','member',NULL);
-         INSERT INTO servers(id,owner_id,name,origin,ca_pem,revision,active,directory_hash,created_at,login_secret_hash)
-         VALUES('srv_a','owner-a','lab','https://host/','pem',1,1,x'00',1,x'aa'),('srv_b','owner-a','lab2','https://host2/','pem',1,1,x'01',1,x'aa');
+         INSERT INTO tenants(id,owner_account_id,created_at) VALUES('ten_test','owner-a',1);
+         INSERT INTO tenant_members(tenant_id,account_id,role) VALUES('ten_test','owner-a','owner'),('ten_test','member-b','member');
+         INSERT INTO servers(id,owner_id,tenant_id,name,origin,ca_pem,revision,active,directory_hash,created_at,login_secret_hash)
+         VALUES('srv_a','owner-a','ten_test','lab','https://host/','pem',1,1,x'00',1,x'aa'),('srv_b','owner-a','ten_test','lab2','https://host2/','pem',1,1,x'01',1,x'aa');
          INSERT INTO devices(id,account_id,name,created_at,last_used,revoked_at)
          VALUES('dev_live','owner-a','laptop',1,1,NULL),('dev_revoked','member-b','other',1,1,999);
          INSERT INTO automation_keys(id,owner_id,server_id,hash,scope,expires_at,revoked_at)
@@ -103,7 +103,7 @@ async fn tenant_wide_revocation_set_lists_removed_devices_and_keys() {
     )
     .unwrap();
     let (status, body) = f
-        .post("/v1/revocations", login, json!({"tenant_id":"owner-a"}))
+        .post("/v1/revocations", login, json!({"tenant_id":"ten_test"}))
         .await;
     assert_eq!(status, StatusCode::OK);
     let set: RevocationSet = serde_json::from_value(body).unwrap();
