@@ -36,6 +36,8 @@ grep -q 'sh scripts/test-check.sh' .github/workflows/build.yml \
   || fail 'build.yml must run test-check.sh'
 grep -q 'sh scripts/test-server-check-nextest.sh' .github/workflows/build.yml \
   || fail 'build.yml must run test-server-check-nextest.sh'
+grep -q 'sh scripts/test-server-check-hang-evidence.sh' .github/workflows/build.yml \
+  || fail 'build.yml must run test-server-check-hang-evidence.sh'
 grep -q 'sh scripts/test-pre-push-hook.sh' .github/workflows/build.yml \
   || fail 'build.yml must run test-pre-push-hook.sh'
 grep -q 'scripts/check.sh' .githooks/pre-push \
@@ -60,6 +62,8 @@ grep -q 'bash scripts/test-identity-upgrade.sh' "$docs" \
   || fail 'check-docs.sh must run test-identity-upgrade.sh (docs-check parity)'
 grep -q 'sh scripts/test-verify-release-attestations.sh' "$docs" \
   || fail 'check-docs.sh must run test-verify-release-attestations.sh (docs-check parity)'
+grep -q 'sh scripts/test-server-check-hang-evidence.sh' "$docs" \
+  || fail 'check-docs.sh must run test-server-check-hang-evidence.sh (docs-check parity)'
 
 printf '%s\n' "$body" | awk '/^run_server_check\(\)/,/^}/' | grep -q 'run-workspace-nextest.sh &&' \
   || fail 'run_server_check must chain steps with && so failures propagate under run_check'
