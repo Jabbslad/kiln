@@ -1,0 +1,4 @@
+curl --http1.1 -k https://127.0.0.1:443/v1/boxes/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ssh (deploy door.Caddyfile: transport http { versions 1.1 })
+HTTP 401
+{"code":"unauthorized","message":"A valid credential is required."}
+audit ssh outcome=unauthorized box_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa caller=anonymous addr=127.0.0.1

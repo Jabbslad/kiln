@@ -57,6 +57,7 @@ if [ -n "$resolve" ]; then
 fi
 
 code=$(curl "${curl_args[@]}" "$url") || fail 'door ssh route is not reachable'
+[ "$code" = 502 ] && fail 'door ssh returned 502; Caddy did not proxy Upgrade: kiln-ssh to the door'
 [ "$code" = 401 ] || fail "unauthenticated door ssh returned ${code:-none}"
 grep -q '"code":"unauthorized"' "$body" \
   || fail 'unauthenticated door ssh body was not a rejection'
@@ -65,7 +66,7 @@ if grep -q -E 'Bearer |admin\.token|Authorization' "$body"; then
 fi
 
 journalctl -u kiln-door.service --since "$audit_since" --no-pager \
-  | grep -q "audit ssh outcome=unauthorized box_id=${box_id}" \
+  | grep -q "audit ssh outcome=unauthorized box_id=${box_id} caller=anonymous addr=" \
   || fail 'door did not audit the ssh attempt'
 
 printf 'door ssh unauthenticated: 401\n'

@@ -103,6 +103,7 @@ jobs:
           bash scripts/test-identity-upgrade.sh
           bash scripts/test-login-token.sh
           sh scripts/test-caddy-endings.sh
+          sh scripts/test-proof-door-ssh-caddy.sh
           sh scripts/test-bootstrap-pins.sh
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
@@ -248,6 +249,7 @@ jobs:
           bash scripts/test-login-token.sh
           bash scripts/test-login-token-upgrade.sh
           sh scripts/test-caddy-endings.sh
+          sh scripts/test-proof-door-ssh-caddy.sh
           sh scripts/test-bootstrap-pins.sh
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
