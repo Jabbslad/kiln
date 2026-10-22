@@ -127,6 +127,7 @@ jobs:
           sh scripts/test-release-notes.sh
           sh scripts/test-fmt.sh
           sh scripts/test-check.sh
+          sh scripts/test-pre-push-hook.sh
           sh scripts/test-ssh-multiplex.sh
 
   feature-map-guard:
@@ -273,6 +274,7 @@ jobs:
           sh scripts/test-release-notes.sh
           sh scripts/test-fmt.sh
           sh scripts/test-check.sh
+          sh scripts/test-pre-push-hook.sh
           sh scripts/test-ssh-multiplex.sh
           shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-bootstrap-pins.sh scripts/test-bootstrap-pins.sh scripts/test-caddy-endings.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/enroll-dark-forge.sh \

@@ -34,6 +34,12 @@ printf '%s\n' "$body" | grep -q 'shellcheck not installed, skipped' \
 
 grep -q 'sh scripts/test-check.sh' .github/workflows/build.yml \
   || fail 'build.yml must run test-check.sh'
+grep -q 'sh scripts/test-pre-push-hook.sh' .github/workflows/build.yml \
+  || fail 'build.yml must run test-pre-push-hook.sh'
+grep -q 'scripts/check.sh' .githooks/pre-push \
+  || fail 'pre-push hook must run scripts/check.sh'
+grep -q 'prepush-extra-check-paths.sh' .githooks/pre-push \
+  || fail 'pre-push hook must use prepush-extra-check-paths.sh'
 
 docs=$root/scripts/check-docs.sh
 grep -q 'sh scripts/test-check-pr-proof.sh' "$docs" \
