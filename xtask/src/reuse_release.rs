@@ -1927,7 +1927,13 @@ fn test_workflow_keeps_drafts_and_does_not_move_tags() {
         .lines()
         .filter(|line| line.trim() == "actions: write")
         .collect();
-    assert_eq!(granted, Vec::<&str>::new());
+    assert_eq!(granted, vec!["      actions: write"]);
+    assert!(
+        job_body(&text, "cancel-on-required-failure")
+            .iter()
+            .any(|line| line.trim() == "actions: write"),
+        "actions: write must stay scoped to cancel-on-required-failure"
+    );
     assert_eq!(text.matches("retention-days: 30").count(), 4);
     assert!(
         text.contains("actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be")
