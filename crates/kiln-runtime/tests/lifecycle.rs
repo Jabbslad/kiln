@@ -783,6 +783,13 @@ fn prepared_clones_have_private_identity_disks_and_lifetimes() {
                 .is_some_and(|value| value > 0.),
             "start should record storage_ms: {launch:?}"
         );
+        if a["disk_layer"].is_null() {
+            assert_eq!(launch["disk_copy"], "Move");
+            assert!(
+                launch["storage_ms"].as_f64().unwrap() < 500.,
+                "start should relocate the disk instead of copying it: {launch:?}"
+            );
+        }
     }
     assert_eq!(
         success(
@@ -1295,6 +1302,57 @@ fn four_4g_clones_preserve_resources_and_enforce_total_quota() {
         assert_eq!(sample["vcpus"], 1, "{mode}");
     }
     success(state.path(), &["checkpoint", "delete", tid]);
+}
+
+#[test]
+#[ignore = "requires KVM and KILN_TEST_IMAGE"]
+fn existing_boxes_jamie_and_jamie2_still_start_after_storage_upgrade() {
+    let image = std::env::var("KILN_TEST_IMAGE").expect("set KILN_TEST_IMAGE");
+    let state = state_directory();
+    std::fs::set_permissions(state.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let _cleanup = Cleanup(state.path());
+    for name in ["jamie", "jamie2"] {
+        let id = success(
+            state.path(),
+            &[
+                "create",
+                "--image",
+                &image,
+                "--name",
+                name,
+                "--allow-unsafe-development",
+            ],
+        )["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        success(
+            state.path(),
+            &[
+                "exec",
+                &id,
+                "--",
+                "/bin/sh",
+                "-c",
+                &format!("printf {name} > /workspace/whoami"),
+            ],
+        );
+        success(state.path(), &["stop", &id]);
+        let restarted = success(state.path(), &["start", &id]);
+        let launch = restarted["last_launch"].as_object().expect("last_launch");
+        if std::env::var("KILN_TEST_ISOLATION_CONFIG").is_ok() && restarted["disk_layer"].is_null()
+        {
+            assert_eq!(launch["disk_copy"], "Move");
+        }
+        assert_eq!(
+            success(
+                state.path(),
+                &["exec", &id, "--", "/bin/cat", "/workspace/whoami"]
+            )["stdout"],
+            format!("{name}\n")
+        );
+        success(state.path(), &["delete", &id]);
+    }
 }
 
 #[test]

@@ -39,7 +39,7 @@ sh scripts/test-proof-door-ssh-caddy.sh
 sh scripts/test-bootstrap-pins.sh
 sh scripts/test-installer-release.sh
 sh scripts/test-wait-main-run.sh
-sh scripts/test-slow-lane-merge.sh
+sh scripts/test-batch-merge.sh
 sh scripts/test-tag-path-dry-run.sh
 sh scripts/test-tag-path-pr-stamp-order.sh
 sh scripts/test-deploy-host-tools.sh
@@ -89,8 +89,8 @@ shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-b
   scripts/test-installer-release.sh \
   scripts/stamp-release-version.sh scripts/stamp-release-dist.sh scripts/reuse-server-check.sh \
   scripts/wait-main-run.sh scripts/test-wait-main-run.sh \
-  scripts/slow-lane-merge.sh scripts/slow-lane-require-deploy.sh \
-  scripts/slow-lane-workflow-run-gate.sh scripts/test-slow-lane-merge.sh \
+  scripts/batch-merge.sh scripts/batch-merge-idle-gate.sh \
+  scripts/test-batch-merge.sh \
   scripts/tag-path-dry-run.sh scripts/test-tag-path-dry-run.sh \
   scripts/test-tag-path-pr-stamp-order.sh \
   scripts/read-release-json-field.sh scripts/test-release-json-field.sh \

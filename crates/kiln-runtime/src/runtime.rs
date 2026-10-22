@@ -1195,10 +1195,9 @@ impl Runtime {
                     record.run = self::id()?;
                     if record.disk_layer.is_none() {
                         let phase = Phase::start("disk_copy");
-                        let method = storage::copy_disk(
+                        let method = storage::relocate_disk(
                             &self.run(&previous)?.join("disk.ext4"),
                             &self.run(&record)?.join("disk.ext4"),
-                            Instant::now() + Duration::from_secs(120),
                         )?;
                         record.disk_copy = format!("{method:?}");
                         self.save(&record)?;
