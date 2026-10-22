@@ -392,22 +392,41 @@ mod tests {
 
     #[tokio::test]
     async fn private_ca_does_not_trust_public_roots() {
-        let ca = rcgen::generate_simple_self_signed(vec!["example.com".into()]).unwrap();
-        let token = "ab".repeat(32);
-        let private = Client::new(
-            "https://example.com/",
-            &token,
-            Some(ca.cert.pem().as_bytes()),
+        let server = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
+            server.cert.pem().into_bytes(),
+            server.signing_key.serialize_pem().into_bytes(),
         )
+        .await
         .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let router = axum::Router::new().route(
+            "/v1/templates",
+            axum::routing::get(|| async { axum::Json(serde_json::json!([])) }),
+        );
+        let handle = axum_server::Handle::new();
+        let task = tokio::spawn(
+            axum_server::from_tcp_rustls(listener, tls)
+                .unwrap()
+                .handle(handle.clone())
+                .serve(router.into_make_service()),
+        );
+        let token = "ab".repeat(32);
+        let url = format!("https://localhost:{port}/");
+        let wrong_ca = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let private = Client::new(&url, &token, Some(wrong_ca.cert.pem().as_bytes())).unwrap();
         let err = error_text(&private.templates().await.unwrap_err());
         assert!(err.to_ascii_lowercase().contains("certificate"), "{err}");
-        let public = Client::new("https://example.com/", &token, None).unwrap();
-        let err = public.templates().await.unwrap_err().to_string();
+        let public = Client::new(&url, &token, None).unwrap();
+        let err = error_text(&public.templates().await.unwrap_err());
         assert!(
-            err.contains("HTTP"),
-            "public roots should finish the TLS handshake, got {err}"
+            err.to_ascii_lowercase().contains("certificate"),
+            "built-in roots must not trust this loopback certificate, got {err}"
         );
+        handle.shutdown();
+        task.await.unwrap().unwrap();
     }
 
     #[tokio::test]

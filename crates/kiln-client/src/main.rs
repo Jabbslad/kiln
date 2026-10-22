@@ -1,5 +1,5 @@
 mod ssh;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use kiln_api::{Action, BoxView, ExecRequest, Operation, OperationState, Outcome, Submit, new_id};
 use kiln_client::Client;
@@ -50,6 +50,10 @@ enum Command {
     Auth {
         #[command(subcommand)]
         command: AuthCommand,
+    },
+    Tenant {
+        #[command(subcommand)]
+        command: TenantCommand,
     },
     /// Open a shell or run a command in a box.
     Ssh {
@@ -169,6 +173,43 @@ enum AuthCommand {
     },
 }
 #[derive(Subcommand)]
+enum TenantCommand {
+    Members {
+        #[command(subcommand)]
+        command: TenantMemberCommand,
+    },
+    Servers {
+        #[command(subcommand)]
+        command: TenantServersCommand,
+    },
+}
+#[derive(Subcommand)]
+enum TenantMemberCommand {
+    Add {
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        name: String,
+    },
+    List {
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    Remove {
+        #[arg(long)]
+        tenant: Option<String>,
+        #[arg(long)]
+        name: String,
+    },
+}
+#[derive(Subcommand)]
+enum TenantServersCommand {
+    List {
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+}
+#[derive(Subcommand)]
 enum DeviceCommand {
     List,
     Revoke { id: String },
@@ -178,6 +219,8 @@ enum KeyCommand {
     Create {
         #[arg(long)]
         server: String,
+        #[arg(long)]
+        account: Option<String>,
         #[arg(long, default_value = "operate")]
         scope: String,
         #[arg(long)]
@@ -206,6 +249,27 @@ enum ProfileCommand {
 fn json(value: &impl serde::Serialize) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+async fn resolve_tenant_id(session: &Session, tenant: Option<String>) -> Result<String> {
+    if let Some(id) = tenant {
+        return Ok(id);
+    }
+    let list = session
+        .identity_json(Method::GET, "v1/tenants", None)
+        .await?;
+    let tenants = list
+        .as_array()
+        .context("identity returned an invalid tenant list")?;
+    ensure!(
+        tenants.len() == 1,
+        "specify --tenant; this account belongs to {} tenants",
+        tenants.len()
+    );
+    Ok(tenants[0]["id"]
+        .as_str()
+        .context("identity omitted tenant id")?
+        .to_owned())
 }
 
 fn show_box(record: &BoxView) {
@@ -503,6 +567,7 @@ async fn run(cli: Cli) -> Result<i32> {
             Command::SshProxy { .. }
                 | Command::Profile { .. }
                 | Command::Auth { .. }
+                | Command::Tenant { .. }
                 | Command::Logout
         )
         && !before.profiles.contains_key(&profile_name);
@@ -728,7 +793,10 @@ async fn run(cli: Cli) -> Result<i32> {
     let selected = profiles.profiles.get(&profile_name).context(
         "profile not found; run `kiln login` (or `kiln profile add` for a direct server)",
     )?;
-    if matches!(cli.command, Command::Logout | Command::Auth { .. }) {
+    if matches!(
+        cli.command,
+        Command::Logout | Command::Auth { .. } | Command::Tenant { .. }
+    ) {
         let profile::Profile::Central(central) = selected else {
             bail!("command requires a central profile")
         };
@@ -784,16 +852,77 @@ async fn run(cli: Cli) -> Result<i32> {
                         command:
                             KeyCommand::Create {
                                 server,
+                                account,
                                 scope,
                                 output,
                             },
                     } => {
-                        let value=session.identity_json(Method::POST,"v1/keys",Some(serde_json::json!({"server_id":server,"scope":kiln_client::auth::scope(scope)?}))).await?;
+                        let mut body = serde_json::json!({"server_id":server,"scope":kiln_client::auth::scope(scope)?});
+                        if let Some(account) = account {
+                            body["account"] = serde_json::Value::String(account.clone());
+                        }
+                        let value = session
+                            .identity_json(Method::POST, "v1/keys", Some(body))
+                            .await?;
                         let secret = value["key"].as_str().context("identity omitted key")?;
                         kiln_client::credentials::write_secret(output, secret)?;
                         let mut redacted = value;
                         redacted["key"] = serde_json::Value::String("<written to file>".into());
                         redacted
+                    }
+                };
+                json(&value)?;
+                return Ok(0);
+            }
+            Command::Tenant { command } => {
+                let value = match command {
+                    TenantCommand::Members {
+                        command: TenantMemberCommand::Add { tenant, name },
+                    } => {
+                        let tenant = resolve_tenant_id(&session, tenant.clone()).await?;
+                        session
+                            .identity_json(
+                                Method::POST,
+                                &format!("v1/tenants/{tenant}/members"),
+                                Some(serde_json::json!({ "name": name })),
+                            )
+                            .await?
+                    }
+                    TenantCommand::Members {
+                        command: TenantMemberCommand::List { tenant },
+                    } => {
+                        let tenant = resolve_tenant_id(&session, tenant.clone()).await?;
+                        session
+                            .identity_json(
+                                Method::GET,
+                                &format!("v1/tenants/{tenant}/members"),
+                                None,
+                            )
+                            .await?
+                    }
+                    TenantCommand::Members {
+                        command: TenantMemberCommand::Remove { tenant, name },
+                    } => {
+                        let tenant = resolve_tenant_id(&session, tenant.clone()).await?;
+                        session
+                            .identity_json(
+                                Method::DELETE,
+                                &format!("v1/tenants/{tenant}/members/{name}"),
+                                None,
+                            )
+                            .await?
+                    }
+                    TenantCommand::Servers {
+                        command: TenantServersCommand::List { tenant },
+                    } => {
+                        let tenant = resolve_tenant_id(&session, tenant.clone()).await?;
+                        session
+                            .identity_json(
+                                Method::GET,
+                                &format!("v1/tenants/{tenant}/servers"),
+                                None,
+                            )
+                            .await?
                     }
                 };
                 json(&value)?;
@@ -1024,7 +1153,9 @@ async fn run(cli: Cli) -> Result<i32> {
             }
         }
         Command::Profile { .. } => unreachable!(),
-        Command::Login { .. } | Command::Logout | Command::Auth { .. } => unreachable!(),
+        Command::Login { .. } | Command::Logout | Command::Auth { .. } | Command::Tenant { .. } => {
+            unreachable!()
+        }
         Command::Ssh { .. }
         | Command::Cp { .. }
         | Command::SshConfig { .. }
