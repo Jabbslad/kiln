@@ -5,7 +5,7 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use std::{io, time::Duration};
+use std::time::Duration;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::OwnedSemaphorePermit,
@@ -64,10 +64,14 @@ where
         if let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_secs(10), connection).await {
             let mut stream = hyper_util::rt::TokioIo::new(stream);
             let deadline = Duration::from_secs(24 * 3600);
-            let _ = tokio::time::timeout(
-                deadline,
-                copy_until_cancel(&mut stream, &mut upstream, cancel),
-            )
+            let _ = tokio::time::timeout(deadline, async {
+                let copy = tokio::io::copy_bidirectional(&mut stream, &mut upstream);
+                tokio::pin!(copy);
+                tokio::select! {
+                    _ = cancel.wait(), if !cancel.is_cancelled() => {}
+                    _ = copy => {}
+                }
+            })
             .await;
         }
     });
@@ -80,46 +84,6 @@ where
         ],
     )
         .into_response()
-}
-
-async fn copy_until_cancel<A, B>(a: &mut A, b: &mut B, cancel: StreamCancel) -> io::Result<()>
-where
-    A: AsyncRead + AsyncWrite + Unpin,
-    B: AsyncRead + AsyncWrite + Unpin,
-{
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut buf_a = [0_u8; 8192];
-    let mut buf_b = [0_u8; 8192];
-    loop {
-        if cancel.is_cancelled() {
-            let _ = a.shutdown().await;
-            let _ = b.shutdown().await;
-            return Ok(());
-        }
-        tokio::select! {
-            _ = cancel.wait(), if !cancel.is_cancelled() => {
-                let _ = a.shutdown().await;
-                let _ = b.shutdown().await;
-                return Ok(());
-            }
-            read = a.read(&mut buf_a) => {
-                let n = read?;
-                if n == 0 {
-                    let _ = b.shutdown().await;
-                    return Ok(());
-                }
-                b.write_all(&buf_a[..n]).await?;
-            }
-            read = b.read(&mut buf_b) => {
-                let n = read?;
-                if n == 0 {
-                    let _ = a.shutdown().await;
-                    return Ok(());
-                }
-                a.write_all(&buf_b[..n]).await?;
-            }
-        }
-    }
 }
 
 #[cfg(test)]
