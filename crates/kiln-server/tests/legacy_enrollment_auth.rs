@@ -87,6 +87,51 @@ async fn legacy_enrollment_accepts_owner_app_token_with_v3_tenant_id() {
 }
 
 #[tokio::test]
+async fn legacy_enrollment_refuses_another_servers_owner_token_before_bind() {
+    let (auth, key, enrollment) = fixture();
+    let now = jsonwebtoken::get_current_timestamp();
+    let claims = ServerClaims {
+        iss: enrollment.issuer.clone(),
+        sub: "acct_owner".into(),
+        aud: "kiln:server:srv_other".into(),
+        tenant_id: Some("ten_other".into()),
+        iat: now,
+        nbf: now,
+        exp: now + 300,
+        credential_id: "app_srv_other".into(),
+        scope: Scope::Operate,
+        role: Some(Role::Owner),
+    };
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some("fixture-key".into());
+    let token = jsonwebtoken::encode(&header, &claims, &key).unwrap();
+    assert!(auth.authenticate_central(&token).await.is_err());
+}
+
+#[tokio::test]
+async fn legacy_enrollment_refuses_wrong_tenant_after_owner_bind() {
+    let (auth, key, enrollment) = fixture();
+    let good = issue_app_token(
+        &key,
+        &enrollment,
+        "acct_owner",
+        "ten_bound",
+        Role::Owner,
+        Scope::Operate,
+    );
+    auth.authenticate_central(&good).await.unwrap();
+    let bad = issue_app_token(
+        &key,
+        &enrollment,
+        "acct_owner",
+        "ten_other",
+        Role::Owner,
+        Scope::Operate,
+    );
+    assert!(auth.authenticate_central(&bad).await.is_err());
+}
+
+#[tokio::test]
 async fn legacy_enrollment_refuses_member_token_for_another_tenant() {
     let (auth, key, enrollment) = fixture();
     let token = issue_app_token(
