@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail, ensure};
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
     routing::any,
@@ -26,7 +26,7 @@ use std::{
     collections::HashMap,
     fs,
     io::{Read, Write},
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex as StdMutex},
@@ -124,7 +124,12 @@ pub fn router_with_read_timeout(
 pub struct SshAuditRecord {
     pub outcome: &'static str,
     pub box_id: String,
+    pub caller: String,
+    pub addr: IpAddr,
 }
+
+/// Paseo Caddy is pinned at this address on `paseo_default`.
+const CADDY_ADDR: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(172, 18, 0, 3));
 
 /// In-memory copy of the SSH audit lines, capped so a public flood cannot grow it.
 #[derive(Clone)]
@@ -143,8 +148,8 @@ impl SshAudit {
         lock_map(&self.records).clone()
     }
 
-    fn record(&self, outcome: &'static str, box_id: &str) {
-        eprintln!("audit ssh outcome={outcome} box_id={box_id}");
+    fn record(&self, outcome: &'static str, box_id: &str, caller: &str, addr: IpAddr) {
+        eprintln!("audit ssh outcome={outcome} box_id={box_id} caller={caller} addr={addr}");
         let mut records = lock_map(&self.records);
         if records.len() == 128 {
             records.remove(0);
@@ -152,6 +157,8 @@ impl SshAudit {
         records.push(SshAuditRecord {
             outcome,
             box_id: box_id.to_owned(),
+            caller: caller.to_owned(),
+            addr,
         });
     }
 }
@@ -260,7 +267,7 @@ pub async fn serve(
     let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(tls_cert, tls_key).await?;
     eprintln!("public door listening on {listen}");
     axum_server::bind_rustls(listen, tls)
-        .serve(router.into_make_service())
+        .serve(router.into_make_service_with_connect_info::<SocketAddr>())
         .await?;
     Ok(())
 }
@@ -363,19 +370,51 @@ fn is_api(path: &str) -> bool {
     path == "/api" || path.starts_with("/api/") || path == "/v1" || path.starts_with("/v1/")
 }
 
-async fn bearer_proxy(door: &Door, request: Request) -> Response {
-    if request.method() == Method::GET
-        && ssh_box_id(request.uri().path()).is_some()
-        && kiln_ssh_upgrade(request.headers())
-    {
-        return ssh_proxy(door, request).await;
-    }
-    let bearer = request
+fn ssh_bearer(request: &Request) -> &str {
+    request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
-        .unwrap_or("");
+        .unwrap_or("")
+}
+
+fn ssh_forwarded_client(headers: &HeaderMap) -> Option<IpAddr> {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .and_then(|value| value.trim().parse().ok())
+}
+
+fn ssh_audit_addr(request: &Request) -> IpAddr {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| *addr)
+        .unwrap_or_else(|| "127.0.0.1:0".parse().unwrap());
+    let direct = peer.ip();
+    if direct == CADDY_ADDR {
+        return ssh_forwarded_client(request.headers()).unwrap_or(direct);
+    }
+    direct
+}
+
+async fn bearer_proxy(door: &Door, request: Request) -> Response {
+    if request.method() == Method::GET && ssh_box_id(request.uri().path()).is_some() {
+        if kiln_ssh_upgrade(request.headers()) {
+            return ssh_proxy(door, request).await;
+        }
+        let box_id = ssh_box_id(request.uri().path()).unwrap_or("").to_owned();
+        let bearer = ssh_bearer(&request);
+        let addr = ssh_audit_addr(&request);
+        if door.auth.authenticate_central(bearer).await.is_err() {
+            door.ssh_audit
+                .record("unauthorized", &box_id, "anonymous", addr);
+            return unauthorized();
+        }
+    }
+    let bearer = ssh_bearer(&request);
     if door.auth.authenticate_central(bearer).await.is_err() {
         return unauthorized();
     }
@@ -393,6 +432,11 @@ async fn bearer_proxy(door: &Door, request: Request) -> Response {
         );
     }
     if request.headers().get(header::UPGRADE).is_some() {
+        if let Some(box_id) = ssh_box_id(request.uri().path()).map(str::to_owned) {
+            let caller = door.auth.central_caller(bearer).await;
+            door.ssh_audit
+                .record("invalid_ssh", &box_id, &caller, ssh_audit_addr(&request));
+        }
         return deny(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -420,21 +464,20 @@ fn kiln_ssh_upgrade(headers: &HeaderMap) -> bool {
 
 async fn ssh_proxy(door: &Door, request: Request) -> Response {
     let box_id = ssh_box_id(request.uri().path()).unwrap_or("").to_owned();
-    let bearer = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .unwrap_or("");
+    let bearer = ssh_bearer(&request);
+    let addr = ssh_audit_addr(&request);
     let scope = match door.auth.authenticate_central(bearer).await {
         Ok(scope) => scope,
         Err(_) => {
-            door.ssh_audit.record("unauthorized", &box_id);
+            door.ssh_audit
+                .record("unauthorized", &box_id, "anonymous", addr);
             return unauthorized();
         }
     };
+    let caller = door.auth.central_caller(bearer).await;
     if scope != Scope::Operate {
-        door.ssh_audit.record("insufficient_scope", &box_id);
+        door.ssh_audit
+            .record("insufficient_scope", &box_id, &caller, addr);
         return deny(
             StatusCode::FORBIDDEN,
             "insufficient_scope",
@@ -442,7 +485,7 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
         );
     }
     if request.uri().query().is_some() {
-        door.ssh_audit.record("invalid_ssh", &box_id);
+        door.ssh_audit.record("invalid_ssh", &box_id, &caller, addr);
         return deny(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -452,17 +495,18 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
     let key = match crate::ssh::admission(&request) {
         Ok(key) => key,
         Err(failure) => {
-            door.ssh_audit.record("invalid_ssh", &box_id);
+            door.ssh_audit.record("invalid_ssh", &box_id, &caller, addr);
             return no_store(failure.into_response());
         }
     };
     let Some(mut authorization) = request.headers().get(header::AUTHORIZATION).cloned() else {
-        door.ssh_audit.record("unauthorized", &box_id);
+        door.ssh_audit
+            .record("unauthorized", &box_id, "anonymous", addr);
         return unauthorized();
     };
     authorization.set_sensitive(true);
     let Ok(permit) = door.ssh_sessions.clone().try_acquire_owned() else {
-        door.ssh_audit.record("busy", &box_id);
+        door.ssh_audit.record("busy", &box_id, &caller, addr);
         return deny(
             StatusCode::TOO_MANY_REQUESTS,
             "ssh_busy",
@@ -483,7 +527,7 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
     {
         Ok(upstream) => upstream,
         Err(_) => {
-            door.ssh_audit.record("upstream", &box_id);
+            door.ssh_audit.record("upstream", &box_id, &caller, addr);
             return deny(
                 StatusCode::BAD_GATEWAY,
                 "host_unavailable",
@@ -492,7 +536,7 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
         }
     };
     if upstream.status() != StatusCode::SWITCHING_PROTOCOLS {
-        door.ssh_audit.record("upstream", &box_id);
+        door.ssh_audit.record("upstream", &box_id, &caller, addr);
         return ssh_refusal(upstream).await;
     }
     if upstream
@@ -501,7 +545,7 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
         .and_then(|value| value.to_str().ok())
         != Some(kiln_api::SSH_UPGRADE)
     {
-        door.ssh_audit.record("upstream", &box_id);
+        door.ssh_audit.record("upstream", &box_id, &caller, addr);
         return deny(
             StatusCode::BAD_GATEWAY,
             "host_unavailable",
@@ -511,7 +555,7 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
     let upstream = match upstream.upgrade().await {
         Ok(upstream) => upstream,
         Err(_) => {
-            door.ssh_audit.record("upstream", &box_id);
+            door.ssh_audit.record("upstream", &box_id, &caller, addr);
             return deny(
                 StatusCode::BAD_GATEWAY,
                 "host_unavailable",
@@ -519,7 +563,7 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
             );
         }
     };
-    door.ssh_audit.record("upgraded", &box_id);
+    door.ssh_audit.record("upgraded", &box_id, &caller, addr);
     crate::ssh::upgrade(request, upstream, permit)
 }
 
@@ -1646,4 +1690,39 @@ fn upstream_error() -> Failure {
 
 fn lock_map<T>(mutex: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+#[cfg(test)]
+mod ssh_audit_tests {
+    use super::*;
+    use axum::body::Body;
+
+    fn ssh_request(peer: SocketAddr, forwarded: Option<&str>) -> Request<Body> {
+        let mut request = Request::builder()
+            .uri("/v1/boxes/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/ssh")
+            .body(Body::empty())
+            .unwrap();
+        if let Some(value) = forwarded {
+            request
+                .headers_mut()
+                .insert("x-forwarded-for", HeaderValue::from_str(value).unwrap());
+        }
+        request.extensions_mut().insert(ConnectInfo(peer));
+        request
+    }
+
+    #[test]
+    fn audit_addr_uses_forwarded_only_from_caddy() {
+        let laptop: IpAddr = "203.0.113.44".parse().unwrap();
+        let caddy_peer = SocketAddr::new(CADDY_ADDR, 443);
+        assert_eq!(
+            ssh_audit_addr(&ssh_request(caddy_peer, Some("203.0.113.44"))),
+            laptop
+        );
+        let loopback = SocketAddr::from(([127, 0, 0, 1], 8444));
+        assert_eq!(
+            ssh_audit_addr(&ssh_request(loopback, Some("203.0.113.44"))),
+            loopback.ip()
+        );
+    }
 }
