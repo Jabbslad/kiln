@@ -1137,23 +1137,36 @@ async fn read_grant_is_checked_and_another_server_is_rejected() {
     assert!(matches!(
         auth.authenticate_central(&token(&key, "owner-a", Scope::Read))
             .await,
-        Ok(grant) if grant.scope == Scope::Read
+        Ok(grant) if grant.scope == Scope::Read && grant.caller.sub == "owner-a"
     ));
-    assert!(
-        auth.authenticate_central(&token(&key, "someone-else", Scope::Read))
-            .await
-            .is_err()
-    );
-    let now = jsonwebtoken::get_current_timestamp();
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
+    let now = jsonwebtoken::get_current_timestamp();
+    let wrong_tenant = jsonwebtoken::encode(
+        &header,
+        &ServerClaims {
+            iss: "https://identity.example.test".into(),
+            sub: "member-z".into(),
+            aud: "kiln:server:server-b".into(),
+            tenant_id: Some("tenant-other".into()),
+            iat: now,
+            nbf: now,
+            exp: now + 300,
+            credential_id: "app_wrong_tenant".into(),
+            scope: Scope::Read,
+            role: Some(Role::Member),
+        },
+        &key,
+    )
+    .unwrap();
+    assert!(auth.authenticate_central(&wrong_tenant).await.is_err());
     let other = jsonwebtoken::encode(
         &header,
         &ServerClaims {
             iss: "https://identity.example.test".into(),
             sub: "owner-a".into(),
             aud: "kiln:server:other".into(),
-            tenant_id: Some("ten_other".into()),
+            tenant_id: Some("owner-a".into()),
             iat: now,
             nbf: now,
             exp: now + 300,
