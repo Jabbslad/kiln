@@ -23,7 +23,12 @@ fn claims(enrollment: &Enrollment, sub: &str, role: Role, scope: Scope, now: u64
         iss: enrollment.issuer.clone(),
         sub: sub.into(),
         aud: format!("kiln:server:{}", enrollment.server_id),
-        tenant_id: Some(enrollment.tenant_id().into()),
+        tenant_id: Some(
+            enrollment
+                .bound_tenant_id()
+                .unwrap_or(enrollment.owner_id.as_str())
+                .into(),
+        ),
         iat: now,
         nbf: now,
         exp: now + 300,
@@ -34,7 +39,7 @@ fn claims(enrollment: &Enrollment, sub: &str, role: Role, scope: Scope, now: u64
 }
 
 #[test]
-fn legacy_token_without_tenant_id_claim_uses_sub_as_tenant() {
+fn legacy_enrollment_binds_owner_app_tenant_from_the_first_valid_token() {
     let (key, jwks) = fixture();
     let enrollment = Enrollment {
         version: 1,
@@ -44,23 +49,32 @@ fn legacy_token_without_tenant_id_claim_uses_sub_as_tenant() {
         tenant_id: None,
     };
     let now = jsonwebtoken::get_current_timestamp();
-    let mut claims = claims(&enrollment, "owner-a", Role::Owner, Scope::Read, now);
-    claims.tenant_id = None;
-    claims.role = None;
+    let token_claims = ServerClaims {
+        iss: enrollment.issuer.clone(),
+        sub: "owner-a".into(),
+        aud: format!("kiln:server:{}", enrollment.server_id),
+        tenant_id: Some("ten_v3".into()),
+        iat: now,
+        nbf: now,
+        exp: now + 300,
+        credential_id: "app_server-b".into(),
+        scope: Scope::Operate,
+        role: Some(Role::Owner),
+    };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
-    let token = jsonwebtoken::encode(&header, &claims, &key).unwrap();
+    let token = jsonwebtoken::encode(&header, &token_claims, &key).unwrap();
     let grant = verify(&token, &enrollment, &jwks).unwrap();
-    assert_eq!(grant.caller.tenant_id, "owner-a");
+    assert_eq!(grant.caller.tenant_id, "ten_v3");
     assert_eq!(grant.caller.role, Role::Owner);
 }
 
 #[test]
-fn legacy_enrollment_without_tenant_id_uses_owner_as_tenant() {
+fn legacy_enrollment_without_tenant_id_starts_unbound() {
     let json = r#"{"version":1,"issuer":"https://identity.example.test","owner_id":"owner-a","server_id":"server-b"}"#;
     let enrollment: Enrollment = serde_json::from_str(json).unwrap();
     enrollment.validate().unwrap();
-    assert_eq!(enrollment.tenant_id(), "owner-a");
+    assert!(enrollment.bound_tenant_id().is_none());
 }
 
 #[test]

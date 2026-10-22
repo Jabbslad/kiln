@@ -351,7 +351,11 @@ pub async fn run(options: Options) -> Result<()> {
         Enrollment::load(&options.enrollment_file)?.context("server is not enrolled")?;
     let server_id = enrollment.server_id.clone();
     let authorize_origin = enrollment.issuer.clone();
-    let auth = Authenticator::central_only(enrollment, options.jwks_cache)?;
+    let auth = Authenticator::central_with_enrollment_file(
+        enrollment,
+        options.jwks_cache,
+        Some(options.enrollment_file),
+    )?;
     let ca = fs::read(&options.upstream_ca).context("upstream CA required")?;
     let login_secret = read_login_secret(Path::new("/etc/kiln/login.token"))?;
     let router = router_with(
