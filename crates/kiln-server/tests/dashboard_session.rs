@@ -17,7 +17,10 @@ use axum::{
 };
 use base64::Engine;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::{AccessToken, DeviceAuthorization, DeviceTokens, Role, Scope, ServerClaims};
+use kiln_api::{
+    Role, Scope, ServerClaims,
+    auth::{AccessToken, DeviceAuthorization, DeviceTokens},
+};
 use kiln_server::{
     auth::{Authenticator, Enrollment},
     door::{self, Dashboard},
@@ -504,6 +507,7 @@ async fn world(with_root: bool) -> World {
         issuer: issuer.clone(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
+        tenant_id: None,
     };
     let cache = tmp.path().join("jwks.json");
     std::fs::write(

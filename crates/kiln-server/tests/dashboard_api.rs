@@ -444,6 +444,7 @@ fn enrollment(cache: &Path) -> (Authenticator, EncodingKey) {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: WORKSPACE.into(),
+        tenant_id: None,
     };
     fs::write(
         cache,
