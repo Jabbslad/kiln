@@ -698,6 +698,9 @@ fn test_deploy_scripts_never_write_paseo_caddyfile() {
     assert!(script.contains("import /config/kiln/kiln.caddy"));
     assert!(script.contains("mktemp"));
     assert!(script.contains("mv -f"));
+    assert!(!script.contains("Caddyfile.candidate"));
+    assert!(!script.contains("glob"));
+    assert!(!script.contains("readdir"));
 }
 
 fn test_install_door_caddy_updates_snippet_and_validates_whole_config() {
@@ -741,6 +744,24 @@ fn test_install_door_caddy_updates_snippet_and_validates_whole_config() {
     let noop = run_install_door_caddy(&root, &snippet, &door, &paseo);
     assert!(noop.status.success(), "{}{}", noop.stderr, noop.stdout);
     assert!(noop.stdout.contains("door caddy unchanged"));
+
+    fs::write(
+        snippet.parent().unwrap().join("Caddyfile.candidate"),
+        "stray\n",
+    )
+    .unwrap();
+    let noop_stray = run_install_door_caddy(&root, &snippet, &door, &paseo);
+    assert!(
+        noop_stray.status.success(),
+        "{}{}",
+        noop_stray.stderr,
+        noop_stray.stdout
+    );
+    assert!(noop_stray.stdout.contains("door caddy unchanged"));
+    assert_eq!(
+        fs::read_to_string(snippet.parent().unwrap().join("Caddyfile.candidate")).unwrap(),
+        "stray\n"
+    );
 
     let _ = fs::remove_dir_all(&root);
 }

@@ -38,10 +38,17 @@ install_snippet() {
   local src=$1
   local dest=$2
   local dir tmp
+  case "$dest" in
+    */kiln/kiln.caddy) ;;
+    *) fail "refusing to install outside kiln/kiln.caddy: ${dest}" ;;
+  esac
   dir=$(dirname "$dest")
   mkdir -p "$dir"
   tmp=$(mktemp "${dir}/kiln.caddy.XXXXXX")
-  cp -a -- "$src" "$tmp"
+  cp -a -- "$src" "$tmp" || {
+    rm -f "$tmp"
+    return 1
+  }
   chmod 644 "$tmp"
   if [ "$(id -u)" -eq 0 ]; then
     chown root:root "$tmp"
