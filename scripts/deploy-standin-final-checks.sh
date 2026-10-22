@@ -19,6 +19,8 @@ fi
 work=$(mktemp -d)
 trap 'sh "$root/scripts/deploy-standin-caddy.sh" down 2>/dev/null || true; sh "$root/scripts/deploy-standin-host.sh" down 2>/dev/null || true; rm -rf "$work"' EXIT
 export KILN_STANDIN_WORK=$work
+export KILN_STANDIN_PASEO_CADDYFILE=$work/paseo/Caddyfile
+export KILN_STANDIN_DOOR_SNIPPET=$work/kiln/kiln.caddy
 
 SEED_TAG=${KILN_STANDIN_SEED_TAG:-v0.4.61}
 tags=$(git ls-remote --tags origin 'refs/tags/v*') || fail 'could not list tags'

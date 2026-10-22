@@ -39,6 +39,8 @@ case "$mode" in
       --network host \
       -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
       -v /dev/kvm:/dev/kvm \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v "${work}:${work}" \
       "$IMAGE" >/dev/null
     start=$(date +%s)
     deadline=$((start + 120))
@@ -52,7 +54,7 @@ case "$mode" in
       || fail 'stand-in systemd did not reach running'
     docker_cmd exec "$CONTAINER" bash -c \
       "DEBIAN_FRONTEND=noninteractive apt-get update -qq &&
-       DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server iproute2 curl ca-certificates tar openssl >/dev/null &&
+       DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server iproute2 curl ca-certificates tar openssl docker.io >/dev/null &&
        mkdir -p /run/sshd &&
        if ! grep -q '^Port ${PORT}' /etc/ssh/sshd_config; then
          printf '\nPort ${PORT}\n' >> /etc/ssh/sshd_config

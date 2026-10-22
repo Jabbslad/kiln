@@ -194,6 +194,7 @@ fi
 put "$script_dir/install-remote.sh" "$remote/install-remote.sh"
 put "$script_dir/smoke.sh" "$remote/smoke.sh"
 put "$script_dir/check-door-ssh.sh" "$remote/check-door-ssh.sh"
+put "$script_dir/install-door-caddy.sh" "$remote/install-door-caddy.sh"
 if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
   KILN_IDENTITY_CHECK_ONLY=1 bash "$remote/install-identity.sh" "$remote"
   KILN_INSTALL_CHECK_ONLY=1 bash "$remote/install-remote.sh" "$remote"
@@ -207,8 +208,21 @@ if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
   exit 0
 fi
 remote_env=()
+remote_env_vars=()
 if [ "${KILN_SKIP_SMOKE:-}" = 1 ]; then
-  remote_env=(env KILN_SKIP_SMOKE=1)
+  remote_env_vars+=(KILN_SKIP_SMOKE=1)
+fi
+if [ "${KILN_DEPLOY_STANDIN:-}" = 1 ]; then
+  standin_work=${KILN_STANDIN_WORK:-}
+  [ -n "$standin_work" ] || fail 'stand-in deploy needs KILN_STANDIN_WORK'
+  remote_env_vars+=(
+    "KILN_DOOR_CADDY_SNIPPET=${standin_work}/kiln/kiln.caddy"
+    "KILN_PASEO_CADDYFILE=${standin_work}/paseo/Caddyfile"
+    KILN_DOOR_CADDY_SKIP_PROBE=1
+  )
+fi
+if [ "${#remote_env_vars[@]}" -gt 0 ]; then
+  remote_env=(env "${remote_env_vars[@]}")
 fi
 if [ -n "$address" ]; then
   bash "$ssh_sh" ssh -- "${remote_env[@]}" bash "$remote/install-remote.sh" "$remote" "$address"
