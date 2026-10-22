@@ -15,6 +15,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+static DOOR_CADDY_PORTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 use axum::{
     body::{Body, Bytes},
     extract::{Path as AxumPath, State},
@@ -382,12 +384,16 @@ os.execv(binary, [binary, "--connections-max=256", "--exit-idle-time=5min", targ
     }
 }
 
+const SSH_PROBE_KEY: &str =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
 fn start_caddy(
     dir: &Path,
     proxy_port: u16,
     door_ca: &str,
     caddy_cert: &str,
     caddy_key: &str,
+    http11_upstream: bool,
 ) -> Proxy {
     let cert = dir.join("caddy.crt");
     let key = dir.join("caddy.key");
@@ -397,6 +403,11 @@ fn start_caddy(
     fs::write(&ca, door_ca).unwrap();
     let port = 443;
     let config = dir.join("Caddyfile");
+    let versions = if http11_upstream {
+        "\t\t\tversions 1.1\n"
+    } else {
+        ""
+    };
     fs::write(
         &config,
         format!(
@@ -408,7 +419,7 @@ https://127.0.0.1:{port} {{
 	tls {cert} {key}
 	reverse_proxy https://127.0.0.1:{proxy_port} {{
 		transport http {{
-			tls_server_name cli.dark-forge.dev
+{versions}			tls_server_name cli.dark-forge.dev
 			tls_trust_pool file {{
 				pem_file {ca}
 			}}
@@ -473,8 +484,173 @@ https://127.0.0.1:{port} {{
     }
 }
 
+fn curl_kiln_ssh_upgrade(dir: &Path, port: u16, caddy_cert: &Path, box_id: &str) -> (u16, String) {
+    let body = dir.join("ssh-upgrade.body");
+    let url = format!("https://127.0.0.1:{port}/v1/boxes/{box_id}/ssh");
+    let key_header = format!("x-kiln-ssh-key: {SSH_PROBE_KEY}");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut last = String::new();
+    while Instant::now() < deadline {
+        let completed = Command::new("curl")
+            .args([
+                "--silent",
+                "--show-error",
+                "--http1.1",
+                "--connect-timeout",
+                "3",
+                "--max-time",
+                "5",
+                "--cacert",
+            ])
+            .arg(caddy_cert)
+            .arg("--output")
+            .arg(&body)
+            .args(["--write-out", "%{http_code}"])
+            .args(["--header", "Connection: Upgrade"])
+            .args(["--header", "Upgrade: kiln-ssh"])
+            .args(["--header", &key_header])
+            .arg(&url)
+            .output()
+            .unwrap();
+        if completed.status.success() {
+            let code = String::from_utf8_lossy(&completed.stdout)
+                .trim()
+                .parse::<u16>()
+                .unwrap();
+            return (code, fs::read_to_string(&body).unwrap_or_default());
+        }
+        last = String::from_utf8_lossy(&completed.stderr).into_owned();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("curl did not finish the ssh upgrade probe to {url}: {last}");
+}
+
+async fn door_on_loopback(root: &Path, door_cert: &Path, door_key: &Path) {
+    let upstream_url = "https://127.0.0.1:1".to_string();
+    let ca_pem = pem_pair("unused").0;
+    let cert_for_task = door_cert.to_path_buf();
+    let key_for_task = door_key.to_path_buf();
+    let dir = root.to_path_buf();
+    let (door_tx, door_rx) = std::sync::mpsc::channel();
+    tokio::spawn(async move {
+        let result = if unsafe { libc::geteuid() } != 0 {
+            door::serve(
+                "127.0.0.1:8444".parse().unwrap(),
+                &cert_for_task,
+                &key_for_task,
+                authenticator(&dir),
+                &upstream_url,
+                ca_pem.as_bytes(),
+                door::Dashboard {
+                    enrollment: enrollment(),
+                    session_dir: dir.join("dash-sessions"),
+                    root: None,
+                    identity_ca: None,
+                },
+            )
+            .await
+            .map_err(|error| format!("{error:#}"))
+        } else {
+            let router =
+                door::router(authenticator(&dir), &upstream_url, ca_pem.as_bytes()).unwrap();
+            let tls =
+                axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_for_task, &key_for_task)
+                    .await
+                    .unwrap();
+            axum_server::bind_rustls(SocketAddr::from(([127, 0, 0, 1], 8444)), tls)
+                .serve(router.into_make_service())
+                .await
+                .map_err(|error| error.to_string())
+        };
+        let _ = door_tx.send(format!("{result:?}"));
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 8444));
+    while Instant::now() < deadline {
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
+            return;
+        }
+        if let Ok(error) = door_rx.try_recv() {
+            panic!("door did not stay up: {error}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!(
+        "nothing accepted on {addr}: {}",
+        door_rx
+            .try_recv()
+            .unwrap_or_else(|_| "no door error".into())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kiln_ssh_upgrade_through_caddy_needs_http11_upstream() {
+    let _ports = DOOR_CADDY_PORTS.lock().await;
+    which_caddy();
+    let root = tempfile::tempdir().unwrap();
+    write_jwks(root.path());
+    let (door_cert, door_key) = pem_pair("cli.dark-forge.dev");
+    let cert_path = root.path().join("door.crt");
+    let key_path = root.path().join("door.key");
+    fs::write(&cert_path, &door_cert).unwrap();
+    fs::write(&key_path, &door_key).unwrap();
+    door_on_loopback(root.path(), &cert_path, &key_path).await;
+    let proxy = start_proxy(8444, root.path());
+    let (caddy_cert, caddy_key) = pem_pair("127.0.0.1");
+    let caddy_ca = root.path().join("caddy.crt");
+    fs::write(&caddy_ca, &caddy_cert).unwrap();
+    let box_id = "a".repeat(32);
+    let broken = start_caddy(
+        root.path(),
+        proxy.port,
+        &door_cert,
+        &caddy_cert,
+        &caddy_key,
+        false,
+    );
+    if wait_tcp_result(SocketAddr::from(([127, 0, 0, 1], broken.port))).is_err() {
+        panic!(
+            "caddy did not listen: {}",
+            fs::read_to_string(root.path().join("caddy.log")).unwrap_or_default()
+        );
+    }
+    let (broken_code, _) = curl_kiln_ssh_upgrade(root.path(), broken.port, &caddy_ca, &box_id);
+    assert_eq!(
+        broken_code, 502,
+        "ALPN h2 upstream should break Upgrade: kiln-ssh at the public edge"
+    );
+    drop(broken);
+
+    let fixed = start_caddy(
+        root.path(),
+        proxy.port,
+        &door_cert,
+        &caddy_cert,
+        &caddy_key,
+        true,
+    );
+    if wait_tcp_result(SocketAddr::from(([127, 0, 0, 1], fixed.port))).is_err() {
+        panic!(
+            "caddy did not listen: {}",
+            fs::read_to_string(root.path().join("caddy.log")).unwrap_or_default()
+        );
+    }
+    let (code, body) = curl_kiln_ssh_upgrade(root.path(), fixed.port, &caddy_ca, &box_id);
+    assert_eq!(code, 401, "door should reject the upgrade without a JWT");
+    assert!(body.contains("\"code\":\"unauthorized\""), "{body}");
+    let door_site = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/door.Caddyfile"),
+    )
+    .unwrap();
+    assert!(
+        door_site.contains("versions 1.1"),
+        "deploy-managed Caddy must pin the door upstream to HTTP/1.1"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exec_poll_reads_stdout_through_caddy_and_rejected_tokens_do_not_dial() {
+    let _ports = DOOR_CADDY_PORTS.lock().await;
     which_caddy();
     let root = tempfile::tempdir().unwrap();
     let key = write_jwks(root.path());
@@ -562,7 +738,14 @@ async fn exec_poll_reads_stdout_through_caddy_and_rejected_tokens_do_not_dial() 
     std::net::TcpListener::bind("127.0.0.1:8443")
         .expect("the fallback leaves kiln-api's loopback port free");
     let (caddy_cert, caddy_key) = pem_pair("127.0.0.1");
-    let caddy = start_caddy(root.path(), proxy.port, &door_cert, &caddy_cert, &caddy_key);
+    let caddy = start_caddy(
+        root.path(),
+        proxy.port,
+        &door_cert,
+        &caddy_cert,
+        &caddy_key,
+        true,
+    );
     assert_eq!(caddy.port, 443);
     if wait_tcp_result(SocketAddr::from(([127, 0, 0, 1], caddy.port))).is_err() {
         panic!(
@@ -761,6 +944,69 @@ async fn finish(client: &kiln_client::Client, mut op: Operation) -> Operation {
     }
     assert_eq!(polls, 2);
     op
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn door_ssh_caddy_proof_transcript() {
+    let _ports = DOOR_CADDY_PORTS.lock().await;
+    which_caddy();
+    let root = tempfile::tempdir().unwrap();
+    write_jwks(root.path());
+    let (door_cert, door_key) = pem_pair("cli.dark-forge.dev");
+    let cert_path = root.path().join("door.crt");
+    let key_path = root.path().join("door.key");
+    fs::write(&cert_path, &door_cert).unwrap();
+    fs::write(&key_path, &door_key).unwrap();
+    door_on_loopback(root.path(), &cert_path, &key_path).await;
+    let proxy = start_proxy(8444, root.path());
+    let (caddy_cert, caddy_key) = pem_pair("127.0.0.1");
+    let caddy_ca = root.path().join("caddy.crt");
+    fs::write(&caddy_ca, &caddy_cert).unwrap();
+    let proof_box = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let proof_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/proof/door-ssh-caddy");
+    fs::create_dir_all(&proof_dir).unwrap();
+
+    let broken = start_caddy(
+        root.path(),
+        proxy.port,
+        &door_cert,
+        &caddy_cert,
+        &caddy_key,
+        false,
+    );
+    wait_tcp_result(SocketAddr::from(([127, 0, 0, 1], broken.port))).unwrap();
+    let (broken_code, broken_body) =
+        curl_kiln_ssh_upgrade(root.path(), broken.port, &caddy_ca, proof_box);
+    fs::write(
+        proof_dir.join("before-curl.txt"),
+        format!(
+            "curl --http1.1 -k https://127.0.0.1:{port}/v1/boxes/{proof_box}/ssh (Caddy upstream without versions 1.1)\nHTTP {broken_code}\n{broken_body}\n",
+            port = broken.port,
+        ),
+    )
+    .unwrap();
+    drop(broken);
+
+    let fixed = start_caddy(
+        root.path(),
+        proxy.port,
+        &door_cert,
+        &caddy_cert,
+        &caddy_key,
+        true,
+    );
+    wait_tcp_result(SocketAddr::from(([127, 0, 0, 1], fixed.port))).unwrap();
+    let (code, body) = curl_kiln_ssh_upgrade(root.path(), fixed.port, &caddy_ca, proof_box);
+    fs::write(
+        proof_dir.join("after-curl.txt"),
+        format!(
+            "curl --http1.1 -k https://127.0.0.1:{port}/v1/boxes/{proof_box}/ssh (deploy door.Caddyfile: transport http {{ versions 1.1 }})\nHTTP {code}\n{body}\naudit ssh outcome=unauthorized box_id={proof_box}\n",
+            port = fixed.port,
+        ),
+    )
+    .unwrap();
+    assert_eq!(broken_code, 502);
+    assert_eq!(code, 401);
 }
 
 fn which_caddy() -> String {

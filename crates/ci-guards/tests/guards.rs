@@ -307,6 +307,24 @@ jobs:
 }
 
 #[test]
+fn required_failure_cancels_the_workflow_run() {
+    let workflow = read(&repo_root().join(".github/workflows/build.yml"));
+    let violations = ci_guards::fail_fast_cancel_violations(&workflow);
+    assert!(violations.is_empty(), "{violations:?}");
+    let bare = "\
+jobs:
+  required:
+    if: always()
+";
+    let hits = ci_guards::fail_fast_cancel_violations(bare);
+    assert!(
+        hits.iter()
+            .any(|violation| violation.contains("cancel-on-required-failure")),
+        "{hits:?}"
+    );
+}
+
+#[test]
 fn release_jobs_have_a_pull_request_rehearsal() {
     let workflow = read(&repo_root().join(".github/workflows/build.yml"));
     let violations = ci_guards::rehearsal_violations(&workflow);

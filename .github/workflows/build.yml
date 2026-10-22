@@ -44,9 +44,14 @@ jobs:
     timeout-minutes: 10
     outputs:
       heavy: ${{ steps.filter.outputs.heavy }}
+      docs: ${{ steps.filter.outputs.docs }}
+      release_path: ${{ steps.filter.outputs.release_path }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: >-
+          github.event_name == 'pull_request' ||
+          github.event_name == 'merge_group' ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main')
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -56,6 +61,8 @@ jobs:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           MERGE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           MERGE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.sha }}
         run: |
           if [ "$EVENT_NAME" = "pull_request" ]; then
             base="$PR_BASE_SHA"
@@ -63,18 +70,31 @@ jobs:
           elif [ "$EVENT_NAME" = "merge_group" ]; then
             base="$MERGE_BASE_SHA"
             head="$MERGE_HEAD_SHA"
+          elif [ "$EVENT_NAME" = "push" ] && [ "${GITHUB_REF:-}" = "refs/heads/main" ]; then
+            base="$PUSH_BEFORE_SHA"
+            head="$PUSH_HEAD_SHA"
+            if [ "$base" = "0000000000000000000000000000000000000000" ]; then
+              git show --name-only --pretty=format: "$head" | cargo xtask ci-job-paths >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           else
             echo "heavy=true" >> "$GITHUB_OUTPUT"
+            echo "docs=false" >> "$GITHUB_OUTPUT"
+            echo "release_path=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # --no-renames lists both sides. A rename out of Rust still builds.
-          git diff --name-only --no-renames "$base" "$head" | cargo xtask ci-docs-only >> "$GITHUB_OUTPUT"
+          git diff --name-only --no-renames "$base" "$head" | cargo xtask ci-job-paths >> "$GITHUB_OUTPUT"
 
-  # This job runs on a heavy diff too. server-check installs Caddy, so
-  # skipping this job hides a missing binary until the next docs-only pull request.
+  # Documentation diffs run this job. Code-only pull requests skip it and rely
+  # on server-check. A skipped job still reports for the required gate.
   docs-check:
     needs: changes
-    if: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changes.result == 'success' }}
+    if: >-
+      !cancelled() &&
+      (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.docs == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -88,6 +108,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           cargo xtask test-ci-docs-only
+          cargo xtask test-ci-job-paths
           cargo xtask test-release-version
           cargo xtask test-release
           cargo xtask test-install
@@ -97,12 +118,15 @@ jobs:
           cargo xtask test-deploy-workflow
           cargo xtask test-reuse-release
           cargo xtask test-merge-queue-tested
+          cargo xtask test-cancel-on-failure-gate
           cargo xtask test-repo-guard
           bash scripts/test-listener-restart.sh
+          sh scripts/test-install-upgrade-failure-message.sh
           bash scripts/test-wait-for-operations-journal-v2.sh
           bash scripts/test-identity-upgrade.sh
           bash scripts/test-login-token.sh
           sh scripts/test-caddy-endings.sh
+          sh scripts/test-proof-door-ssh-caddy.sh
           sh scripts/test-bootstrap-pins.sh
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
@@ -126,6 +150,7 @@ jobs:
           sh scripts/test-release-notes.sh
           sh scripts/test-fmt.sh
           sh scripts/test-check.sh
+          sh scripts/test-pre-push-hook.sh
           sh scripts/test-ssh-multiplex.sh
 
   feature-map-guard:
@@ -248,15 +273,19 @@ jobs:
           cargo xtask test-caddy-door
           cargo xtask test-deploy-workflow
           cargo xtask test-ci-docs-only
+          cargo xtask test-ci-job-paths
           cargo xtask test-reuse-release
           cargo xtask test-merge-queue-tested
+          cargo xtask test-cancel-on-failure-gate
           cargo xtask test-repo-guard
           bash scripts/test-listener-restart.sh
+          sh scripts/test-install-upgrade-failure-message.sh
           bash scripts/test-wait-for-operations-journal-v2.sh
           bash scripts/test-identity-upgrade.sh
           bash scripts/test-login-token.sh
           bash scripts/test-login-token-upgrade.sh
           sh scripts/test-caddy-endings.sh
+          sh scripts/test-proof-door-ssh-caddy.sh
           sh scripts/test-bootstrap-pins.sh
           sh scripts/test-installer-release.sh
           sh scripts/test-wait-main-run.sh
@@ -280,6 +309,7 @@ jobs:
           sh scripts/test-release-notes.sh
           sh scripts/test-fmt.sh
           sh scripts/test-check.sh
+          sh scripts/test-pre-push-hook.sh
           sh scripts/test-ssh-multiplex.sh
           shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-bootstrap-pins.sh scripts/test-bootstrap-pins.sh scripts/test-caddy-endings.sh images/build-ubuntu.sh deploy/install.sh deploy/bootstrap/install.sh \
             deploy/enroll-dark-forge.sh \
@@ -294,6 +324,7 @@ jobs:
             scripts/test-deploy-host-tools.sh \
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
             scripts/test-listener-restart.sh \
+            scripts/test-install-upgrade-failure-message.sh \
             scripts/test-wait-for-operations-journal-v2.sh \
             scripts/test-identity-upgrade.sh \
             scripts/test-login-token.sh \
@@ -787,6 +818,25 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+  # When a required compile job fails, stop the rest of the run so agents
+  # do not wait on jobs that will be cancelled anyway.
+  cancel-on-required-failure:
+    needs: [changes, docs-check, feature-map-guard, server-check, client, dashboard, tag-path-dry-run]
+    if: always() && !cancelled()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the workflow run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          if cargo xtask cancel-on-failure-gate; then
+            gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+          fi
+
   # A client matrix leg and a skipped client job are different check names.
   # always() still runs when a dependency fails or is skipped. Without it,
   # GitHub skips this job and the check never reports.
@@ -933,9 +983,13 @@ jobs:
   # packages onto v<patch+1>-dryrun. The real scripts do the work. Nothing
   # is published and no tag is pushed.
   tag-path-dry-run:
+    needs: changes
     if: >-
-      github.event_name == 'pull_request' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      !cancelled() &&
+      needs.changes.result == 'success' &&
+      needs.changes.outputs.release_path == 'true' &&
+      (github.event_name == 'pull_request' ||
+        (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

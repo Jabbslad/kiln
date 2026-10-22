@@ -5,9 +5,13 @@ fn main() {
     let code = match command.as_str() {
         "ci-docs-only" => xtask::ci_docs_only::cli(&rest),
         "test-ci-docs-only" => xtask::ci_docs_only::cli_tests(),
+        "ci-job-paths" => xtask::ci_job_paths::cli(&rest),
+        "test-ci-job-paths" => xtask::ci_job_paths::cli_tests(),
         "merge-queue-tested" => xtask::merge_queue::cli(&rest),
         "test-merge-queue-tested" => xtask::merge_queue::cli_tests(),
         "required-gate" => xtask::required_gate::cli(&rest),
+        "cancel-on-failure-gate" => xtask::required_gate::cli_cancel(&rest),
+        "test-cancel-on-failure-gate" => xtask::required_gate::cli_tests(),
         "release" => xtask::release::cli(&rest),
         "test-release" => xtask::release::cli_tests(),
         "release-version" => xtask::release_version::cli(&rest),
