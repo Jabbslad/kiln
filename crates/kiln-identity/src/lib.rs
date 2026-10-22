@@ -1772,14 +1772,14 @@ fn tenant_accounts(
     tenant_id: &str,
 ) -> rusqlite::Result<Vec<String>> {
     let mut ids = Vec::new();
-    if schema_has(tx, "tenants")? {
-        if let Ok(owner) = tx.query_row(
+    if schema_has(tx, "tenants")?
+        && let Ok(owner) = tx.query_row(
             "SELECT owner_id FROM tenants WHERE id=?1",
             [tenant_id],
             |row| row.get::<_, String>(0),
-        ) {
-            ids.push(owner);
-        }
+        )
+    {
+        ids.push(owner);
     }
     if schema_has(tx, "tenant_members")? {
         let mut q = tx.prepare(
