@@ -101,12 +101,21 @@ parse_launch_ms() {
 
 journal_op_times() {
   local op_id=$1
-  sqlite3 -readonly "$JOURNAL" \
+  sqlite3 -readonly -separator ' ' "$JOURNAL" \
     "SELECT created_at, COALESCE(finished_at, ''), running FROM operations WHERE id='$op_id';" \
     2>/dev/null || true
 }
 
+BENCH_SELF_TEST=${BENCH_SELF_TEST:-0}
+BENCH_STUB_BOX_ID=0123456789abcdef0123456789abcdef
+BENCH_OP_SEQ=0
+
 new_request_id() {
+  if [ "$BENCH_SELF_TEST" = 1 ]; then
+    BENCH_OP_SEQ=$((BENCH_OP_SEQ + 1))
+    printf '%032x' "$BENCH_OP_SEQ"
+    return
+  fi
   if [ -r /proc/sys/kernel/random/uuid ]; then
     tr -d '-' </proc/sys/kernel/random/uuid
   else
@@ -155,62 +164,12 @@ json_op_state() {
   '
 }
 
-run_self_test() {
-  local out p50 p90
-  mapfile -t sorted < <(printf '%s\n' 10 20 30 40 50 60 70 80 90 100)
-  read -r p50 p90 <<<"$(percentile_rank "${sorted[@]}")"
-  [ "$p50" = 50 ] || fail "self-test p50 expected 50 got $p50"
-  [ "$p90" = 90 ] || fail "self-test p90 expected 90 got $p90"
-
-  tmp=$(mktemp -d)
-  printf '%s\n' \
-    '{"state":"running","last_launch":{"method":"create","vmm_ms":12.5,"init_ms":3.0,"agent_ms":4.0,"total_ms":25.0}}' \
-    >"$tmp/box.json"
-  read -r v i a t <<<"$(parse_launch_ms "$tmp/box.json")"
-  [ "$v" = 12.5 ] || fail "self-test vmm_ms parse"
-  [ "$i" = 3.0 ] || fail "self-test init_ms parse"
-  [ "$a" = 4.0 ] || fail "self-test agent_ms parse"
-  [ "$t" = 25.0 ] || fail "self-test total_ms parse"
-  rm -rf "$tmp"
-
-  ms=$(( (1005 - 1000) * 1000 ))
-  [ "$ms" -eq 5000 ] || fail "self-test journal duration math expected 5000 got $ms"
-
-  printf 'bench-box-start self-test: ok\n'
-  exit 0
-}
-
-if [ "$SELF_TEST" = true ]; then
-  run_self_test
-fi
-
-case "$MODE" in
-  host-socket|local-gateway) ;;
-  *) fail "unsupported --mode $MODE (use host-socket or local-gateway)" ;;
-esac
-
-command -v curl >/dev/null 2>&1 || fail 'curl is required'
-command -v sqlite3 >/dev/null 2>&1 || fail 'sqlite3 is required'
-command -v awk >/dev/null 2>&1 || fail 'awk is required'
-
-[ -S "$HOST_SOCKET" ] || fail "host socket missing: $HOST_SOCKET"
-[ -f "$JOURNAL" ] || fail "operations journal missing: $JOURNAL"
-[ -d "$RUNTIME" ] || fail "runtime dir missing: $RUNTIME"
-
-CURL_HOST=(curl -sS --unix-socket "$HOST_SOCKET" -H 'Content-Type: application/json')
-CURL_GATEWAY=()
-CLI_AUTH_START=unmeasured
-if [ "$MODE" = local-gateway ]; then
-  [ -r "$TOKEN_FILE" ] || fail "local-gateway mode needs readable $TOKEN_FILE"
-  [ -r "$CA_FILE" ] || fail "local-gateway mode needs readable $CA_FILE"
-  CLI_AUTH_START=$(now_ns)
-  token=$(tr -d '[:space:]' <"$TOKEN_FILE")
-  [ "${#token}" -eq 64 ] || fail "admin token must be 64 hex characters"
-  CLI_AUTH_END=$(now_ns)
-  CURL_GATEWAY=(curl -sS --cacert "$CA_FILE" -H "Authorization: Bearer $token" -H 'Content-Type: application/json')
-fi
-
 BENCH_BOXES=
+CLI_AUTH_START=unmeasured
+CLI_AUTH_END=unmeasured
+CURL_HOST=()
+CURL_GATEWAY=()
+
 bench_register() {
   BENCH_BOXES="$BENCH_BOXES $1"
 }
@@ -230,9 +189,49 @@ cleanup() {
   bench_delete_all || status=1
   exit "$status"
 }
-trap cleanup EXIT INT TERM
+
+bench_stub_request_id() {
+  sed -n 's/.*"id":"\([0-9a-f][0-9a-f]*\)".*/\1/p' | head -1
+}
+
+bench_stub_journal_row() {
+  local req_id=$1 action=${2:-create}
+  local created finished
+  created=$(date +%s)
+  finished=$((created + 1))
+  sqlite3 "$JOURNAL" \
+    "INSERT OR REPLACE INTO operations(id,fingerprint,box_id,is_create,running,response,created_at,finished_at,action)
+     VALUES('$req_id',X'00','$BENCH_STUB_BOX_ID',1,0,'{}',$created,$finished,'$action');"
+}
+
+bench_stub_http_post() {
+  local body=$1 req_id action
+  req_id=$(printf '%s' "$body" | bench_stub_request_id)
+  if printf '%s' "$body" | grep -q '"type":"exec"'; then
+    printf '{"state":"succeeded"}\n'
+    return
+  fi
+  if printf '%s' "$body" | grep -qE '"type":"(stop|delete)"'; then
+    printf '{"state":"succeeded"}\n'
+    return
+  fi
+  action=create
+  if printf '%s' "$body" | grep -q '"type":"start"'; then
+    action=start
+  fi
+  bench_stub_journal_row "$req_id" "$action"
+  printf '{"id":"%s","box_id":"%s","state":"succeeded"}\n' "$req_id" "$BENCH_STUB_BOX_ID"
+}
+
+bench_stub_http_get() {
+  printf '{"state":"succeeded"}\n'
+}
 
 count_boxes() {
+  if [ "$BENCH_SELF_TEST" = 1 ]; then
+    printf '0\n'
+    return
+  fi
   "${CURL_HOST[@]}" "http://localhost/v1/boxes" | awk '
     BEGIN { n = 0 }
     /"id"/ { n++ }
@@ -250,6 +249,10 @@ ensure_capacity() {
 
 http_post_op() {
   local body=$1
+  if [ "$BENCH_SELF_TEST" = 1 ]; then
+    bench_stub_http_post "$body"
+    return
+  fi
   if [ "$MODE" = host-socket ]; then
     "${CURL_HOST[@]}" -X POST -d "$body" "http://localhost/v1/operations"
   else
@@ -259,6 +262,10 @@ http_post_op() {
 
 http_get_op() {
   local op_id=$1
+  if [ "$BENCH_SELF_TEST" = 1 ]; then
+    bench_stub_http_get "$op_id"
+    return
+  fi
   if [ "$MODE" = host-socket ]; then
     "${CURL_HOST[@]}" "http://localhost/v1/operations/$op_id"
   else
@@ -349,6 +356,10 @@ duration_ms() {
 
 resolve_template() {
   local list
+  if [ "$BENCH_SELF_TEST" = 1 ]; then
+    printf '%s\n' "$TEMPLATE"
+    return
+  fi
   list=$("${CURL_HOST[@]}" "http://localhost/v1/templates")
   if printf '%s' "$list" | grep -q "\"name\":\"$TEMPLATE\""; then
     printf '%s\n' "$TEMPLATE"
@@ -357,11 +368,7 @@ resolve_template() {
   printf '%s' "$list" | awk -F'"' '/"name"/ { print $4; exit }'
 }
 
-TEMPLATE=$(resolve_template)
-[ -n "$TEMPLATE" ] || fail "no templates in host catalog"
-
-CSV_FILE=$(mktemp)
-printf 'scenario,iteration,cli_auth_ms,api_request_ms,kiln_host_operation_ms,firecracker_boot_ms,guest_agent_ready_ms,sshd_ready_ms,ready_exec_ms,notes\n' >"$CSV_FILE"
+CSV_FILE=
 
 launch_guest_ms() {
   local init=$1 agent=$2
@@ -374,7 +381,7 @@ launch_guest_ms() {
 }
 
 record_run() {
-  local scenario=$1 iter=$2 op_id=$3 box_id=$4 t_cli0 t_cli1 t_http0 t_http1
+  local scenario=$1 iter=$2 op_id=$3 box_id=$4 t_cli0=$5 t_cli1=$6 t_http0=$7 t_http1=$8
   local cli_ms api_ms host_ms fc_ms guest_ms sshd_ms ready_ms box_json
   if [ "$MODE" = local-gateway ] && [ "$t_cli0" != unmeasured ]; then
     cli_ms=$(duration_ms "$t_cli0" "$t_cli1")
@@ -389,9 +396,9 @@ record_run() {
   guest_ms=$(launch_guest_ms "$init" "$agent")
   sshd_ms=unmeasured
   ready_ms=$(wait_exec_ready "$box_id")
-  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,box=%s op=%s\n' \
+  printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,"%s"\n' \
     "$scenario" "$iter" "$cli_ms" "$api_ms" "$host_ms" "$fc_ms" "$guest_ms" "$sshd_ms" \
-    "$ready_ms" "launch_total_ms=$total" "$box_id" "$op_id" >>"$CSV_FILE"
+    "$ready_ms" "launch_total_ms=$total box=$box_id op=$op_id" >>"$CSV_FILE"
 }
 
 run_create_iteration() {
@@ -449,42 +456,146 @@ summarize_scenario() {
   done
 }
 
-printf 'bench-box-start: mode=%s template=%s iterations=%s\n' "$MODE" "$TEMPLATE" "$ITERATIONS" >&2
-printf 'bench-box-start: host socket %s journal %s\n' "$HOST_SOCKET" "$JOURNAL" >&2
+run_self_test() {
+  local tmp p50 p90 v i a t t0 t1 row
+  command -v sqlite3 >/dev/null 2>&1 || fail 'sqlite3 is required for self-test'
+  command -v awk >/dev/null 2>&1 || fail 'awk is required for self-test'
+  mapfile -t sorted < <(printf '%s\n' 10 20 30 40 50 60 70 80 90 100)
+  read -r p50 p90 <<<"$(percentile_rank "${sorted[@]}")"
+  [ "$p50" = 50 ] || fail "self-test p50 expected 50 got $p50"
+  [ "$p90" = 90 ] || fail "self-test p90 expected 90 got $p90"
 
-ensure_capacity 1
-i=1
-while [ "$i" -le "$ITERATIONS" ]; do
-  run_create_iteration "$i"
-  i=$((i + 1))
-done
+  tmp=$(mktemp -d)
+  printf '%s\n' \
+    '{"state":"running","last_launch":{"method":"create","vmm_ms":12.5,"init_ms":3.0,"agent_ms":4.0,"total_ms":25.0}}' \
+    >"$tmp/box.json"
+  read -r v i a t <<<"$(parse_launch_ms "$tmp/box.json")"
+  [ "$v" = 12.5 ] || fail "self-test vmm_ms parse"
+  [ "$i" = 3.0 ] || fail "self-test init_ms parse"
+  [ "$a" = 4.0 ] || fail "self-test agent_ms parse"
+  [ "$t" = 25.0 ] || fail "self-test total_ms parse"
 
-ensure_capacity 1
-START_BOX=
-row=$(submit_timed '{"type":"create","template":"'"$TEMPLATE"'","name":"bench-start"}')
-box_id=$(printf '%s' "${row##*|}" | json_get_box_id)
-[ -n "$box_id" ] || fail "bench-start create failed"
-bench_register "$box_id"
-START_BOX=$box_id
-submit_operation '{"type":"stop","id":"'"$START_BOX"'","force":true}' >/dev/null
+  ms=$(( (1005 - 1000) * 1000 ))
+  [ "$ms" -eq 5000 ] || fail "self-test journal duration math expected 5000 got $ms"
 
-i=1
-while [ "$i" -le "$ITERATIONS" ]; do
-  run_start_iteration start "$i" "$START_BOX"
+  BENCH_SELF_TEST=1
+  MODE=host-socket
+  TEMPLATE=ubuntu-4g
+  JOURNAL=$tmp/operations.sqlite
+  RUNTIME=$tmp/runtime
+  BENCH_OP_SEQ=0
+  BENCH_BOXES=
+  trap - EXIT INT TERM
+  mkdir -p "$RUNTIME/boxes/$BENCH_STUB_BOX_ID"
+  printf '%s\n' \
+    '{"state":"running","last_launch":{"vmm_ms":10.0,"init_ms":2.0,"agent_ms":3.0,"total_ms":20.0}}' \
+    >"$RUNTIME/boxes/$BENCH_STUB_BOX_ID/box.json"
+  sqlite3 "$JOURNAL" \
+    'CREATE TABLE operations(
+       id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
+       is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
+       created_at INTEGER NOT NULL, finished_at INTEGER, action TEXT NOT NULL DEFAULT "create");'
+  CSV_FILE=$tmp/results.csv
+  printf 'scenario,iteration,cli_auth_ms,api_request_ms,kiln_host_operation_ms,firecracker_boot_ms,guest_agent_ready_ms,sshd_ready_ms,ready_exec_ms,notes\n' \
+    >"$CSV_FILE"
+
+  t0=$(now_ns)
+  t1=$((t0 + 5000000))
+  bench_stub_journal_row "$(printf '%032x' 99)" create
+  record_run create 0 "$(printf '%032x' 99)" "$BENCH_STUB_BOX_ID" unmeasured unmeasured "$t0" "$t1"
+  grep -q '^create,0,unmeasured,' "$CSV_FILE" || fail "self-test record_run host-socket row missing"
+
+  run_create_iteration 1
+  grep -q '^create,1,' "$CSV_FILE" || fail "self-test run_create_iteration row missing"
+  run_start_iteration start 1 "$BENCH_STUB_BOX_ID"
+  grep -q '^start,1,' "$CSV_FILE" || fail "self-test run_start_iteration row missing"
+  summarize_scenario create >"$tmp/summary.txt"
+  grep -q 'kiln_host_operation_ms,[0-9]' "$tmp/summary.txt" \
+    || fail "self-test summarize_scenario create"
+
+  rm -rf "$tmp"
+  printf 'bench-box-start self-test: ok\n'
+}
+
+main() {
+  case "$MODE" in
+    host-socket|local-gateway) ;;
+    *) fail "unsupported --mode $MODE (use host-socket or local-gateway)" ;;
+  esac
+
+  command -v curl >/dev/null 2>&1 || fail 'curl is required'
+  command -v sqlite3 >/dev/null 2>&1 || fail 'sqlite3 is required'
+  command -v awk >/dev/null 2>&1 || fail 'awk is required'
+
+  [ -S "$HOST_SOCKET" ] || fail "host socket missing: $HOST_SOCKET"
+  [ -f "$JOURNAL" ] || fail "operations journal missing: $JOURNAL"
+  [ -d "$RUNTIME" ] || fail "runtime dir missing: $RUNTIME"
+
+  CURL_HOST=(curl -sS --unix-socket "$HOST_SOCKET" -H 'Content-Type: application/json')
+  CURL_GATEWAY=()
+  CLI_AUTH_START=unmeasured
+  CLI_AUTH_END=unmeasured
+  if [ "$MODE" = local-gateway ]; then
+    [ -r "$TOKEN_FILE" ] || fail "local-gateway mode needs readable $TOKEN_FILE"
+    [ -r "$CA_FILE" ] || fail "local-gateway mode needs readable $CA_FILE"
+    CLI_AUTH_START=$(now_ns)
+    token=$(tr -d '[:space:]' <"$TOKEN_FILE")
+    [ "${#token}" -eq 64 ] || fail "admin token must be 64 hex characters"
+    CLI_AUTH_END=$(now_ns)
+    CURL_GATEWAY=(curl -sS --cacert "$CA_FILE" -H "Authorization: Bearer $token" -H 'Content-Type: application/json')
+  fi
+
+  trap cleanup EXIT INT TERM
+
+  TEMPLATE=$(resolve_template)
+  [ -n "$TEMPLATE" ] || fail "no templates in host catalog"
+
+  CSV_FILE=$(mktemp)
+  printf 'scenario,iteration,cli_auth_ms,api_request_ms,kiln_host_operation_ms,firecracker_boot_ms,guest_agent_ready_ms,sshd_ready_ms,ready_exec_ms,notes\n' >"$CSV_FILE"
+
+  printf 'bench-box-start: mode=%s template=%s iterations=%s\n' "$MODE" "$TEMPLATE" "$ITERATIONS" >&2
+  printf 'bench-box-start: host socket %s journal %s\n' "$HOST_SOCKET" "$JOURNAL" >&2
+
+  ensure_capacity 1
+  i=1
+  while [ "$i" -le "$ITERATIONS" ]; do
+    run_create_iteration "$i"
+    i=$((i + 1))
+  done
+
+  ensure_capacity 1
+  START_BOX=
+  row=$(submit_timed '{"type":"create","template":"'"$TEMPLATE"'","name":"bench-start"}')
+  box_id=$(printf '%s' "${row##*|}" | json_get_box_id)
+  [ -n "$box_id" ] || fail "bench-start create failed"
+  bench_register "$box_id"
+  START_BOX=$box_id
   submit_operation '{"type":"stop","id":"'"$START_BOX"'","force":true}' >/dev/null
-  i=$((i + 1))
-done
 
-i=1
-while [ "$i" -le "$ITERATIONS" ]; do
-  submit_operation '{"type":"stop","id":"'"$START_BOX"'","force":true}' >/dev/null
-  run_start_iteration restart "$i" "$START_BOX"
-  i=$((i + 1))
-done
+  i=1
+  while [ "$i" -le "$ITERATIONS" ]; do
+    run_start_iteration start "$i" "$START_BOX"
+    submit_operation '{"type":"stop","id":"'"$START_BOX"'","force":true}' >/dev/null
+    i=$((i + 1))
+  done
 
-cat "$CSV_FILE"
-summarize_scenario create
-summarize_scenario start
-summarize_scenario restart
+  i=1
+  while [ "$i" -le "$ITERATIONS" ]; do
+    submit_operation '{"type":"stop","id":"'"$START_BOX"'","force":true}' >/dev/null
+    run_start_iteration restart "$i" "$START_BOX"
+    i=$((i + 1))
+  done
 
-rm -f "$CSV_FILE"
+  cat "$CSV_FILE"
+  summarize_scenario create
+  summarize_scenario start
+  summarize_scenario restart
+
+  rm -f "$CSV_FILE"
+}
+
+if [ "$SELF_TEST" = true ]; then
+  run_self_test
+else
+  main
+fi
