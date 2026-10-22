@@ -369,7 +369,10 @@ function Access({ boxId }: { boxId: string }) {
       </div>
       <div className="access-section">
         <span className="eyebrow">SSH</span>
-        <CapabilitySurface capability="ssh">
+        <CapabilitySurface
+          capability="ssh"
+          notYetFallback={<p className="capability-unavailable">Coming soon</p>}
+        >
           <div className="connection-placeholder">
             <Terminal size={15} />
             <span>{sshCommand}</span>
