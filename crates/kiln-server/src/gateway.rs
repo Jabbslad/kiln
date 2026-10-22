@@ -125,22 +125,29 @@ async fn ssh_tunnel(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
-    let identity = state.auth.central_identity(token).await.map_err(|_| {
-        Failure::new(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "A valid credential is required.",
-        )
-    })?;
-    if identity.scope != Scope::Operate {
-        return Err(Failure::new(
-            StatusCode::FORBIDDEN,
-            "insufficient_scope",
-            "An operate credential is required.",
-        ));
-    }
+    let cancel = match state.auth.central_identity(token).await {
+        Ok(identity) => {
+            if identity.scope != Scope::Operate {
+                return Err(Failure::new(
+                    StatusCode::FORBIDDEN,
+                    "insufficient_scope",
+                    "An operate credential is required.",
+                ));
+            }
+            state.auth.track_stream(&identity)
+        }
+        Err(_) if state.auth.authenticate(token).await.is_ok() => {
+            crate::revocation::StreamCancel::new()
+        }
+        Err(_) => {
+            return Err(Failure::new(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "A valid credential is required.",
+            ));
+        }
+    };
     validate_uri_query(request.method(), request.uri())?;
-    let cancel = state.auth.track_stream(&identity);
     let key = crate::ssh::admission(&request)?;
     let permit = state
         .sessions
