@@ -1,4 +1,6 @@
-/** Canonical operation action tags; must match kiln_api::Action serde `type` values. */
+/** Canonical operation action tags; must match kiln_api::Action serde `type` values.
+ * The interactive terminal is a WebSocket session and is intentionally absent.
+ */
 export const OPERATION_ACTION_TYPES = [
   'create',
   'pause',

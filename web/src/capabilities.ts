@@ -5,7 +5,7 @@ export type Capability =
 
 export const capabilities = {
   metrics: 'available',
-  terminal: 'not-yet',
+  terminal: 'available',
   ssh: 'not-yet',
   httpPreview: 'not-yet',
   publicUrl: 'not-yet',

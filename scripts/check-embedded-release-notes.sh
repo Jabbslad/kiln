@@ -25,24 +25,26 @@ expected=$root/web/src/release-notes.json
   npm run build >/dev/null
 )
 
-bundle=
-for path in "$root/web/dist/assets"/*.js; do
-  [ -f "$path" ] || continue
-  bundle=$path
-  break
-done
-[ -n "$bundle" ] || fail 'dashboard bundle js missing'
-
-EXPECTED="$expected" BUNDLE="$bundle" node <<'NODE'
+EXPECTED="$expected" ASSETS="$root/web/dist/assets" node <<'NODE'
 const fs = require('node:fs')
+const path = require('node:path')
 const expected = JSON.parse(fs.readFileSync(process.env.EXPECTED, 'utf8'))
-const source = fs.readFileSync(process.env.BUNDLE, 'utf8')
+const assets = process.env.ASSETS
+const bundles = fs
+  .readdirSync(assets)
+  .filter((name) => name.endsWith('.js'))
+  .map((name) => fs.readFileSync(path.join(assets, name), 'utf8'))
+if (bundles.length === 0) {
+  console.error('dashboard bundle js missing')
+  process.exit(1)
+}
 const versionNeedles = [
   'version:"' + expected.version + '"',
   '"version":"' + expected.version + '"',
   'version:`' + expected.version + '`',
 ]
-if (!versionNeedles.some((needle) => source.includes(needle))) {
+const source = bundles.find((chunk) => versionNeedles.some((needle) => chunk.includes(needle)))
+if (!source) {
   console.error('embedded version missing from bundle')
   process.exit(1)
 }

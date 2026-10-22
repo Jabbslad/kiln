@@ -249,6 +249,15 @@ jobs:
             sudo apt-get update
             sudo apt-get install --no-install-recommends -y systemd iproute2
           fi
+      - name: OpenSSH server
+        if: steps.queue.outputs.skip_tests != 'true'
+        run: |
+          if [ ! -x /usr/sbin/sshd ]; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y openssh-server
+          fi
+          sudo mkdir -p /run/sshd
+          sudo chmod 755 /run/sshd
       - name: Test and lint
         if: steps.queue.outputs.skip_tests != 'true'
         env:
