@@ -438,9 +438,7 @@ async fn open_terminal(app: Arc<App>, peer: SocketAddr, id: String, request: Req
         return unauthorized();
     };
     match app.auth.authenticate_central(&jwt).await {
-        Ok(grant) if grant.scope == Scope::Operate => {
-            let _caller = grant.caller;
-        }
+        Ok(Scope::Operate) => {}
         Ok(_) => {
             audit_terminal(&app, "insufficient_scope", &id);
             return deny(
@@ -1253,7 +1251,7 @@ async fn finish_login(app: &App, request: Request) -> Response {
         .authenticate_central(&jwt)
         .await
         .ok()
-        .filter(|grant| dashboard_grant(grant.scope))
+        .filter(|scope| dashboard_grant(*scope))
         .is_none()
     {
         return deny(
@@ -1378,7 +1376,7 @@ async fn refresh_reader(app: &App, reader: &str) -> Result<(String, u64)> {
         .authenticate_central(&jwt)
         .await
         .ok()
-        .filter(|grant| dashboard_grant(grant.scope))
+        .filter(|scope| dashboard_grant(*scope))
         .is_none()
     {
         anyhow::bail!("refreshed token was not a dashboard grant");
