@@ -21,6 +21,20 @@ pub fn is_release_path(path: &str) -> bool {
     rel.ends_with("/Cargo.toml")
 }
 
+pub fn needs_web(paths: &[String]) -> bool {
+    let cleaned: Vec<String> = paths
+        .iter()
+        .filter(|path| !path.trim().is_empty())
+        .map(|path| normalize(path))
+        .collect();
+    if cleaned.is_empty() {
+        return true;
+    }
+    cleaned
+        .iter()
+        .any(|path| path.starts_with("web/") || path.as_str() == "web")
+}
+
 pub fn needs_release_path(paths: &[String]) -> bool {
     let cleaned: Vec<String> = paths
         .iter()
@@ -67,10 +81,11 @@ pub fn pull_request_jobs(paths: &[String]) -> PullRequestJobs {
 
 pub fn classify(paths: &[String]) -> String {
     format!(
-        "heavy={}\ndocs={}\nrelease_path={}\n",
+        "heavy={}\ndocs={}\nrelease_path={}\nweb={}\n",
         bool_line(needs_heavy(paths)),
         bool_line(needs_docs_check(paths)),
         bool_line(needs_release_path(paths)),
+        bool_line(needs_web(paths)),
     )
 }
 
@@ -124,6 +139,16 @@ fn test_rust_only_pull_request_skips_docs_and_tag_path() {
             dashboard: true,
         }
     );
+    assert!(!needs_web(&paths));
+}
+
+fn test_web_paths_enable_dashboard_npm() {
+    let paths = vec!["web/src/App.tsx".to_string()];
+    assert!(needs_web(&paths));
+    assert_eq!(
+        classify(&paths),
+        "heavy=true\ndocs=false\nrelease_path=false\nweb=true\n"
+    );
 }
 
 fn test_deploy_change_runs_tag_path_not_docs() {
@@ -166,11 +191,11 @@ fn test_docs_and_deploy_run_both_guards() {
     assert!(jobs.server_check);
 }
 
-fn test_classify_emits_three_outputs() {
+fn test_classify_emits_four_outputs() {
     let paths = vec!["README.md".to_string()];
     assert_eq!(
         classify(&paths),
-        "heavy=false\ndocs=true\nrelease_path=false\n"
+        "heavy=false\ndocs=true\nrelease_path=false\nweb=false\n"
     );
 }
 
@@ -181,5 +206,6 @@ crate::register_cases! {
     test_release_workflow_change_runs_tag_path,
     test_cargo_toml_bump_runs_tag_path,
     test_docs_and_deploy_run_both_guards,
-    test_classify_emits_three_outputs,
+    test_web_paths_enable_dashboard_npm,
+    test_classify_emits_four_outputs,
 }

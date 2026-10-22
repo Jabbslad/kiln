@@ -46,6 +46,7 @@ jobs:
       heavy: ${{ steps.filter.outputs.heavy }}
       docs: ${{ steps.filter.outputs.docs }}
       release_path: ${{ steps.filter.outputs.release_path }}
+      web: ${{ steps.filter.outputs.web }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         if: >-
@@ -81,6 +82,7 @@ jobs:
             echo "heavy=true" >> "$GITHUB_OUTPUT"
             echo "docs=false" >> "$GITHUB_OUTPUT"
             echo "release_path=true" >> "$GITHUB_OUTPUT"
+            echo "web=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # --no-renames lists both sides. A rename out of Rust still builds.
@@ -109,6 +111,7 @@ jobs:
         run: |
           cargo xtask test-ci-docs-only
           cargo xtask test-ci-job-paths
+          sh scripts/test-dashboard-npm-ci.sh
           cargo xtask test-release-version
           cargo xtask test-release
           cargo xtask test-install
@@ -284,6 +287,7 @@ jobs:
           cargo xtask test-deploy-workflow
           cargo xtask test-ci-docs-only
           cargo xtask test-ci-job-paths
+          sh scripts/test-dashboard-npm-ci.sh
           cargo xtask test-reuse-release
           cargo xtask test-merge-queue-tested
           sh scripts/test-reuse-proved-server-package.sh
@@ -618,43 +622,68 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: cargo xtask release-version resolve --ref-type "$REF_TYPE" --ref-name "$REF_NAME"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: >-
+          (github.event_name != 'pull_request' && github.event_name != 'merge_group') ||
+          needs.changes.outputs.web == 'true'
         with:
           node-version: '22'
           # Empty on a v* tag, so setup-node skips restore and save and still installs Node.
           cache: ${{ !startsWith(github.ref, 'refs/tags/v') && 'npm' || '' }}
           cache-dependency-path: web/package-lock.json
       - name: Install dashboard dependencies
+        if: >-
+          (github.event_name != 'pull_request' && github.event_name != 'merge_group') ||
+          needs.changes.outputs.web == 'true'
         working-directory: web
         run: npm ci
       - name: Test dashboard
-        if: steps.queue.outputs.skip_tests != 'true'
+        if: >-
+          steps.queue.outputs.skip_tests != 'true' &&
+          ((github.event_name != 'pull_request' && github.event_name != 'merge_group') ||
+            needs.changes.outputs.web == 'true')
         working-directory: web
         run: |
           npm test
           npx prettier --check .
       - name: Build dashboard
+        if: >-
+          (github.event_name != 'pull_request' && github.event_name != 'merge_group') ||
+          needs.changes.outputs.web == 'true'
         working-directory: web
         run: npm run build
       - name: Check embedded release notes
-        if: steps.queue.outputs.skip_tests != 'true'
+        if: >-
+          steps.queue.outputs.skip_tests != 'true' &&
+          ((github.event_name != 'pull_request' && github.event_name != 'merge_group') ||
+            needs.changes.outputs.web == 'true')
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           KILN_RELEASE_NOTES_PUBLISHED_BASE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
         run: sh scripts/check-embedded-release-notes.sh "$VERSION"
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        if: steps.queue.outputs.skip_tests != 'true' && !startsWith(github.ref, 'refs/tags/v')
+        if: >-
+          steps.queue.outputs.skip_tests != 'true' &&
+          !startsWith(github.ref, 'refs/tags/v') &&
+          ((github.event_name != 'pull_request' && github.event_name != 'merge_group') ||
+            needs.changes.outputs.web == 'true')
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('web/package-lock.json') }}
       - name: Browser tests
-        if: steps.queue.outputs.skip_tests != 'true'
+        if: >-
+          steps.queue.outputs.skip_tests != 'true' &&
+          ((github.event_name != 'pull_request' && github.event_name != 'merge_group') ||
+            needs.changes.outputs.web == 'true')
         working-directory: web
         run: |
           npx playwright install --with-deps chromium
           npm run test:browser
       - name: Proof smoke
-        if: steps.queue.outputs.skip_tests != 'true'
+        if: >-
+          steps.queue.outputs.skip_tests != 'true' &&
+          ((github.event_name != 'pull_request' && github.event_name != 'merge_group') ||
+            needs.changes.outputs.web == 'true')
         env:
           KILN_PROOF_SKIP_KILN_APP: 1
         run: sh scripts/test-proof.sh
