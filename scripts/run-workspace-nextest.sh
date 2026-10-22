@@ -17,8 +17,6 @@ for shard in $(seq 1 "$shards"); do
     --partition "count:${shard}/${shards}" &
   pids="$pids $!"
 done
-cargo nextest run -p kiln-server --test door_caddy --all-features --locked &
-pids="$pids $!"
 
 fail=0
 for pid in $pids; do
@@ -26,4 +24,9 @@ for pid in $pids; do
     fail=1
   fi
 done
+
+if ! cargo nextest run -p kiln-server --test door_caddy --all-features --locked \
+  --test-threads=1; then
+  fail=1
+fi
 exit "$fail"
