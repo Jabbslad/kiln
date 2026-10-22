@@ -649,6 +649,34 @@ fn test_smoke_deletes_the_box_when_exec_or_output_fails() {
     );
     assert!(leaked.captured.stderr.contains("box create failed"));
     assert!(command_names(&leaked.log).contains(&"delete"));
+
+    let smoke = read_repo("deploy/github/smoke.sh");
+    assert!(
+        smoke.find("self-check").unwrap() < smoke.find("delete_box || true").unwrap(),
+        "launch timing check must run before the smoke box is deleted"
+    );
+    assert!(
+        ok.captured
+            .stdout
+            .contains("smoke: launch timing kiln-smoke"),
+        "stdout: {}",
+        ok.captured.stdout
+    );
+
+    let metrics_failed = run_smoke(&[("KILN_SELF_CHECK_RC", "1")]);
+    assert!(
+        !metrics_failed.captured.status.success(),
+        "{}",
+        metrics_failed.captured.stderr
+    );
+    assert!(
+        metrics_failed
+            .captured
+            .stderr
+            .contains("kiln-api self-check failed (exit 1)"),
+        "{}",
+        metrics_failed.captured.stderr
+    );
 }
 
 struct Captured {
@@ -1061,7 +1089,9 @@ fn run_smoke(extra: &[(&str, &str)]) -> SmokeRun {
         &kiln_api,
         r#"#!/bin/sh
 case "$*" in
-  *self-check*) exit 0 ;;
+  *self-check*)
+    printf 'smoke: launch timing kiln-smoke total_ms=1 storage_ms=1\n'
+    exit "${KILN_SELF_CHECK_RC-0}" ;;
   *) exit 1 ;;
 esac
 "#,

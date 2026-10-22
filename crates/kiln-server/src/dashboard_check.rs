@@ -17,6 +17,7 @@ pub enum CheckError {
     RunningLaunchTimingMissing,
     RequireLaunchTimingBoxNotFound,
     RequireLaunchTimingMissing,
+    RequireLaunchTimingPhasesMissing,
 }
 
 impl fmt::Display for CheckError {
@@ -38,6 +39,9 @@ impl fmt::Display for CheckError {
             Self::RequireLaunchTimingMissing => {
                 f.write_str("required box is missing timing.total_ms on the dashboard")
             }
+            Self::RequireLaunchTimingPhasesMissing => f.write_str(
+                "required box is missing measured launch phase timings on the dashboard",
+            ),
         }
     }
 }
@@ -80,7 +84,10 @@ pub(crate) fn validate_document(document: &Document) -> Result<(), CheckError> {
     Ok(())
 }
 
-pub fn require_launch_timing(body: &[u8], identifier: &str) -> Result<(), CheckError> {
+pub fn require_launch_timing(
+    body: &[u8],
+    identifier: &str,
+) -> Result<kiln_runtime::launch_timing::LaunchTiming, CheckError> {
     if body.is_empty() {
         return Err(CheckError::EmptyBody);
     }
@@ -88,12 +95,48 @@ pub fn require_launch_timing(body: &[u8], identifier: &str) -> Result<(), CheckE
     require_launch_timing_document(&document, identifier)
 }
 
-fn require_launch_timing_document(document: &Document, identifier: &str) -> Result<(), CheckError> {
-    match document.named_box_missing_launch_total_ms(identifier) {
-        None => Err(CheckError::RequireLaunchTimingBoxNotFound),
-        Some(true) => Err(CheckError::RequireLaunchTimingMissing),
-        Some(false) => Ok(()),
+fn require_launch_timing_document(
+    document: &Document,
+    identifier: &str,
+) -> Result<kiln_runtime::launch_timing::LaunchTiming, CheckError> {
+    let Some(timing) = document.named_box_timing(identifier) else {
+        return Err(CheckError::RequireLaunchTimingBoxNotFound);
+    };
+    let Some(timing) = timing else {
+        return Err(CheckError::RequireLaunchTimingMissing);
+    };
+    if timing.total_ms.is_none() {
+        return Err(CheckError::RequireLaunchTimingMissing);
     }
+    if !timing.has_measured_phases() {
+        return Err(CheckError::RequireLaunchTimingPhasesMissing);
+    }
+    Ok(timing)
+}
+
+pub fn launch_timing_log_line(
+    identifier: &str,
+    timing: &kiln_runtime::launch_timing::LaunchTiming,
+) -> String {
+    fn field(label: &str, value: Option<f64>) -> Option<String> {
+        value.map(|ms| format!("{label}={ms}"))
+    }
+    let mut parts = vec![format!("smoke: launch timing {identifier}")];
+    for part in [
+        field("total_ms", timing.total_ms),
+        field("storage_ms", timing.storage_ms),
+        field("vmm_ms", timing.vmm_ms),
+        field("restore_ms", timing.restore_ms),
+        field("agent_ms", timing.agent_ms),
+        field("init_ms", timing.init_ms),
+        field("first_command_ms", timing.first_command_ms),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        parts.push(part);
+    }
+    parts.join(" ")
 }
 
 #[derive(Debug, Clone)]
@@ -133,7 +176,9 @@ pub async fn run_self_check(options: SelfCheckOptions) -> Result<()> {
     );
     parse_and_validate(&body).map_err(|error| anyhow::anyhow!("{error}"))?;
     if let Some(identifier) = options.require_launch_timing {
-        require_launch_timing(&body, &identifier).map_err(|error| anyhow::anyhow!("{error}"))?;
+        let timing = require_launch_timing(&body, &identifier)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        println!("{}", launch_timing_log_line(&identifier, &timing));
     }
     Ok(())
 }
