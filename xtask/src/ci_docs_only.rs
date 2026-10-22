@@ -51,6 +51,17 @@ pub fn is_documentation(path: &str) -> bool {
     rel.starts_with("docs/") && !CODE_SUFFIXES.iter().any(|suffix| name.ends_with(suffix))
 }
 
+pub fn needs_deploy_final_checks(paths: &[String]) -> bool {
+    let cleaned: Vec<String> = paths
+        .iter()
+        .filter(|path| !path.trim().is_empty())
+        .map(|path| normalize(path))
+        .collect();
+    cleaned.iter().any(|path| {
+        path.starts_with("deploy/") || path.starts_with("scripts/") || path.starts_with("crates/")
+    })
+}
+
 pub fn needs_heavy(paths: &[String]) -> bool {
     let cleaned: Vec<String> = paths
         .iter()
@@ -88,8 +99,13 @@ pub fn changed_paths(base: &str, head: &str, cwd: Option<&Path>) -> Result<Vec<S
 
 pub fn classify(paths: &[String]) -> String {
     format!(
-        "heavy={}\n",
-        if needs_heavy(paths) { "true" } else { "false" }
+        "heavy={}\ndeploy_final={}\n",
+        if needs_heavy(paths) { "true" } else { "false" },
+        if needs_deploy_final_checks(paths) {
+            "true"
+        } else {
+            "false"
+        }
     )
 }
 
@@ -121,7 +137,7 @@ fn test_runbooks_and_markdown_skip_the_compile_jobs() {
         "docs/picture.png".to_string(),
     ];
     assert!(!needs_heavy(&paths));
-    assert_eq!(classify(&paths), "heavy=false\n");
+    assert_eq!(classify(&paths), "heavy=false\ndeploy_final=false\n");
 }
 
 fn test_code_scripts_workflows_deploy_and_locks_build() {
@@ -145,14 +161,41 @@ fn test_code_scripts_workflows_deploy_and_locks_build() {
     for path in samples {
         let with_doc = vec![path.to_string(), "docs/releases.md".to_string()];
         assert!(needs_heavy(&with_doc), "{path}");
-        assert_eq!(classify(&[path.to_string()]), "heavy=true\n", "{path}");
+        let deploy_final = if path.starts_with(".github/") {
+            "false"
+        } else {
+            "true"
+        };
+        assert_eq!(
+            classify(&[path.to_string()]),
+            format!("heavy=true\ndeploy_final={deploy_final}\n"),
+            "{path}"
+        );
     }
 }
 
 fn test_empty_diff_builds() {
     assert!(needs_heavy(&[]));
     assert!(needs_heavy(&[String::new(), "  ".to_string()]));
-    assert_eq!(classify(&[]), "heavy=true\n");
+    assert_eq!(classify(&[]), "heavy=true\ndeploy_final=false\n");
+}
+
+fn test_deploy_final_checks_only_for_deploy_scripts_crates() {
+    assert!(!needs_deploy_final_checks(&["README.md".to_string()]));
+    assert!(!needs_deploy_final_checks(
+        &["docs/releases.md".to_string()]
+    ));
+    assert!(!needs_deploy_final_checks(&["web/src/App.tsx".to_string()]));
+    assert!(needs_deploy_final_checks(&[
+        "crates/kiln-server/src/main.rs".to_string()
+    ]));
+    assert!(needs_deploy_final_checks(&["scripts/check.sh".to_string()]));
+    assert!(needs_deploy_final_checks(
+        &["deploy/install.sh".to_string()]
+    ));
+    assert!(!needs_deploy_final_checks(&[
+        ".github/workflows/build.yml".to_string()
+    ]));
 }
 
 fn test_rename_out_of_rust_lists_both_sides() {
@@ -214,4 +257,5 @@ register_cases! {
     test_code_scripts_workflows_deploy_and_locks_build,
     test_empty_diff_builds,
     test_rename_out_of_rust_lists_both_sides,
+    test_deploy_final_checks_only_for_deploy_scripts_crates,
 }

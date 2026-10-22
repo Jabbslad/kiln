@@ -133,9 +133,15 @@ put() {
   fi
 }
 
-if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
+use_local_dist=false
+if [ -n "${KILN_DEPLOY_DIST:-}" ]; then
+  case "${KILN_DEPLOY_DRY_RUN:-}:${KILN_DEPLOY_STANDIN:-}" in
+    1:*|*:1) use_local_dist=true ;;
+  esac
+fi
+if [ "$use_local_dist" = true ]; then
   dist=${KILN_DEPLOY_DIST:-}
-  [ -n "$dist" ] || fail 'dry run needs KILN_DEPLOY_DIST'
+  [ -n "$dist" ] || fail 'local deploy needs KILN_DEPLOY_DIST'
   start_ssh_session
   for name in \
     "$asset" "${asset}.sha256" \
@@ -145,7 +151,11 @@ if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
     [ -f "$dist/$name" ] || fail "missing deploy input ${name}"
     cp -- "$dist/$name" "$work/$name"
   done
-  remote=$(mktemp -d /tmp/kiln-deploy.XXXXXX)
+  if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
+    remote=$(mktemp -d /tmp/kiln-deploy.XXXXXX)
+  else
+    remote=$(bash "$ssh_sh" ssh -- mktemp -d /tmp/kiln-deploy.XXXXXX)
+  fi
 else
   fetch_asset "$asset" &
   server_pid=$!
@@ -196,9 +206,13 @@ if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
   printf 'deploy inputs %s\n' "$tag"
   exit 0
 fi
+remote_env=()
+if [ "${KILN_SKIP_SMOKE:-}" = 1 ]; then
+  remote_env=(env KILN_SKIP_SMOKE=1)
+fi
 if [ -n "$address" ]; then
-  bash "$ssh_sh" ssh -- bash "$remote/install-remote.sh" "$remote" "$address"
+  bash "$ssh_sh" ssh -- "${remote_env[@]}" bash "$remote/install-remote.sh" "$remote" "$address"
 else
-  bash "$ssh_sh" ssh -- bash "$remote/install-remote.sh" "$remote"
+  bash "$ssh_sh" ssh -- "${remote_env[@]}" bash "$remote/install-remote.sh" "$remote"
 fi
 printf 'deployed %s\n' "$tag"

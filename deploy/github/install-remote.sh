@@ -214,7 +214,10 @@ else
 fi
 
 smoke_rc=1
-if [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] \
+if [ "${KILN_SKIP_SMOKE:-}" = 1 ]; then
+  printf 'deploy: SKIPPED guest smoke test (/dev/kvm unavailable on this runner)\n' >&2
+  smoke_rc=0
+elif [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] \
   && [ "$metrics_rc" -eq 0 ]; then
   smoke_rc=0
   bash "$dir/smoke.sh" "$address" || smoke_rc=$?

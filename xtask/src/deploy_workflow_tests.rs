@@ -613,6 +613,20 @@ fn test_deploy_host_scripts_do_not_invoke_jq() {
     }
 }
 
+fn test_deploy_stand_in_local_dist_and_skip_smoke() {
+    let deploy = read_repo("deploy/github/deploy.sh");
+    let remote = read_repo("deploy/github/install-remote.sh");
+    let build = workflow("build.yml");
+    assert!(deploy.contains("KILN_DEPLOY_STANDIN"));
+    assert!(deploy.contains("use_local_dist"));
+    assert!(deploy.contains("KILN_SKIP_SMOKE=1"));
+    assert!(remote.contains("KILN_SKIP_SMOKE"));
+    assert!(remote.contains("SKIPPED guest smoke test"));
+    assert!(build.contains("deploy-final-checks:"));
+    assert!(build.contains("deploy-standin-final-checks.sh"));
+    assert!(build.contains("KILN_STANDIN_FAULT_INJECT=1"));
+}
+
 fn test_door_ssh_probe_rejects_an_unauthenticated_request() {
     let deploy = read_repo("deploy/github/deploy.sh");
     let remote = read_repo("deploy/github/install-remote.sh");
@@ -1472,5 +1486,6 @@ register_cases! {
     test_deploy_installs_dashboard_and_checks_the_live_bundle,
     test_deploy_host_scripts_do_not_invoke_jq,
     test_smoke_deletes_the_box_when_exec_or_output_fails,
+    test_deploy_stand_in_local_dist_and_skip_smoke,
     test_door_ssh_probe_rejects_an_unauthenticated_request,
 }
