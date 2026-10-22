@@ -476,6 +476,7 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
     };
     let caller = grant.caller.sub.clone();
     if grant.scope != Scope::Operate {
+        let _ = crate::auth::deny("insufficient_scope");
         door.ssh_audit
             .record("insufficient_scope", &box_id, &caller, addr);
         return deny(

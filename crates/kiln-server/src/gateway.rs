@@ -108,6 +108,7 @@ async fn authenticate(
         )
     })?;
     if required == Scope::Operate && grant.scope != Scope::Operate {
+        let _ = crate::auth::deny("insufficient_scope");
         return Err(Failure::new(
             StatusCode::FORBIDDEN,
             "insufficient_scope",

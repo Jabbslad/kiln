@@ -45,3 +45,24 @@ Do not run this against `https://dark-forge.dev` from an unattended agent. Appro
 - First-use interactive VM commands can start login. `--json`, SSH proxy, and a missing explicit profile do not open a browser.
 - `cargo xtask central-login` checks an already approved profile. It is not a substitute for this journey.
 - Device requests last ten minutes. The client poll interval starts at the value the server returns (5 seconds in the identity store).
+
+## Sign-in audit
+
+Every identity login attempt is appended to a separate SQLite journal next to the identity database: `{database-file-name}.signin-audit` (for the unit file, `/var/lib/kiln-identity/identity.db.signin-audit`). The identity database and its `audit_events` prune path are unchanged. The journal is append-only: the writer only inserts, and update and delete triggers abort. It survives restart and identity-database prune.
+
+Events, success and failure: dashboard sign-in, OAuth code exchange, device-code approval, token issue, token refresh, revocation, and app-reader exchange. Poll replies `authorization_pending` and `slow_down` are not recorded. A failed journal write is logged and counted; the auth response is the one already chosen.
+
+A row stores only UTC time with milliseconds, account id, tenant, the real client IP (`client_ip`, including the first `X-Forwarded-For` hop when the peer is loopback and `--trusted-proxy-loopback` is set), user agent, client or app id, SHA-256 hex of the session id, SHA-256 hex of the token id, auth method, event, outcome, and a failure reason code. It does not store the request URL, query string, one-use OAuth or device code, or any raw token.
+
+Query it with the identity binary, not the laptop `kiln` client:
+
+```sh
+kiln-identity doctor --database /var/lib/kiln-identity/identity.db \
+  --account acct_... \
+  --since 1970-01-01T00:00:00.000Z \
+  --until 9999-12-31T23:59:59.999Z
+```
+
+`kiln-identity admin` takes the same flags and prints the same JSON array. `--account` is required. `--since` and `--until` are inclusive UTC timestamps with milliseconds. This does not change `kiln --help` or token lifetimes, cookies, redirects, or error bodies.
+
+When `kiln-server` refuses a bearer, it records the check that failed (`tenant_mismatch`, `expired_token`, `insufficient_scope`, and the other verifier checks) as `auth deny reason=<check>` on stderr. The line is the check name only: no token, code, or URL.

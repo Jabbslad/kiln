@@ -442,6 +442,7 @@ async fn open_terminal(app: Arc<App>, peer: SocketAddr, id: String, request: Req
             let _caller = grant.caller;
         }
         Ok(_) => {
+            let _ = crate::auth::deny("insufficient_scope");
             audit_terminal(&app, "insufficient_scope", &id);
             return deny(
                 StatusCode::FORBIDDEN,
