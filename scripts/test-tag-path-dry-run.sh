@@ -27,10 +27,12 @@ grep -q 'scripts/check-release-trust.sh' "$root/scripts/tag-path-dry-run.sh" \
 grep -q 'scripts/check-release-trust.sh' "$root/.github/workflows/build.yml" \
   || fail 'release build must guard release binaries'
 
-grep -q 'green_main_run_sha' "$root/scripts/tag-path-dry-run.sh" \
-  || fail 'tag-path-dry-run must retry the green main run lookup'
-grep -q 'TAG_PATH_MAIN_SHA_LOOKUP_SLEEP' "$root/scripts/tag-path-dry-run.sh" \
-  || fail 'tag-path-dry-run must backoff between green main run lookup tries'
+grep -q 'green_main_run' "$root/scripts/tag-path-dry-run.sh" \
+  || fail 'tag-path-dry-run must resolve the latest green main run'
+grep -q 'databaseId' "$root/scripts/tag-path-dry-run.sh" \
+  || fail 'tag-path-dry-run must pin the green main workflow run id'
+grep -q 'REUSE_RUN_ID' "$root/scripts/tag-path-dry-run.sh" \
+  || fail 'tag-path-dry-run must pass REUSE_RUN_ID into reuse-release fetch'
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -169,37 +171,117 @@ grep -q 'packaged versions v0.4.18' "$work/deploy-out" \
   || fail 'deploy dry-run did not check packaged binary versions'
 [ ! -s "$work/ssh.log" ] || fail 'dry-run called ssh or curl'
 
+old_green=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+new_main=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+green_run_id=8888
 real_gh=$(command -v gh)
-count_file=$work/gh-run-list.count
-: >"$count_file"
 mkdir -p "$work/bin"
 cat >"$work/bin/gh" <<EOF
 #!/bin/sh
 if [ "\$1" = run ] && [ "\$2" = list ]; then
-  n=\$(wc -l < "$count_file")
-  printf '1\n' >> "$count_file"
-  if [ "\$n" -eq 0 ]; then
-    printf '\n'
-    exit 0
-  fi
-  printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+  case "\$*" in
+    *--commit*)
+      printf '[]\n'
+      exit 0
+      ;;
+    *--status*success*)
+      printf '%s\t%s\n' "$green_run_id" "$old_green"
+      exit 0
+      ;;
+    *--branch*main*)
+      printf '[{"databaseId":9999,"headSha":"$new_main","event":"push","conclusion":"","headBranch":"main","status":"in_progress"}]\n'
+      exit 0
+      ;;
+  esac
+fi
+if [ "\$1" = api ]; then
+  case "\$*" in
+    *actions/runs/*/artifacts*)
+      cat <<'ARTS'
+{"total_count":5,"artifacts":[
+{"name":"package-aarch64-apple-darwin","expired":false,"expires_at":"2099-01-01T00:00:00Z"},
+{"name":"package-dashboard","expired":false,"expires_at":"2099-01-01T00:00:00Z"},
+{"name":"package-server","expired":false,"expires_at":"2099-01-01T00:00:00Z"},
+{"name":"package-x86_64-apple-darwin","expired":false,"expires_at":"2099-01-01T00:00:00Z"},
+{"name":"package-x86_64-unknown-linux-gnu","expired":false,"expires_at":"2099-01-01T00:00:00Z"}
+]}
+ARTS
+      exit 0
+      ;;
+    *actions/runs/$green_run_id*--jq*path*)
+      printf '.github/workflows/build.yml\n'
+      exit 0
+      ;;
+    *actions/runs/$green_run_id*)
+      printf '{"databaseId":$green_run_id,"headSha":"$old_green","headBranch":"main","event":"push","conclusion":"success","status":"completed","path":".github/workflows/build.yml"}\n'
+      exit 0
+      ;;
+    *contents/Cargo.toml*)
+      cat <<'CARGO'
+[workspace]
+members = ["xtask"]
+
+[workspace.package]
+version = "0.4.17"
+CARGO
+      exit 0
+      ;;
+  esac
+fi
+if [ "\$1" = run ] && [ "\$2" = download ]; then
+  mkdir -p "\${@: -1}"
   exit 0
 fi
 exec "$real_gh" "\$@"
 EOF
 chmod +x "$work/bin/gh"
 
-if TAG_PATH_MAIN_SHA_LOOKUP_TEST=1 \
-  TAG_PATH_MAIN_SHA_LOOKUP_SLEEP=0 \
+if ! TAG_PATH_GREEN_MAIN_RUN_TEST=1 \
   GH_REPO=Jabbslad/kiln \
   GH_TOKEN=test-token \
   PATH="$work/bin:$PATH" \
-  sh "$root/scripts/tag-path-dry-run.sh" >"$work/lookup-out" 2>"$work/lookup-err"; then
-  grep -q 'green main sha lookup ok' "$work/lookup-out" \
-    || fail 'lookup test must succeed after a transient empty gh run list'
-else
-  cat "$work/lookup-err" >&2
-  fail 'lookup test must not fail when gh run list is empty once then populated'
+  sh "$root/scripts/tag-path-dry-run.sh" >"$work/green-out" 2>"$work/green-err"; then
+  cat "$work/green-err" >&2
+  fail 'green main run lookup must succeed while a newer main build is in progress'
 fi
-lines=$(wc -l < "$count_file")
-[ "$lines" -ge 2 ] || fail 'lookup test must retry gh run list after an empty response'
+grep -q "green main run $green_run_id $old_green" "$work/green-out" \
+  || fail 'green main run lookup must pin the last green run, not the in-progress main build'
+
+align_dist=$work/reuse-dist
+align_out=$work/reuse-output
+mkdir -p "$align_dist"
+env -u REUSE_VERSION \
+  GITHUB_OUTPUT="$align_out" \
+  REUSE_EVENT=workflow_dispatch \
+  REUSE_SHA_INPUT="$old_green" \
+  GH_REPO=Jabbslad/kiln \
+  GH_TOKEN=test-token \
+  PATH="$work/bin:$PATH" \
+  cargo xtask reuse-release fetch --dist "$align_dist" >"$work/unpinned.stdout" 2>"$work/unpinned.stderr" \
+  || fail 'unpinned reuse fetch must exit cleanly into fallback'
+grep -q 'no successful main push of this workflow for that commit' "$work/unpinned.stderr" \
+  || fail 'unpinned reuse fetch must refuse with no successful main push during commit-list race'
+grep -q 'mode=fallback' "$align_out" \
+  || fail 'unpinned reuse fetch must record fallback mode'
+
+if ! env -u REUSE_VERSION \
+  GITHUB_OUTPUT="$align_out" \
+  REUSE_EVENT=workflow_dispatch \
+  REUSE_SHA_INPUT="$old_green" \
+  REUSE_RUN_ID="$green_run_id" \
+  GH_REPO=Jabbslad/kiln \
+  GH_TOKEN=test-token \
+  PATH="$work/bin:$PATH" \
+  cargo xtask reuse-release fetch --dist "$align_dist" >"$work/pinned.stdout" 2>"$work/pinned.stderr"; then
+  :
+fi
+if grep -q 'no successful main push of this workflow for that commit' "$work/pinned.stderr"; then
+  fail 'pinned reuse fetch must not refuse when REUSE_RUN_ID matches the green main run'
+fi
+
+if ! cargo xtask test-reuse-release >"$work/reuse-test.log" 2>&1; then
+  cat "$work/reuse-test.log" >&2
+  fail 'reuse-release unit tests failed'
+fi
+grep -q 'test_pinned_run_resolves_when_commit_list_is_empty' "$work/reuse-test.log" \
+  || fail 'reuse-release must cover pinned run id when commit list is empty'

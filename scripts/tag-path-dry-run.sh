@@ -13,32 +13,22 @@ fail() {
   exit 1
 }
 
-green_main_run_sha() {
+green_main_run() {
   repo=$1
-  tries=${TAG_PATH_MAIN_SHA_LOOKUP_TRIES:-3}
-  sleep_sec=${TAG_PATH_MAIN_SHA_LOOKUP_SLEEP:-10}
-  attempt=1
-  sha=
-  while [ "$attempt" -le "$tries" ]; do
-    sha=$(
-      gh run list --repo "$repo" --workflow build.yml --branch main --event push \
-        --status success --limit 1 \
-        --json headSha,event,conclusion,headBranch,status \
-        --jq '.[0] | select(.conclusion == "success" and .event == "push" and .headBranch == "main" and .status == "completed") | .headSha'
-    )
-    if printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
-      printf '%s\n' "$sha"
-      return 0
-    fi
-    if [ "$attempt" -lt "$tries" ]; then
-      sleep "$sleep_sec"
-    fi
-    attempt=$((attempt + 1))
-  done
-  return 1
+  row=$(
+    gh run list --repo "$repo" --workflow build.yml --branch main --event push \
+      --status success --limit 1 \
+      --json databaseId,headSha,event,conclusion,headBranch,status \
+      --jq 'first(select(.conclusion == "success" and .event == "push" and .headBranch == "main" and .status == "completed")) | "\(.databaseId)\t\(.headSha)"'
+  )
+  green_main_run_id=${row%%	*}
+  green_main_sha=${row#*	}
+  printf '%s\n' "$green_main_sha" | grep -Eq '^[0-9a-f]{40}$' || return 1
+  printf '%s\n' "$green_main_run_id" | grep -Eq '^[0-9]+$' || return 1
+  return 0
 }
 
-if [ "${TAG_PATH_MAIN_SHA_LOOKUP_TEST:-}" = 1 ]; then
+if [ "${TAG_PATH_GREEN_MAIN_RUN_TEST:-}" = 1 ]; then
   repo=${GH_REPO:-Jabbslad/kiln}
   case $repo in
     */*) ;;
@@ -47,8 +37,8 @@ if [ "${TAG_PATH_MAIN_SHA_LOOKUP_TEST:-}" = 1 ]; then
   if [ -z "${GH_TOKEN:-}" ]; then
     fail 'GH_TOKEN is required'
   fi
-  green_main_run_sha "$repo" || fail 'no green main run'
-  printf 'green main sha lookup ok\n'
+  green_main_run "$repo" || fail 'no green main run'
+  printf 'green main run %s %s\n' "$green_main_run_id" "$green_main_sha"
   exit 0
 fi
 
@@ -67,7 +57,8 @@ if [ -z "${GH_TOKEN:-}" ]; then
   fail 'GH_TOKEN is required'
 fi
 
-sha=$(green_main_run_sha "$repo") || fail 'no green main run'
+green_main_run "$repo" || fail 'no green main run'
+sha=$green_main_sha
 
 dist=$(mktemp -d)
 output=$(mktemp)
@@ -77,6 +68,7 @@ env -u REUSE_VERSION \
   GITHUB_OUTPUT="$output" \
   REUSE_EVENT=workflow_dispatch \
   REUSE_SHA_INPUT="$sha" \
+  REUSE_RUN_ID="$green_main_run_id" \
   GH_REPO="$repo" \
   GH_TOKEN="$GH_TOKEN" \
   cargo xtask reuse-release fetch --dist "$dist"
