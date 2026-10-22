@@ -392,9 +392,27 @@ mod tests {
 
     #[tokio::test]
     async fn private_ca_does_not_trust_public_roots() {
+        let server = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
+            server.cert.pem().into_bytes(),
+            server.signing_key.serialize_pem().into_bytes(),
+        )
+        .await
+        .unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
-        drop(listener);
+        let router = axum::Router::new().route(
+            "/v1/templates",
+            axum::routing::get(|| async { axum::Json(serde_json::json!([])) }),
+        );
+        let handle = axum_server::Handle::new();
+        let task = tokio::spawn(
+            axum_server::from_tcp_rustls(listener, tls)
+                .unwrap()
+                .handle(handle.clone())
+                .serve(router.into_make_service()),
+        );
         let token = "ab".repeat(32);
         let url = format!("https://localhost:{port}/");
         let wrong_ca = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
@@ -407,6 +425,8 @@ mod tests {
             err.to_ascii_lowercase().contains("certificate"),
             "built-in roots must not trust this loopback certificate, got {err}"
         );
+        handle.shutdown();
+        task.await.unwrap().unwrap();
     }
 
     #[tokio::test]
