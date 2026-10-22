@@ -32,13 +32,13 @@ fn issuer_owner_audience_time_and_scope_are_enforced() {
         iss: enrollment.issuer.clone(),
         sub: enrollment.owner_id.clone(),
         aud: "kiln:server:server-b".into(),
-        tenant_id: "ten_test".into(),
+        tenant_id: Some("ten_test".into()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-c".into(),
         scope: Scope::Read,
-        role: MemberRole::Owner,
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -113,13 +113,13 @@ async fn read_scope_cannot_reach_operations_or_ssh() {
         iss: enrollment.issuer,
         sub: enrollment.owner_id,
         aud: "kiln:server:server-b".into(),
-        tenant_id: "ten_test".into(),
+        tenant_id: Some("ten_test".into()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-c".into(),
         scope: Scope::Read,
-        role: MemberRole::Owner,
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

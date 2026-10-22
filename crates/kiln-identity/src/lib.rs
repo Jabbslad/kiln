@@ -585,13 +585,13 @@ async fn access(State(a): State<Arc<App>>, h: HeaderMap, Json(f): Json<AccessReq
             iss: a.cfg.public_origin.clone(),
             sub: account,
             aud: format!("kiln:server:{}", f.server_id),
-            tenant_id,
+            tenant_id: Some(tenant_id),
             iat: now,
             nbf: now,
             exp: now + 300,
             credential_id: did,
             scope: Scope::Operate,
-            role,
+            role: Some(role),
         };
         let token = a.signer.issue(&claims)?;
         Ok(Json(tokens::Grant {
@@ -1606,13 +1606,13 @@ async fn key_token(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
         iss: a.cfg.public_origin.clone(),
         sub: owner,
         aud: format!("kiln:server:{sid}"),
-        tenant_id,
+        tenant_id: Some(tenant_id),
         iat: n,
         nbf: n,
         exp: n + 300,
         credential_id: kid,
         scope,
-        role,
+        role: Some(role),
     }) {
         Ok(x) => x,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
@@ -1744,13 +1744,13 @@ fn issue_app(
         iss: a.cfg.public_origin.clone(),
         sub: owner.to_owned(),
         aud: format!("kiln:server:{server}"),
-        tenant_id: tenant_id.to_owned(),
+        tenant_id: Some(tenant_id.to_owned()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: credential,
         scope: Scope::Operate,
-        role: MemberRole::Owner,
+        role: Some(MemberRole::Owner),
     })
 }
 async fn oauth_server(

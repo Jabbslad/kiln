@@ -31,13 +31,11 @@ fn server_claims_require_every_authority_and_time_field() {
         "iss",
         "sub",
         "aud",
-        "tenant_id",
         "iat",
         "nbf",
         "exp",
         "credential_id",
         "scope",
-        "role",
     ] {
         let mut missing = value.clone();
         missing.as_object_mut().unwrap().remove(field);
@@ -46,6 +44,15 @@ fn server_claims_require_every_authority_and_time_field() {
             "{field}"
         );
     }
+    let legacy = json!({
+        "iss": "https://identity.example.test", "sub": "owner-a",
+        "aud": "kiln:server:server-b",
+        "iat": 1900000000_u64, "nbf": 1900000000_u64, "exp": 1900000300_u64,
+        "credential_id": "device-c", "scope": "read"
+    });
+    let parsed: ServerClaims = serde_json::from_value(legacy).unwrap();
+    assert!(parsed.tenant_id.is_none());
+    assert!(parsed.role.is_none());
     let mut unknown = value;
     unknown["admin"] = json!(true);
     assert!(serde_json::from_value::<ServerClaims>(unknown).is_err());

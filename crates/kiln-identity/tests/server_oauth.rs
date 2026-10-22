@@ -451,8 +451,13 @@ async fn server_oauth_is_single_use_and_split_from_the_directory_token() {
     assert_eq!(decoded.sub, owner);
     assert_eq!(decoded.aud, format!("kiln:server:{server}"));
     assert_eq!(decoded.scope, Scope::Operate);
-    assert_eq!(decoded.role, MemberRole::Owner);
-    assert!(!decoded.tenant_id.is_empty());
+    assert_eq!(decoded.role, Some(MemberRole::Owner));
+    assert!(
+        decoded
+            .tenant_id
+            .as_deref()
+            .is_some_and(|id| !id.is_empty())
+    );
     assert_eq!(decoded.credential_id, format!("app_{server}"));
     assert_eq!(decoded.exp - decoded.iat, 300);
     let (status, _, body) = f

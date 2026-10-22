@@ -755,13 +755,13 @@ fn mint_with(key: &EncodingKey, issuer: &str, sub: &str) -> String {
         iss: issuer.into(),
         sub: sub.into(),
         aud: "kiln:server:server-b".into(),
-        tenant_id: "ten_test".into(),
+        tenant_id: Some("ten_test".into()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "dev_dashboard".into(),
         scope: Scope::Operate,
-        role: MemberRole::Owner,
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

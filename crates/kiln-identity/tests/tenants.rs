@@ -290,8 +290,8 @@ async fn tenant_membership_is_shared_and_tokens_carry_tenant_id() {
     let jwt = token_body["token"]["access_token"].as_str().unwrap();
     let decoded = claims(jwt);
     assert_eq!(decoded.sub, member_id);
-    assert_eq!(decoded.tenant_id, tenant);
-    assert_eq!(decoded.role, MemberRole::Member);
+    assert_eq!(decoded.tenant_id.as_deref(), Some(tenant.as_str()));
+    assert_eq!(decoded.role, Some(MemberRole::Member));
     assert_eq!(decoded.scope, Scope::Operate);
 
     let other_central = "d".repeat(43);
