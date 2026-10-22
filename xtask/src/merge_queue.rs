@@ -2,7 +2,7 @@ use crate::register_cases;
 use crate::repo_root;
 use crate::required_gate::{self, Blocker};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -22,17 +22,18 @@ const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const TREE_OTHER: &str = "cccccccccccccccccccccccccccccccccccccccc";
 const PROOF_EVENTS: &[&str] = &["merge_group", "pull_request"];
+const PROOF_RUN_ID: u64 = 9001;
 
 pub fn should_skip(
     event_name: &str,
     reference: &str,
     head_tree: &str,
-    tested_trees: &HashSet<String>,
+    proofs: &HashMap<String, u64>,
 ) -> bool {
     event_name == "push"
         && reference == "refs/heads/main"
         && sha_ok(head_tree)
-        && tested_trees.contains(head_tree)
+        && proofs.contains_key(head_tree)
 }
 
 pub fn head_tree(cwd: Option<&Path>) -> Result<String, String> {
@@ -50,12 +51,12 @@ pub fn head_tree(cwd: Option<&Path>) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub fn tested_trees<F>(
+pub fn tested_proofs<F>(
     repo: &str,
     token: &str,
     api: &str,
     fetch: &mut F,
-) -> Result<HashSet<String>, String>
+) -> Result<HashMap<String, u64>, String>
 where
     F: FnMut(&str, &str) -> Result<Value, String>,
 {
@@ -66,7 +67,7 @@ where
         return Err("GITHUB_TOKEN is missing".into());
     }
     let base = api.trim_end_matches('/');
-    let mut trees = HashSet::new();
+    let mut proofs = HashMap::new();
     for event in PROOF_EVENTS {
         let listed = fetch(
             &format!(
@@ -87,23 +88,33 @@ where
             {
                 continue;
             }
+            let Some(run_id) = proof_run_id(run) else {
+                continue;
+            };
             let Some(sha) = proof_sha(run) else {
                 continue;
             };
             let commit = fetch(&format!("{base}/repos/{repo}/commits/{sha}"), token)?;
             if let Some(tree) = commit_tree(&commit) {
-                trees.insert(tree);
+                proofs
+                    .entry(tree)
+                    .and_modify(|seen| {
+                        if run_id > *seen {
+                            *seen = run_id;
+                        }
+                    })
+                    .or_insert(run_id);
             }
         }
     }
-    Ok(trees)
+    Ok(proofs)
 }
 
 pub fn decide<F>(
     env: &HashMap<String, String>,
     fetch: &mut F,
     cwd: Option<&Path>,
-) -> Result<bool, String>
+) -> Result<(bool, Option<String>), String>
 where
     F: FnMut(&str, &str) -> Result<Value, String>,
 {
@@ -113,9 +124,9 @@ where
         .unwrap_or("");
     let reference = env.get("GITHUB_REF").map(String::as_str).unwrap_or("");
     if event_name != "push" || reference != "refs/heads/main" {
-        return Ok(false);
+        return Ok((false, None));
     }
-    let trees = tested_trees(
+    let proofs = tested_proofs(
         env.get("GITHUB_REPOSITORY")
             .map(String::as_str)
             .unwrap_or(""),
@@ -125,7 +136,13 @@ where
             .unwrap_or("https://api.github.com"),
         fetch,
     )?;
-    Ok(should_skip(event_name, reference, &head_tree(cwd)?, &trees))
+    let tree = head_tree(cwd)?;
+    let skip = should_skip(event_name, reference, &tree, &proofs);
+    let proof_run_id = skip
+        .then(|| proofs.get(&tree).copied())
+        .flatten()
+        .map(|run_id| run_id.to_string());
+    Ok((skip, proof_run_id))
 }
 
 fn github_fetch(url: &str, token: &str) -> Result<Value, String> {
@@ -156,16 +173,16 @@ fn github_fetch(url: &str, token: &str) -> Result<Value, String> {
 
 pub fn run(env: &HashMap<String, String>, cwd: Option<&Path>) -> (i32, String, String) {
     match decide(env, &mut github_fetch, cwd) {
-        Ok(skip) => {
-            write_output(skip, env.get("GITHUB_OUTPUT"));
-            (
-                0,
-                format!("skip_tests={}\n", bool_word(skip)),
-                String::new(),
-            )
+        Ok((skip, proof_run_id)) => {
+            write_output(skip, proof_run_id.as_deref(), env.get("GITHUB_OUTPUT"));
+            let mut stdout = format!("skip_tests={}\n", bool_word(skip));
+            if let Some(run_id) = proof_run_id {
+                stdout.push_str(&format!("proof_run_id={run_id}\n"));
+            }
+            (0, stdout, String::new())
         }
         Err(error) => {
-            write_output(false, env.get("GITHUB_OUTPUT"));
+            write_output(false, None, env.get("GITHUB_OUTPUT"));
             (
                 0,
                 "skip_tests=false\n".to_string(),
@@ -183,13 +200,26 @@ pub fn cli(_args: &[String]) -> i32 {
     code
 }
 
-fn write_output(skip: bool, path: Option<&String>) {
+fn write_output(skip: bool, proof_run_id: Option<&str>, path: Option<&String>) {
     let Some(path) = path.filter(|path| !path.is_empty()) else {
         return;
     };
     if let Ok(mut handle) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(handle, "skip_tests={}", bool_word(skip));
+        if let Some(run_id) = proof_run_id.filter(|value| !value.is_empty()) {
+            let _ = writeln!(handle, "proof_run_id={run_id}");
+        }
     }
+}
+
+fn proof_run_id(run: &serde_json::Map<String, Value>) -> Option<u64> {
+    run.get("id").and_then(json_u64)
+}
+
+fn json_u64(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|number| u64::try_from(number).ok()))
 }
 
 fn bool_word(value: bool) -> &'static str {
@@ -246,14 +276,22 @@ fn test_same_tree_on_a_new_commit_skips_main_tests() {
         tree
     );
     let mut fetch = runs(&tree, "merge_group", "success", SHA_A);
-    assert!(decide(&main_push(), &mut fetch, Some(repo.path())).unwrap());
+    assert!(
+        decide(&main_push(), &mut fetch, Some(repo.path()))
+            .unwrap()
+            .0
+    );
 }
 
 fn test_a_different_tree_still_runs_tests() {
     let repo = tempfile::tempdir().unwrap();
     make_repo(repo.path());
     let mut fetch = runs(TREE_OTHER, "merge_group", "success", SHA_A);
-    assert!(!decide(&main_push(), &mut fetch, Some(repo.path())).unwrap());
+    assert!(
+        !decide(&main_push(), &mut fetch, Some(repo.path()))
+            .unwrap()
+            .0
+    );
 }
 
 fn test_pull_request_tag_and_dispatch_ignore_a_matching_tree() {
@@ -274,7 +312,7 @@ fn test_pull_request_tag_and_dispatch_ignore_a_matching_tree() {
         let mut env = HashMap::new();
         env.insert("GITHUB_EVENT_NAME".into(), event.into());
         env.insert("GITHUB_REF".into(), reference.into());
-        assert!(!decide(&env, &mut fetch, Some(repo.path())).unwrap());
+        assert!(!decide(&env, &mut fetch, Some(repo.path())).unwrap().0);
     }
     assert!(calls.lock().unwrap().is_empty());
 }
@@ -284,7 +322,11 @@ fn test_failed_or_non_queue_runs_do_not_count() {
     let (_first, _second, tree) = make_repo(repo.path());
     for (event, conclusion) in [("merge_group", "failure"), ("push", "success")] {
         let mut fetch = runs(&tree, event, conclusion, SHA_A);
-        assert!(!decide(&main_push(), &mut fetch, Some(repo.path())).unwrap());
+        assert!(
+            !decide(&main_push(), &mut fetch, Some(repo.path()))
+                .unwrap()
+                .0
+        );
     }
 }
 
@@ -292,8 +334,23 @@ fn test_successful_pull_request_head_tree_skips_main_push() {
     let repo = tempfile::tempdir().unwrap();
     make_repo(repo.path());
     let tree = git(repo.path(), &["rev-parse", "HEAD^{tree}"]);
-    let mut fetch = runs(&tree.trim(), "pull_request", "success", SHA_A);
-    assert!(decide(&main_push(), &mut fetch, Some(repo.path())).unwrap());
+    let mut fetch = runs(tree.trim(), "pull_request", "success", SHA_A);
+    let (skip, proof_run_id) = decide(&main_push(), &mut fetch, Some(repo.path())).unwrap();
+    assert!(skip);
+    assert_eq!(
+        proof_run_id.as_deref(),
+        Some(PROOF_RUN_ID.to_string().as_str())
+    );
+}
+
+fn test_proof_run_id_is_written_on_main_skip() {
+    let output = tempfile::NamedTempFile::new().unwrap();
+    let path = output.path().display().to_string();
+    write_output(true, Some(&PROOF_RUN_ID.to_string()), Some(&path));
+    assert_eq!(
+        fs::read_to_string(output.path()).unwrap(),
+        format!("skip_tests=true\nproof_run_id={PROOF_RUN_ID}\n")
+    );
 }
 
 fn test_pull_request_merge_commit_tree_is_ignored_without_head() {
@@ -319,7 +376,11 @@ fn test_pull_request_merge_commit_tree_is_ignored_without_head() {
             Err(url.to_string())
         }
     };
-    assert!(!decide(&main_push(), &mut fetch, Some(repo.path())).unwrap());
+    assert!(
+        !decide(&main_push(), &mut fetch, Some(repo.path()))
+            .unwrap()
+            .0
+    );
 }
 
 fn test_main_push_queue_steps_receive_github_token() {
@@ -337,7 +398,7 @@ fn test_main_push_queue_steps_receive_github_token() {
         found += 1;
         start = absolute + needle.len();
     }
-    assert_eq!(found, 3);
+    assert_eq!(found, 4);
 }
 
 fn test_lookup_failure_runs_tests_and_exits_zero() {
@@ -408,8 +469,8 @@ fn test_queue_runs_checks_and_only_push_or_dispatch_packages() {
     assert!(text.contains("github.event.merge_group.base_sha"));
     assert!(text.contains("github.event.merge_group.head_sha"));
     assert!(text.contains("github.event_name != 'merge_group'"));
-    assert_eq!(text.matches("id: queue").count(), 3);
-    assert_eq!(text.matches("cargo xtask merge-queue-tested").count(), 3);
+    assert_eq!(text.matches("id: queue").count(), 4);
+    assert_eq!(text.matches("cargo xtask merge-queue-tested").count(), 4);
     assert!(text.contains("cargo xtask test-merge-queue-tested"));
     for name in ["deploy.yml", "diagnose.yml"] {
         let other = fs::read_to_string(repo_root().join(".github/workflows").join(name)).unwrap();
@@ -575,6 +636,7 @@ fn runs(
             Ok(serde_json::json!({"commit": {"tree": {"sha": tree}}}))
         } else if url.contains(&format!("event={event}")) {
             let mut run = serde_json::json!({
+                "id": PROOF_RUN_ID,
                 "event": event,
                 "conclusion": conclusion,
                 "head_sha": sha,
@@ -629,6 +691,7 @@ register_cases! {
     test_pull_request_tag_and_dispatch_ignore_a_matching_tree,
     test_failed_or_non_queue_runs_do_not_count,
     test_successful_pull_request_head_tree_skips_main_push,
+    test_proof_run_id_is_written_on_main_skip,
     test_pull_request_merge_commit_tree_is_ignored_without_head,
     test_main_push_queue_steps_receive_github_token,
     test_lookup_failure_runs_tests_and_exits_zero,
