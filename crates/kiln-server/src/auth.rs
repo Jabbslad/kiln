@@ -1,7 +1,8 @@
 //! Local enrollment remains the authority for issuer, owner and server audience.
 use anyhow::{Context, Result, ensure};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
-use kiln_api::auth::{AuthGrant, Caller, Role, Scope, ServerClaims};
+use kiln_api::auth::{MemberRole, Scope, ServerClaims};
+use kiln_api::{Caller, Role};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -21,8 +22,6 @@ pub struct Enrollment {
     pub issuer: String,
     pub owner_id: String,
     pub server_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tenant_id: Option<String>,
 }
 
 impl Enrollment {
@@ -46,22 +45,7 @@ impl Enrollment {
                 && self.server_id.len() <= 128,
             "invalid enrollment identity"
         );
-        if let Some(tenant_id) = &self.tenant_id {
-            ensure!(
-                !tenant_id.is_empty() && tenant_id.len() <= 128,
-                "invalid enrollment tenant"
-            );
-        }
         Ok(())
-    }
-
-    /// Effective tenant for this server. Legacy enrollments without `tenant_id`
-    /// treat the enrolled owner as the sole tenant owner.
-    pub fn tenant_id(&self) -> &str {
-        self.tenant_id
-            .as_deref()
-            .filter(|id| !id.is_empty())
-            .unwrap_or(&self.owner_id)
     }
 
     pub fn load(path: &Path) -> Result<Option<Self>> {
@@ -111,6 +95,24 @@ fn keys(value: &Value) -> Result<JwkSet> {
     Ok(serde_json::from_value(value.clone())?)
 }
 
+pub fn caller_from_claims(c: &ServerClaims, enrollment: &Enrollment) -> Caller {
+    let sub = c.sub.clone();
+    let tenant_id = c
+        .tenant_id
+        .clone()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| enrollment.owner_id.clone());
+    let role = match c.role {
+        Some(MemberRole::Member) => Role::Member,
+        Some(MemberRole::Owner) | None => Role::Owner,
+    };
+    Caller {
+        sub,
+        tenant_id,
+        role,
+    }
+}
+
 pub fn verify_claims(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<ServerClaims> {
     enrollment.validate()?;
     ensure!(token.len() <= 8192, "invalid token");
@@ -133,13 +135,8 @@ pub fn verify_claims(token: &str, enrollment: &Enrollment, jwks: &Value) -> Resu
     validation.validate_nbf = true;
     validation.leeway = 30;
     let c = decode::<ServerClaims>(token, &key, &validation)?.claims;
-    let tenant_id = c
-        .tenant_id
-        .clone()
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| c.sub.clone());
     ensure!(
-        tenant_id == enrollment.tenant_id()
+        c.sub == enrollment.owner_id
             && !c.credential_id.is_empty()
             && c.credential_id.len() <= 128
             && c.exp > c.iat
@@ -152,35 +149,8 @@ pub fn verify_claims(token: &str, enrollment: &Enrollment, jwks: &Value) -> Resu
     Ok(c)
 }
 
-fn auth_grant_from_claims(c: &ServerClaims, enrollment: &Enrollment) -> AuthGrant {
-    let sub = c.sub.clone();
-    let tenant_id = c
-        .tenant_id
-        .clone()
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| sub.clone());
-    let role = c.role.unwrap_or_else(|| {
-        if sub == enrollment.owner_id {
-            Role::Owner
-        } else {
-            Role::Member
-        }
-    });
-    AuthGrant {
-        caller: Caller {
-            sub,
-            tenant_id,
-            role,
-        },
-        scope: c.scope,
-    }
-}
-
-pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<AuthGrant> {
-    Ok(auth_grant_from_claims(
-        &verify_claims(token, enrollment, jwks)?,
-        enrollment,
-    ))
+pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Scope> {
+    Ok(verify_claims(token, enrollment, jwks)?.scope)
 }
 
 pub fn verify_caller(
@@ -188,8 +158,8 @@ pub fn verify_caller(
     enrollment: &Enrollment,
     jwks: &Value,
 ) -> Result<(Caller, Scope)> {
-    let grant = verify(token, enrollment, jwks)?;
-    Ok((grant.caller, grant.scope))
+    let claims = verify_claims(token, enrollment, jwks)?;
+    Ok((caller_from_claims(&claims, enrollment), claims.scope))
 }
 
 struct Cache {
@@ -248,40 +218,44 @@ impl Authenticator {
         Ok(auth)
     }
 
-    pub async fn authenticate(&self, bearer: &str) -> Result<AuthGrant> {
+    pub async fn authenticate(&self, bearer: &str) -> Result<Scope> {
+        Ok(self.authenticate_with_caller(bearer).await?.1)
+    }
+
+    pub async fn authenticate_with_caller(&self, bearer: &str) -> Result<(Caller, Scope)> {
         ensure!(bearer.len() <= 8192, "invalid token");
         if let Some(admin_hash) = self.admin_hash {
             let supplied: [u8; 32] = Sha256::digest(bearer.as_bytes()).into();
             if bool::from(supplied.ct_eq(&admin_hash)) {
                 if let Some((enrollment, _)) = &self.central {
-                    return Ok(AuthGrant {
-                        caller: Caller {
+                    return Ok((
+                        Caller {
                             sub: enrollment.owner_id.clone(),
-                            tenant_id: enrollment.tenant_id().to_owned(),
+                            tenant_id: enrollment.owner_id.clone(),
                             role: Role::Owner,
                         },
-                        scope: Scope::Operate,
-                    });
+                        Scope::Operate,
+                    ));
                 }
-                return Ok(AuthGrant {
-                    caller: Caller {
+                return Ok((
+                    Caller {
                         sub: "administrator".into(),
                         tenant_id: String::new(),
                         role: Role::Owner,
                     },
-                    scope: Scope::Operate,
-                });
+                    Scope::Operate,
+                ));
             }
         }
-        self.central_jwt(bearer).await
+        let (enrollment, _) = self
+            .central
+            .as_ref()
+            .context("central authentication not enrolled")?;
+        let claims = self.central_claims(bearer).await?;
+        Ok((caller_from_claims(&claims, enrollment), claims.scope))
     }
 
-    pub async fn authenticate_with_caller(&self, bearer: &str) -> Result<(Caller, Scope)> {
-        let grant = self.authenticate(bearer).await?;
-        Ok((grant.caller, grant.scope))
-    }
-
-    pub async fn authenticate_central(&self, bearer: &str) -> Result<AuthGrant> {
+    pub async fn authenticate_central(&self, bearer: &str) -> Result<Scope> {
         ensure!(bearer.len() <= 8192, "invalid token");
         self.central_jwt(bearer).await
     }
@@ -313,17 +287,6 @@ impl Authenticator {
             return None;
         }
         self.central_claims(bearer).await.ok().map(|c| c.sub)
-    }
-
-    async fn central_jwt(&self, bearer: &str) -> Result<AuthGrant> {
-        let (enrollment, _) = self
-            .central
-            .as_ref()
-            .context("central authentication not enrolled")?;
-        Ok(auth_grant_from_claims(
-            &self.central_claims(bearer).await?,
-            enrollment,
-        ))
     }
 
     async fn central_claims(&self, bearer: &str) -> Result<ServerClaims> {
@@ -380,5 +343,9 @@ impl Authenticator {
             cache.jwks = value;
         }
         verify_claims(bearer, enrollment, &cache.jwks)
+    }
+
+    async fn central_jwt(&self, bearer: &str) -> Result<Scope> {
+        Ok(self.central_claims(bearer).await?.scope)
     }
 }

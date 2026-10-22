@@ -512,13 +512,12 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
             .record("unauthorized", &box_id, &caller.sub, addr);
         return unauthorized();
     };
-    let access = crate::box_access::access_caller(&caller);
     if let Err(failure) = crate::box_access::ensure_member_box_access(
         &door.client,
         &door.upstream,
         &authorization,
         &box_id,
-        &access,
+        &caller,
         tenant_owner,
     )
     .await
@@ -917,7 +916,7 @@ async fn approve(door: &Door, dash: &Dash, tokens: DeviceTokens) -> Approve {
     };
     if !matches!(
         door.auth.authenticate_central(&grant.access_token).await,
-        Ok(auth) if auth.scope == Scope::Operate
+        Ok(Scope::Operate)
     ) {
         let _ = revoke_device(dash, &device_id, &central).await;
         return Approve::Denied;
@@ -1094,7 +1093,7 @@ async fn operate_jwt(door: &Door, dash: &Dash, slot: &SessionSlot) -> Jwt {
     };
     if !matches!(
         door.auth.authenticate_central(&grant.access_token).await,
-        Ok(auth) if auth.scope == Scope::Operate
+        Ok(Scope::Operate)
     ) || !(1..=300).contains(&grant.expires_in)
     {
         kill(dash, &mut session);

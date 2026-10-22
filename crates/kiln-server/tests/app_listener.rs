@@ -16,7 +16,7 @@ use axum::{
 };
 use futures_util::stream;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::{Action, Submit, auth::Role, auth::Scope, auth::ServerClaims, new_id};
+use kiln_api::{Action, Submit, auth::MemberRole, auth::Scope, auth::ServerClaims, new_id};
 use kiln_server::{
     app_listener::{self, BIND},
     auth::{Authenticator, Enrollment},
@@ -64,7 +64,6 @@ fn auth(dir: &Path) -> (Authenticator, EncodingKey) {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: Some("tenant-a".into()),
     };
     let cache = dir.join("jwks.json");
     std::fs::write(
@@ -83,7 +82,7 @@ fn token(key: &EncodingKey, sub: &str, scope: Scope) -> String {
     token_with(key, sub, scope, "device-1")
 }
 
-fn tenant_token(key: &EncodingKey, sub: &str, scope: Scope, tenant_id: &str, role: Role) -> String {
+fn tenant_token(key: &EncodingKey, sub: &str, scope: Scope, tenant_id: &str, role: MemberRole) -> String {
     let now = jsonwebtoken::get_current_timestamp();
     let claims = ServerClaims {
         iss: "https://identity.example.test".into(),
@@ -104,7 +103,7 @@ fn tenant_token(key: &EncodingKey, sub: &str, scope: Scope, tenant_id: &str, rol
 
 fn token_with(key: &EncodingKey, sub: &str, scope: Scope, credential_id: &str) -> String {
     let now = jsonwebtoken::get_current_timestamp();
-    let role = (sub == "owner-a").then_some(Role::Owner);
+    let role = (sub == "owner-a").then_some(MemberRole::Owner);
     let claims = ServerClaims {
         iss: "https://identity.example.test".into(),
         sub: sub.into(),
@@ -1137,42 +1136,29 @@ async fn read_grant_is_checked_and_another_server_is_rejected() {
     assert!(matches!(
         auth.authenticate_central(&token(&key, "owner-a", Scope::Read))
             .await,
-        Ok(grant) if grant.scope == Scope::Read && grant.caller.sub == "owner-a"
+        Ok(Scope::Read)
     ));
+    assert!(
+        auth.authenticate_central(&token(&key, "someone-else", Scope::Read))
+            .await
+            .is_err()
+    );
+    let now = jsonwebtoken::get_current_timestamp();
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
-    let now = jsonwebtoken::get_current_timestamp();
-    let wrong_tenant = jsonwebtoken::encode(
-        &header,
-        &ServerClaims {
-            iss: "https://identity.example.test".into(),
-            sub: "member-z".into(),
-            aud: "kiln:server:server-b".into(),
-            tenant_id: Some("tenant-other".into()),
-            iat: now,
-            nbf: now,
-            exp: now + 300,
-            credential_id: "app_wrong_tenant".into(),
-            scope: Scope::Read,
-            role: Some(Role::Member),
-        },
-        &key,
-    )
-    .unwrap();
-    assert!(auth.authenticate_central(&wrong_tenant).await.is_err());
     let other = jsonwebtoken::encode(
         &header,
         &ServerClaims {
             iss: "https://identity.example.test".into(),
             sub: "owner-a".into(),
             aud: "kiln:server:other".into(),
-            tenant_id: Some("owner-a".into()),
+            tenant_id: Some("ten_other".into()),
             iat: now,
             nbf: now,
             exp: now + 300,
             credential_id: "app_other".into(),
             scope: Scope::Read,
-            role: Some(Role::Owner),
+            role: Some(MemberRole::Owner),
         },
         &key,
     )
@@ -1565,7 +1551,7 @@ async fn serve_operations() -> ServedOperations {
         &format!("https://127.0.0.1:{port}"),
         ca_pem.as_bytes(),
         Some(root.path()),
-        &tenant_token(&key, "member-b", Scope::Operate, "tenant-a", Role::Member),
+        &tenant_token(&key, "member-b", Scope::Operate, "tenant-a", MemberRole::Member),
     )
     .unwrap();
     ServedOperations {
@@ -2455,7 +2441,6 @@ fn central(dir: &Path) -> Authenticator {
             issuer: "https://identity.example.test".into(),
             owner_id: "owner-a".into(),
             server_id: "server-b".into(),
-            tenant_id: Some("tenant-a".into()),
         },
         dir.join("jwks.json"),
     )

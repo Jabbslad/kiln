@@ -3,17 +3,6 @@ use axum::http::{HeaderValue, StatusCode, header};
 use kiln_api::{BoxView, Caller, Role, may_access_box, valid_id};
 use reqwest::Url;
 
-pub(crate) fn access_caller(c: &kiln_api::auth::Caller) -> Caller {
-    Caller {
-        sub: c.sub.clone(),
-        tenant_id: c.tenant_id.clone(),
-        role: match c.role {
-            kiln_api::auth::Role::Owner => Role::Owner,
-            kiln_api::auth::Role::Member => Role::Member,
-        },
-    }
-}
-
 pub fn box_id_from_path(path: &str, suffix: &str) -> Option<String> {
     let rest = path.strip_prefix("/v1/boxes/")?;
     let (id, tail) = rest.split_once('/')?;

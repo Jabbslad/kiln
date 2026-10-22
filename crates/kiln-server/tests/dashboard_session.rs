@@ -760,7 +760,7 @@ fn mint_with(key: &EncodingKey, issuer: &str, sub: &str) -> String {
         exp: now + 300,
         credential_id: "dev_dashboard".into(),
         scope: Scope::Operate,
-        role: Some(Role::Owner),
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

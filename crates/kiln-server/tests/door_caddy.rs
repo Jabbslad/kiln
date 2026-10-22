@@ -28,7 +28,7 @@ use futures_util::stream;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use kiln_api::{
     Action, ExecRequest, ExecResult, Operation, OperationState, Outcome, Submit,
-    auth::{Role, Scope, ServerClaims},
+    auth::{MemberRole, Scope, ServerClaims},
 };
 use kiln_server::{
     auth::{Authenticator, Enrollment},
@@ -87,7 +87,7 @@ fn token(key: &EncodingKey) -> String {
         exp: now + 300,
         credential_id: "device-1".into(),
         scope: Scope::Operate,
-        role: Some(Role::Owner),
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
