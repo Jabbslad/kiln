@@ -31,7 +31,7 @@ mod disk;
 mod ssh;
 use benchmark::{Phase, scoped, take_phases};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BoxRecord {
     pub schema_version: u32,
     pub id: String,
@@ -463,9 +463,17 @@ impl Runtime {
         Ok(())
     }
 
+    async fn summarize(&self, id: &str) -> Result<BoxRecord> {
+        let _lock = storage::lock(&self.directory(id)?)?;
+        let mut record = self.read(id)?;
+        self.observed(&mut record).await?;
+        Ok(record)
+    }
+
     pub async fn inspect(&self, id: &str) -> Result<BoxRecord> {
         let _lock = storage::lock(&self.directory(id)?)?;
         let mut record = self.read(id)?;
+        let baseline = record.clone();
         let interrupted_launch = matches!(
             record.operation.as_deref(),
             Some("create" | "clone" | "start" | "restore")
@@ -530,7 +538,9 @@ impl Runtime {
             );
             record.operation = None;
         }
-        self.save(&record)?;
+        if record != baseline {
+            self.save(&record)?;
+        }
         Ok(record)
     }
 
@@ -540,7 +550,7 @@ impl Runtime {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if storage::valid_id(&name) {
-                records.push(self.inspect(&name).await?);
+                records.push(self.summarize(&name).await?);
             }
         }
         records.sort_by(|a, b| a.id.cmp(&b.id));
