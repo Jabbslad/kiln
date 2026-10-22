@@ -16,6 +16,7 @@ cargo xtask test-caddy-door
 cargo xtask test-deploy-workflow
 cargo xtask test-reuse-release
 cargo xtask test-merge-queue-tested
+sh scripts/test-reuse-proved-server-package.sh
 cargo xtask test-repo-guard
 bash scripts/test-listener-restart.sh
 bash scripts/test-wait-for-operations-journal-v2.sh

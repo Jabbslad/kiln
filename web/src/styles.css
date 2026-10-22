@@ -1113,6 +1113,19 @@ tbody tr:hover {
   font-size: 10px;
   color: var(--muted);
 }
+.terminal-screen {
+  flex: 1;
+  min-height: 320px;
+  width: 100%;
+  padding: 8px 8px 0;
+  overflow: hidden;
+}
+.terminal-screen-idle {
+  display: none;
+}
+.terminal-screen .xterm {
+  height: 100%;
+}
 .terminal-footer {
   padding: 9px 17px;
   display: flex;

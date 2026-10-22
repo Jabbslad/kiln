@@ -118,6 +118,7 @@ jobs:
           cargo xtask test-deploy-workflow
           cargo xtask test-reuse-release
           cargo xtask test-merge-queue-tested
+          sh scripts/test-reuse-proved-server-package.sh
           cargo xtask test-cancel-on-failure-gate
           cargo xtask test-repo-guard
           bash scripts/test-listener-restart.sh
@@ -212,6 +213,8 @@ jobs:
       - name: Merge queue already tested this tree
         id: queue
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: cargo xtask merge-queue-tested
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: steps.queue.outputs.skip_tests != 'true'
@@ -255,6 +258,15 @@ jobs:
             sudo apt-get update
             sudo apt-get install --no-install-recommends -y systemd iproute2
           fi
+      - name: OpenSSH server
+        if: steps.queue.outputs.skip_tests != 'true'
+        run: |
+          if [ ! -x /usr/sbin/sshd ]; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y openssh-server
+          fi
+          sudo mkdir -p /run/sshd
+          sudo chmod 755 /run/sshd
       - name: Test and lint
         if: steps.queue.outputs.skip_tests != 'true'
         env:
@@ -274,6 +286,7 @@ jobs:
           cargo xtask test-ci-job-paths
           cargo xtask test-reuse-release
           cargo xtask test-merge-queue-tested
+          sh scripts/test-reuse-proved-server-package.sh
           cargo xtask test-cancel-on-failure-gate
           cargo xtask test-repo-guard
           bash scripts/test-listener-restart.sh
@@ -422,70 +435,49 @@ jobs:
           !(needs.reuse.result == 'success' && needs.reuse.outputs.mode == 'reuse')))
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Merge queue already tested this tree
+        id: queue
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: cargo xtask merge-queue-tested
       - name: Stamp release version
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
         run: cargo xtask release-version resolve --ref-type "$REF_TYPE" --ref-name "$REF_NAME"
+      - name: Reuse PR-proved server package
+        id: proved_reuse
+        if: >-
+          github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          steps.queue.outputs.skip_tests == 'true' &&
+          steps.queue.outputs.proof_run_id != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          gh run download "${{ steps.queue.outputs.proof_run_id }}" --repo "$GITHUB_REPOSITORY" --name package-server --dir dist
+          (cd dist && sha256sum -c ./*.sha256)
       - name: Toolchain
+        if: steps.proved_reuse.outcome != 'success'
         run: rustup show
       # Tag builds ship binaries, so they do not restore or save a cache.
       # Keep the kiln crates in the cache so a warm run reuses them.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        if: steps.proved_reuse.outcome != 'success' && !startsWith(github.ref, 'refs/tags/v')
         with:
           cache-workspace-crates: 'true'
-      - name: Build release binaries
-        run: |
-          trust_json=$(mktemp)
-          cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client \
-            --message-format=json >"$trust_json"
-          sh scripts/check-release-trust.sh --cargo-json "$trust_json" \
-            target/release/kiln \
-            target/release/kiln-runtime \
-            target/release/kiln-host \
-            target/release/kiln-api
-          rm -f "$trust_json"
-          # One cargo command unifies features and links h2 into kiln-identity.
-          # lab-provider stays off this command. The release binary cannot select a substitute provider.
-          trust_json=$(mktemp)
-          cargo build --release --locked -p kiln-identity --message-format=json >"$trust_json"
-          sh scripts/check-release-trust.sh --cargo-json "$trust_json" \
-            target/release/kiln-identity
-          rm -f "$trust_json"
-          target/release/kiln-host --help
-          target/release/kiln-api --help
-          cargo xtask release-version check-binary --version "$VERSION" -- \
-            target/release/kiln \
-            target/release/kiln-runtime \
-            target/release/kiln-host \
-            target/release/kiln-api \
-            target/release/kiln-identity
-          case "$(target/release/kiln-identity --help)" in
-            *github-authorize-url*|*github-token-url*|*github-user-url*|*provider-ca-file*)
-              echo "release kiln-identity must not accept a substitute provider" >&2
-              exit 1
-              ;;
-          esac
-      - name: Package identity service
-        run: |
-          cargo xtask release identity --version "$VERSION" --target x86_64-unknown-linux-gnu \
-            --bin-dir target/release --output dist
-      - name: Build pinned warm guest image without root
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y fakeroot musl-tools e2fsprogs curl binutils xz-utils
-          rustup target add x86_64-unknown-linux-musl
-          bash images/build-ubuntu.sh images/output/release '' systemd_warm
-      - name: Package server with prebuilt image
-        run: |
-          cargo xtask release server --version "$VERSION" --target x86_64-unknown-linux-gnu \
-            --bin-dir target/release --image-dir images/output/release --output dist
-          (cd dist && sha256sum -c ./*.sha256)
+      - name: Build and package server release
+        if: steps.proved_reuse.outcome != 'success'
+        run: PACKAGE_OUTPUT=dist sh scripts/package-server-release.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: package-server
@@ -527,6 +519,8 @@ jobs:
       - name: Merge queue already tested this tree
         id: queue
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: cargo xtask merge-queue-tested
       - name: Stamp release version
         env:
@@ -615,6 +609,8 @@ jobs:
       - name: Merge queue already tested this tree
         id: queue
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: cargo xtask merge-queue-tested
       - name: Stamp release version
         env:
@@ -1011,3 +1007,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: sh scripts/tag-path-dry-run.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name == 'pull_request'
+        with:
+          name: package-server
+          path: dist-proved-package-server/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

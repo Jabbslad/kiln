@@ -695,13 +695,39 @@ it('validates a create form but cannot create a fake VM', async () => {
   expect(previewDashboard.boxes).toHaveLength(4)
 })
 
-it('labels the terminal capability as not available yet', async () => {
+it('marks the terminal capability available and keeps preview disconnected', async () => {
   open('/boxes/box-7f3a2c1e?preview=1')
   const terminal = await screen.findByTestId('capability-terminal')
-  expect(terminal).toHaveAttribute('data-capability-state', 'not-yet')
-  expect(within(terminal).getByText('Not available yet')).toBeVisible()
-  expect(screen.queryByText('Session not connected')).not.toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Connect terminal' })).not.toBeInTheDocument()
+  expect(terminal).toHaveAttribute('data-capability-state', 'available')
+  expect(within(terminal).queryByText('Not available yet')).not.toBeInTheDocument()
+  expect(within(terminal).getByText('Session not connected')).toBeVisible()
+  expect(within(terminal).getByRole('button', { name: 'Connect terminal' })).toBeDisabled()
+})
+
+it('enables Connect terminal only for a running box on a live console', async () => {
+  const dashboard = () => Promise.resolve(Response.json(previewDashboard))
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(dashboard))
+  const running = open('/boxes/box-7f3a2c1e')
+  expect(await screen.findByRole('button', { name: 'Connect terminal' })).toBeEnabled()
+  running.unmount()
+
+  const stopped = open('/boxes/box-a1b2c3d4')
+  expect(await screen.findByRole('button', { name: 'Connect terminal' })).toBeDisabled()
+  stopped.unmount()
+
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        Response.json({
+          ...previewDashboard,
+          host: { ...previewDashboard.host, state: 'offline' as const },
+        }),
+      ),
+    ),
+  )
+  open('/boxes/box-7f3a2c1e')
+  expect(await screen.findByRole('button', { name: 'Connect terminal' })).toBeDisabled()
 })
 
 it('posts sign-out to /logout with the CSRF value', async () => {

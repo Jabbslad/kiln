@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -187,36 +187,7 @@ export default function BoxDetail({ data, preview }: PageProps) {
       {activeTab === 'terminal' && (
         <>
           <div className="workspace-grid">
-            <section className="terminal-panel">
-              <div className="terminal-heading">
-                <span>
-                  <Terminal size={16} />
-                  shell
-                </span>
-              </div>
-              <CapabilitySurface capability="terminal" className="terminal-body">
-                <div className="terminal-watermark">
-                  <Terminal size={30} strokeWidth={1} />
-                </div>
-                <span className="terminal-comment"># {box.name} / workspace terminal</span>
-                <p>A shell, right where you work.</p>
-                <span className="terminal-comment">
-                  {preview
-                    ? '# Preview mode does not open a shell or execute commands.'
-                    : '# Authenticated terminal transport is not configured.'}
-                </span>
-                <span className="terminal-prompt">
-                  <span>$</span>
-                  <span className="cursor-block" aria-hidden="true" />
-                </span>
-                <div className="terminal-connect">
-                  <button className="button" disabled>
-                    Connect terminal <ArrowUpRight size={14} />
-                  </button>
-                  <span>Requires the terminal service</span>
-                </div>
-              </CapabilitySurface>
-            </section>
+            <TerminalPane box={box} preview={preview} authenticated={authenticated} />
             <div className="access-column">
               <Access boxId={box.id} />
               <ResourceMetrics
@@ -544,6 +515,182 @@ function Exec({
         </button>
       </form>
     </section>
+  )
+}
+
+function terminalHint(
+  preview: boolean,
+  authenticated: boolean,
+  state: string,
+  status: 'idle' | 'opening' | 'open' | 'ended',
+) {
+  if (status === 'open') return 'Session active'
+  if (status === 'ended') return 'Session ended'
+  if (preview) return 'Preview mode does not open a shell.'
+  if (!authenticated) return 'Sign in on a live console to open a shell.'
+  if (state !== 'running') return 'Start this box to open a shell.'
+  return 'Opens a shell in this box.'
+}
+
+function terminalUrl(id: string) {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.host}/v1/boxes/${id}/terminal`
+}
+
+function TerminalPane({
+  box,
+  preview,
+  authenticated,
+}: {
+  box: Box
+  preview: boolean
+  authenticated: boolean
+}) {
+  const canConnect = authenticated && box.state === 'running'
+  const [attempt, setAttempt] = useState(0)
+  const [status, setStatus] = useState<'idle' | 'opening' | 'open' | 'ended'>('idle')
+  const screenRef = useRef<HTMLDivElement>(null)
+  const socketRef = useRef<WebSocket | null>(null)
+  const hint = terminalHint(preview, authenticated, box.state, status)
+  useEffect(() => {
+    if (attempt === 0) return
+    const screen = screenRef.current
+    if (!screen) return
+    let cancelled = false
+    let term: { write: (data: string | Uint8Array) => void; dispose: () => void } | null = null
+    let observer: ResizeObserver | null = null
+    const socket = new WebSocket(terminalUrl(box.id))
+    socket.binaryType = 'arraybuffer'
+    socketRef.current = socket
+    socket.addEventListener('open', () => {
+      void (async () => {
+        const [{ Terminal }, { FitAddon }] = await Promise.all([
+          import('@xterm/xterm'),
+          import('@xterm/addon-fit'),
+          import('@xterm/xterm/css/xterm.css'),
+        ])
+        if (cancelled || socket.readyState !== WebSocket.OPEN) return
+        const fit = new FitAddon()
+        const instance = new Terminal({
+          cursorBlink: true,
+          fontFamily: 'Geist Mono, ui-monospace, monospace',
+          fontSize: 13,
+          theme: { background: '#0a0a0a', foreground: '#d7ddd6', cursor: '#78e772' },
+        })
+        instance.loadAddon(fit)
+        instance.open(screen)
+        fit.fit()
+        const sendSize = () => {
+          if (instance.cols < 1 || instance.rows < 1 || socket.readyState !== WebSocket.OPEN) return
+          socket.send(JSON.stringify({ type: 'resize', cols: instance.cols, rows: instance.rows }))
+        }
+        instance.onData((data) => {
+          if (socket.readyState === WebSocket.OPEN) socket.send(data)
+        })
+        instance.onResize(sendSize)
+        sendSize()
+        observer = new ResizeObserver(() => fit.fit())
+        observer.observe(screen)
+        term = instance
+        if (!cancelled) setStatus('open')
+      })()
+    })
+    socket.addEventListener('message', (event) => {
+      if (typeof event.data === 'string') {
+        try {
+          const parsed = JSON.parse(event.data) as { type?: string }
+          if (parsed.type === 'closed') {
+            if (!cancelled) setStatus('ended')
+            return
+          }
+        } catch {
+          // Plain text is shell output.
+        }
+        term?.write(event.data)
+        return
+      }
+      if (event.data instanceof ArrayBuffer) term?.write(new Uint8Array(event.data))
+    })
+    socket.addEventListener('close', () => {
+      if (!cancelled) setStatus((current) => (current === 'idle' ? current : 'ended'))
+    })
+    socket.addEventListener('error', () => {
+      if (!cancelled) setStatus('ended')
+    })
+    return () => {
+      cancelled = true
+      observer?.disconnect()
+      term?.dispose()
+      socket.close()
+      if (socketRef.current === socket) socketRef.current = null
+    }
+  }, [attempt, box.id])
+  return (
+    <CapabilitySurface capability="terminal" className="terminal-panel">
+      <div className="terminal-heading">
+        <span>
+          <Terminal size={16} />
+          shell
+        </span>
+        <span className="micro">
+          <span className="status-dot" />
+          {status === 'open' ? 'Connected' : 'Session not connected'}
+        </span>
+      </div>
+      <div className="terminal-body">
+        {status !== 'open' && status !== 'opening' && (
+          <>
+            <div className="terminal-watermark">
+              <Terminal size={30} strokeWidth={1} />
+            </div>
+            <span className="terminal-comment"># {box.name} / workspace terminal</span>
+            <p>A shell, right where you work.</p>
+            <span className="terminal-comment"># {hint}</span>
+            <span className="terminal-prompt">
+              <span>$</span>
+              <span className="cursor-block" aria-hidden="true" />
+            </span>
+          </>
+        )}
+        <div
+          className={
+            status === 'open' || status === 'opening'
+              ? 'terminal-screen'
+              : 'terminal-screen terminal-screen-idle'
+          }
+          ref={screenRef}
+        />
+        <div className="terminal-connect">
+          {status === 'open' ? (
+            <button
+              className="button"
+              onClick={() => {
+                socketRef.current?.close()
+                setStatus('ended')
+              }}
+            >
+              Disconnect terminal
+            </button>
+          ) : (
+            <button
+              className="button"
+              disabled={!canConnect || status === 'opening'}
+              onClick={() => {
+                setStatus('opening')
+                setAttempt((value) => value + 1)
+              }}
+            >
+              Connect terminal <ArrowUpRight size={14} />
+            </button>
+          )}
+          <span>{hint}</span>
+        </div>
+      </div>
+      <div className="terminal-footer">
+        <span>UTF-8</span>
+        <span>{status === 'open' ? 'Session active' : 'No session active'}</span>
+      </div>
+    </CapabilitySurface>
   )
 }
 

@@ -9,6 +9,7 @@ pub mod host;
 mod journal;
 mod metrics;
 mod ssh;
+mod terminal;
 
 use axum::{
     Json,
