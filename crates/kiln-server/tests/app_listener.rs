@@ -2425,6 +2425,7 @@ fn central(dir: &Path) -> Authenticator {
             issuer: "https://identity.example.test".into(),
             owner_id: "owner-a".into(),
             server_id: "server-b".into(),
+            tenant_id: common::fixture_tenant_id(),
         },
         dir.join("jwks.json"),
     )
