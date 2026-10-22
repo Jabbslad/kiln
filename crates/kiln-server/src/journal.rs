@@ -107,6 +107,7 @@ fn ensure_v2_columns(connection: &Connection) -> Result<()> {
 
 fn ensure_v4_columns(connection: &Connection) -> Result<()> {
     if !table_has_column(connection, "actor")? {
+        // Nullable: legacy rows and pre-gateway accepts have no actor.
         connection.execute("ALTER TABLE operations ADD COLUMN actor TEXT", [])?;
     }
     Ok(())
