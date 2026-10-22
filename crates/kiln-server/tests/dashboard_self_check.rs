@@ -80,6 +80,27 @@ fn require_launch_timing_passes_when_named_box_has_total_ms() {
 }
 
 #[test]
+fn require_launch_timing_rejects_journal_total_without_phases() {
+    let error = dashboard_check::require_launch_timing(RUNNING_BOX_CPU_NULL.as_bytes(), "smoke")
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        CheckError::RequireLaunchTimingPhasesMissing
+    ));
+}
+
+#[test]
+fn launch_timing_log_line_lists_phase_fields() {
+    let timing =
+        dashboard_check::require_launch_timing(CAPTURE_HOST_DISK.as_bytes(), "running-box")
+            .expect("timing");
+    let line = dashboard_check::launch_timing_log_line("running-box", &timing);
+    assert!(line.contains("total_ms=8420.7"));
+    assert!(line.contains("storage_ms=4200.5"));
+    assert!(line.contains("vmm_ms=1800.2"));
+}
+
+#[test]
 fn require_launch_timing_rejects_missing_box_name() {
     let error =
         dashboard_check::require_launch_timing(RUNNING_BOX_LEGACY_LAUNCH.as_bytes(), "kiln-smoke")
