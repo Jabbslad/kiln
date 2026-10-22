@@ -27,7 +27,7 @@ fn server_claims_require_every_authority_and_time_field() {
     let claims: ServerClaims = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(claims.aud, "kiln:server:server-b");
     assert_eq!(claims.scope, Scope::Read);
-    assert_eq!(claims.role, Some(Role::Owner));
+    assert_eq!(claims.role, Some(MemberRole::Owner));
     assert_eq!(claims.tenant_id.as_deref(), Some("tenant-t"));
     for field in [
         "iss",
