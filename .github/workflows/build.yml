@@ -881,33 +881,6 @@ jobs:
       tag: ${{ needs.release-plan.outputs.tag }}
     secrets: inherit
 
-  # Merges from GITHUB_TOKEN do not fire push, so a successful merge dispatches
-  # Build and package on main (workflow_dispatch) to run release and deploy again.
-  slow-lane-merge:
-    needs: [deploy]
-    if: >-
-      !cancelled() &&
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
-      needs.deploy.result == 'success'
-    # rehearsal: tag-path-dry-run
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-      actions: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - name: Merge next slow-lane pull request
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: sh scripts/slow-lane-merge.sh
-
   dry-run-assets:
     needs: [reuse]
     if: >-
