@@ -131,6 +131,7 @@ jobs:
           sh scripts/test-check.sh
           sh scripts/test-ssh-multiplex.sh
           sh scripts/test-deploy-standin-final-checks.sh
+          sh scripts/test-deploy-standin-ssh-secret-guard.sh
 
   feature-map-guard:
     if: github.event_name == 'pull_request'

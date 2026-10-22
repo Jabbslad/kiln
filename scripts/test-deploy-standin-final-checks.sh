@@ -26,4 +26,6 @@ remote=$root/deploy/github/install-remote.sh
 grep -q 'KILN_SKIP_SMOKE' "$remote" \
   || fail 'install-remote.sh must honor KILN_SKIP_SMOKE'
 
+sh "$root/scripts/test-deploy-standin-ssh-secret-guard.sh"
+
 printf 'test-deploy-standin-final-checks: ok\n'

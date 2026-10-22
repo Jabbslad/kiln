@@ -63,6 +63,23 @@ case "$mode" in
     docker_cmd exec "$CONTAINER" chmod 700 /root/.ssh
     docker_cmd cp "$pub" "$CONTAINER:/root/.ssh/authorized_keys"
     docker_cmd exec "$CONTAINER" chmod 600 /root/.ssh/authorized_keys
+    docker_cmd exec "$CONTAINER" systemctl reload ssh 2>/dev/null \
+      || docker_cmd exec "$CONTAINER" systemctl restart ssh 2>/dev/null \
+      || docker_cmd exec "$CONTAINER" systemctl try-restart ssh 2>/dev/null \
+      || true
+    start=$(date +%s)
+    deadline=$((start + 30))
+    export KILN_STANDIN_SSH_KEY=$key
+    export KILN_STANDIN_SSH_PORT=$PORT
+    export KILN_SSH_SH=$root/scripts/deploy-standin-ssh.sh
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+      if bash "$root/scripts/deploy-standin-ssh.sh" ssh -- true >/dev/null 2>&1; then
+        break
+      fi
+      sleep 1
+    done
+    bash "$root/scripts/deploy-standin-ssh.sh" ssh -- true \
+      || fail 'stand-in ssh authentication did not become ready'
     printf '%s\n' "$PORT" >"$work/ssh-port"
     printf '%s\n' "$key" >"$work/ssh-key"
     ;;

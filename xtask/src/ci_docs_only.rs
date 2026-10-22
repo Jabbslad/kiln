@@ -161,10 +161,10 @@ fn test_code_scripts_workflows_deploy_and_locks_build() {
     for path in samples {
         let with_doc = vec![path.to_string(), "docs/releases.md".to_string()];
         assert!(needs_heavy(&with_doc), "{path}");
-        let deploy_final = if path.starts_with(".github/") {
-            "false"
-        } else {
+        let deploy_final = if needs_deploy_final_checks(&[path.to_string()]) {
             "true"
+        } else {
+            "false"
         };
         assert_eq!(
             classify(&[path.to_string()]),

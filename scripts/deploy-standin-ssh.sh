@@ -10,7 +10,7 @@ key=${KILN_STANDIN_SSH_KEY:-}
 user=${KILN_STANDIN_SSH_USER:-root}
 [ -n "$port" ] || fail 'KILN_STANDIN_SSH_PORT is empty'
 [ -n "$key" ] || fail 'KILN_STANDIN_SSH_KEY is empty'
-[ -f "$key" ] || fail "missing stand-in key: ${key}"
+[ -f "$key" ] || fail 'missing stand-in private key file'
 
 target="${user}@${host}"
 common=(
