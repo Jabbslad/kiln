@@ -72,6 +72,8 @@ fn test_diagnose_is_manual_and_read_only() {
     }
     let ssh = read_repo("deploy/github/ssh.sh");
     assert!(ssh.contains("StrictHostKeyChecking=yes"));
+    assert!(ssh.contains("ControlMaster=auto"));
+    assert!(ssh.contains("ControlPath"));
     assert!(!ssh.contains("accept-new"));
     assert!(!ssh.contains("ssh-keyscan"));
 }
@@ -816,7 +818,8 @@ fn run_deploy(
             ("assets/index-deploytest.js", "console.log('ok');\n"),
         ]);
         write_release_asset(&assets, &dashboard_name, &dashboard_blob, bad_checksum);
-        write_executable(&tmp.path().join("ssh.sh"), &ssh_stub(&ssh_log));
+        write_executable(&tmp.path().join("ssh"), &ssh_stub(&ssh_log));
+        write_executable(&tmp.path().join("scp"), &scp_stub(&ssh_log));
     }
     write_executable(
         &tmp.path().join("curl"),
@@ -832,7 +835,18 @@ fn run_deploy(
     command.env("PATH", prepend_path(tmp.path()));
     command.env("KILN_RELEASE_TAG", tag);
     if archive_installer.is_some() {
-        command.env("KILN_SSH_SH", tmp.path().join("ssh.sh"));
+        command.env(
+            "DARK_FORGE_SSH_KEY",
+            "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----",
+        );
+        command.env(
+            "DARK_FORGE_KNOWN_HOSTS",
+            "dark-forge.dev ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHRlc3Q=",
+        );
+        command.env(
+            "KILN_SSH_CONTROL_PATH",
+            tmp.path().join("kiln-ssh-control").display().to_string(),
+        );
     }
     let captured = capture(&mut command);
     DeployRun {
@@ -890,30 +904,56 @@ exit 1
 
 fn ssh_stub(log: &Path) -> String {
     r#"#!/bin/bash
-printf '%s\n' "$*" >> __LOG__
-if [ "$1" = scp ]; then
-  mkdir -p -- "$(dirname -- "$3")"
-  cp -- "$2" "$3"
-  exit 0
-fi
-if [ "$1" = ssh ]; then
+printf '%s\n' "ssh $*" >> __LOG__
+case " $* " in
+  *" -M "*|*ControlMaster=yes*)
+    exit 0
+    ;;
+  *" -O exit "*)
+    exit 0
+    ;;
+esac
+while [ $# -gt 0 ]; do
+  if [ "$1" = -- ]; then
+    shift
+    if [ "${1:-}" = mktemp ]; then
+      shift
+      mktemp "$@"
+      exit 0
+    fi
+    if [ "${1:-}" = rm ]; then
+      shift
+      rm "$@"
+      exit 0
+    fi
+    exit 0
+  fi
   shift
-  if [ "${1:-}" = -- ]; then
-    shift
-  fi
-  if [ "${1:-}" = mktemp ]; then
-    shift
-    mktemp "$@"
-    exit 0
-  fi
-  if [ "${1:-}" = rm ]; then
-    shift
-    rm "$@"
-    exit 0
-  fi
-  exit 0
-fi
-exit 1
+done
+exit 0
+"#
+    .replace("__LOG__", &sh_quote(&log.display().to_string()))
+}
+
+fn scp_stub(log: &Path) -> String {
+    r#"#!/bin/bash
+printf '%s\n' "scp $*" >> __LOG__
+local=
+remote=
+for arg in "$@"; do
+  case "$arg" in
+    -*) ;;
+    *:*)
+      remote=${arg#*:}
+      ;;
+    *)
+      local=$arg
+      ;;
+  esac
+done
+mkdir -p -- "$(dirname -- "$remote")"
+cp -- "$local" "$remote"
+exit 0
 "#
     .replace("__LOG__", &sh_quote(&log.display().to_string()))
 }

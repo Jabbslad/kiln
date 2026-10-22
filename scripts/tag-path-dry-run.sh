@@ -106,6 +106,8 @@ KILN_DEPLOY_DRY_RUN=1 \
   KILN_RELEASE_TAG="$tag" \
   KILN_DEPLOY_DIST="$dist" \
   bash deploy/github/deploy.sh >"$output.deploy" 2>&1
+grep -q 'ssh-session: dry-run control path' "$output.deploy" \
+  || fail 'deploy dry-run did not set up the multiplex session'
 grep -q "deploy inputs ${tag}" "$output.deploy" || fail 'deploy dry-run did not finish'
 grep -q "dashboard inputs kiln-dashboard-${tag}.tar.gz" "$output.deploy" \
   || fail 'deploy dry-run did not check the dashboard archive'

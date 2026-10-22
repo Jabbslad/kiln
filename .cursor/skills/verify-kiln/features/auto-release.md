@@ -9,8 +9,8 @@ A green push to `main` can publish the next patch release and deploy it to dark-
 - `version-guard`: when `release=true`, stamps artifacts to the planned tag and runs `scripts/check-stamped-clients.sh`.
 - `attest`: build provenance on `dist/*.tar.gz` and `dist/*.zip` for main pushes.
 - `draft-release`: verifies checksums and attestations (`scripts/verify-release-attestations.sh` retries Sigstore verifier init flakes), then `gh release create` for the planned tag.
-- `deploy`: reusable `deploy.yml` with `tag: ${{ needs.release-plan.outputs.tag }}`.
-- Post-checks on the host (`deploy/github/install-remote.sh`): `install.sh --healthcheck`, `kiln-api self-check` (typed dashboard metrics right after restart), `smoke.sh`, `check-dashboard-bundle.sh` against live `kiln-app` HTML, and a kiln-identity stamp guard.
+- `deploy`: reusable `deploy.yml` with `tag: ${{ needs.release-plan.outputs.tag }}`. One multiplexed SSH connection per job (`deploy/github/ssh-session.sh`, `ControlPath` under `RUNNER_TEMP`); master open retries pre-auth failures only.
+- Post-checks on the host (`deploy/github/install-remote.sh`): `install.sh --healthcheck`, `kiln-api self-check` (typed dashboard metrics right after restart), `smoke.sh` (with `--require-launch-timing` for the smoke box), `check-dashboard-bundle.sh` against live `kiln-app` HTML, and a kiln-identity stamp guard.
 
 ## How to get to it (operator POV)
 
@@ -36,6 +36,7 @@ sh scripts/test-tag-path-dry-run.sh
 sh scripts/test-tag-path-pr-stamp-order.sh
 sh scripts/test-releasable.sh
 cargo xtask test-deploy-workflow
+sh scripts/test-ssh-multiplex.sh
 cargo xtask test-reuse-release
 ```
 
@@ -46,6 +47,7 @@ The tag-path dry run on pull requests stamps packages to a `-dryrun` tag locally
 ## Gotchas
 
 - Deploy never runs on pull requests; only `workflow_dispatch`, `workflow_call` from a successful main release, or tag-shaped refs reach `deploy/github/deploy.sh`.
+- Parallel `scp` on separate connections used to compete with sshd `MaxStartups`; deploy and diagnose now reuse one control socket and upload serially.
 - `release-plan` needs `contents: write` to create the git tag before downstream jobs read `needs.release-plan.outputs.tag`.
 - Skipping `required` or any package job blocks `release-plan`, so a half-green main push does not publish.
 - Identity and dashboard archives ride with the server deploy; identity is upgraded before `kiln-app` restarts (`deploy/github/install-identity.sh`).

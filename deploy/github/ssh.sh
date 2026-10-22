@@ -49,19 +49,78 @@ common=(
   -o LogLevel=ERROR
 )
 
-mode=${1:?usage: ssh.sh ssh|scp ...}
+ssh_port=()
+[ "$port" = 22 ] || ssh_port=(-p "$port")
+scp_port=()
+[ "$port" = 22 ] || scp_port=(-P "$port")
+target="${user}@${host}"
+
+multiplex=()
+if [ -n "${KILN_SSH_CONTROL_PATH:-}" ]; then
+  multiplex=(
+    -o ControlMaster=auto
+    -o "ControlPath=${KILN_SSH_CONTROL_PATH}"
+    -o ControlPersist=600
+  )
+fi
+
+master_retryable() {
+  local rc=$1
+  local err=$2
+  [ "$rc" -eq 255 ] && return 0
+  printf '%s\n' "$err" | grep -qiE 'kex_exchange_identification|connection reset by peer|Connection reset'
+}
+
+open_master() {
+  [ -n "${KILN_SSH_CONTROL_PATH:-}" ] || fail 'KILN_SSH_CONTROL_PATH is empty'
+  local master_common=(
+    "${common[@]}"
+    -o ControlMaster=yes
+    -o "ControlPath=${KILN_SSH_CONTROL_PATH}"
+    -o ControlPersist=600
+  )
+  local attempt=1
+  local delay
+  local err
+  local rc
+  while [ "$attempt" -le 4 ]; do
+    err=$(
+      ssh -M -f -N "${ssh_port[@]}" "${master_common[@]}" "$target" 2>&1 >/dev/null
+    ) && return 0
+    rc=$?
+    if ! master_retryable "$rc" "$err"; then
+      printf '%s\n' "$err" >&2
+      return "$rc"
+    fi
+    if [ "$attempt" -eq 4 ]; then
+      printf '%s\n' "$err" >&2
+      return "$rc"
+    fi
+    case "$attempt" in
+      1) delay=5 ;;
+      2) delay=15 ;;
+      *) delay=30 ;;
+    esac
+    sleep "$delay"
+    attempt=$((attempt + 1))
+  done
+}
+
+mode=${1:?usage: ssh.sh master-open|master-close|ssh|scp ...}
 shift
 case "$mode" in
+  master-open)
+    open_master
+    ;;
+  master-close)
+    ssh -O exit "${ssh_port[@]}" "${common[@]}" "${multiplex[@]}" "$target" 2>/dev/null || true
+    ;;
   ssh)
-    ssh_port=()
-    [ "$port" = 22 ] || ssh_port=(-p "$port")
-    ssh -T "${ssh_port[@]}" "${common[@]}" "${user}@${host}" "$@"
+    ssh -T "${ssh_port[@]}" "${common[@]}" "${multiplex[@]}" "$target" "$@"
     ;;
   scp)
     [ "$#" = 2 ] || fail 'usage: ssh.sh scp LOCAL REMOTE_PATH'
-    scp_port=()
-    [ "$port" = 22 ] || scp_port=(-P "$port")
-    scp "${scp_port[@]}" "${common[@]}" "$1" "${user}@${host}:$2"
+    scp "${scp_port[@]}" "${common[@]}" "${multiplex[@]}" "$1" "${target}:$2"
     ;;
-  *) fail 'usage: ssh.sh ssh|scp ...' ;;
+  *) fail 'usage: ssh.sh master-open|master-close|ssh|scp ...' ;;
 esac
