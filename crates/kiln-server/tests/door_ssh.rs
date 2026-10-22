@@ -29,22 +29,38 @@ const SSH_KEY: &str =
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 fn token(key: &EncodingKey, sub: &str, scope: Scope) -> String {
+    token_for_tenant(
+        key,
+        sub,
+        "owner-a",
+        if sub == "owner-a" {
+            Role::Owner
+        } else {
+            Role::Member
+        },
+        scope,
+    )
+}
+
+fn token_for_tenant(
+    key: &EncodingKey,
+    sub: &str,
+    tenant_id: &str,
+    role: Role,
+    scope: Scope,
+) -> String {
     let now = jsonwebtoken::get_current_timestamp();
     let claims = ServerClaims {
         iss: "https://identity.example.test".into(),
         sub: sub.into(),
         aud: "kiln:server:server-b".into(),
-        tenant_id: "owner-a".into(),
+        tenant_id: tenant_id.into(),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-1".into(),
         scope,
-        role: if sub == "owner-a" {
-            Role::Owner
-        } else {
-            Role::Member
-        },
+        role,
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -244,7 +260,13 @@ async fn door_ssh_rejects_bad_callers_and_round_trips_an_operate_jwt() {
     let owner_box = "b".repeat(32);
     let other_box = "c".repeat(32);
     let operate = token(&world.key, "owner-a", Scope::Operate);
-    let other = token(&world.key, "owner-b", Scope::Operate);
+    let other_tenant = token_for_tenant(
+        &world.key,
+        "member-z",
+        "tenant-other",
+        Role::Member,
+        Scope::Operate,
+    );
     let read = token(&world.key, "owner-a", Scope::Read);
     let cases = [
         (
@@ -260,8 +282,8 @@ async fn door_ssh_rejects_bad_callers_and_round_trips_an_operate_jwt() {
             StatusCode::UNAUTHORIZED,
         ),
         (
-            "other-owner",
-            Some(other.as_str()),
+            "other-tenant",
+            Some(other_tenant.as_str()),
             other_box.as_str(),
             StatusCode::UNAUTHORIZED,
         ),
@@ -352,7 +374,7 @@ async fn door_ssh_rejects_bad_callers_and_round_trips_an_operate_jwt() {
         ("missing", "unauthorized", "anonymous", owner_box.as_str()),
         ("invalid", "unauthorized", "anonymous", owner_box.as_str()),
         (
-            "other-owner",
+            "other-tenant",
             "unauthorized",
             "anonymous",
             other_box.as_str(),
