@@ -392,21 +392,20 @@ mod tests {
 
     #[tokio::test]
     async fn private_ca_does_not_trust_public_roots() {
-        let ca = rcgen::generate_simple_self_signed(vec!["example.com".into()]).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
         let token = "ab".repeat(32);
-        let private = Client::new(
-            "https://example.com/",
-            &token,
-            Some(ca.cert.pem().as_bytes()),
-        )
-        .unwrap();
+        let url = format!("https://localhost:{port}/");
+        let wrong_ca = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let private = Client::new(&url, &token, Some(wrong_ca.cert.pem().as_bytes())).unwrap();
         let err = error_text(&private.templates().await.unwrap_err());
         assert!(err.to_ascii_lowercase().contains("certificate"), "{err}");
-        let public = Client::new("https://example.com/", &token, None).unwrap();
-        let err = public.templates().await.unwrap_err().to_string();
+        let public = Client::new(&url, &token, None).unwrap();
+        let err = error_text(&public.templates().await.unwrap_err());
         assert!(
-            err.contains("HTTP"),
-            "public roots should finish the TLS handshake, got {err}"
+            err.to_ascii_lowercase().contains("certificate"),
+            "built-in roots must not trust this loopback certificate, got {err}"
         );
     }
 
