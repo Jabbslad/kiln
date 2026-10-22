@@ -797,8 +797,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          cargo xtask cancel-on-failure-gate \
-            && gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+          if cargo xtask cancel-on-failure-gate; then
+            gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+          fi
 
   # A client matrix leg and a skipped client job are different check names.
   # always() still runs when a dependency fails or is skipped. Without it,
