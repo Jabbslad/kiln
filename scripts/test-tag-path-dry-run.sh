@@ -185,13 +185,16 @@ real_gh=$(command -v gh)
 
 write_gh_shim() {
   run_list_tsv=$1
+  commit_run_list_json=${2:-[]}
   mkdir -p "$work/bin"
   cat >"$work/bin/gh" <<EOF
 #!/bin/sh
 if [ "\$1" = run ] && [ "\$2" = list ]; then
   case "\$*" in
     *--commit*)
-      printf '[]\n'
+      cat <<'COMMITLIST'
+$commit_run_list_json
+COMMITLIST
       exit 0
       ;;
     *--branch*main*)
@@ -216,7 +219,7 @@ if [ "\$1" = api ]; then
 ARTS
       exit 0
       ;;
-    *actions/runs/$green_run_id*--jq*path*)
+    *actions/runs/$green_run_id*--jq*".path"*)
       printf '.github/workflows/build.yml\n'
       exit 0
       ;;
@@ -234,10 +237,21 @@ version = "0.4.17"
 CARGO
       exit 0
       ;;
+    *workflows/build.yml*)
+      printf 'name: build\non: push\njobs: {}\n'
+      exit 0
+      ;;
   esac
 fi
 if [ "\$1" = run ] && [ "\$2" = download ]; then
-  mkdir -p "\${@: -1}"
+  download_dir=
+  for arg in "\$@"; do
+    download_dir=\$arg
+  done
+  mkdir -p "\$download_dir"
+  exit 0
+fi
+if [ "\$1" = attestation ] && [ "\$2" = verify ]; then
   exit 0
 fi
 exec "$real_gh" "\$@"
@@ -274,6 +288,16 @@ if ! resolve_reuse; then
 fi
 grep -q "reuse main run $green_run_id $old_green" "$work/resolve-out" \
   || fail 'reuse resolve must pin the last green ancestor after a failed main build'
+
+rerun_green_runs=$green_run_id'	'"$old_green"'	success	completed	push	main'
+stale_commit_list='[{"databaseId":'"$green_run_id"',"headSha":"'"$old_green"'","event":"push","conclusion":"failure","headBranch":"main","status":"completed"}]'
+write_gh_shim "$rerun_green_runs" "$stale_commit_list"
+if ! resolve_reuse; then
+  cat "$work/resolve-err" >&2
+  fail 'reuse resolve must succeed when main went green on a re-run attempt'
+fi
+grep -q "reuse main run $green_run_id $old_green" "$work/resolve-out" \
+  || fail 'reuse resolve must pin the green main run after a re-run attempt'
 
 no_ancestor_runs=$green_run_id'	'"$orphan_green"'	success	completed	push	main'
 write_gh_shim "$no_ancestor_runs"
@@ -329,11 +353,32 @@ if grep -q 'no successful main push of this workflow for that commit' "$work/pin
   fail 'pinned reuse fetch must not refuse when REUSE_RUN_ID matches the green main run'
 fi
 
+write_gh_shim "$rerun_green_runs" "$stale_commit_list"
+rerun_out=$work/reuse-output-rerun
+if ! env -u REUSE_VERSION \
+  GITHUB_OUTPUT="$rerun_out" \
+  REUSE_EVENT=workflow_dispatch \
+  REUSE_SHA_INPUT="$old_green" \
+  REUSE_RUN_ID="$green_run_id" \
+  GH_REPO=Jabbslad/kiln \
+  GH_TOKEN=test-token \
+  PATH="$work/bin:$PATH" \
+  cargo xtask reuse-release fetch --dist "$align_dist" >"$work/rerun.stdout" 2>"$work/rerun.stderr"; then
+  cat "$work/rerun.stderr" >&2
+  fail 'pinned reuse fetch must accept a green re-run when the commit run list is still failure'
+fi
+grep -q 'no successful main push of this workflow for that commit' "$work/rerun.stderr" \
+  && fail 'pinned reuse fetch must not refuse when run metadata is green after re-run'
+grep -q 'REUSE_RUN_ID is not an eligible main push run for this commit' "$work/rerun.stderr" \
+  && fail 'pinned reuse fetch must not treat a green re-run as ineligible because the commit list is stale'
+
 if ! cargo xtask test-reuse-release >"$work/reuse-test.log" 2>&1; then
   cat "$work/reuse-test.log" >&2
   fail 'reuse-release unit tests failed'
 fi
 grep -q 'test_pinned_run_resolves_when_commit_list_is_empty' "$work/reuse-test.log" \
   || fail 'reuse-release must cover pinned run id when commit list is empty'
+grep -q 'test_pinned_run_uses_api_when_commit_list_is_stale_after_rerun' "$work/reuse-test.log" \
+  || fail 'reuse-release must cover stale commit list after a green re-run'
 
 printf 'tag-path dry-run tests ok\n'

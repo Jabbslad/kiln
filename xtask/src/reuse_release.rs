@@ -156,13 +156,10 @@ pub fn chosen_run_for_fetch(
         return Err(ReuseRefused("commit sha is not 40 hex characters".into()));
     }
     if let Some(run_id) = pinned_run_id {
-        if let Some(run) = runs.iter().find(|run| run.run_id == run_id) {
-            if run_eligible_for_reuse(run, sha) {
-                return Ok(run.clone());
-            }
-            return Err(ReuseRefused(
-                "REUSE_RUN_ID is not an eligible main push run for this commit".into(),
-            ));
+        if let Some(run) = runs.iter().find(|run| run.run_id == run_id)
+            && run_eligible_for_reuse(run, sha)
+        {
+            return Ok(run.clone());
         }
         if let Some(run) = pinned_from_api {
             if run.run_id != run_id {
@@ -173,6 +170,11 @@ pub fn chosen_run_for_fetch(
             if run_eligible_for_reuse(&run, sha) {
                 return Ok(run);
             }
+            return Err(ReuseRefused(
+                "REUSE_RUN_ID is not an eligible main push run for this commit".into(),
+            ));
+        }
+        if runs.iter().any(|run| run.run_id == run_id) {
             return Err(ReuseRefused(
                 "REUSE_RUN_ID is not an eligible main push run for this commit".into(),
             ));
@@ -417,12 +419,8 @@ pub fn fetch(
     let enriched = with_paths(repo, listed, env)?;
     let runs = parse_runs(&Value::Array(enriched))?;
     let pinned_run_id = optional_reuse_run_id(env)?;
-    let pinned_from_api = if pinned_run_id.is_some() {
-        match pinned_run_id {
-            Some(run_id) if runs.iter().any(|run| run.run_id == run_id) => None,
-            Some(run_id) => Some(fetch_run_meta(repo, run_id, env)?),
-            None => None,
-        }
+    let pinned_from_api = if let Some(run_id) = pinned_run_id {
+        Some(fetch_run_meta(repo, run_id, env)?)
     } else {
         None
     };
@@ -1804,6 +1802,15 @@ fn test_pinned_run_resolves_when_commit_list_is_empty() {
     assert!(chosen_run_for_fetch(&[], SHA, Some(8888), Some(in_progress)).is_err());
 }
 
+fn test_pinned_run_uses_api_when_commit_list_is_stale_after_rerun() {
+    let mut stale = sample_run(8888);
+    stale.conclusion = "failure".to_string();
+    let fresh = sample_run(8888);
+    let chosen = chosen_run_for_fetch(&[stale], SHA, Some(8888), Some(fresh.clone())).unwrap();
+    assert_eq!(chosen.run_id, 8888);
+    assert_eq!(chosen.conclusion, "success");
+}
+
 fn test_selects_the_latest_successful_main_push() {
     let older = sample_run(3);
     let newer = sample_run(9);
@@ -2124,6 +2131,7 @@ fn test_fetch_refusal_sets_fallback_without_publishing() {
 
 register_cases! {
     test_pinned_run_resolves_when_commit_list_is_empty,
+    test_pinned_run_uses_api_when_commit_list_is_stale_after_rerun,
     test_selects_the_latest_successful_main_push,
     test_refuses_a_run_that_is_not_this_workflow_on_main,
     test_refuses_missing_extra_or_expired_artifacts,
