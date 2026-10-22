@@ -1,4 +1,4 @@
-use kiln_api::auth::{RevocationQuery, RevocationSet, Scope, ServerClaims};
+use kiln_api::auth::{MemberRole, RevocationQuery, RevocationSet, Scope, ServerClaims};
 use serde_json::json;
 
 #[test]
