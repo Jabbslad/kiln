@@ -17,6 +17,7 @@ cargo xtask test-caddy-door
 cargo xtask test-deploy-workflow
 cargo xtask test-reuse-release
 cargo xtask test-merge-queue-tested
+sh scripts/test-reuse-proved-server-package.sh
 cargo xtask test-repo-guard
 bash scripts/test-listener-restart.sh
 bash scripts/test-wait-for-operations-journal-v2.sh
@@ -27,6 +28,7 @@ sh scripts/test-installer-release.sh
 sh scripts/test-wait-main-run.sh
 sh scripts/test-tag-path-dry-run.sh
 sh scripts/test-tag-path-pr-stamp-order.sh
+sh scripts/test-main-push-proved-package-stamp.sh
 sh scripts/test-deploy-host-tools.sh
 sh scripts/test-release-json-field.sh
 sh scripts/test-check-dashboard-bundle.sh
@@ -44,3 +46,4 @@ sh scripts/test-operations-journal-version-sync.sh
 sh scripts/test-release-notes.sh
 sh scripts/test-fmt.sh
 sh scripts/test-check.sh
+sh scripts/test-server-check-nextest.sh

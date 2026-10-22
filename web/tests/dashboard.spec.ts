@@ -90,9 +90,10 @@ test('inventory, search, sorting, navigation and actual rendered design', async 
   await page.getByRole('link', { name: 'api-dev', exact: true }).click()
   await expect(page.getByTestId('capability-terminal')).toHaveAttribute(
     'data-capability-state',
-    'not-yet',
+    'available',
   )
-  await expect(page.getByTestId('capability-terminal')).toContainText('Not available yet')
+  await expect(page.getByText('Session not connected')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Connect terminal' })).toBeDisabled()
   await capture(page, 'box-workspace-desktop')
   await page.getByRole('button', { name: 'Exec', exact: true }).click()
   await page.getByLabel('Arguments (JSON array)').fill('[42]')

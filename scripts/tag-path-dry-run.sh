@@ -158,6 +158,23 @@ if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
   KILN_SERVER_UPGRADE_PREV_TAR=$prev_archive \
     KILN_SERVER_UPGRADE_TO_TAR=$next_archive \
     bash scripts/test-identity-upgrade.sh
+  proved_dist=$root/dist-proved-package-server
+  mkdir -p "$proved_dist"
+  git checkout -- Cargo.toml Cargo.lock
+  VERSION=$from
+  export VERSION
+  PACKAGE_OUTPUT=$proved_dist sh scripts/package-server-release.sh
+  stamp_rehearsal=$(mktemp -d)
+  cp "$proved_dist"/*.tar.gz "$proved_dist"/*.sha256 "$stamp_rehearsal/"
+  sh scripts/stamp-release-dist.sh "$stamp_rehearsal" "$from" "$tag"
+  found=
+  for path in "$stamp_rehearsal/kiln-server-${tag}"*.tar.gz; do
+    [ -f "$path" ] || continue
+    found=1
+    break
+  done
+  [ -n "$found" ] || fail 'main-push stamp rehearsal did not rename proved server archive'
+  rm -rf "$stamp_rehearsal"
 fi
 
 printf 'tag path dry-run ok %s\n' "$dry_tag"

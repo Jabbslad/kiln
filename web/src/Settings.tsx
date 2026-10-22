@@ -148,8 +148,9 @@ export function Docs() {
           <h3>Before enabling mutations</h3>
           <p>
             The service must enforce workspace ownership, scoped credentials, durable idempotency,
-            resource reservation, operation progress and audit events. Terminal and preview
-            transport also need authenticated gateway integration.
+            resource reservation, operation progress and audit events. The terminal opens a shell in
+            a running box through a same-origin WebSocket when the session can operate. HTTP preview
+            routing still needs authenticated gateway integration.
           </p>
           <h3>Source of truth</h3>
           <p>
