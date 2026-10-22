@@ -48,5 +48,9 @@ grep -q 'sh scripts/test-release-json-field.sh' "$docs" \
   || fail 'check-docs.sh must run test-release-json-field.sh (docs-check parity)'
 grep -q 'sh scripts/test-release-notes.sh' "$docs" \
   || fail 'check-docs.sh must run test-release-notes.sh (docs-check parity)'
+grep -q 'bash scripts/test-identity-upgrade.sh' "$docs" \
+  || fail 'check-docs.sh must run test-identity-upgrade.sh (docs-check parity)'
+grep -q 'sh scripts/test-verify-release-attestations.sh' "$docs" \
+  || fail 'check-docs.sh must run test-verify-release-attestations.sh (docs-check parity)'
 
 printf 'check wiring tests ok\n'

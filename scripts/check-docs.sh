@@ -34,6 +34,7 @@ sh scripts/test-next-release-tag.sh
 sh scripts/test-plan-release.sh
 sh scripts/test-check-stamped-clients.sh
 sh scripts/test-release-budget.sh
+sh scripts/test-verify-release-attestations.sh
 sh scripts/test-check-dropped-platform.sh
 sh scripts/test-feature-map-guard.sh
 sh scripts/test-check-pr-proof.sh
