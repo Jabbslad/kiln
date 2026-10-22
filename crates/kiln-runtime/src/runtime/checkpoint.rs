@@ -200,7 +200,7 @@ impl Runtime {
         Ok(snapshot)
     }
 
-    fn verify_snapshot(&self, snapshot: &Snapshot) -> Result<()> {
+    pub(super) fn verify_snapshot(&self, snapshot: &Snapshot) -> Result<()> {
         let _phase = Phase::start("snapshot_verification");
         let directory = self.root.join("snapshots").join(&snapshot.id);
         for name in ["disk.ext4", "state.snap", "memory.snap"] {
@@ -269,6 +269,9 @@ impl Runtime {
             .await?;
         let result = self.capture(&builder.id, true).await;
         self.delete(&builder.id).await?;
+        if let Ok(snapshot) = &result {
+            self.register_golden_template(snapshot)?;
+        }
         result
     }
 
@@ -298,13 +301,8 @@ impl Runtime {
         }
         let records = self.records()?;
         ensure_unique_name(&records, name)?;
-        let snapshot = self.snapshot_metadata(snapshot_id)?;
+        let snapshot = self.verified_template_snapshot(snapshot_id)?;
         let phase = Phase::start("reservation");
-        if !snapshot.template {
-            return Err(Error::Invalid(
-                "only prepared templates can be cloned".into(),
-            ));
-        }
         if records.len() >= 8
             || records.iter().map(|r| r.memory_mib).sum::<u32>() + snapshot.memory_mib > 16384
         {
@@ -349,7 +347,6 @@ impl Runtime {
         let started = std::time::Instant::now();
         let (result, phases) = super::benchmark::scoped(async {
             let result = async {
-                self.verify_snapshot(&snapshot)?;
                 let phase = Phase::start("disk_copy");
                 self.prepare_snapshot_disk(&mut record, &snapshot)?;
                 self.save(&record)?;

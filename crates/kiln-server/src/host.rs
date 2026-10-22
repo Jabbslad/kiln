@@ -216,8 +216,12 @@ impl Host {
     async fn execute(&self, action: Action, box_id: &str) -> kiln_runtime::Result<Outcome> {
         let record = match action {
             Action::Create { template, name } => {
+                let snapshot_id = self
+                    .runtime
+                    .ensure_template_for_create(&self.templates[&template])
+                    .await?;
                 self.runtime
-                    .clone_template_with_id(&self.templates[&template], &name, box_id)
+                    .clone_template_with_id(&snapshot_id, &name, box_id)
                     .await?
             }
             Action::Pause { id } => self.runtime.set_paused(&id, true).await?,

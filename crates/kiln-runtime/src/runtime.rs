@@ -28,6 +28,7 @@ use std::{
 mod benchmark;
 mod checkpoint;
 mod disk;
+mod golden;
 mod ssh;
 use benchmark::{Phase, scoped, take_phases};
 
