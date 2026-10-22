@@ -27,6 +27,11 @@ grep -q 'scripts/check-release-trust.sh' "$root/scripts/tag-path-dry-run.sh" \
 grep -q 'scripts/check-release-trust.sh' "$root/.github/workflows/build.yml" \
   || fail 'release build must guard release binaries'
 
+grep -q 'green_main_run_sha' "$root/scripts/tag-path-dry-run.sh" \
+  || fail 'tag-path-dry-run must retry the green main run lookup'
+grep -q 'TAG_PATH_MAIN_SHA_LOOKUP_SLEEP' "$root/scripts/tag-path-dry-run.sh" \
+  || fail 'tag-path-dry-run must backoff between green main run lookup tries'
+
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -163,3 +168,38 @@ grep -q 'dashboard live index-dryrun.js' "$work/deploy-out" \
 grep -q 'packaged versions v0.4.18' "$work/deploy-out" \
   || fail 'deploy dry-run did not check packaged binary versions'
 [ ! -s "$work/ssh.log" ] || fail 'dry-run called ssh or curl'
+
+real_gh=$(command -v gh)
+count_file=$work/gh-run-list.count
+: >"$count_file"
+mkdir -p "$work/bin"
+cat >"$work/bin/gh" <<EOF
+#!/bin/sh
+if [ "\$1" = run ] && [ "\$2" = list ]; then
+  n=\$(wc -l < "$count_file")
+  printf '1\n' >> "$count_file"
+  if [ "\$n" -eq 0 ]; then
+    printf '\n'
+    exit 0
+  fi
+  printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+  exit 0
+fi
+exec "$real_gh" "\$@"
+EOF
+chmod +x "$work/bin/gh"
+
+if TAG_PATH_MAIN_SHA_LOOKUP_TEST=1 \
+  TAG_PATH_MAIN_SHA_LOOKUP_SLEEP=0 \
+  GH_REPO=Jabbslad/kiln \
+  GH_TOKEN=test-token \
+  PATH="$work/bin:$PATH" \
+  sh "$root/scripts/tag-path-dry-run.sh" >"$work/lookup-out" 2>"$work/lookup-err"; then
+  grep -q 'green main sha lookup ok' "$work/lookup-out" \
+    || fail 'lookup test must succeed after a transient empty gh run list'
+else
+  cat "$work/lookup-err" >&2
+  fail 'lookup test must not fail when gh run list is empty once then populated'
+fi
+lines=$(wc -l < "$count_file")
+[ "$lines" -ge 2 ] || fail 'lookup test must retry gh run list after an empty response'

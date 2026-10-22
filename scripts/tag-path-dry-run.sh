@@ -13,6 +13,45 @@ fail() {
   exit 1
 }
 
+green_main_run_sha() {
+  repo=$1
+  tries=${TAG_PATH_MAIN_SHA_LOOKUP_TRIES:-3}
+  sleep_sec=${TAG_PATH_MAIN_SHA_LOOKUP_SLEEP:-10}
+  attempt=1
+  sha=
+  while [ "$attempt" -le "$tries" ]; do
+    sha=$(
+      gh run list --repo "$repo" --workflow build.yml --branch main --event push \
+        --status success --limit 1 \
+        --json headSha,event,conclusion,headBranch,status \
+        --jq '.[0] | select(.conclusion == "success" and .event == "push" and .headBranch == "main" and .status == "completed") | .headSha'
+    )
+    if printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+      printf '%s\n' "$sha"
+      return 0
+    fi
+    if [ "$attempt" -lt "$tries" ]; then
+      sleep "$sleep_sec"
+    fi
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+if [ "${TAG_PATH_MAIN_SHA_LOOKUP_TEST:-}" = 1 ]; then
+  repo=${GH_REPO:-Jabbslad/kiln}
+  case $repo in
+    */*) ;;
+    *) fail "repository is not owner/name" ;;
+  esac
+  if [ -z "${GH_TOKEN:-}" ]; then
+    fail 'GH_TOKEN is required'
+  fi
+  green_main_run_sha "$repo" || fail 'no green main run'
+  printf 'green main sha lookup ok\n'
+  exit 0
+fi
+
 sh scripts/test-releasable.sh
 sh scripts/test-next-release-tag.sh
 sh scripts/test-plan-release.sh
@@ -28,13 +67,7 @@ if [ -z "${GH_TOKEN:-}" ]; then
   fail 'GH_TOKEN is required'
 fi
 
-sha=$(
-  gh run list --repo "$repo" --workflow build.yml --branch main --event push \
-    --status success --limit 1 \
-    --json headSha,event,conclusion,headBranch,status \
-    --jq '.[0] | select(.conclusion == "success" and .event == "push" and .headBranch == "main" and .status == "completed") | .headSha'
-)
-printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{40}$' || fail 'no green main run'
+sha=$(green_main_run_sha "$repo") || fail 'no green main run'
 
 dist=$(mktemp -d)
 output=$(mktemp)
