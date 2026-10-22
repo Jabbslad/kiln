@@ -111,7 +111,7 @@ fn keys(value: &Value) -> Result<JwkSet> {
     Ok(serde_json::from_value(value.clone())?)
 }
 
-pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<AuthGrant> {
+pub fn verify_claims(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<ServerClaims> {
     enrollment.validate()?;
     ensure!(token.len() <= 8192, "invalid token");
     let header = decode_header(token)?;
@@ -133,18 +133,11 @@ pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Auth
     validation.validate_nbf = true;
     validation.leeway = 30;
     let c = decode::<ServerClaims>(token, &key, &validation)?.claims;
-    let sub = c.sub.clone();
     let tenant_id = c
         .tenant_id
+        .clone()
         .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| sub.clone());
-    let role = c.role.unwrap_or_else(|| {
-        if sub == enrollment.owner_id {
-            Role::Owner
-        } else {
-            Role::Member
-        }
-    });
+        .unwrap_or_else(|| c.sub.clone());
     ensure!(
         tenant_id == enrollment.tenant_id()
             && !c.credential_id.is_empty()
@@ -156,14 +149,38 @@ pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Auth
             && c.iat <= jsonwebtoken::get_current_timestamp().saturating_add(30),
         "invalid token authority or lifetime"
     );
-    Ok(AuthGrant {
+    Ok(c)
+}
+
+fn auth_grant_from_claims(c: &ServerClaims, enrollment: &Enrollment) -> AuthGrant {
+    let sub = c.sub.clone();
+    let tenant_id = c
+        .tenant_id
+        .clone()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| sub.clone());
+    let role = c.role.unwrap_or_else(|| {
+        if sub == enrollment.owner_id {
+            Role::Owner
+        } else {
+            Role::Member
+        }
+    });
+    AuthGrant {
         caller: Caller {
             sub,
             tenant_id,
             role,
         },
         scope: c.scope,
-    })
+    }
+}
+
+pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<AuthGrant> {
+    Ok(auth_grant_from_claims(
+        &verify_claims(token, enrollment, jwks)?,
+        enrollment,
+    ))
 }
 
 struct Cache {
@@ -250,21 +267,32 @@ impl Authenticator {
         self.central_jwt(bearer).await
     }
 
-    /// Enrolled caller id when the bearer is a valid central JWT; otherwise `anonymous`.
+    /// JWT `sub` when the bearer is a valid central token; otherwise `anonymous`.
     pub async fn central_caller(&self, bearer: &str) -> String {
+        self.central_subject(bearer)
+            .await
+            .unwrap_or_else(|| "anonymous".into())
+    }
+
+    pub async fn central_subject(&self, bearer: &str) -> Option<String> {
         if bearer.is_empty() {
-            return "anonymous".into();
+            return None;
         }
-        if self.central.is_none() {
-            return "anonymous".into();
-        }
-        match self.authenticate_central(bearer).await {
-            Ok(grant) => grant.caller.sub,
-            Err(_) => "anonymous".into(),
-        }
+        self.central_claims(bearer).await.ok().map(|c| c.sub)
     }
 
     async fn central_jwt(&self, bearer: &str) -> Result<AuthGrant> {
+        let (enrollment, _) = self
+            .central
+            .as_ref()
+            .context("central authentication not enrolled")?;
+        Ok(auth_grant_from_claims(
+            &self.central_claims(bearer).await?,
+            enrollment,
+        ))
+    }
+
+    async fn central_claims(&self, bearer: &str) -> Result<ServerClaims> {
         let (enrollment, path) = self
             .central
             .as_ref()
@@ -278,7 +306,7 @@ impl Authenticator {
                 && header.x5c.is_none(),
             "invalid token header"
         );
-        let kid = header.kid.context("missing key id")?;
+        let kid = header.kid.context("missing token key id")?;
         let mut cache = self.cache.lock().await;
         let known = cache.jwks["keys"]
             .as_array()
@@ -317,6 +345,6 @@ impl Authenticator {
             fs::File::open(parent)?.sync_all()?;
             cache.jwks = value;
         }
-        verify(bearer, enrollment, &cache.jwks)
+        verify_claims(bearer, enrollment, &cache.jwks)
     }
 }
