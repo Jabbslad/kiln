@@ -758,13 +758,7 @@ fn mint(world: &World, sub: &str) -> String {
     )
 }
 
-fn mint_with(
-    key: &EncodingKey,
-    issuer: &str,
-    sub: &str,
-    tenant_id: &str,
-    role: Role,
-) -> String {
+fn mint_with(key: &EncodingKey, issuer: &str, sub: &str, tenant_id: &str, role: Role) -> String {
     let now = jsonwebtoken::get_current_timestamp();
     let claims = ServerClaims {
         iss: issuer.into(),
