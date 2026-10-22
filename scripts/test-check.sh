@@ -17,8 +17,8 @@ printf '%s\n' "$body" | grep -q 'scripts/fmt.sh --check' \
   || fail 'check.sh must run fmt in check mode'
 printf '%s\n' "$body" | grep -q 'cargo clippy --workspace' \
   || fail 'check.sh must run clippy'
-printf '%s\n' "$body" | grep -q 'cargo test --workspace' \
-  || fail 'check.sh must run workspace tests'
+printf '%s\n' "$body" | grep -q 'run-workspace-nextest.sh' \
+  || fail 'check.sh must run workspace tests through run-workspace-nextest.sh'
 printf '%s\n' "$body" | grep -q 'check-feature-map.sh' \
   || fail 'check.sh must run the feature-map guard'
 printf '%s\n' "$body" | grep -q '\-\-docs-check' \
@@ -34,6 +34,8 @@ printf '%s\n' "$body" | grep -q 'shellcheck not installed, skipped' \
 
 grep -q 'sh scripts/test-check.sh' .github/workflows/build.yml \
   || fail 'build.yml must run test-check.sh'
+grep -q 'sh scripts/test-server-check-nextest.sh' .github/workflows/build.yml \
+  || fail 'build.yml must run test-server-check-nextest.sh'
 grep -q 'sh scripts/test-pre-push-hook.sh' .github/workflows/build.yml \
   || fail 'build.yml must run test-pre-push-hook.sh'
 grep -q 'scripts/check.sh' .githooks/pre-push \
