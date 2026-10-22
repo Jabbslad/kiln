@@ -420,7 +420,24 @@ for name in kiln kiln-runtime kiln-network kiln-host kiln-api; do
   chmod 755 "$dest" "$package/bin/$name"
   chown root:root "$dest" "$package/bin/$name"
 done
-target_version=$("$package/bin/kiln-api" --version | awk '{print $2}')
+# The published archive and this workspace share a Cargo version, so an
+# unstamped package reports the same version as the install. Equal versions
+# are still an upgrade when the bytes differ, and they are "already current"
+# when the bytes match. Stamp the new package one patch above the installed
+# release so a same-version run cannot pass. The installer accepts only X.Y.Z.
+installed_reported=$("$libexec/kiln-api" --version | awk '{print $2}')
+[ "$installed_reported" = "$installed_version" ] || fail "installed kiln-api reports ${installed_reported}"
+target_version=$(printf '%s\n' "$installed_version" | awk -F. '{ printf "%d.%d.%d\n", $1, $2, $3 + 1 }')
+[ "$installed_version" != "$target_version" ] || fail "same-version package is not an upgrade"
+for name in kiln kiln-runtime kiln-host kiln-api; do
+  sh "$root/scripts/stamp-release-version.sh" "$package/bin/$name" "$target_version"
+  case $name in
+    kiln-host|kiln-api) reported=kiln-server ;;
+    *) reported=$name ;;
+  esac
+  got=$("$package/bin/$name" --version)
+  [ "$got" = "$reported $target_version" ] || fail "$name reports ${got}"
+done
 printf '{"version":"v%s","target":"x86_64-unknown-linux-gnu","min_upgrade_from":"%s"}\n' \
   "$target_version" "$installed_version" > "$package/release.json"
 cp "$work/prev/release.json" "$opt/release.json"
@@ -475,6 +492,11 @@ if [ "$rc" != 0 ]; then
   cat "$work/err" >&2 || true
   fail "upgrade from ${tag} did not publish (${installed_version} -> ${target_version})"
 fi
+grep -F -q "Kiln ${installed_version} -> ${target_version}:" "$work/out" \
+  || fail "upgrade did not swap binaries"
+if grep -F -q 'already current' "$work/out"; then
+  fail "first upgrade treated the package as already current"
+fi
 [ -f /etc/kiln/login.token ] || fail "missing login file was not created"
 [ ! -L /etc/kiln/login.token ] || fail "login file is a symlink"
 if [ "$(tr -cd '\n\r' < /etc/kiln/login.token | wc -c | tr -d '[:space:]')" -ne 0 ]; then
@@ -493,6 +515,8 @@ if [ "$rc" != 0 ]; then
 fi
 after=$(stamp /etc/kiln/login.token)
 [ "$before" = "$after" ] || fail "existing login file changed"
+grep -F -q "Kiln ${target_version} is already current" "$work/out" \
+  || fail "second upgrade did not see the swapped binaries"
 leaked && fail "second upgrade output contained a secret"
 
 cache=$work/jwks-cache.json
