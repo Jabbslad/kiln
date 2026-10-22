@@ -2,7 +2,11 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use kiln_api::auth::{CALLER_ROLE_HEADER, CALLER_SUB_HEADER, CALLER_TENANT_HEADER};
+use kiln_api::{
+    Action, Submit,
+    auth::{CALLER_ROLE_HEADER, CALLER_SUB_HEADER, CALLER_TENANT_HEADER},
+    new_id,
+};
 use kiln_runtime::runtime::BoxRecord;
 use kiln_server::host::{Config, Host};
 use std::os::unix::fs::PermissionsExt;
@@ -141,4 +145,58 @@ async fn member_list_and_get_hide_other_accounts_boxes() {
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
+}
+
+/// Another member's box may exist in the journal before `box.json` is written.
+/// Members must not operate on it during that window.
+#[tokio::test]
+async fn member_cannot_operate_on_another_accounts_inflight_create() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    for path in ["runtime", "journal"] {
+        std::fs::create_dir_all(root.path().join(path)).unwrap();
+        std::fs::set_permissions(
+            root.path().join(path),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+    }
+    let cfg = config(root.path());
+    let host = Host::open(&cfg).unwrap();
+    let inflight = "0123456789abcdef0123456789abcde2";
+    let db = rusqlite::Connection::open(cfg.journal_dir.join("operations.sqlite")).unwrap();
+    db.execute(
+        "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,created_at)
+         VALUES (?1,zeroblob(32),?2,1,1,?3,1)",
+        rusqlite::params![
+            "op-inflight",
+            inflight,
+            format!(
+                r#"{{"id":"op-inflight","box_id":"{inflight}","state":"running","result":null,"error":null}}"#
+            ),
+        ],
+    )
+    .unwrap();
+    let router = host.router();
+    let submit = Submit {
+        id: new_id(),
+        action: Action::Delete { id: inflight.into() },
+    };
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/v1/operations")
+        .header("content-type", "application/json");
+    for (name, value) in member_headers() {
+        request = request.header(name, value);
+    }
+    let response = router
+        .clone()
+        .oneshot(request.body(Body::from(serde_json::to_vec(&submit).unwrap())).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "member must not delete another account's in-flight create"
+    );
 }
