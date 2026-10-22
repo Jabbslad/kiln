@@ -160,6 +160,8 @@ if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
     bash scripts/test-identity-upgrade.sh
   proved_dist=$root/dist-proved-package-server
   mkdir -p "$proved_dist"
+  VERSION=$tag
+  export VERSION
   PACKAGE_OUTPUT=$proved_dist sh scripts/package-server-release.sh
 fi
 
