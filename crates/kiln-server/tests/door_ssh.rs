@@ -35,7 +35,7 @@ fn token(key: &EncodingKey, sub: &str, scope: Scope) -> String {
     token_for_tenant(
         key,
         sub,
-        "owner-a",
+        common::FIXTURE_TENANT_ID,
         if sub == "owner-a" {
             Role::Owner
         } else {

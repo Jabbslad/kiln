@@ -467,7 +467,6 @@ fn read_jwt(key: &EncodingKey) -> String {
         nbf: now,
         exp: now + 300,
         credential_id: "device-1".into(),
-        tenant_id: Some("owner-a".into()),
         scope: Scope::Read,
         role: Some(Role::Owner),
     };

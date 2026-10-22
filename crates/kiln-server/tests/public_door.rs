@@ -32,7 +32,7 @@ fn sockets(port: u16) -> usize {
 }
 
 fn token(key: &EncodingKey, sub: &str, audience: &str) -> String {
-    token_with_tenant(key, sub, "owner-a", audience)
+    token_with_tenant(key, sub, common::FIXTURE_TENANT_ID, audience)
 }
 
 fn token_with_tenant(key: &EncodingKey, sub: &str, tenant_id: &str, audience: &str) -> String {
