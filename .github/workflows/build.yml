@@ -1063,6 +1063,15 @@ jobs:
         with:
           name: server-check-release-bins
           path: server-check-release-bins
+      - name: Make reused release binaries executable
+        if: github.event_name == 'pull_request'
+        run: |
+          chmod +x \
+            server-check-release-bins/kiln \
+            server-check-release-bins/kiln-runtime \
+            server-check-release-bins/kiln-host \
+            server-check-release-bins/kiln-api \
+            server-check-release-bins/kiln-identity
       - name: Dry-run the tag path
         env:
           GH_TOKEN: ${{ github.token }}

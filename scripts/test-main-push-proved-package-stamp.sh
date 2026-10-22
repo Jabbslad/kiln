@@ -66,6 +66,8 @@ tag_job=$(
 )
 printf '%s\n' "$tag_job" | grep -q 'server-check-release-bins' \
   || fail 'tag-path-dry-run must download server-check-release-bins on pull requests'
+printf '%s\n' "$tag_job" | grep -q 'chmod +x' \
+  || fail 'tag-path-dry-run must chmod reused release binaries after artifact download'
 printf '%s\n' "$tag_job" | grep -q 'Swatinem/rust-cache@' \
   || fail 'tag-path-dry-run must use rust-cache on pull requests'
 printf '%s\n' "$tag_job" | grep -Fq 'needs: [changes, server-check]' \
