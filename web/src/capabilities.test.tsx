@@ -83,8 +83,13 @@ describe('capability guard', () => {
         const roots = await capabilityRoot(capability)
         expect(roots.length).toBeGreaterThan(0)
         for (const root of roots) {
-          if (status === 'not-yet') assertNotYet(root)
-          else assertAvailable(root)
+          if (status === 'not-yet') {
+            if (capability === 'ssh') {
+              expect(root).toHaveAttribute('data-capability-state', 'not-yet')
+              expect(within(root).getByText('Coming soon')).toBeVisible()
+              expect(root.textContent ?? '').not.toMatch(/kiln ssh/i)
+            } else assertNotYet(root)
+          } else assertAvailable(root)
         }
         cleanup()
       }
