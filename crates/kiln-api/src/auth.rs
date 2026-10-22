@@ -18,6 +18,31 @@ pub enum Scope {
     Operate,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberRole {
+    Owner,
+    Member,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantMember {
+    pub account_id: String,
+    pub role: MemberRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantSummary {
+    pub id: String,
+    pub role: MemberRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_server_id: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerDescriptor {
@@ -77,9 +102,15 @@ pub struct ServerClaims {
     pub iss: String,
     pub sub: String,
     pub aud: String,
+    /// Present on tokens minted after the tenant migration; legacy issuers omit it until upgraded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
     pub iat: u64,
     pub nbf: u64,
     pub exp: u64,
     pub credential_id: String,
     pub scope: Scope,
+    /// Present on tokens minted after the tenant migration; legacy issuers omit it until upgraded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<MemberRole>,
 }

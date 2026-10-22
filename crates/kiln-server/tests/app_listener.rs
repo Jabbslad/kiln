@@ -16,7 +16,7 @@ use axum::{
 };
 use futures_util::stream;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::{Action, Submit, auth::Scope, auth::ServerClaims, new_id};
+use kiln_api::{Action, Submit, auth::MemberRole, auth::Scope, auth::ServerClaims, new_id};
 use kiln_server::{
     app_listener::{self, BIND},
     auth::{Authenticator, Enrollment},
@@ -88,11 +88,13 @@ fn token_with(key: &EncodingKey, sub: &str, scope: Scope, credential_id: &str) -
         iss: "https://identity.example.test".into(),
         sub: sub.into(),
         aud: "kiln:server:server-b".into(),
+        tenant_id: Some("ten_test".into()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: credential_id.into(),
         scope,
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -1130,11 +1132,13 @@ async fn read_grant_is_checked_and_another_server_is_rejected() {
             iss: "https://identity.example.test".into(),
             sub: "owner-a".into(),
             aud: "kiln:server:other".into(),
+            tenant_id: Some("ten_other".into()),
             iat: now,
             nbf: now,
             exp: now + 300,
             credential_id: "app_other".into(),
             scope: Scope::Read,
+            role: Some(MemberRole::Owner),
         },
         &key,
     )

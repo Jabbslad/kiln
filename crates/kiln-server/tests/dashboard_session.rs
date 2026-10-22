@@ -17,7 +17,9 @@ use axum::{
 };
 use base64::Engine;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{AccessToken, DeviceAuthorization, DeviceTokens, Scope, ServerClaims};
+use kiln_api::auth::{
+    AccessToken, DeviceAuthorization, DeviceTokens, MemberRole, Scope, ServerClaims,
+};
 use kiln_server::{
     auth::{Authenticator, Enrollment},
     door::{self, Dashboard},
@@ -753,11 +755,13 @@ fn mint_with(key: &EncodingKey, issuer: &str, sub: &str) -> String {
         iss: issuer.into(),
         sub: sub.into(),
         aud: "kiln:server:server-b".into(),
+        tenant_id: Some("ten_test".into()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "dev_dashboard".into(),
         scope: Scope::Operate,
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
