@@ -331,11 +331,7 @@ impl Authenticator {
         let claims = self.central_claims(bearer).await?;
         let grant = auth_grant_from_claims(&claims, enrollment);
         if let Some(watch) = &self.revocations {
-            watch.allow(
-                &grant.caller.sub,
-                &claims.credential_id,
-                grant.caller.role,
-            )?;
+            watch.allow(&grant.caller.sub, &claims.credential_id, grant.caller.role)?;
         }
         Ok(CentralIdentity {
             scope: grant.scope,
@@ -374,11 +370,7 @@ impl Authenticator {
         let claims = self.central_claims(bearer).await?;
         let grant = auth_grant_from_claims(&claims, enrollment);
         if let Some(watch) = &self.revocations {
-            watch.allow(
-                &grant.caller.sub,
-                &claims.credential_id,
-                grant.caller.role,
-            )?;
+            watch.allow(&grant.caller.sub, &claims.credential_id, grant.caller.role)?;
         }
         Ok(grant)
     }

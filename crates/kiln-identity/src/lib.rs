@@ -15,7 +15,7 @@ pub use config::{
     unix_now,
 };
 use kiln_api::auth::{
-    DeviceTokens, Role, Registration, RevocationQuery, RevocationSet, Scope, ServerClaims,
+    DeviceTokens, Registration, RevocationQuery, RevocationSet, Role, Scope, ServerClaims,
     TenantMember, TenantSummary,
 };
 pub use providers::{Provider, ProviderIdentity};

@@ -103,19 +103,14 @@ async fn tenant_revocation_feed_rejects_within_one_refresh_cycle() {
         .unwrap();
     let watch =
         kiln_server::revocation::RevocationWatch::new(enrollment, "login-secret".into(), http);
-    watch
-        .allow("owner-a", "device-live", Role::Owner)
-        .unwrap();
+    watch.allow("owner-a", "device-live", Role::Owner).unwrap();
     *revocations.lock().await = RevocationSet {
         accounts: vec![],
         credentials: vec!["device-live".into()],
     };
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(300)).await;
-        if watch
-            .allow("owner-a", "device-live", Role::Owner)
-            .is_err()
-        {
+        if watch.allow("owner-a", "device-live", Role::Owner).is_err() {
             return;
         }
     }
@@ -135,11 +130,7 @@ async fn member_tokens_fail_closed_when_revocation_feed_is_stale() {
         "login-secret".into(),
         reqwest::Client::builder().https_only(true).build().unwrap(),
     );
-    assert!(
-        watch
-            .allow("member-b", "device-m", Role::Member)
-            .is_err()
-    );
+    assert!(watch.allow("member-b", "device-m", Role::Member).is_err());
 }
 
 #[tokio::test]
