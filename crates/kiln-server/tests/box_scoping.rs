@@ -166,14 +166,15 @@ async fn member_cannot_operate_on_another_accounts_inflight_create() {
     let inflight = "0123456789abcdef0123456789abcde2";
     let db = rusqlite::Connection::open(cfg.journal_dir.join("operations.sqlite")).unwrap();
     db.execute(
-        "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,created_at)
-         VALUES (?1,zeroblob(32),?2,1,1,?3,1)",
+        "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,created_at,create_owner)
+         VALUES (?1,zeroblob(32),?2,1,1,?3,1,?4)",
         rusqlite::params![
             "op-inflight",
             inflight,
             format!(
                 r#"{{"id":"op-inflight","box_id":"{inflight}","state":"running","result":null,"error":null}}"#
             ),
+            "acct-other",
         ],
     )
     .unwrap();

@@ -1544,7 +1544,7 @@ fn write_named(root: &Path, names: &[&str]) {
             fs::create_dir_all(parent).unwrap();
         }
         let body = if *name == "deploy/operations-journal.max-version" {
-            "2\n"
+            "3\n"
         } else {
             name
         };

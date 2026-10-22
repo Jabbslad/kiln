@@ -254,6 +254,24 @@ impl Host {
         }
     }
 
+    fn ensure_inflight_box_access(
+        &self,
+        journal: &Journal,
+        caller: &Caller,
+        box_id: &str,
+    ) -> Result<(), Failure> {
+        let owner = journal
+            .create_owner(box_id)
+            .map_err(Failure::internal)?
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| self.tenant_owner_id.clone());
+        if caller_may_access_box(caller, &owner) {
+            Ok(())
+        } else {
+            Err(Failure::missing())
+        }
+    }
+
     async fn resolve_box(&self, caller: &Caller, target: &str) -> Result<BoxRecord, Failure> {
         let record = self.find_box_record(target).await?;
         self.ensure_box_access(caller, &record)?;
@@ -884,6 +902,7 @@ async fn plan_submit(
                 if host.box_on_disk(target)? {
                     Some(target.to_string())
                 } else {
+                    host.ensure_inflight_box_access(&db, caller, target)?;
                     None
                 }
             }
@@ -916,17 +935,21 @@ async fn plan_submit(
     })?;
     let live_ids = live_box_ids(&host.runtime_dir).map_err(Failure::internal)?;
     let live_refs: Vec<&str> = live_ids.iter().map(String::as_str).collect();
-    let accepted = db.accept(request, &live_refs).map_err(|error| {
-        if error.is::<JournalFull>() {
-            Failure::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "journal_full",
-                "The operation journal is full after automatic retention. Archive this installation or delete old boxes, then retry.",
-            )
-        } else {
-            Failure::internal(error)
-        }
-    })?;
+    let create_owner = matches!(request.action, Action::Create { .. })
+        .then(|| caller.sub.as_str());
+    let accepted = db
+        .accept(request, &live_refs, create_owner)
+        .map_err(|error| {
+            if error.is::<JournalFull>() {
+                Failure::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "journal_full",
+                    "The operation journal is full after automatic retention. Archive this installation or delete old boxes, then retry.",
+                )
+            } else {
+                Failure::internal(error)
+            }
+        })?;
     Ok(SubmitPlan::Run {
         request: request.clone(),
         accepted,
@@ -1355,6 +1378,7 @@ mod tests {
                     },
                 },
                 &[],
+                Some("owner"),
             )
             .unwrap();
         let _held: Vec<_> = (0..32)
@@ -1404,6 +1428,7 @@ mod tests {
                     },
                 },
                 &[],
+                None,
             )
             .unwrap();
         let err = wait_for_create(host, &op.id, 1).await.unwrap_err();
@@ -1440,6 +1465,7 @@ mod tests {
                     },
                 },
                 &[],
+                None,
             )
             .unwrap();
         let mut finished = op.clone();

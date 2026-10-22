@@ -68,6 +68,16 @@ fn table_has_column(connection: &Connection, column: &str) -> Result<bool> {
     Ok(names.filter_map(Result::ok).any(|name| name == column))
 }
 
+fn ensure_v3_columns(connection: &Connection) -> Result<()> {
+    if !table_has_column(connection, "create_owner")? {
+        connection.execute(
+            "ALTER TABLE operations ADD COLUMN create_owner TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 fn ensure_v2_columns(connection: &Connection) -> Result<()> {
     if !table_has_column(connection, "finished_at")? {
         connection.execute("ALTER TABLE operations ADD COLUMN finished_at INTEGER", [])?;
@@ -97,11 +107,13 @@ impl Journal {
             id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
             is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
             created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-            finished_at INTEGER, action TEXT NOT NULL DEFAULT 'unknown');
+            finished_at INTEGER, action TEXT NOT NULL DEFAULT 'unknown',
+            create_owner TEXT NOT NULL DEFAULT '');
             CREATE INDEX IF NOT EXISTS operation_boxes ON operations(box_id, is_create);",
         )?;
         if version < SCHEMA_VERSION {
             ensure_v2_columns(&tx)?;
+            ensure_v3_columns(&tx)?;
             tx.execute(
                 "UPDATE operations SET action = 'create' WHERE is_create = 1 AND action = 'unknown'",
                 [],
@@ -212,9 +224,20 @@ impl Journal {
         Ok(())
     }
 
-    pub fn accept(&mut self, request: &Submit, live_box_ids: &[&str]) -> Result<Operation> {
+    pub fn accept(
+        &mut self,
+        request: &Submit,
+        live_box_ids: &[&str],
+        create_owner: Option<&str>,
+    ) -> Result<Operation> {
         let now = unix_now();
         self.make_room(now, live_box_ids)?;
+        let is_create = matches!(request.action, Action::Create { .. });
+        let owner = if is_create {
+            create_owner.unwrap_or("")
+        } else {
+            ""
+        };
         let op = Operation {
             id: request.id.clone(),
             box_id: request
@@ -227,17 +250,30 @@ impl Journal {
             error: None,
         };
         self.0.execute(
-            "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,action) VALUES (?1,?2,?3,?4,1,?5,?6)",
+            "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,action,create_owner) VALUES (?1,?2,?3,?4,1,?5,?6,?7)",
             params![
                 op.id,
                 Self::fingerprint(request)?,
                 op.box_id,
-                matches!(request.action, Action::Create { .. }),
+                is_create,
                 serde_json::to_string(&op)?,
                 launch_action(&request.action),
+                owner,
             ],
         )?;
         Ok(op)
+    }
+
+    pub fn create_owner(&self, box_id: &str) -> Result<Option<String>> {
+        let owner: Option<String> = self
+            .0
+            .query_row(
+                "SELECT create_owner FROM operations WHERE box_id=?1 AND is_create=1 LIMIT 1",
+                [box_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(owner.filter(|value| !value.is_empty()))
     }
 
     pub fn get(&self, id: &str) -> Result<Option<Operation>> {
@@ -437,7 +473,7 @@ mod tests {
             },
         };
         let mut db = Journal::open(&path).unwrap();
-        let op = db.accept(&request, &[]).unwrap();
+        let op = db.accept(&request, &[], None).unwrap();
         assert_eq!(op.state, OperationState::Running);
         assert!(db.owns(&op.box_id).unwrap());
         assert!(!db.owns(&new_id()).unwrap());
@@ -475,7 +511,7 @@ mod tests {
                 },
             },
         };
-        let mut op = db.accept(&request, &[]).unwrap();
+        let mut op = db.accept(&request, &[], None).unwrap();
         op.state = OperationState::Succeeded;
         op.result = Some(Outcome::Exec(kiln_api::ExecResult {
             stdout: vec![0, 255, 17],
@@ -585,7 +621,7 @@ mod tests {
                 name: "after-prune".into(),
             },
         };
-        db.accept(&request, &[]).unwrap();
+        db.accept(&request, &[], None).unwrap();
         assert!(db.count().unwrap() < HIGH_WATER_MARK);
         assert!(db.existing(&request).unwrap().is_some());
     }
@@ -628,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_journal_is_version_two_and_reopening_is_a_noop() {
+    fn fresh_journal_is_current_version_and_reopening_is_a_noop() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("ops.sqlite");
         drop(Journal::open(&path).unwrap());
@@ -639,12 +675,33 @@ mod tests {
         assert_eq!(version, SCHEMA_VERSION);
         assert!(table_has_column(&Connection::open(&path).unwrap(), "finished_at").unwrap());
         assert!(table_has_column(&Connection::open(&path).unwrap(), "action").unwrap());
+        assert!(table_has_column(&Connection::open(&path).unwrap(), "create_owner").unwrap());
         drop(Journal::open(&path).unwrap());
         let version: u32 = Connection::open(&path)
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v2_upgrade_adds_create_owner_column() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("ops.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "PRAGMA user_version=2;
+             CREATE TABLE operations (
+               id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
+               is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
+               created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+               finished_at INTEGER, action TEXT NOT NULL DEFAULT 'unknown');
+             CREATE INDEX operation_boxes ON operations(box_id, is_create);",
+        )
+        .unwrap();
+        drop(conn);
+        drop(Journal::open(&path).unwrap());
+        assert!(table_has_column(&Connection::open(&path).unwrap(), "create_owner").unwrap());
     }
 
     #[test]
@@ -759,7 +816,7 @@ mod tests {
                 name: "box".into(),
             },
         };
-        let mut op = db.accept(&request, &[]).unwrap();
+        let mut op = db.accept(&request, &[], None).unwrap();
         op.state = OperationState::Succeeded;
         std::thread::sleep(std::time::Duration::from_secs(1));
         db.finish(&op).unwrap();
@@ -826,6 +883,6 @@ mod tests {
                 name: "blocked".into(),
             },
         };
-        assert!(db.accept(&request, &[]).is_err());
+        assert!(db.accept(&request, &[], None).is_err());
     }
 }
