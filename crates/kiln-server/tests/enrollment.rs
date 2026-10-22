@@ -48,7 +48,6 @@ fn setup() -> (tempfile::TempDir, Receipt) {
             issuer: "https://identity.example/".into(),
             owner_id: "owner".into(),
             server_id: "server".into(),
-            tenant_id: None,
         },
         origin: "https://server.example/".into(),
         ca_pem: String::new(),
