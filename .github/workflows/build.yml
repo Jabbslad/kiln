@@ -746,7 +746,7 @@ jobs:
     if: >-
       !cancelled() &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)) &&
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.dry_run == false)) &&
       needs.required.result == 'success' &&
       needs.server-check.result == 'success' &&
       needs.server-package.result == 'success' &&
@@ -787,7 +787,7 @@ jobs:
     if: >-
       !cancelled() &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)) &&
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.dry_run == false)) &&
       needs.release-plan.result == 'success' &&
       needs.release-plan.outputs.release == 'true' &&
       needs.server-package.result == 'success' &&
@@ -891,7 +891,7 @@ jobs:
     if: >-
       !cancelled() &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && !inputs.dry_run)) &&
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.dry_run == false)) &&
       needs.release-plan.result == 'success' &&
       needs.release-plan.outputs.release == 'true' &&
       needs.version-guard.result == 'success' &&
