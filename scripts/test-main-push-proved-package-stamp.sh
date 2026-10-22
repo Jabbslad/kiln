@@ -43,8 +43,40 @@ proved_block=$(
 )
 [ -n "$proved_block" ] || fail 'tag-path-dry-run missing proved package-server block'
 
-printf '%s\n' "$proved_block" | grep -q 'PACKAGE_OUTPUT=\$proved_dist sh scripts/package-server-release.sh' \
-  || fail 'tag-path-dry-run must build proved package-server for main reuse'
+printf '%s\n' "$proved_block" | grep -q 'SKIP_RELEASE_BUILD=1' \
+  || fail 'proved package-server must reuse server-check release binaries'
+printf '%s\n' "$proved_block" | grep -q 'RELEASE_BIN_DIR="\$reuse_bin_dir"' \
+  || fail 'proved package-server must pass RELEASE_BIN_DIR from server-check'
+printf '%s\n' "$proved_block" | grep -q 'KILN_PACKAGE_IMAGE_DIR=' \
+  || fail 'proved package-server must reuse the reuse image instead of rebuilding'
+printf '%s\n' "$proved_block" | grep -q 'TAG_PATH_RELEASE_BIN_DIR' \
+  || fail 'tag-path-dry-run must require TAG_PATH_RELEASE_BIN_DIR on pull requests'
+
+workflow=$root/.github/workflows/build.yml
+server=$(
+  awk '/^  server-check:/{flag=1} flag && /^  [a-z].*:/ && !/^  server-check:/{exit} flag{print}' \
+    "$workflow"
+)
+printf '%s\n' "$server" | grep -q 'server-check-release-bins' \
+  || fail 'server-check must upload server-check-release-bins for tag-path reuse'
+
+tag_job=$(
+  awk '/^  tag-path-dry-run:/{flag=1} flag && /^  [a-z].*:/ && !/^  tag-path-dry-run:/{exit} flag{print}' \
+    "$workflow"
+)
+printf '%s\n' "$tag_job" | grep -q 'server-check-release-bins' \
+  || fail 'tag-path-dry-run must download server-check-release-bins on pull requests'
+printf '%s\n' "$tag_job" | grep -q 'Swatinem/rust-cache@' \
+  || fail 'tag-path-dry-run must use rust-cache on pull requests'
+printf '%s\n' "$tag_job" | grep -Fq 'needs: [changes, server-check]' \
+  || fail 'tag-path-dry-run must wait for server-check on pull requests'
+
+printf '%s\n' 'scripts/run-workspace-nextest.sh' | cargo xtask ci-job-paths \
+  | grep -q 'release_path=false' \
+  || fail 'CI-only nextest script changes must not set release_path'
+printf '%s\n' 'scripts/plan-release.sh' | cargo xtask ci-job-paths \
+  | grep -q 'release_path=true' \
+  || fail 'release script changes must still set release_path'
 
 if printf '%s\n' "$proved_block" | grep -q 'VERSION=\$tag'; then
   fail 'proved package-server must not use the planned tag in archive names'
