@@ -232,14 +232,10 @@ else
 fi
 
 door_caddy_rc=1
-if [ "$install_rc" -eq 0 ] && [ -f /opt/paseo/Caddyfile ] \
-  && [ -f "$extract/package/deploy/door.Caddyfile" ]; then
+if [ "$install_rc" -eq 0 ] && [ -f "$extract/package/deploy/door.Caddyfile" ]; then
   door_caddy_rc=0
   bash "$dir/install-door-caddy.sh" "$extract/package/deploy/door.Caddyfile" \
     || door_caddy_rc=$?
-elif [ "$install_rc" -eq 0 ] && [ ! -f /opt/paseo/Caddyfile ]; then
-  printf 'deploy: skipping door caddy install because /opt/paseo/Caddyfile is absent\n' >&2
-  door_caddy_rc=0
 else
   printf 'deploy: skipping door caddy install because installation failed\n' >&2
 fi

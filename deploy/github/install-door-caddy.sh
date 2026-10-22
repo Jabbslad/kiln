@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install deploy/door.Caddyfile into /opt/paseo/Caddyfile without restarting Caddy.
+# Install deploy/door.Caddyfile into the Caddy config volume snippet and reload.
 set -euo pipefail
 
 fail() { printf 'install-door-caddy: %s\n' "$*" >&2; exit 1; }
@@ -8,30 +8,53 @@ site=${1:-}
 [ -n "$site" ] || fail 'usage: install-door-caddy.sh DOOR_CADDYFILE'
 [ -f "$site" ] || fail "missing door site: ${site}"
 
-live=${KILN_PASEO_CADDYFILE:-/opt/paseo/Caddyfile}
-backup=${KILN_PASEO_CADDYFILE_BAK:-/opt/paseo/Caddyfile.bak-deploy-door}
-staging=${KILN_PASEO_CADDYFILE_NEW:-/opt/paseo/Caddyfile.new-deploy-door}
-ca=${KILN_KILN_CA_CERT:-/etc/kiln/ca.crt}
-
-[ -f "$live" ] || fail "missing live Caddyfile: ${live}"
-[ -f "$ca" ] || fail "missing CA for Caddy validate: ${ca}"
+paseo_caddyfile=${KILN_PASEO_CADDYFILE:-/opt/paseo/Caddyfile}
+snippet=${KILN_DOOR_CADDY_SNIPPET:-/var/lib/docker/volumes/paseo_caddy_config/_data/kiln/kiln.caddy}
+import_line='import /config/kiln/kiln.caddy'
 
 docker_cmd=${KILN_DOCKER:-docker}
+caddy_config=/etc/caddy/Caddyfile
+
 if ! "$docker_cmd" inspect -f '{{.State.Running}}' caddy 2>/dev/null | grep -qx true; then
   fail 'caddy container is not running'
 fi
-image=$("$docker_cmd" inspect -f '{{.Config.Image}}' caddy)
 
-validate_config() {
-  local config=$1
-  local out rc
+[ -f "$paseo_caddyfile" ] || fail "missing shared Caddyfile: ${paseo_caddyfile}"
+if ! grep -Fq "$import_line" "$paseo_caddyfile"; then
+  fail "one-time import edit required: add \"${import_line}\" to ${paseo_caddyfile}"
+fi
+
+[ -f "$snippet" ] || fail "missing door Caddy snippet at ${snippet}; Kiln Ops must move the cli.dark-forge.dev site there before deploy can update it"
+
+if cmp -s "$site" "$snippet"; then
+  printf 'door caddy unchanged\n'
+  exit 0
+fi
+
+backup="${snippet}.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+cp -a "$snippet" "$backup"
+
+install_snippet() {
+  local src=$1
+  local dest=$2
+  local dir tmp
+  dir=$(dirname "$dest")
+  mkdir -p "$dir"
+  tmp=$(mktemp "${dir}/kiln.caddy.XXXXXX")
+  cp -a -- "$src" "$tmp"
+  chmod 644 "$tmp"
+  if [ "$(id -u)" -eq 0 ]; then
+    chown root:root "$tmp"
+  fi
+  mv -f "$tmp" "$dest"
+}
+
+validate_whole() {
+  local rc out
   rc=0
   out=$(
-    "$docker_cmd" run --rm \
-      --mount "type=bind,source=${config},target=/etc/caddy/Caddyfile,readonly" \
-      --mount "type=bind,source=${ca},target=/etc/kiln/ca.crt,readonly" \
-      "$image" \
-      caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1
+    "$docker_cmd" exec caddy \
+      caddy validate --config "$caddy_config" --adapter caddyfile 2>&1
   ) || rc=$?
   if [ "$rc" -ne 0 ]; then
     printf '%s\n' "$out" >&2
@@ -42,11 +65,11 @@ validate_config() {
 }
 
 reload_live() {
-  local out rc
+  local rc out
   rc=0
   out=$(
     "$docker_cmd" exec caddy \
-      caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1
+      caddy reload --config "$caddy_config" --adapter caddyfile 2>&1
   ) || rc=$?
   if [ "$rc" -ne 0 ]; then
     printf '%s\n' "$out" >&2
@@ -56,101 +79,75 @@ reload_live() {
   return 0
 }
 
-restore_and_reload_backup() {
-  cp -a "$backup" "$live"
-  if validate_config "$live" >/dev/null; then
-    reload_live >/dev/null || true
+restore_snippet() {
+  install_snippet "$backup" "$snippet"
+  reload_rc=0
+  reload_out=$(reload_live) || reload_rc=$?
+  if [ "$reload_rc" -ne 0 ]; then
+    fail "restore reload failed (exit ${reload_rc}): ${reload_out}"
   fi
 }
 
-site_bytes=$(mktemp)
-trap 'rm -f "$site_bytes" "$staging"' EXIT
-awk '
-  {
-    line = $0
-    sub(/\r$/, "", line)
-    printf "%s\n", line
-  }
-' "$site" >"$site_bytes"
-if [ -s "$site_bytes" ] && [ -n "$(tail -c1 "$site_bytes")" ]; then
-  printf '\n' >>"$site_bytes"
-fi
-
-merge_door() {
-  awk -v door="$site_bytes" '
-function braces(line,    i, c, n) {
-  n = 0
-  for (i = 1; i <= length(line); i++) {
-    c = substr(line, i, 1)
-    if (c == "{") n++
-    else if (c == "}") n--
-  }
-  return n
-}
-BEGIN {
-  while ((getline line < door) > 0) door_text = door_text line "\n"
-  close(door)
-  found = 0
-  skip = 0
-  depth = 0
-}
-{
-  raw = $0
-  sub(/\r$/, "", raw)
-  if (!skip && raw == "cli.dark-forge.dev {") {
-    found = 1
-    skip = 1
-    depth = braces(raw)
-    printf "%s", door_text
-    if (depth <= 0) skip = 0
-    next
-  }
-  if (skip) {
-    depth += braces(raw)
-    if (depth <= 0) skip = 0
-    next
-  }
-  print raw
-}
-END { exit !found }
-' "$live"
-}
-
-if merge_door >"$staging"; then
-  :
-else
-  cp -a "$live" "$staging"
-  if [ -s "$staging" ] && [ -n "$(tail -c1 "$staging")" ]; then
-    printf '\n' >>"$staging"
-  fi
-  cat "$site_bytes" >>"$staging"
-fi
-
-if cmp -s "$live" "$staging"; then
-  printf 'door caddy unchanged\n'
-  exit 0
-fi
-
-cp -a "$live" "$backup"
+install_snippet "$site" "$snippet"
 
 validate_rc=0
-validate_out=$(validate_config "$staging") || validate_rc=$?
+validate_out=$(validate_whole) || validate_rc=$?
 if [ "$validate_rc" -ne 0 ]; then
-  rm -f "$staging"
-  printf 'install-door-caddy: caddy validate failed (exit %s) on staging config\n' "$validate_rc" >&2
-  exit 1
+  install_snippet "$backup" "$snippet"
+  restore_rc=0
+  restore_out=$(reload_live) || restore_rc=$?
+  if [ "$restore_rc" -ne 0 ]; then
+    fail "docker exec caddy caddy reload --config ${caddy_config} after validate failure failed (exit ${restore_rc}): ${restore_out}"
+  fi
+  fail "docker exec caddy caddy validate --config ${caddy_config} --adapter caddyfile failed (exit ${validate_rc}): ${validate_out}"
 fi
-
-cp -a "$staging" "$live"
-rm -f "$staging"
 
 reload_rc=0
 reload_out=$(reload_live) || reload_rc=$?
 if [ "$reload_rc" -ne 0 ]; then
-  restore_and_reload_backup
-  fail "caddy reload failed (exit ${reload_rc}): ${reload_out}"
+  restore_snippet
+  fail "docker exec caddy caddy reload --config ${caddy_config} --adapter caddyfile failed (exit ${reload_rc}): ${reload_out}"
 fi
 
-printf 'door caddy installed and reloaded\n'
+if [ "${KILN_DOOR_CADDY_SKIP_PROBE:-}" != 1 ]; then
+  probe_rc=0
+  probe_out=$(
+    set +e
+    app_code=$(curl --fail --silent --show-error --max-time 10 -o /dev/null -w '%{http_code}' \
+      https://app.dark-forge.dev/ 2>&1)
+    app_rc=$?
+    login_code=$(curl --fail --silent --show-error --max-time 10 -o /dev/null -w '%{http_code}' \
+      https://dark-forge.dev/login 2>&1)
+    login_rc=$?
+    cli_body=$(mktemp)
+    cli_code=$(curl --silent --show-error --http1.1 --max-time 10 \
+      --header 'Connection: Upgrade' \
+      --header 'Upgrade: kiln-ssh' \
+      --output "$cli_body" --write-out '%{http_code}' \
+      https://cli.dark-forge.dev/v1/templates 2>&1)
+    cli_rc=$?
+    set -e
+    if [ "$app_rc" -ne 0 ] || [ "$app_code" != 200 ]; then
+      printf 'app.dark-forge.dev probe failed (curl exit %s, http %s)\n' "$app_rc" "$app_code"
+      probe_rc=1
+    fi
+    if [ "$login_rc" -ne 0 ] || [ "$login_code" != 200 ]; then
+      printf 'dark-forge.dev/login probe failed (curl exit %s, http %s)\n' "$login_rc" "$login_code"
+      probe_rc=1
+    fi
+    if [ "$cli_rc" -ne 0 ] || [ "$cli_code" != 401 ]; then
+      printf 'cli.dark-forge.dev Upgrade probe failed (curl exit %s, http %s)\n' "$cli_rc" "$cli_code"
+      probe_rc=1
+    fi
+    rm -f "$cli_body"
+    exit "$probe_rc"
+  ) || probe_rc=$?
+  if [ "$probe_rc" -ne 0 ]; then
+    restore_snippet
+    fail "post-reload HTTP probe failed: ${probe_out}"
+  fi
+fi
+
+printf 'door caddy snippet installed and reloaded\n'
 printf '%s\n' "$validate_out"
 printf '%s\n' "$reload_out"

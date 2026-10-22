@@ -613,38 +613,9 @@ fn test_deploy_host_scripts_do_not_invoke_jq() {
     }
 }
 
-fn test_install_door_caddy_validates_staging_and_skips_unchanged_bytes() {
-    let script = read_repo("deploy/github/install-door-caddy.sh");
-    let deploy = read_repo("deploy/github/deploy.sh");
-    let remote = read_repo("deploy/github/install-remote.sh");
-    assert!(deploy.contains("install-door-caddy.sh"));
-    assert!(remote.contains("install-door-caddy.sh"));
-    assert!(remote.contains("deploy/door.Caddyfile"));
-    assert!(remote.contains("\"$door_caddy_rc\" -eq 0"));
-    assert!(script.contains("caddy validate"));
-    assert!(script.contains("caddy reload"));
-    assert!(!script.contains("compose up"));
-    assert!(!script.contains("restart caddy"));
-
-    let root = std::env::temp_dir().join(format!("kiln-door-caddy-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(root.join("bin")).unwrap();
-    let live = root.join("Caddyfile");
-    let door = root.join("door.Caddyfile");
-    let ca = root.join("ca.crt");
-    let backup = root.join("Caddyfile.bak");
-    let staging = root.join("Caddyfile.new");
-    let log = root.join("docker.log");
-    let base_site = read_repo("deploy/door.Caddyfile");
-    let legacy = base_site.replace("versions 1.1\n", "");
-    let prefix = "dark-forge.dev {\n\trespond \"login ok\" 200\n}\n\n";
-    fs::write(&live, format!("{prefix}{legacy}")).unwrap();
-    fs::write(&door, &base_site).unwrap();
-    fs::write(&ca, read_repo("deploy/host.example.json")).unwrap();
-    write_executable(
-        &root.join("bin/docker"),
-        &format!(
-            r#"#!/bin/bash
+fn door_caddy_docker_stub(log: &Path, snippet: &Path) -> String {
+    format!(
+        r#"#!/bin/bash
 printf '%s\n' "$*" >> "{log}"
 case "$1" in
   inspect)
@@ -652,33 +623,17 @@ case "$1" in
       printf 'true\n'
       exit 0
     fi
-    if [ "$2" = '-f' ] && [ "$3" = '{{{{.Config.Image}}}}' ]; then
-      printf 'caddy:test\n'
-      exit 0
-    fi
     ;;
-  run)
-    config=
-    for arg in "$@"; do
-      case "$arg" in
-        type=bind,source=*,target=/etc/caddy/Caddyfile,*)
-          config=${{arg#type=bind,source=}}
-          config=${{config%%,target=/etc/caddy/Caddyfile*}}
-          ;;
-      esac
-    done
-    if printf '%s\n' "$*" | grep -q 'caddy validate'; then
-      if grep -q 'not_a_directive' "$config"; then
+  exec)
+    if [ "$2" = caddy ] && printf '%s\n' "$*" | grep -q 'caddy validate'; then
+      if grep -q 'not_a_directive' "{snippet}"; then
         printf 'invalid config\n' >&2
         exit 17
       fi
       printf 'Valid configuration\n'
       exit 0
     fi
-    exit 99
-    ;;
-  exec)
-    if printf '%s\n' "$*" | grep -q 'caddy reload'; then
+    if [ "$2" = caddy ] && printf '%s\n' "$*" | grep -q 'caddy reload'; then
       printf 'reloaded\n'
       exit 0
     fi
@@ -687,56 +642,141 @@ case "$1" in
 esac
 exit 97
 "#,
-            log = log.display()
-        ),
-    );
-    let run = |door_site: &Path| {
-        let mut command = Command::new("bash");
-        command.arg(repo().join("deploy/github/install-door-caddy.sh"));
-        command.arg(door_site);
-        command.env("PATH", prepend_path(&root.join("bin")));
-        command.env("KILN_PASEO_CADDYFILE", &live);
-        command.env("KILN_PASEO_CADDYFILE_BAK", &backup);
-        command.env("KILN_PASEO_CADDYFILE_NEW", &staging);
-        command.env("KILN_KILN_CA_CERT", &ca);
-        command.env("KILN_DOCKER", root.join("bin/docker"));
-        capture(&mut command)
-    };
+        log = log.display(),
+        snippet = snippet.display()
+    )
+}
 
-    let before = fs::read(&live).unwrap();
-    let ok = run(&door);
+fn run_install_door_caddy(root: &Path, snippet: &Path, door: &Path, paseo: &Path) -> Captured {
+    let mut command = Command::new("bash");
+    command.arg(repo().join("deploy/github/install-door-caddy.sh"));
+    command.arg(door);
+    command.env("PATH", prepend_path(&root.join("bin")));
+    command.env("KILN_DOOR_CADDY_SNIPPET", snippet);
+    command.env("KILN_PASEO_CADDYFILE", paseo);
+    command.env("KILN_DOCKER", root.join("bin/docker"));
+    command.env("KILN_DOOR_CADDY_SKIP_PROBE", "1");
+    capture(&mut command)
+}
+
+fn test_deploy_scripts_never_write_paseo_caddyfile() {
+    let dir = crate::repo_root().join("deploy/github");
+    for entry in fs::read_dir(&dir).expect("deploy/github") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("sh") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy();
+        let text = fs::read_to_string(&path).unwrap_or_else(|err| panic!("{name}: {err}"));
+        for line in text.lines() {
+            let trimmed = line.split('#').next().unwrap_or(line);
+            if trimmed.contains("/opt/paseo/Caddyfile") {
+                assert!(
+                    trimmed.contains("grep -Fq")
+                        || trimmed.contains("grep -F")
+                        || trimmed.contains("paseo_caddyfile=")
+                        || trimmed.contains("missing shared Caddyfile")
+                        || (trimmed.contains("[ -f") && trimmed.contains("paseo_caddyfile")),
+                    "{name} may read /opt/paseo/Caddyfile only: {trimmed}"
+                );
+                assert!(
+                    !trimmed.contains(">>")
+                        && !trimmed.contains(" >")
+                        && !trimmed.contains("cp ")
+                        && !trimmed.contains("mv ")
+                        && !trimmed.contains("install ")
+                        && !trimmed.contains("cat ")
+                        && !trimmed.contains("tee "),
+                    "{name} must not write /opt/paseo/Caddyfile: {trimmed}"
+                );
+            }
+        }
+    }
+    let script = read_repo("deploy/github/install-door-caddy.sh");
+    assert!(script.contains("KILN_DOOR_CADDY_SNIPPET"));
+    assert!(script.contains("/var/lib/docker/volumes/paseo_caddy_config/_data/kiln/kiln.caddy"));
+    assert!(script.contains("import /config/kiln/kiln.caddy"));
+    assert!(script.contains("mktemp"));
+    assert!(script.contains("mv -f"));
+}
+
+fn test_install_door_caddy_updates_snippet_and_validates_whole_config() {
+    let deploy = read_repo("deploy/github/deploy.sh");
+    let remote = read_repo("deploy/github/install-remote.sh");
+    assert!(deploy.contains("install-door-caddy.sh"));
+    assert!(remote.contains("install-door-caddy.sh"));
+    assert!(remote.contains("deploy/door.Caddyfile"));
+    assert!(remote.contains("\"$door_caddy_rc\" -eq 0"));
+
+    let root = std::env::temp_dir().join(format!("kiln-door-caddy-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("bin")).unwrap();
+    let snippet = root.join("kiln/kiln.caddy");
+    fs::create_dir_all(snippet.parent().unwrap()).unwrap();
+    let paseo = root.join("Caddyfile");
+    let door = root.join("door.Caddyfile");
+    let log = root.join("docker.log");
+    let legacy = read_repo("deploy/door.Caddyfile").replace("versions 1.1\n", "");
+    fs::write(&snippet, legacy).unwrap();
+    fs::write(&paseo, "import /config/kiln/kiln.caddy\n").unwrap();
+    fs::write(&door, read_repo("deploy/door.Caddyfile")).unwrap();
+    write_executable(
+        &root.join("bin/docker"),
+        &door_caddy_docker_stub(&log, &snippet),
+    );
+
+    let before = fs::read(&snippet).unwrap();
+    let ok = run_install_door_caddy(&root, &snippet, &door, &paseo);
     assert!(ok.status.success(), "{}{}", ok.stderr, ok.stdout);
-    assert!(ok.stdout.contains("door caddy installed and reloaded"));
-    let logged = fs::read_to_string(&log).unwrap();
-    assert!(logged.contains("validate"));
-    assert!(logged.contains("reload"));
-    assert!(String::from_utf8_lossy(&fs::read(&live).unwrap()).contains("versions 1.1"));
-    assert_ne!(fs::read(&live).unwrap(), before);
-
-    let log2 = root.join("docker2.log");
-    fs::write(&log, "").unwrap();
-    fs::write(&log2, "").unwrap();
-    let unchanged = run(&door);
     assert!(
-        unchanged.status.success(),
-        "{}{}",
-        unchanged.stderr,
-        unchanged.stdout
+        ok.stdout
+            .contains("door caddy snippet installed and reloaded")
     );
-    assert!(unchanged.stdout.contains("door caddy unchanged"));
-    let logged2 = fs::read_to_string(&log).unwrap();
-    assert!(!logged2.contains("validate"), "{logged2}");
-    assert!(!logged2.contains("reload"), "{logged2}");
+    assert!(String::from_utf8_lossy(&fs::read(&snippet).unwrap()).contains("versions 1.1"));
+    assert_ne!(fs::read(&snippet).unwrap(), before);
+    let logged = fs::read_to_string(&log).unwrap();
+    assert!(logged.contains("/etc/caddy/Caddyfile"));
+    assert!(logged.contains("validate"));
 
-    let bad = root.join("bad.Caddyfile");
-    fs::write(&bad, "cli.dark-forge.dev {\n\tnot_a_directive\n}\n").unwrap();
-    let live_before = fs::read(&live).unwrap();
-    let bad_run = run(&bad);
-    assert!(!bad_run.status.success(), "{}", bad_run.stdout);
-    assert!(bad_run.stderr.contains("validate failed"));
-    assert!(bad_run.stderr.contains("exit 17"));
-    assert_eq!(fs::read(&live).unwrap(), live_before);
-    assert!(!staging.exists());
+    let noop = run_install_door_caddy(&root, &snippet, &door, &paseo);
+    assert!(noop.status.success(), "{}{}", noop.stderr, noop.stdout);
+    assert!(noop.stdout.contains("door caddy unchanged"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn test_install_door_caddy_requires_snippet_and_restores_on_validate_failure() {
+    let root = std::env::temp_dir().join(format!("kiln-door-caddy-guard-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("bin")).unwrap();
+    let snippet = root.join("kiln/kiln.caddy");
+    let paseo = root.join("Caddyfile");
+    let door = root.join("door.Caddyfile");
+    let log = root.join("docker.log");
+    fs::write(&paseo, "dark-forge.dev {\n}\n").unwrap();
+    fs::write(&door, read_repo("deploy/door.Caddyfile")).unwrap();
+    write_executable(
+        &root.join("bin/docker"),
+        &door_caddy_docker_stub(&log, &snippet),
+    );
+    let no_import = run_install_door_caddy(&root, &snippet, &door, &paseo);
+    assert!(!no_import.status.success(), "{}", no_import.stdout);
+    assert!(no_import.stderr.contains("one-time import edit required"));
+
+    fs::write(&paseo, "import /config/kiln/kiln.caddy\n").unwrap();
+    let no_snippet = run_install_door_caddy(&root, &snippet, &door, &paseo);
+    assert!(!no_snippet.status.success(), "{}", no_snippet.stdout);
+    assert!(no_snippet.stderr.contains("missing door Caddy snippet"));
+
+    fs::create_dir_all(snippet.parent().unwrap()).unwrap();
+    fs::write(&snippet, "cli.dark-forge.dev {\n\trespond ok 200\n}\n").unwrap();
+    fs::write(&door, "cli.dark-forge.dev {\n\tnot_a_directive\n}\n").unwrap();
+    let before = fs::read(&snippet).unwrap();
+    let bad = run_install_door_caddy(&root, &snippet, &door, &paseo);
+    assert!(!bad.status.success(), "{}", bad.stdout);
+    assert!(bad.stderr.contains("caddy validate"));
+    assert!(bad.stderr.contains("exit 17"));
+    assert_eq!(fs::read(&snippet).unwrap(), before);
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -1603,5 +1643,7 @@ register_cases! {
     test_deploy_host_scripts_do_not_invoke_jq,
     test_smoke_deletes_the_box_when_exec_or_output_fails,
     test_door_ssh_probe_rejects_an_unauthenticated_request,
-    test_install_door_caddy_validates_staging_and_skips_unchanged_bytes,
+    test_deploy_scripts_never_write_paseo_caddyfile,
+    test_install_door_caddy_updates_snippet_and_validates_whole_config,
+    test_install_door_caddy_requires_snippet_and_restores_on_validate_failure,
 }
