@@ -18,6 +18,13 @@ pub enum Scope {
     Operate,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenRole {
+    Owner,
+    Member,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerDescriptor {
@@ -82,4 +89,8 @@ pub struct ServerClaims {
     pub exp: u64,
     pub credential_id: String,
     pub scope: Scope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<TokenRole>,
 }

@@ -1,5 +1,7 @@
 //! Portable, public management contract. No runtime records or host paths.
+pub mod access;
 pub mod auth;
+pub use access::{Caller, Role, may_access_box};
 pub use kiln_protocol::{ExecRequest, ExecResult, SshReady, release_version, valid_ssh_public_key};
 use serde::{Deserialize, Serialize};
 
@@ -241,6 +243,8 @@ pub struct BoxView {
     pub state: String,
     pub memory_mib: u32,
     pub vcpus: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

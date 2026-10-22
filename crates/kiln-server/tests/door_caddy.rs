@@ -86,6 +86,8 @@ fn token(key: &EncodingKey) -> String {
         exp: now + 300,
         credential_id: "device-1".into(),
         scope: Scope::Operate,
+        tenant_id: None,
+        role: None,
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -98,6 +100,7 @@ fn enrollment() -> Enrollment {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
+        tenant_id: String::new(),
     }
 }
 
@@ -249,6 +252,7 @@ async fn poll_exec(
                     state: "running".into(),
                     memory_mib: 512,
                     vcpus: 1,
+                    owner: None,
                 };
                 state.boxes.lock().unwrap().push(view.clone());
                 Outcome::Box(view)

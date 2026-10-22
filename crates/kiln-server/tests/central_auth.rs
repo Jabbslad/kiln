@@ -1,5 +1,7 @@
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{Scope, ServerClaims};
+use kiln_api::auth::{Scope, ServerClaims, TokenRole};
+use kiln_api::{Caller, Role};
+use kiln_server::auth::verify_caller;
 use kiln_server::auth::{Enrollment, verify};
 
 fn fixture() -> (EncodingKey, serde_json::Value) {
@@ -26,6 +28,7 @@ fn issuer_owner_audience_time_and_scope_are_enforced() {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
+        tenant_id: String::new(),
     };
     let now = jsonwebtoken::get_current_timestamp();
     let claims = ServerClaims {
@@ -37,6 +40,8 @@ fn issuer_owner_audience_time_and_scope_are_enforced() {
         exp: now + 300,
         credential_id: "device-c".into(),
         scope: Scope::Read,
+        tenant_id: None,
+        role: None,
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -80,6 +85,44 @@ fn issuer_owner_audience_time_and_scope_are_enforced() {
     );
 }
 
+#[test]
+fn tenant_member_token_is_accepted_when_tenant_matches() {
+    let (key, jwks) = fixture();
+    let enrollment = Enrollment {
+        version: 1,
+        issuer: "https://identity.example.test".into(),
+        owner_id: "owner-a".into(),
+        server_id: "server-b".into(),
+        tenant_id: "tenant-a".into(),
+    };
+    let now = jsonwebtoken::get_current_timestamp();
+    let claims = ServerClaims {
+        iss: enrollment.issuer.clone(),
+        sub: "member-b".into(),
+        aud: "kiln:server:server-b".into(),
+        iat: now,
+        nbf: now,
+        exp: now + 300,
+        credential_id: "device-m".into(),
+        scope: Scope::Operate,
+        tenant_id: Some("tenant-a".into()),
+        role: Some(TokenRole::Member),
+    };
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some("first".into());
+    let token = jsonwebtoken::encode(&header, &claims, &key).unwrap();
+    let (caller, scope) = verify_caller(&token, &enrollment, &jwks).unwrap();
+    assert_eq!(scope, Scope::Operate);
+    assert_eq!(
+        caller,
+        Caller {
+            sub: "member-b".into(),
+            tenant_id: "tenant-a".into(),
+            role: Role::Member,
+        }
+    );
+}
+
 #[tokio::test]
 async fn read_scope_cannot_reach_operations_or_ssh() {
     use axum::{
@@ -95,6 +138,7 @@ async fn read_scope_cannot_reach_operations_or_ssh() {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
+        tenant_id: String::new(),
     };
     std::fs::write(
         &cache,
@@ -116,6 +160,8 @@ async fn read_scope_cannot_reach_operations_or_ssh() {
         exp: now + 300,
         credential_id: "device-c".into(),
         scope: Scope::Read,
+        tenant_id: None,
+        role: None,
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

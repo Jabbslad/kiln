@@ -39,6 +39,8 @@ fn token(key: &EncodingKey, sub: &str, audience: &str) -> String {
         exp: now + 300,
         credential_id: "device-1".into(),
         scope: Scope::Operate,
+        tenant_id: None,
+        role: None,
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -134,6 +136,7 @@ fn auth(dir: &std::path::Path) -> (Authenticator, EncodingKey) {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
+        tenant_id: String::new(),
     };
     let cache = dir.join("jwks.json");
     std::fs::write(

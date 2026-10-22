@@ -215,6 +215,7 @@ async fn fixture() -> (Fixture, Arc<AtomicUsize>) {
             jail: None,
             network: None,
             last_launch: None,
+            owner: Some("owner-a".into()),
         },
         None,
     );
@@ -251,6 +252,7 @@ async fn fixture() -> (Fixture, Arc<AtomicUsize>) {
                 first_command_ms: None,
                 total_ms: Some(2500.),
             }),
+            owner: Some("member-b".into()),
         },
         Some(b"boxdisk!!"),
     );
@@ -289,6 +291,7 @@ async fn fixture() -> (Fixture, Arc<AtomicUsize>) {
                 state: "running".into(),
                 memory_mib: 512,
                 vcpus: 2,
+                owner: Some("member-b".into()),
             })),
             None,
         ),
@@ -441,6 +444,7 @@ fn enrollment(cache: &Path) -> (Authenticator, EncodingKey) {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: WORKSPACE.into(),
+        tenant_id: String::new(),
     };
     fs::write(
         cache,
@@ -463,6 +467,8 @@ fn read_jwt(key: &EncodingKey) -> String {
         exp: now + 300,
         credential_id: "device-1".into(),
         scope: Scope::Read,
+        tenant_id: None,
+        role: None,
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -629,6 +635,49 @@ async fn read_scope_and_admin_token_receive_schema_version_one() {
         assert_document(&raw, &value, &fixture);
     }
     assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn tenant_member_dashboard_lists_only_owned_boxes() {
+    use kiln_api::auth::TokenRole;
+    let (fixture, hits) = fixture().await;
+    let (auth, key) = enrollment(&fixture.root.path().join("jwks.json"));
+    let router = gateway::router_with_workspace(&fixture.socket, auth, WORKSPACE.into()).unwrap();
+    let now = jsonwebtoken::get_current_timestamp();
+    let member = {
+        let claims = ServerClaims {
+            iss: "https://identity.example.test".into(),
+            sub: "member-b".into(),
+            aud: format!("kiln:server:{WORKSPACE}"),
+            iat: now,
+            nbf: now,
+            exp: now + 300,
+            credential_id: "device-member".into(),
+            scope: Scope::Read,
+            tenant_id: Some("owner-a".into()),
+            role: Some(TokenRole::Member),
+        };
+        let mut header = Header::new(Algorithm::ES256);
+        header.kid = Some("first".into());
+        jsonwebtoken::encode(&header, &claims, &key).unwrap()
+    };
+    let response = get(&router, Some(&member), "/api/v1/dashboard").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let bytes = to_bytes(response.into_body(), kiln_api::MAX_RESPONSE_BYTES)
+        .await
+        .unwrap();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    let boxes = value["boxes"].as_array().unwrap();
+    assert_eq!(boxes.len(), 1, "{value}");
+    assert_eq!(boxes[0]["name"], "beta");
+    assert!(
+        value["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["box_name"] == "beta")
+    );
 }
 
 #[tokio::test]

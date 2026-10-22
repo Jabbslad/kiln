@@ -496,6 +496,8 @@ async fn access(State(a): State<Arc<App>>, h: HeaderMap, Json(f): Json<AccessReq
             exp: now + 300,
             credential_id: did,
             scope: Scope::Operate,
+            tenant_id: None,
+            role: None,
         };
         let token = a.signer.issue(&claims)?;
         Ok(Json(tokens::Grant {
@@ -1237,6 +1239,8 @@ async fn key_token(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
         exp: n + 300,
         credential_id: kid,
         scope,
+        tenant_id: None,
+        role: None,
     }) {
         Ok(x) => x,
         Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
@@ -1367,6 +1371,8 @@ fn issue_app(a: &App, owner: &str, server: &str, now: i64) -> anyhow::Result<Str
         exp: now + 300,
         credential_id: credential,
         scope: Scope::Operate,
+        tenant_id: None,
+        role: None,
     })
 }
 async fn oauth_server(

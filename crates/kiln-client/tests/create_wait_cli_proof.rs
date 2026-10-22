@@ -79,6 +79,7 @@ async fn start_mock(counters: Arc<Counters>) -> TlsServer {
                                 state: "running".into(),
                                 memory_mib: 512,
                                 vcpus: 1,
+                                owner: None,
                             }))
                         } else {
                             None
@@ -111,6 +112,7 @@ async fn start_mock(counters: Arc<Counters>) -> TlsServer {
                             state: "running".into(),
                             memory_mib: 512,
                             vcpus: 1,
+                            owner: None,
                         }));
                     }
                     Json(op.clone())

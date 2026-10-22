@@ -55,6 +55,8 @@ pub struct BoxRecord {
     pub network: Option<Topology>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_launch: Option<LaunchTiming>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -609,6 +611,7 @@ impl Runtime {
             jail: None,
             network: None,
             last_launch: None,
+            owner: None,
         };
         let (result, phases) = scoped(async {
             let result = async {

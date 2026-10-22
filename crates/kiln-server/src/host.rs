@@ -300,6 +300,7 @@ impl Host {
             boxes.push(crate::dashboard::BoxFacts {
                 id,
                 name: record.name,
+                owner: record.owner.clone(),
                 state: record.state,
                 memory_mib: record.memory_mib,
                 vcpus: record.vcpus,
@@ -481,6 +482,7 @@ fn view(record: BoxRecord) -> BoxView {
         state: record.state,
         memory_mib: record.memory_mib,
         vcpus: record.vcpus,
+        owner: record.owner,
     }
 }
 
@@ -946,6 +948,7 @@ mod tests {
                 jail: None,
                 network: None,
                 last_launch: None,
+                owner: None,
             })
             .unwrap(),
         )
@@ -1071,6 +1074,7 @@ mod tests {
                 jail: None,
                 network: None,
                 last_launch: None,
+                owner: None,
             })
             .unwrap(),
         )
@@ -1141,6 +1145,7 @@ mod tests {
                     first_command_ms: None,
                     total_ms: Some(42.),
                 }),
+                owner: None,
             })
             .unwrap(),
         )
@@ -1278,6 +1283,7 @@ mod tests {
             state: "running".into(),
             memory_mib: 256,
             vcpus: 1,
+            owner: None,
         }));
         finished.error = None;
         host.journal.lock().unwrap().finish(&finished).unwrap();

@@ -333,6 +333,7 @@ impl Runtime {
                 None
             },
             last_launch: None,
+            owner: None,
         };
         use std::os::unix::fs::DirBuilderExt;
         fs::DirBuilder::new()
@@ -468,6 +469,7 @@ mod tests {
             disk_layer: None,
             jail: None,
             network: None,
+            owner: None,
         };
         let directory = root.join("boxes").join(id);
         crate::storage::private_dir(&directory).unwrap();
