@@ -40,6 +40,24 @@ pub struct AuthGrant {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct TenantMember {
+    pub account_id: String,
+    pub role: Role,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantSummary {
+    pub id: String,
+    pub role: Role,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_server_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerDescriptor {
     pub id: String,
     pub name: String,
@@ -97,6 +115,7 @@ pub struct ServerClaims {
     pub iss: String,
     pub sub: String,
     pub aud: String,
+    /// Present on tokens minted after the tenant migration; legacy issuers omit it until upgraded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant_id: Option<String>,
     pub iat: u64,
@@ -104,6 +123,7 @@ pub struct ServerClaims {
     pub exp: u64,
     pub credential_id: String,
     pub scope: Scope,
+    /// Present on tokens minted after the tenant migration; legacy issuers omit it until upgraded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
 }
