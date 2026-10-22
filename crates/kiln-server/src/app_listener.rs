@@ -1254,7 +1254,7 @@ async fn finish_login(app: &App, request: Request) -> Response {
         .authenticate_central(&jwt)
         .await
         .ok()
-        .filter(|grant| dashboard_grant(grant.scope))
+        .filter(|scope| dashboard_grant(*scope))
         .is_none()
     {
         return deny(
@@ -1379,7 +1379,7 @@ async fn refresh_reader(app: &App, reader: &str) -> Result<(String, u64)> {
         .authenticate_central(&jwt)
         .await
         .ok()
-        .filter(|grant| dashboard_grant(grant.scope))
+        .filter(|scope| dashboard_grant(*scope))
         .is_none()
     {
         anyhow::bail!("refreshed token was not a dashboard grant");

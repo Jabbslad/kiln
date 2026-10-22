@@ -15,7 +15,7 @@ pub use config::{
     unix_now,
 };
 use kiln_api::auth::{
-    DeviceTokens, Registration, RevocationQuery, RevocationSet, Role, Scope, ServerClaims,
+    DeviceTokens, MemberRole, Registration, RevocationQuery, RevocationSet, Scope, ServerClaims,
     TenantMember, TenantSummary,
 };
 pub use providers::{Provider, ProviderIdentity};
@@ -487,10 +487,10 @@ async fn servers(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
         Ok(Json(values).into_response())
     })
 }
-fn member_role(raw: &str) -> Option<Role> {
+fn member_role(raw: &str) -> Option<MemberRole> {
     match raw {
-        "owner" => Some(Role::Owner),
-        "member" => Some(Role::Member),
+        "owner" => Some(MemberRole::Owner),
+        "member" => Some(MemberRole::Member),
         _ => None,
     }
 }
@@ -526,7 +526,7 @@ fn tenant_member_rows(
         let role: String = r.get(1)?;
         Ok(TenantMember {
             account_id: r.get(0)?,
-            role: member_role(&role).unwrap_or(Role::Member),
+            role: member_role(&role).unwrap_or(MemberRole::Member),
             name: r.get(2)?,
         })
     })?
@@ -1286,7 +1286,7 @@ async fn tenant_list(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
             .query_map([account], |r| {
                 Ok(TenantSummary {
                     id: r.get(0)?,
-                    role: member_role(&r.get::<_, String>(1)?).unwrap_or(Role::Member),
+                    role: member_role(&r.get::<_, String>(1)?).unwrap_or(MemberRole::Member),
                     default_server_id: r.get(2)?,
                 })
             })?
@@ -1752,7 +1752,7 @@ fn issue_app(
         exp: now + 300,
         credential_id: credential,
         scope: Scope::Operate,
-        role: Some(Role::Owner),
+        role: Some(MemberRole::Owner),
     })
 }
 async fn oauth_server(

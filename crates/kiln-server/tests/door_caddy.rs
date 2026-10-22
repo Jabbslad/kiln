@@ -28,11 +28,8 @@ use futures_util::stream;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use kiln_api::{
     Action, ExecRequest, ExecResult, Operation, OperationState, Outcome, Submit,
-    auth::{Role, Scope, ServerClaims},
+    auth::{MemberRole, Scope, ServerClaims},
 };
-#[path = "common.rs"]
-mod common;
-
 use kiln_server::{
     auth::{Authenticator, Enrollment},
     door,
@@ -84,13 +81,13 @@ fn token(key: &EncodingKey) -> String {
         iss: "https://identity.example.test".into(),
         sub: "owner-a".into(),
         aud: "kiln:server:server-b".into(),
-        tenant_id: common::fixture_tenant_id(),
+        tenant_id: Some("ten_test".into()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-1".into(),
         scope: Scope::Operate,
-        role: Some(Role::Owner),
+        role: Some(MemberRole::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -103,7 +100,6 @@ fn enrollment() -> Enrollment {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: common::fixture_tenant_id(),
     }
 }
 

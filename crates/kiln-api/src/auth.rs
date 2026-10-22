@@ -20,29 +20,16 @@ pub enum Scope {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Role {
+pub enum MemberRole {
     Owner,
     Member,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Caller {
-    pub sub: String,
-    pub tenant_id: String,
-    pub role: Role,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AuthGrant {
-    pub caller: Caller,
-    pub scope: Scope,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TenantMember {
     pub account_id: String,
-    pub role: Role,
+    pub role: MemberRole,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -51,7 +38,7 @@ pub struct TenantMember {
 #[serde(deny_unknown_fields)]
 pub struct TenantSummary {
     pub id: String,
-    pub role: Role,
+    pub role: MemberRole,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_server_id: Option<String>,
 }
@@ -125,7 +112,7 @@ pub struct ServerClaims {
     pub scope: Scope,
     /// Present on tokens minted after the tenant migration; legacy issuers omit it until upgraded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<Role>,
+    pub role: Option<MemberRole>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
