@@ -27,6 +27,7 @@ sh scripts/test-installer-release.sh
 sh scripts/test-wait-main-run.sh
 sh scripts/test-tag-path-dry-run.sh
 sh scripts/test-tag-path-pr-stamp-order.sh
+sh scripts/test-main-push-proved-package-stamp.sh
 sh scripts/test-deploy-host-tools.sh
 sh scripts/test-release-json-field.sh
 sh scripts/test-check-dashboard-bundle.sh
