@@ -803,3 +803,25 @@ fn workflow_texts(root: &Path) -> Vec<(String, String)> {
         })
         .collect()
 }
+
+#[test]
+fn dashboard_terminal_web_socket_uses_app_site_not_cli_door() {
+    let root = repo_root();
+    let app_site = read(&root.join("deploy/app.Caddyfile"));
+    let door_site = read(&root.join("deploy/door.Caddyfile"));
+    let kiln_app = read(&root.join("deploy/kiln-app.service"));
+    let terminal = read(&root.join("crates/kiln-server/src/terminal.rs"));
+
+    assert!(app_site.contains("app.dark-forge.dev"));
+    assert!(app_site.contains("172.18.0.1:8093"));
+    assert!(!app_site.contains("cli.dark-forge.dev"));
+    assert!(door_site.contains("cli.dark-forge.dev"));
+    assert!(door_site.contains("8444"));
+    assert!(!door_site.contains("8093"));
+
+    assert!(kiln_app.contains("--listen 127.0.0.1:8093"));
+    assert!(kiln_app.contains("--upstream https://127.0.0.1:8443"));
+
+    assert!(terminal.contains("/v1/boxes/{box_id}/ssh"));
+    assert!(terminal.contains("kiln_api::SSH_UPGRADE"));
+}
