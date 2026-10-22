@@ -8,6 +8,144 @@ root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 script=$root/deploy/github/install-identity.sh
 fail() { printf 'identity-upgrade: %s\n' "$*" >&2; exit 1; }
 
+run_server_upgrade_rehearsal() {
+  local prev_tar=$1 next_tar=$2
+  local work fx state log package etc opt var libexec
+  [ -f "$prev_tar" ] || fail "missing previous server archive: $prev_tar"
+  [ -f "$next_tar" ] || fail "missing target server archive: $next_tar"
+  work=$(mktemp -d)
+  state=$work/stub-state
+  log=$work/commands.log
+  package=$work/package
+  etc=$work/etc/kiln
+  opt=$work/opt/kiln
+  var=$work/var/lib/kiln
+  libexec=$work/usr/local/libexec
+  mkdir -p "$work/prev" "$work/next"
+  tar -xzf "$prev_tar" -C "$work/prev"
+  tar -xzf "$next_tar" -C "$work/next"
+  read_release_version_json() {
+    sh "$root/scripts/read-release-json-field.sh" version --strip-v
+  }
+  installed=$(
+    tar -xOzf "$prev_tar" release.json 2>/dev/null | read_release_version_json
+  )
+  target=$(
+    tar -xOzf "$next_tar" release.json 2>/dev/null | read_release_version_json
+  )
+  if [ -z "$installed" ] || [ -z "$target" ]; then
+    fail "could not read release.json versions"
+  fi
+  mkdir -p "$state" "$package/bin" "$etc" "$opt/bin" "$var/runtime" "$var/journal" "$var/image" \
+    "$libexec" "$work/run/systemd/system" "$work/sys/fs/cgroup" "$work/dev" \
+    "$work/etc/systemd/system" "$work/proc" "$work/stubs"
+  cp "$work/next/install.sh" "$package/install.sh"
+  chmod 755 "$package/install.sh"
+  cp "$root/deploy/operations-journal.max-version" "$package/operations-journal.max-version"
+  printf 'ID=ubuntu\nVERSION_ID=24.04\n' > "$work/etc/os-release"
+  printf 'MemAvailable:       8388608 kB\n' > "$work/proc/meminfo"
+  printf 'cpu memory pids\n' > "$work/sys/fs/cgroup/cgroup.controllers"
+  : > "$work/dev/kvm"
+  printf 'process\n' > "$state/killmode"
+  : > "$log"
+  cat > "$work/stubs/systemctl" << EOF
+#!/bin/bash
+printf '%s\\n' "systemctl \$*" >> "$log"
+prop= service=
+for arg in "\$@"; do
+  case "\$arg" in
+    --property=*) prop=\${arg#--property=} ;;
+    --value|--no-pager|--quiet) ;;
+    show|stop|start|restart|enable|disable|daemon-reload|is-active) ;;
+    *) service=\$arg ;;
+  esac
+done
+case "\$1" in
+  show)
+    case "\$prop" in
+      LoadState) printf '%s\\n' loaded ;;
+      ActiveState)
+        if [ -f "$state/active-\$service" ]; then cat "$state/active-\$service"; else printf '%s\\n' inactive; fi
+        ;;
+      MainPID) printf '%s\\n' 0 ;;
+      KillMode) cat "$state/killmode" ;;
+      ExecStart) cat "$state/exec-\$service" ;;
+      *) printf '%s\\n' "" ;;
+    esac
+    ;;
+  stop|start)
+    for svc in "\${@:2}"; do
+      if [ "\$1" = stop ]; then printf '%s\\n' inactive; else printf '%s\\n' active; fi > "$state/active-\$svc"
+    done
+    ;;
+  restart|enable|disable|daemon-reload|is-active) ;;
+  *) exit 1 ;;
+esac
+EOF
+  cat > "$work/stubs/curl" << EOF
+#!/bin/bash
+printf '%s\\n' "curl \$*" >> "$log"
+if [ ! -s "$work/curl.seq" ]; then exit 1; fi
+line=\$(head -n 1 "$work/curl.seq")
+tail -n +2 "$work/curl.seq" > "$work/curl.seq.next"
+mv "$work/curl.seq.next" "$work/curl.seq"
+[ "\$line" = ok ] || exit 1
+printf '%s' '[{"name":"custom","memory_mib":3072,"vcpus":2}]'
+EOF
+  chmod 755 "$work/stubs/systemctl" "$work/stubs/curl"
+  printf '#!/bin/bash\nexit 0\n' > "$work/stubs/systemd-analyze"
+  chmod 755 "$work/stubs/systemd-analyze"
+  custom=$(printf 'a%.0s' $(seq 1 32))
+  printf '{"runtime_dir":"%s/runtime","journal_dir":"%s/journal","socket":"/run/kiln/host.sock","isolation_config":"%s/isolation.json","templates":{"custom":"%s"}}\n' \
+    "$var" "$var" "$etc" "$custom" > "$etc/host.json"
+  printf '{}\n' > "$etc/isolation.json"
+  for name in ca.crt tls.crt tls.key admin.token; do printf 'synthetic-test-only\n' > "$etc/$name"; done
+  sqlite3 "$var/journal/operations.sqlite" \
+    'PRAGMA journal_mode=DELETE; PRAGMA user_version=1; CREATE TABLE operations(running INTEGER); INSERT INTO operations VALUES(0);'
+  for name in kiln kiln-runtime kiln-network kiln-host kiln-api; do
+    if [ "$name" = kiln ] || [ "$name" = kiln-runtime ] || [ "$name" = kiln-network ]; then
+      dest=$opt/bin/$name
+      live=$work/prev/bin/$name
+      staged=$work/next/bin/$name
+    else
+      dest=$libexec/$name
+      live=$work/prev/bin/$name
+      staged=$work/next/bin/$name
+    fi
+    cp "$live" "$dest"
+    chmod 755 "$dest"
+    cp "$staged" "$package/bin/$name"
+    chmod 755 "$package/bin/$name"
+  done
+  cp "$work/prev/release.json" "$opt/release.json"
+  cp "$work/next/release.json" "$package/release.json"
+  host=$libexec/kiln-host
+  api=$libexec/kiln-api
+  printf '{ path=%s ; argv[]=%s --config %s ; ignore_errors=no ; }\n' "$host" "$host" "$etc/host.json" > "$state/exec-kiln-host.service"
+  printf '{ path=%s ; argv[]=%s --listen 100.64.5.6:8443 --host-socket /run/kiln/host.sock --token-file %s --tls-cert %s --tls-key %s ; ignore_errors=no ; }\n' \
+    "$api" "$api" "$etc/admin.token" "$etc/tls.crt" "$etc/tls.key" > "$state/exec-kiln-api.service"
+  printf 'active\n' > "$state/active-kiln-host.service"
+  printf 'active\n' > "$state/active-kiln-api.service"
+  printf 'ok\nok\n' > "$work/curl.seq"
+  set +e
+  KILN_INSTALL_FIXTURE=$work PATH="$work/stubs:$PATH" bash "$package/install.sh" --apply >"$work/out" 2>"$work/err"
+  rc=$?
+  set -e
+  [ "$rc" = 0 ] || {
+    cat "$work/err" >&2
+    cat "$work/out" >&2
+    rm -rf "$work"
+    fail "server upgrade rehearsal failed (${installed} -> ${target})"
+  }
+  rm -rf "$work"
+  printf 'server upgrade rehearsal ok (%s -> %s)\n' "$installed" "$target"
+}
+
+if [ -n "${KILN_SERVER_UPGRADE_PREV_TAR:-}" ] && [ -n "${KILN_SERVER_UPGRADE_TO_TAR:-}" ]; then
+  run_server_upgrade_rehearsal "$KILN_SERVER_UPGRADE_PREV_TAR" "$KILN_SERVER_UPGRADE_TO_TAR"
+  exit 0
+fi
+
 [ -f "$script" ] || fail "missing $script"
 
 work=
@@ -128,9 +266,19 @@ prepare() {
   printf 'db-sentinel\n' > "$fx/var/lib/kiln-identity/identity.db"
   printf 'active\n' > "$state/active"
   printf '4300\n' > "$state/pid"
+  printf '0\n' > "$state/nrestarts"
   mkdir -p "$fx/proc/4300"
   ln -s "$live" "$fx/proc/4300/exe"
   : > "$log"
+  cat > "$work/stubs/sleep" << EOF
+#!/bin/bash
+if [ -f "$state/bump-nrestarts-on-sleep" ]; then
+  n=\$(tr -d '[:space:]' < "$state/nrestarts")
+  case "\$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s\\n' \$((n + 1)) > "$state/nrestarts"
+fi
+exec /bin/sleep "\$@"
+EOF
   cat > "$work/stubs/systemctl" << EOF
 #!/bin/bash
 printf '%s\\n' "systemctl \$*" >> "$log"
@@ -166,15 +314,27 @@ case "\$1" in
     case "\$prop" in
       ActiveState) cat "$state/active" ;;
       MainPID) cat "$state/pid" ;;
+      NRestarts) tr -d '[:space:]' < "$state/nrestarts"; printf '\\n' ;;
       *) printf '%s\\n' inactive ;;
     esac
+    ;;
+  is-active)
+    cat "$state/active"
+    grep -qx active "$state/active"
     ;;
   restart)
     old=\$(tr -d '[:space:]' < "$state/pid")
     case "\$old" in ''|*[!0-9]*) old=0 ;; esac
     next=\$((old + 1))
+    n=\$(tr -d '[:space:]' < "$state/nrestarts")
+    case "\$n" in ''|*[!0-9]*) n=0 ;; esac
+    printf '%s\\n' \$((n + 1)) > "$state/nrestarts"
     printf '%s\\n' "\$next" > "$state/pid"
-    printf 'active\\n' > "$state/active"
+    if [ -f "$state/fail-inactive-on-restart" ]; then
+      printf 'inactive\\n' > "$state/active"
+    else
+      printf 'active\\n' > "$state/active"
+    fi
     rm -rf "$fx/proc/\$old"
     mkdir -p "$fx/proc/\$next"
     ln -s "$live" "$fx/proc/\$next/exe"
@@ -226,7 +386,7 @@ case "\$url" in
     ;;
 esac
 EOF
-  chmod 755 "$work/stubs/systemctl" "$work/stubs/curl"
+  chmod 755 "$work/stubs/systemctl" "$work/stubs/curl" "$work/stubs/sleep"
 }
 
 run_id() {
@@ -234,6 +394,13 @@ run_id() {
   PATH="$work/stubs:$PATH" KILN_IDENTITY_FIXTURE=$fx bash "$script" "$deploy" >"$work/out" 2>"$work/err"
   rc=$?
   set -e
+}
+
+assert_step_failure() {
+  grep -q 'identity step failed:' "$work/err" || fail "missing step failure header: $(cat "$work/err")"
+  grep -q 'command:' "$work/err" || fail "missing failing command: $(cat "$work/err")"
+  grep -q 'exit code:' "$work/err" || fail "missing exit code: $(cat "$work/err")"
+  grep -q 'last output lines:' "$work/err" || fail "missing output tail: $(cat "$work/err")"
 }
 
 sentinel_inodes() {
@@ -265,8 +432,6 @@ run_id
 grep -q 'identity 0.4.16' "$work/out" || fail "missing version line: $(cat "$work/out")"
 [ "$(grep -c 'identity probe version: match 0.4.16' "$work/out" || true)" = 1 ] \
   || fail "version probe: $(cat "$work/out")"
-[ "$(grep -c 'identity probe loopback: status=200 phrase=found' "$work/out" || true)" = 1 ] \
-  || fail "loopback probe: $(cat "$work/out")"
 [ "$(grep -c 'identity probe public: status=200 phrase=found' "$work/out" || true)" = 1 ] \
   || fail "public probe: $(cat "$work/out")"
 [ "$(grep -c 'identity probe app: status=303 location_oauth_server=yes code_challenge_method=S256' "$work/out" || true)" = 1 ] \
@@ -280,11 +445,15 @@ backup=$(find "$fx/opt/kiln/upgrades" -type f -name kiln-identity ! -path '*/ide
 grep -q 'old-bytes' "$backup"
 [ ! -d "$fx/opt/kiln/upgrades/identity-in-progress" ] || fail "marker left behind"
 grep -q 'systemctl restart kiln-identity.service' "$log" || fail "did not restart identity"
+is_active_line=$(grep -n 'systemctl is-active --quiet kiln-identity.service' "$log" | head -1 | cut -d: -f1)
+restart_line=$(grep -n 'systemctl restart kiln-identity.service' "$log" | head -1 | cut -d: -f1)
+if [ -z "$is_active_line" ] || [ -z "$restart_line" ] || [ "$restart_line" -ge "$is_active_line" ]; then
+  fail "sign-in check ran before restart"
+fi
 if grep -q 'kiln-app' "$log"; then fail "touched kiln-app"; fi
 loop_line=$(grep -n 'http://127.0.0.1:8091/login' "$log" | head -1 | cut -d: -f1)
-restart_line=$(grep -n 'systemctl restart kiln-identity.service' "$log" | head -1 | cut -d: -f1)
 if [ -z "$loop_line" ] || [ -z "$restart_line" ] || [ "$restart_line" -ge "$loop_line" ]; then
-  fail "probe ran before restart"
+  fail "login probe ran before restart"
 fi
 app_line=$(grep -n 'https://app.dark-forge.dev/login' "$log" | head -1 | cut -d: -f1)
 if [ -z "$app_line" ] || [ "$loop_line" -ge "$app_line" ]; then
@@ -325,11 +494,36 @@ printf '1\n' > "$state/fail-loopback"
 run_id
 [ "$rc" != 0 ] || fail "loopback failure should fail"
 grep -q 'old-bytes' "$live" || fail "loopback failure left the new binary"
-[ "$(grep -c 'identity probe loopback:' "$work/out" || true)" = 1 ] \
-  || fail "loopback logged every retry: $(cat "$work/out")"
-grep -q 'identity probe loopback: status=500 phrase=missing' "$work/out" \
-  || fail "loopback result: $(cat "$work/out")"
 if grep -q 'redirect_uri' "$work/out"; then fail "probe printed a redirect"; fi
+assert_step_failure
+grep -q 'identity step failed: kiln-identity login after restart' "$work/err" \
+  || fail "loopback failure step name: $(cat "$work/err")"
+
+# Inactive service after restart fails the deploy loudly.
+prepare
+write_bin "$live" 0.4.15
+printf 'old-bytes\n' >> "$live"
+pack_identity "$deploy" 0.4.16 'new-bytes'
+printf '1\n' > "$state/fail-inactive-on-restart"
+run_id
+[ "$rc" != 0 ] || fail "inactive service after restart should fail"
+assert_step_failure
+grep -q 'identity step failed: kiln-identity active after restart' "$work/err" \
+  || fail "inactive failure step name: $(cat "$work/err")"
+grep -q 'systemctl is-active --quiet kiln-identity.service' "$work/err" \
+  || fail "inactive failure command: $(cat "$work/err")"
+
+# A rising NRestarts count during the settle window fails the deploy.
+prepare
+write_bin "$live" 0.4.15
+printf 'old-bytes\n' >> "$live"
+pack_identity "$deploy" 0.4.16 'new-bytes'
+printf '1\n' > "$state/bump-nrestarts-on-sleep"
+run_id
+[ "$rc" != 0 ] || fail "rising NRestarts should fail the swap"
+assert_step_failure
+grep -q 'identity step failed: kiln-identity stable after restart' "$work/err" \
+  || fail "NRestarts failure step name: $(cat "$work/err")"
 
 # Already on the package: a later public failure does not roll the binary back.
 prepare
@@ -347,17 +541,25 @@ run_id
 if grep -q 'curl ' "$log"; then fail "unchanged binary probed again"; fi
 grep -q 'new-bytes' "$live" || fail "unchanged binary was replaced"
 
-# A version slot is the only difference. The live binary stays, and probes do not run.
+# Masked bytes match but the version slot differs: atomic slot update, no restart.
 prepare
 write_slotted "$live" 0.4.19
 pack_slotted "$deploy" 0.4.20
+cp "$live" "$work/before-slot"
 run_id
-[ "$rc" = 0 ] || fail "slot-only upgrade should skip: $(cat "$work/err")"
-grep -q 'identity unchanged 0.4.20' "$work/out" || fail "slot-only was installed: $(cat "$work/out")"
+[ "$rc" = 0 ] || fail "slot-only upgrade should stamp: $(cat "$work/err")"
+grep -q 'identity version 0.4.20' "$work/out" || fail "slot-only did not stamp: $(cat "$work/out")"
 if grep -q 'systemctl restart' "$log"; then fail "slot-only restarted"; fi
 if grep -q 'curl ' "$log"; then fail "slot-only probed"; fi
 live_version=$(PATH="$work/stubs:$PATH" "$live" --version)
-[ "$live_version" = "kiln-identity 0.4.19" ] || fail "slot-only replaced the binary: $live_version"
+[ "$live_version" = "kiln-identity 0.4.20" ] || fail "slot-only did not update version: $live_version"
+stage=$(mktemp -d)
+tar -xzf "$deploy"/kiln-identity-v0.4.20-x86_64-unknown-linux-gnu.tar.gz -C "$stage" bin/kiln-identity
+cmp -s "$live" "$stage/bin/kiln-identity" \
+  || fail 'live bytes differ from the packaged identity after slot update'
+cmp -s "$work/before-slot" "$stage/bin/kiln-identity" \
+  && fail 'stale live matched package; slot-only case was not exercised'
+rm -rf "$stage"
 
 # Downgrade is refused before a restart. 0.4.4 to 0.4.10 is allowed.
 prepare
@@ -586,4 +788,8 @@ if [ -s "$work/ssh.log" ]; then fail "missing identity asset reached ssh"; fi
 
 rm -rf "$work"
 trap - EXIT
+printf 'journal v1 upgrade checks\n'
+cargo test -p kiln-server --lib v1_upgrade_leaves_legacy_finished_at_null --locked
+cargo test -p kiln-server --lib v1_running_box_upgrade_keeps_null_timing_and_passes_self_check --locked
+cargo test -p kiln-server --lib v2_finish_records_measured_launch_duration --locked
 printf 'identity upgrade checks passed\n'

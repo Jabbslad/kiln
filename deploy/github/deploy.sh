@@ -175,6 +175,7 @@ put "$work/$dashboard" "$remote/$dashboard"
 put "$work/${dashboard}.sha256" "$remote/${dashboard}.sha256"
 put "$script_dir/install-identity.sh" "$remote/install-identity.sh"
 put "$script_dir/check-dashboard-bundle.sh" "$remote/check-dashboard-bundle.sh"
+put "$script_dir/check-installed-versions.sh" "$remote/check-installed-versions.sh"
 if [ "$tag" = "v0.4.4" ]; then
   put "$repo_root/deploy/install.sh" "$remote/installer.sh"
 fi
@@ -188,6 +189,7 @@ if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
   KILN_DASHBOARD_LIVE_HTML="$stage/index.html" \
     bash "$remote/check-dashboard-bundle.sh" "$work/$dashboard"
   rm -rf -- "$stage"
+  KILN_VERSION_CHECK_DIST="$work" bash "$script_dir/check-installed-versions.sh" "$tag"
   printf 'deploy inputs %s\n' "$tag"
   exit 0
 fi

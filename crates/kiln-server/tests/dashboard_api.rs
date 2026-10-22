@@ -214,6 +214,7 @@ async fn fixture() -> (Fixture, Arc<AtomicUsize>) {
             disk_layer: None,
             jail: None,
             network: None,
+            last_launch: None,
         },
         None,
     );
@@ -238,6 +239,18 @@ async fn fixture() -> (Fixture, Arc<AtomicUsize>) {
             disk_layer: None,
             jail: None,
             network: None,
+            last_launch: Some(kiln_runtime::launch_timing::LaunchTiming {
+                method: "start".into(),
+                cache: "uncontrolled".into(),
+                disk_copy: "Copy".into(),
+                storage_ms: None,
+                vmm_ms: Some(1200.),
+                restore_ms: None,
+                agent_ms: Some(400.),
+                init_ms: Some(300.),
+                first_command_ms: None,
+                total_ms: Some(2500.),
+            }),
         },
         Some(b"boxdisk!!"),
     );
@@ -473,9 +486,15 @@ fn assert_document(raw: &str, value: &Value, fixture: &Fixture) {
     assert_eq!(value["workspace"], WORKSPACE);
     assert_eq!(value["host"]["name"], WORKSPACE);
     assert_eq!(value["host"]["state"], "online");
-    for field in ["cpu_percent", "memory_bytes", "disk_bytes"] {
-        assert!(value["host"]["metrics"][field].is_null(), "{field}");
-    }
+    assert!(value["host"]["metrics"]["cpu_percent"].as_f64().is_some());
+    assert!(value["host"]["metrics"]["memory_bytes"].as_u64().unwrap() > 0);
+    assert!(value["host"]["metrics"]["disk_bytes"].as_u64().unwrap() > 0);
+    assert!(
+        value["host"]["metrics"]["disk_total_bytes"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
     let observed = value["observed_at"].as_str().unwrap();
     assert_eq!(observed.len(), 20, "{observed}");
     assert!(observed.ends_with('Z'), "{observed}");
@@ -507,8 +526,9 @@ fn assert_document(raw: &str, value: &Value, fixture: &Fixture) {
     assert_eq!(beta["resources"]["vcpus"], 2);
     assert_eq!(beta["resources"]["memory_bytes"], 512 * 1024 * 1024);
     assert_eq!(beta["resources"]["disk_bytes"], b"boxdisk!!".len());
+    assert!(beta["metrics"]["disk_bytes"].as_u64().unwrap() >= b"boxdisk!!".len() as u64);
     assert!(beta["metrics"]["memory_bytes"].is_null());
-    assert!(beta["timing"].is_null());
+    assert_eq!(beta["timing"]["total_ms"].as_f64(), Some(2500.));
     assert_eq!(beta["last_error"], SAFE_ERROR);
     assert_eq!(beta["last_operation"], "start");
     assert_eq!(beta["restored_from"], fixture.source);

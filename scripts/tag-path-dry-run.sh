@@ -63,8 +63,21 @@ printf '%s\n' "$dry_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-dryrun$' || fail "
 printf 'dry-run tag %s sha %s\n' "$tag" "$sha"
 printf 'dry-run release %s\n' "$tag"
 
+prev_server=
+for path in "$dist/kiln-server-${from}"*.tar.gz; do
+  [ -f "$path" ] || continue
+  prev_server=$path
+  break
+done
+[ -n "$prev_server" ] || fail "reuse dist missing server archive for ${from}"
+prev_saved=$(mktemp -d)
+cp "$prev_server" "$prev_saved/"
+prev_server="$prev_saved/$(basename "$prev_server")"
+
 sh scripts/stamp-release-dist.sh "$dist" "$from" "$tag"
 sh scripts/check-stamped-clients.sh "$dist" "$tag"
+KILN_VERSION_CHECK_DIST="$dist" bash deploy/github/check-installed-versions.sh "$tag"
+bash scripts/test-identity-slot-rehearsal.sh "$dist" "$tag"
 
 count=0
 for path in "$dist"/*.tar.gz; do
@@ -102,4 +115,33 @@ grep -q 'dashboard live ' "$output.deploy" || fail 'deploy dry-run did not check
 
 remote_tags=$(git ls-remote --tags origin "refs/tags/${dry_tag}") || fail 'could not list tags'
 [ -z "$remote_tags" ] || fail "${dry_tag} exists on the remote"
+
+if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
+  prev_archive=$prev_server
+  VERSION=${tag#v}
+  export VERSION
+  cargo xtask release-version resolve --ref-type tag --ref-name "$tag"
+  cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client
+  cargo xtask release-version check-binary --version "$tag" -- \
+    target/release/kiln \
+    target/release/kiln-runtime \
+    target/release/kiln-host \
+    target/release/kiln-api
+  image_root=$(mktemp -d)
+  tar -xzf "$prev_archive" -C "$image_root" image
+  pr_dist=$(mktemp -d)
+  cargo xtask release server --version "$tag" --target x86_64-unknown-linux-gnu \
+    --bin-dir target/release --image-dir "$image_root/image" --output "$pr_dist"
+  next_archive=
+  for path in "$pr_dist/kiln-server-${tag}"*.tar.gz; do
+    [ -f "$path" ] || continue
+    next_archive=$path
+    break
+  done
+  [ -n "$next_archive" ] || fail 'PR server package was not assembled'
+  KILN_SERVER_UPGRADE_PREV_TAR=$prev_archive \
+    KILN_SERVER_UPGRADE_TO_TAR=$next_archive \
+    bash scripts/test-identity-upgrade.sh
+fi
+
 printf 'tag path dry-run ok %s\n' "$dry_tag"

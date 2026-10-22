@@ -24,6 +24,19 @@ impl Drop for Phase {
     }
 }
 
+pub(super) fn take_phases() -> std::collections::BTreeMap<&'static str, f64> {
+    PHASES
+        .try_with(|phases| std::mem::take(&mut *phases.borrow_mut()))
+        .unwrap_or_default()
+}
+
+pub(super) async fn scoped<Fut, T>(launch: Fut) -> T
+where
+    Fut: std::future::Future<Output = T>,
+{
+    PHASES.scope(RefCell::new(BTreeMap::new()), launch).await
+}
+
 fn summarize(values: &[Option<f64>]) -> Value {
     let mut successful: Vec<_> = values.iter().flatten().copied().collect();
     successful.sort_by(f64::total_cmp);
@@ -137,6 +150,105 @@ impl Runtime {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn launch_phases_are_lost_if_taken_after_scope_exit() {
+        scoped(async {
+            let _phase = Phase::start("disk_copy");
+        })
+        .await;
+        assert!(
+            take_phases().is_empty(),
+            "create/start take phases after scoped() returns, so finish_launch must receive them from inside the scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn launch_phase_timing_cli_proof() {
+        use crate::launch_timing::LaunchTiming;
+        use std::time::Duration;
+
+        scoped(async {
+            {
+                let _storage = Phase::start("disk_copy");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            {
+                let _vmm = Phase::start("vmm_start");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            {
+                let _guest = Phase::start("guest_ready");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            {
+                let _agent = Phase::start("guest_initialize");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await;
+        let before = LaunchTiming::from_phases("create", "Copy", 8367.8, take_phases());
+        println!(
+            "PROOF_BEFORE {}",
+            serde_json::to_string(&before).expect("timing json")
+        );
+
+        let phases = scoped(async {
+            {
+                let _storage = Phase::start("disk_copy");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            {
+                let _vmm = Phase::start("vmm_start");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            {
+                let _guest = Phase::start("guest_ready");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            {
+                let _agent = Phase::start("guest_initialize");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            take_phases()
+        })
+        .await;
+        let after = LaunchTiming::from_phases("create", "Copy", 8367.8, phases);
+        println!(
+            "PROOF_AFTER {}",
+            serde_json::to_string(&after).expect("timing json")
+        );
+    }
+
+    #[tokio::test]
+    async fn launch_phases_map_into_last_launch_when_taken_inside_scope() {
+        let phases = scoped(async {
+            {
+                let _storage = Phase::start("disk_copy");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            {
+                let _vmm = Phase::start("vmm_start");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            {
+                let _guest = Phase::start("guest_ready");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            {
+                let _agent = Phase::start("guest_initialize");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            take_phases()
+        })
+        .await;
+        let timing =
+            crate::launch_timing::LaunchTiming::from_phases("create", "Copy", 100., phases);
+        assert!(timing.storage_ms.is_some());
+        assert!(timing.vmm_ms.is_some());
+        assert!(timing.init_ms.is_some());
+        assert!(timing.agent_ms.is_some());
+    }
 
     #[test]
     fn nearest_rank_counts_failures_without_inventing_latencies() {

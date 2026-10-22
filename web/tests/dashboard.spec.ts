@@ -156,7 +156,12 @@ test('live loading, empty, zero metrics and service failure are distinct', async
         operations: [],
         host: {
           ...previewDashboard.host,
-          metrics: { cpu_percent: 0, memory_bytes: 0, disk_bytes: null },
+          metrics: {
+            cpu_percent: 0,
+            memory_bytes: 0,
+            disk_bytes: null,
+            disk_total_bytes: null,
+          },
         },
       },
     })
@@ -168,9 +173,10 @@ test('live loading, empty, zero metrics and service failure are distinct', async
   await expect(page.getByText('No boxes yet')).toBeVisible()
   await expect(page.getByTestId('capability-metrics')).toHaveAttribute(
     'data-capability-state',
-    'not-yet',
+    'available',
   )
-  await expect(page.getByTestId('capability-metrics')).toContainText('Not available yet')
+  await expect(page.getByTestId('capability-metrics')).toContainText('0%')
+  await expect(page.getByTestId('capability-metrics')).toContainText('0 B')
   await capture(page, 'empty-desktop')
   await page.unroute('**/api/v1/dashboard')
   await page.route('**/api/v1/dashboard', (route) =>
@@ -307,6 +313,20 @@ test('phone inventory retains accessible table semantics after reflow', async ({
     (await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze())
       .violations,
   ).toEqual([])
+})
+
+test('clicking the version label opens embedded release notes', async ({ page }) => {
+  await page.goto('/boxes?preview=1')
+  const version = page.getByRole('button', { name: /^Release notes for v/ })
+  await expect(version).toBeVisible()
+  await capture(page, 'release-notes-header')
+  await version.click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.getByRole('heading', { level: 2 })).toBeVisible()
+  await expect(dialog.getByRole('link', { name: /View on GitHub/i })).toBeVisible()
+  await capture(page, 'release-notes-open')
+  await dialog.getByRole('button', { name: 'Close dialog' }).click()
+  await expect(dialog).toHaveCount(0)
 })
 
 test('key screens have no automated accessibility violations', async ({ page }) => {

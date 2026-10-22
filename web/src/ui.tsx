@@ -2,7 +2,53 @@ import { useEffect, useId, useRef, useState, type ReactNode, type ComponentProps
 import { Link, useSearchParams } from 'react-router-dom'
 import { ArrowUpRight, Box as BoxIcon, Check, Copy, Info, X } from 'lucide-react'
 import { capabilities, capabilityAvailable, type Capability } from './capabilities'
-import { formatBytes, formatMetric, type Dashboard } from './data'
+import { boxStates, formatBytes, formatDiskUsedOfTotal, formatMetric, type Dashboard } from './data'
+
+type BoxState = (typeof boxStates)[number]
+type MetricRow = { label: string; value: string; hint: string }
+
+function metricRows(
+  metrics: Dashboard['host']['metrics'],
+  boxState?: BoxState,
+  diskTotalBytes: number | null = metrics.disk_total_bytes,
+  hostObservedDisk = false,
+): MetricRow[] {
+  const active = !boxState || boxState === 'running' || boxState === 'paused'
+  const inactiveLabel = boxState === 'stopped' ? 'Stopped' : 'Not available yet'
+  const display = (
+    value: number | null,
+    format: (next: number) => string,
+    hint = 'Observed use',
+  ) => {
+    if (value !== null) {
+      return { value: format(value), hint }
+    }
+    if (!active) {
+      return { value: inactiveLabel, hint: inactiveLabel }
+    }
+    return { value: 'Not reported', hint: 'Not reported' }
+  }
+  const diskHint = hostObservedDisk ? 'Host-observed' : 'Observed use'
+  const disk = (() => {
+    if (metrics.disk_bytes === null) {
+      if (!active) {
+        return { value: inactiveLabel, hint: inactiveLabel }
+      }
+      return { value: 'Not reported', hint: 'Not reported' }
+    }
+    const total = diskTotalBytes ?? metrics.disk_total_bytes
+    const value =
+      total !== null
+        ? formatDiskUsedOfTotal(metrics.disk_bytes, total)
+        : formatBytes(metrics.disk_bytes)
+    return { value, hint: diskHint }
+  })()
+  return [
+    { label: 'CPU', ...display(metrics.cpu_percent, (value) => formatMetric(value, '%')) },
+    { label: 'Memory', ...display(metrics.memory_bytes, formatBytes) },
+    { label: 'Disk', ...disk },
+  ]
+}
 
 export type PageProps = {
   data: Dashboard
@@ -111,32 +157,47 @@ export function Unavailable({ preview }: { preview: boolean }) {
 export function ResourceMetrics({
   metrics,
   title = 'Resource use',
+  boxState,
+  diskTotalBytes = null,
+  hostObservedDisk = false,
 }: {
   metrics: Dashboard['host']['metrics']
   title?: string
+  boxState?: BoxState
+  diskTotalBytes?: number | null
+  hostObservedDisk?: boolean
 }) {
-  const missing = Object.values(metrics).every((value) => value === null)
+  const missing = [metrics.cpu_percent, metrics.memory_bytes, metrics.disk_bytes].every(
+    (value) => value === null,
+  )
+  const active = !boxState || boxState === 'running' || boxState === 'paused'
   return (
     <section className="panel metrics-panel" aria-label={title}>
       <div className="panel-heading">
         <h2>{title}</h2>
         {capabilityAvailable('metrics') && (
-          <span className="micro">{missing ? 'Awaiting host telemetry' : 'Reported by host'}</span>
+          <span className="micro">
+            {!active
+              ? boxState === 'stopped'
+                ? 'Box is stopped'
+                : 'Telemetry unavailable'
+              : missing
+                ? 'Awaiting host telemetry'
+                : 'Reported by host'}
+          </span>
         )}
       </div>
       <CapabilitySurface capability="metrics">
         <div className="metric-grid">
-          {[
-            ['CPU', formatMetric(metrics.cpu_percent, '%')],
-            ['Memory', formatBytes(metrics.memory_bytes)],
-            ['Disk', formatBytes(metrics.disk_bytes)],
-          ].map(([label, value]) => (
-            <div className="metric" key={label}>
-              <span className="eyebrow">{label}</span>
-              <strong>{value}</strong>
-              <span className="micro">{value === '—' ? 'Not reported' : 'Observed use'}</span>
-            </div>
-          ))}
+          {metricRows(metrics, boxState, diskTotalBytes, hostObservedDisk).map(
+            ({ label, value, hint }) => (
+              <div className="metric" key={label}>
+                <span className="eyebrow">{label}</span>
+                <strong>{value}</strong>
+                <span className="micro">{hint}</span>
+              </div>
+            ),
+          )}
         </div>
       </CapabilitySurface>
     </section>
