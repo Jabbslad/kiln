@@ -260,14 +260,20 @@ impl Authenticator {
         if let Some(admin_hash) = self.admin_hash {
             let supplied: [u8; 32] = Sha256::digest(bearer.as_bytes()).into();
             if bool::from(supplied.ct_eq(&admin_hash)) {
-                let (enrollment, _) = self
-                    .central
-                    .as_ref()
-                    .context("central authentication not enrolled")?;
+                if let Some((enrollment, _)) = &self.central {
+                    return Ok((
+                        Caller {
+                            sub: enrollment.owner_id.clone(),
+                            tenant_id: enrollment.enrolled_tenant_id().to_owned(),
+                            role: Role::Owner,
+                        },
+                        Scope::Operate,
+                    ));
+                }
                 return Ok((
                     Caller {
-                        sub: enrollment.owner_id.clone(),
-                        tenant_id: enrollment.enrolled_tenant_id().to_owned(),
+                        sub: "administrator".into(),
+                        tenant_id: String::new(),
                         role: Role::Owner,
                     },
                     Scope::Operate,
