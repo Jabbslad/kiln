@@ -304,7 +304,7 @@ impl Host {
                 memory_mib: record.memory_mib,
                 vcpus: record.vcpus,
                 disk_bytes,
-                created_at,
+                created_at: crate::journal::journal_stored_secs(created_at),
                 last_operation: record.operation,
                 last_error: record.last_error,
                 restored_from: record.source,

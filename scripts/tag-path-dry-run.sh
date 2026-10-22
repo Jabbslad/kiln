@@ -161,9 +161,26 @@ if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
   proved_dist=$root/dist-proved-package-server
   mkdir -p "$proved_dist"
   git checkout -- Cargo.toml Cargo.lock
+  reuse_bin_dir=${TAG_PATH_RELEASE_BIN_DIR:-}
+  if [ -z "$reuse_bin_dir" ]; then
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+      fail 'TAG_PATH_RELEASE_BIN_DIR is required on pull requests'
+    fi
+    VERSION=$from
+    export VERSION
+    cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client
+    cargo build --release --locked -p kiln-identity
+    reuse_bin_dir=target/release
+  fi
+  image_root=$(mktemp -d)
+  tar -xzf "$prev_archive" -C "$image_root" image
   VERSION=$from
   export VERSION
-  PACKAGE_OUTPUT=$proved_dist sh scripts/package-server-release.sh
+  SKIP_RELEASE_BUILD=1 \
+    RELEASE_BIN_DIR="$reuse_bin_dir" \
+    KILN_PACKAGE_IMAGE_DIR="$image_root/image" \
+    PACKAGE_OUTPUT=$proved_dist sh scripts/package-server-release.sh
+  rm -rf "$image_root"
   stamp_rehearsal=$(mktemp -d)
   cp "$proved_dist"/*.tar.gz "$proved_dist"/*.sha256 "$stamp_rehearsal/"
   sh scripts/stamp-release-dist.sh "$stamp_rehearsal" "$from" "$tag"
