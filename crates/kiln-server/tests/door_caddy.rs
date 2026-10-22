@@ -28,7 +28,7 @@ use futures_util::stream;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use kiln_api::{
     Action, ExecRequest, ExecResult, Operation, OperationState, Outcome, Submit,
-    auth::{MemberRole, Scope, ServerClaims},
+    auth::{Role, Scope, ServerClaims},
 };
 #[path = "common.rs"]
 mod common;
@@ -90,7 +90,7 @@ fn token(key: &EncodingKey) -> String {
         exp: now + 300,
         credential_id: "device-1".into(),
         scope: Scope::Operate,
-        role: Some(MemberRole::Owner),
+        role: Some(Role::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

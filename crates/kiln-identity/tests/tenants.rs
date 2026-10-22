@@ -5,7 +5,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use kiln_api::auth::{MemberRole, Scope, ServerClaims};
+use kiln_api::auth::{Role, Scope, ServerClaims};
 use kiln_identity::{Config, Store};
 use p256::pkcs8::EncodePrivateKey;
 use serde_json::json;
@@ -291,7 +291,7 @@ async fn tenant_membership_is_shared_and_tokens_carry_tenant_id() {
     let decoded = claims(jwt);
     assert_eq!(decoded.sub, member_id);
     assert_eq!(decoded.tenant_id.as_deref(), Some(tenant.as_str()));
-    assert_eq!(decoded.role, Some(MemberRole::Member));
+    assert_eq!(decoded.role, Some(Role::Member));
     assert_eq!(decoded.scope, Scope::Operate);
 
     let other_central = "d".repeat(43);

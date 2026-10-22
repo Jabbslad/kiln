@@ -1,6 +1,6 @@
 //! Live revocation set polled from identity and enforced on every JWT.
 use anyhow::{Context, Result, ensure};
-use kiln_api::auth::{MemberRole, RevocationQuery, RevocationSet};
+use kiln_api::auth::{RevocationQuery, RevocationSet, Role};
 use std::sync::Mutex;
 use std::{
     collections::HashSet,
@@ -108,12 +108,12 @@ impl RevocationWatch {
         cancel
     }
 
-    pub fn allow(&self, sub: &str, credential_id: &str, role: MemberRole) -> Result<()> {
+    pub fn allow(&self, sub: &str, credential_id: &str, role: Role) -> Result<()> {
         let snap = self.snapshot.lock().unwrap();
         if snap.accounts.contains(sub) || snap.credentials.contains(credential_id) {
             anyhow::bail!("revoked");
         }
-        if role == MemberRole::Member && snap.refreshed.is_none_or(|t| t.elapsed() > MEMBER_STALE) {
+        if role == Role::Member && snap.refreshed.is_none_or(|t| t.elapsed() > MEMBER_STALE) {
             anyhow::bail!("revocation stale");
         }
         Ok(())
