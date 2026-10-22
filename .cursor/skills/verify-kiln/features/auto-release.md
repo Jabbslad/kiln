@@ -21,7 +21,8 @@ Manual recovery uses workflow dispatch on `Deploy` with a published tag, or `bui
 
 ## Driving it in a checkout
 
-Before push, run the fast local gate (fmt check, `cargo fmt`/`clippy`/workspace tests, feature-map guard):
+Before push, enable the repository hook once per clone (`bash scripts/install-hooks.sh`).
+The pre-push hook runs the fast local gate (fmt check, `cargo fmt`/`clippy`/workspace tests, feature-map guard):
 
 ```sh
 bash scripts/check.sh

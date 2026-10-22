@@ -184,6 +184,13 @@ and the separately retained transient test failure](docs/runtime.md#retained-pid
 
 ## Development
 
+Enable the pre-push hook once per clone (runs `scripts/check.sh` before every
+push; adds `--release` when the diff touches release, deploy, or install paths):
+
+```sh
+bash scripts/install-hooks.sh
+```
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
