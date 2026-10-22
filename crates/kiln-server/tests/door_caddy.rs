@@ -953,8 +953,7 @@ async fn door_ssh_caddy_proof_transcript() {
     let caddy_ca = root.path().join("caddy.crt");
     fs::write(&caddy_ca, &caddy_cert).unwrap();
     let box_id = "a".repeat(32);
-    let proof_dir =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/proof/door-ssh-caddy");
+    let proof_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/proof/door-ssh-caddy");
     fs::create_dir_all(&proof_dir).unwrap();
 
     let broken = start_caddy(
