@@ -208,6 +208,8 @@ jobs:
       - name: Merge queue already tested this tree
         id: queue
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: cargo xtask merge-queue-tested
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: steps.queue.outputs.skip_tests != 'true'
@@ -511,6 +513,8 @@ jobs:
       - name: Merge queue already tested this tree
         id: queue
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: cargo xtask merge-queue-tested
       - name: Stamp release version
         env:
@@ -599,6 +603,8 @@ jobs:
       - name: Merge queue already tested this tree
         id: queue
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: cargo xtask merge-queue-tested
       - name: Stamp release version
         env:

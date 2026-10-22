@@ -19,7 +19,9 @@ const NEEDED: &[&str] = &[
     "dashboard",
 ];
 const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const TREE_OTHER: &str = "cccccccccccccccccccccccccccccccccccccccc";
+const PROOF_EVENTS: &[&str] = &["merge_group", "pull_request"];
 
 pub fn should_skip(
     event_name: &str,
@@ -64,35 +66,34 @@ where
         return Err("GITHUB_TOKEN is missing".into());
     }
     let base = api.trim_end_matches('/');
-    let listed = fetch(
-        &format!(
-            "{base}/repos/{repo}/actions/workflows/{WORKFLOW}/runs?event=merge_group&status=success&per_page={PAGE}"
-        ),
-        token,
-    )?;
-    let runs = listed
-        .get("workflow_runs")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "workflow run list has no workflow_runs".to_string())?;
     let mut trees = HashSet::new();
-    for run in runs {
-        let Some(run) = run.as_object() else {
-            continue;
-        };
-        if run.get("event").and_then(Value::as_str) != Some("merge_group")
-            || run.get("conclusion").and_then(Value::as_str) != Some("success")
-        {
-            continue;
-        }
-        let Some(sha) = run.get("head_sha").and_then(Value::as_str) else {
-            continue;
-        };
-        if !sha_ok(sha) {
-            continue;
-        }
-        let commit = fetch(&format!("{base}/repos/{repo}/commits/{sha}"), token)?;
-        if let Some(tree) = commit_tree(&commit) {
-            trees.insert(tree);
+    for event in PROOF_EVENTS {
+        let listed = fetch(
+            &format!(
+                "{base}/repos/{repo}/actions/workflows/{WORKFLOW}/runs?event={event}&status=success&per_page={PAGE}"
+            ),
+            token,
+        )?;
+        let runs = listed
+            .get("workflow_runs")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "workflow run list has no workflow_runs".to_string())?;
+        for run in runs {
+            let Some(run) = run.as_object() else {
+                continue;
+            };
+            if run.get("event").and_then(Value::as_str) != Some(*event)
+                || run.get("conclusion").and_then(Value::as_str) != Some("success")
+            {
+                continue;
+            }
+            let Some(sha) = proof_sha(run) else {
+                continue;
+            };
+            let commit = fetch(&format!("{base}/repos/{repo}/commits/{sha}"), token)?;
+            if let Some(tree) = commit_tree(&commit) {
+                trees.insert(tree);
+            }
         }
     }
     Ok(trees)
@@ -195,6 +196,21 @@ fn bool_word(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
+fn proof_sha(run: &serde_json::Map<String, Value>) -> Option<String> {
+    let event = run.get("event").and_then(Value::as_str)?;
+    let sha = if event == "pull_request" {
+        run.get("pull_requests")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .and_then(|item| item.pointer("/head/sha"))
+            .and_then(Value::as_str)
+            .or_else(|| run.get("head_sha").and_then(Value::as_str))?
+    } else {
+        run.get("head_sha").and_then(Value::as_str)?
+    };
+    sha_ok(sha).then(|| sha.to_string())
+}
+
 fn commit_tree(commit: &Value) -> Option<String> {
     let sha = commit.pointer("/commit/tree/sha")?.as_str()?;
     sha_ok(sha).then(|| sha.to_string())
@@ -266,14 +282,62 @@ fn test_pull_request_tag_and_dispatch_ignore_a_matching_tree() {
 fn test_failed_or_non_queue_runs_do_not_count() {
     let repo = tempfile::tempdir().unwrap();
     let (_first, _second, tree) = make_repo(repo.path());
-    for (event, conclusion) in [
-        ("merge_group", "failure"),
-        ("pull_request", "success"),
-        ("push", "success"),
-    ] {
+    for (event, conclusion) in [("merge_group", "failure"), ("push", "success")] {
         let mut fetch = runs(&tree, event, conclusion, SHA_A);
         assert!(!decide(&main_push(), &mut fetch, Some(repo.path())).unwrap());
     }
+}
+
+fn test_successful_pull_request_head_tree_skips_main_push() {
+    let repo = tempfile::tempdir().unwrap();
+    make_repo(repo.path());
+    let tree = git(repo.path(), &["rev-parse", "HEAD^{tree}"]);
+    let mut fetch = runs(&tree.trim(), "pull_request", "success", SHA_A);
+    assert!(decide(&main_push(), &mut fetch, Some(repo.path())).unwrap());
+}
+
+fn test_pull_request_merge_commit_tree_is_ignored_without_head() {
+    let repo = tempfile::tempdir().unwrap();
+    make_repo(repo.path());
+    let tree = TREE_OTHER.to_string();
+    let mut fetch = move |url: &str, token: &str| {
+        assert_eq!(token, "test-token");
+        if url.contains("event=pull_request") {
+            Ok(serde_json::json!({
+                "workflow_runs": [{
+                    "event": "pull_request",
+                    "conclusion": "success",
+                    "head_sha": SHA_B,
+                    "pull_requests": []
+                }]
+            }))
+        } else if url.contains("event=merge_group") {
+            Ok(serde_json::json!({"workflow_runs": []}))
+        } else if url.ends_with(&format!("/commits/{SHA_B}")) {
+            Ok(serde_json::json!({"commit": {"tree": {"sha": tree}}}))
+        } else {
+            Err(url.to_string())
+        }
+    };
+    assert!(!decide(&main_push(), &mut fetch, Some(repo.path())).unwrap());
+}
+
+fn test_main_push_queue_steps_receive_github_token() {
+    let text = fs::read_to_string(repo_root().join(".github/workflows/build.yml")).unwrap();
+    let needle = "run: cargo xtask merge-queue-tested";
+    let mut start = 0;
+    let mut found = 0;
+    while let Some(index) = text[start..].find(needle) {
+        let absolute = start + index;
+        let window = &text[absolute.saturating_sub(320)..absolute];
+        assert!(
+            window.contains("GITHUB_TOKEN: ${{ github.token }}"),
+            "merge-queue-tested step missing GITHUB_TOKEN"
+        );
+        found += 1;
+        start = absolute + needle.len();
+    }
+    assert_eq!(found, 3);
 }
 
 fn test_lookup_failure_runs_tests_and_exits_zero() {
@@ -509,10 +573,20 @@ fn runs(
         assert_eq!(token, "test-token");
         if url.ends_with(&format!("/commits/{sha}")) {
             Ok(serde_json::json!({"commit": {"tree": {"sha": tree}}}))
+        } else if url.contains(&format!("event={event}")) {
+            let mut run = serde_json::json!({
+                "event": event,
+                "conclusion": conclusion,
+                "head_sha": sha,
+            });
+            if event == "pull_request" {
+                run["pull_requests"] = serde_json::json!([{"head": {"sha": sha}}]);
+            }
+            Ok(serde_json::json!({"workflow_runs": [run]}))
+        } else if url.contains("event=merge_group") || url.contains("event=pull_request") {
+            Ok(serde_json::json!({"workflow_runs": []}))
         } else {
-            Ok(serde_json::json!({
-                "workflow_runs": [{"event": event, "conclusion": conclusion, "head_sha": sha}]
-            }))
+            Err(url.to_string())
         }
     }
 }
@@ -554,6 +628,9 @@ register_cases! {
     test_a_different_tree_still_runs_tests,
     test_pull_request_tag_and_dispatch_ignore_a_matching_tree,
     test_failed_or_non_queue_runs_do_not_count,
+    test_successful_pull_request_head_tree_skips_main_push,
+    test_pull_request_merge_commit_tree_is_ignored_without_head,
+    test_main_push_queue_steps_receive_github_token,
     test_lookup_failure_runs_tests_and_exits_zero,
     test_pull_request_process_does_not_need_a_token,
     test_queue_runs_checks_and_only_push_or_dispatch_packages,
