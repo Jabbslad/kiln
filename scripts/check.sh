@@ -15,7 +15,7 @@ while [ $# -gt 0 ]; do
       cat <<'EOF'
 Usage: sh scripts/check.sh [--docs-check] [--release]
 
-Default (fast, run before every push):
+Default (fast; also run by .githooks/pre-push when hooks are installed):
   fmt check, server-check (cargo fmt/clippy/test), feature-map-guard
 
   --docs-check  Also run the docs-check repository script bundle (slow; opt-in).

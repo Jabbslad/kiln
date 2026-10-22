@@ -1,8 +1,10 @@
 # Delivery preference
 
-Run `bash scripts/fmt.sh` before every push.
+Run `bash scripts/install-hooks.sh` once per clone so the pre-push hook runs
+`scripts/check.sh` (and `--release` when the push touches release, deploy, or
+install paths).
 
-Run `bash scripts/check.sh` before every push.
+Run `bash scripts/fmt.sh` before every push.
 
 For pull requests that change dashboard or CLI output, run `sh scripts/proof.sh` and attach the generated screenshots or CLI captures to the PR body (see `.cursor/skills/verify-kiln/features/proof.md`).
 

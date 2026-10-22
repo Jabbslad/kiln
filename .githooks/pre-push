@@ -1,0 +1,48 @@
+#!/bin/sh
+# Run scripts/check.sh before push; add --release for release/deploy/install paths.
+set -eu
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+zero=0000000000000000000000000000000000000000
+needs_release=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${local_ref:-}" ] || continue
+  [ "$local_sha" = "$zero" ] && continue
+
+  if [ "$remote_sha" = "$zero" ]; then
+    empty_tree=$(git hash-object -t tree /dev/null)
+    paths=$(git diff --name-only --no-renames "$empty_tree" "$local_sha")
+  else
+    paths=$(git diff --name-only --no-renames "$remote_sha" "$local_sha")
+  fi
+
+  if printf '%s\n' "$paths" | sh "$root/scripts/prepush-extra-check-paths.sh"; then
+    needs_release=1
+  fi
+done
+
+if [ "$needs_release" -eq 1 ]; then
+  printf 'pre-push: running bash scripts/check.sh --release\n'
+  set +e
+  output=$(bash scripts/check.sh --release 2>&1)
+  code=$?
+  set -eu
+  check_cmd='bash scripts/check.sh --release'
+else
+  printf 'pre-push: running bash scripts/check.sh\n'
+  set +e
+  output=$(bash scripts/check.sh 2>&1)
+  code=$?
+  set -eu
+  check_cmd='bash scripts/check.sh'
+fi
+
+if [ "$code" -ne 0 ]; then
+  printf 'pre-push: FAILED: %s (exit %s)\n' "$check_cmd" "$code" >&2
+  printf '%s\n' "$output" >&2
+  exit "$code"
+fi
+printf '%s\n' "$output"
