@@ -773,7 +773,7 @@ fn plan_submit(host: &Arc<Host>, request: &Submit) -> Result<SubmitPlan, Failure
     })?;
     let live_ids = live_box_ids(&host.runtime_dir).map_err(Failure::internal)?;
     let live_refs: Vec<&str> = live_ids.iter().map(String::as_str).collect();
-    let accepted = db.accept(&request, &live_refs).map_err(|error| {
+    let accepted = db.accept(request, &live_refs).map_err(|error| {
         if error.is::<JournalFull>() {
             Failure::new(
                 StatusCode::SERVICE_UNAVAILABLE,
