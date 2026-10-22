@@ -64,8 +64,11 @@ pub fn parse_caller_headers(
     role: Option<&str>,
 ) -> Option<Caller> {
     let sub = sub?;
-    let tenant_id = tenant_id?;
-    if sub.is_empty() || sub.len() > 128 || tenant_id.is_empty() || tenant_id.len() > 128 {
+    if sub.is_empty() || sub.len() > 128 {
+        return None;
+    }
+    let tenant_id = tenant_id.unwrap_or("");
+    if tenant_id.len() > 128 {
         return None;
     }
     let role = match role {

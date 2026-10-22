@@ -857,7 +857,7 @@ async fn plan_submit(
     request: &Submit,
     caller: &Caller,
 ) -> Result<SubmitPlan, Failure> {
-    let box_target = {
+    let box_target: Option<String> = {
         let db = host.journal.lock().unwrap();
         if let Some(existing) = db.existing(request).map_err(|e| {
             if e.is::<Conflict>() {
@@ -881,7 +881,11 @@ async fn plan_submit(
                 if !db.owns(target).map_err(Failure::internal)? {
                     return Err(Failure::missing());
                 }
-                Some(target.to_string())
+                if host.box_on_disk(target)? {
+                    Some(target.to_string())
+                } else {
+                    None
+                }
             }
             _ => None,
         }
