@@ -31,15 +31,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-        run: |
-          conclusion=$(gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}/jobs" --paginate \
-            --jq '[.jobs[] | select(.name == "deploy" or .name == "deploy / deploy") | .conclusion] | .[0] // empty')
-          if [ "$conclusion" != success ]; then
-            printf 'deploy job conclusion was %s\n' "${conclusion:-missing}"
-            exit 0
-          fi
-          printf 'deploy=success\n' >> "$GITHUB_OUTPUT"
+        run: sh scripts/slow-lane-require-deploy.sh '${{ github.event.workflow_run.id }}'
       - name: Merge next slow-lane pull request
         if: steps.deploy.outputs.deploy == 'success'
         env:

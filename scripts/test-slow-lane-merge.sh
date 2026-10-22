@@ -3,6 +3,8 @@ set -eu
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 merge=$root/scripts/slow-lane-merge.sh
+require_deploy=$root/scripts/slow-lane-require-deploy.sh
+wr_gate=$root/scripts/slow-lane-workflow-run-gate.sh
 
 fail() {
   printf 'test-slow-lane-merge: %s\n' "$*" >&2
@@ -158,6 +160,21 @@ case "$1" in
           payload=$(jq -n '{behind_by: 0}')
         fi
         ;;
+      */actions/runs/*/jobs)
+        mode=${DEPLOY_STUB_MODE:-success}
+        case $mode in
+          success)
+            payload=$(jq -n '{jobs: [{name: "deploy", conclusion: "success"}]}')
+            ;;
+          failure)
+            payload=$(jq -n '{jobs: [{name: "deploy", conclusion: "failure"}]}')
+            ;;
+          missing)
+            payload=$(jq -n '{jobs: [{name: "server-check", conclusion: "success"}]}')
+            ;;
+          *) exit 1 ;;
+        esac
+        ;;
       *) exit 1 ;;
     esac
     if [ -n "$jq_filter" ]; then
@@ -168,6 +185,8 @@ case "$1" in
     ;;
   workflow)
     [ "$2" = run ] || exit 1
+    shift 2
+    printf '%s\n' "$*" >>"$root/dispatch_args"
     printf '1\n' >>"$root/dispatch_count"
     ;;
   *) exit 1 ;;
@@ -239,6 +258,30 @@ assert_merged() {
 write_stub
 printf '1\n' >"$tmp/label_exists"
 
+# workflow_run gate (same as slow-lane-merge.yml job if)
+WR_CONCLUSION=success WR_EVENT=push WR_BRANCH=main sh "$wr_gate" \
+  || fail 'workflow_run gate should allow green main push'
+WR_CONCLUSION=failure WR_EVENT=push WR_BRANCH=main sh "$wr_gate" \
+  && fail 'workflow_run gate should refuse failed upstream run'
+WR_CONCLUSION=success WR_EVENT=workflow_dispatch WR_BRANCH=main sh "$wr_gate" \
+  && fail 'workflow_run gate should refuse non-push events'
+
+# deploy job gate before merge script runs
+DEPLOY_STUB_MODE=success GITHUB_OUTPUT=$tmp/deploy_ok GH_STUB_ROOT=$tmp GH_REPO=Jabbslad/kiln \
+  PATH="$tmp:$PATH" sh "$require_deploy" 999 \
+  || fail 'green deploy should exit 0'
+grep -qx 'deploy=success' "$tmp/deploy_ok" || fail 'green deploy should set deploy=success'
+
+DEPLOY_STUB_MODE=failure GITHUB_OUTPUT=$tmp/deploy_bad GH_STUB_ROOT=$tmp GH_REPO=Jabbslad/kiln \
+  PATH="$tmp:$PATH" sh "$require_deploy" 999 \
+  || fail 'red deploy should exit 0 without failing the step'
+grep -qx 'deploy=failure' "$tmp/deploy_bad" || fail 'red deploy should record failure'
+
+DEPLOY_STUB_MODE=missing GITHUB_OUTPUT=$tmp/deploy_miss GH_STUB_ROOT=$tmp GH_REPO=Jabbslad/kiln \
+  PATH="$tmp:$PATH" sh "$require_deploy" 999 \
+  || fail 'missing deploy should exit 0'
+grep -qx 'deploy=missing' "$tmp/deploy_miss" || fail 'missing deploy job should record missing'
+
 reset_prs
 run_merge
 assert_skip 'no open non-draft'
@@ -254,6 +297,12 @@ setup_pr 11 bbb2222222222222222222222222222222222222222 2026-01-02T00:00:00Z fal
   '{"labels":[]}' '[{"status":"completed","conclusion":"failure"}]' 0 README.md
 run_merge
 assert_skip 'not all success or skipped'
+
+reset_prs
+setup_pr 17 bbbb7777777777777777777777777777777777777777 2026-01-08T00:00:00Z false ok \
+  '{"labels":[]}' '[]' 0 README.md
+run_merge
+assert_skip 'no check runs'
 
 reset_prs
 setup_pr 12 ccc3333333333333333333333333333333333333333 2026-01-03T00:00:00Z false ok \
@@ -293,6 +342,23 @@ setup_pr 20 deadbeefdeadbeefdeadbeefdeadbeefdeadbeef 2026-01-10T00:00:00Z false 
 run_merge
 assert_merged 20 deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
 grep -q 'merged.*#20' "$tmp/summary.md" || fail 'summary should record merge'
+grep -q 'Build and package' "$tmp/dispatch_args" || fail 'dispatch should name Build and package workflow'
+grep -q 'main' "$tmp/dispatch_args" || fail 'dispatch should target main'
+
+# end-to-end chain: workflow_run gate + green deploy + merge + dispatch
+WR_CONCLUSION=success WR_EVENT=push WR_BRANCH=main sh "$wr_gate" \
+  || fail 'chain: workflow_run gate'
+DEPLOY_STUB_MODE=success GITHUB_OUTPUT=$tmp/deploy_chain GH_STUB_ROOT=$tmp GH_REPO=Jabbslad/kiln \
+  PATH="$tmp:$PATH" sh "$require_deploy" 42 \
+  || fail 'chain: deploy gate'
+grep -qx 'deploy=success' "$tmp/deploy_chain" || fail 'chain: deploy output'
+reset_prs
+setup_pr 21 cafebabecafebabecafebabecafebabecafebabe 2026-01-11T00:00:00Z false ok \
+  '{"labels":[]}' '[{"status":"completed","conclusion":"success"}]' 0 README.md
+run_merge
+assert_merged 21 cafebabecafebabecafebabecafebabecafebabe
+grep -q 'workflow run Build and package --ref main' "$tmp/gh.log" \
+  || grep -q 'workflow run' "$tmp/gh.log" || fail 'chain: workflow dispatch logged'
 
 reset_prs
 jq -n \

@@ -1432,6 +1432,62 @@ const REHEARSAL_MARK: &str = "rehearsal: tag-path-dry-run";
 
 /// A job that publishes, stamps, attests, or deploys, or whose `if` is limited
 /// to main or a tag push, needs the pull-request rehearsal named in its body.
+const FAIL_FAST_CANCEL_JOB: &str = "cancel-on-required-failure";
+
+/// Pull-request CI cancels the workflow when a required job fails.
+pub fn fail_fast_cancel_violations(workflow: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    let Some(body) = job_blocks(workflow)
+        .into_iter()
+        .find_map(|(name, body)| (name == FAIL_FAST_CANCEL_JOB).then_some(body))
+    else {
+        violations.push(format!("{FAIL_FAST_CANCEL_JOB} job is missing"));
+        return violations;
+    };
+    let expr = job_if(workflow, FAIL_FAST_CANCEL_JOB).unwrap_or_default();
+    let normalized = normalize_if(&expr);
+    if !normalized.contains("always()") && !normalized.contains("failure()") {
+        violations.push(format!(
+            "{FAIL_FAST_CANCEL_JOB} if must use always() or failure() (got {expr})"
+        ));
+    }
+    if !normalized.starts_with("!cancelled()") && !normalized.contains("always()") {
+        violations.push(format!(
+            "{FAIL_FAST_CANCEL_JOB} if should start with !cancelled() or use always()"
+        ));
+    }
+    if !body.contains("cancel-on-failure-gate") {
+        violations.push(format!(
+            "{FAIL_FAST_CANCEL_JOB} must run cargo xtask cancel-on-failure-gate before cancelling"
+        ));
+    }
+    if !body.contains("actions: write") {
+        violations.push(format!(
+            "{FAIL_FAST_CANCEL_JOB} must grant actions: write to cancel the run"
+        ));
+    }
+    if !body.contains("gh run cancel") && !body.contains("cancelWorkflowRun") {
+        violations.push(format!(
+            "{FAIL_FAST_CANCEL_JOB} must call gh run cancel or cancelWorkflowRun"
+        ));
+    }
+    for job in [
+        "changes",
+        "docs-check",
+        "feature-map-guard",
+        "server-check",
+        "client",
+        "dashboard",
+    ] {
+        if !needs_job(&body, job) {
+            violations.push(format!(
+                "{FAIL_FAST_CANCEL_JOB} must need {job} so failures are observed"
+            ));
+        }
+    }
+    violations
+}
+
 pub fn rehearsal_violations(workflow: &str) -> Vec<String> {
     let mut violations = Vec::new();
     match job_if(workflow, "tag-path-dry-run") {

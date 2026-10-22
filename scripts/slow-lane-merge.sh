@@ -87,7 +87,7 @@ checks_verdict() {
         elif (.conclusion == "success" or .conclusion == "skipped") then "ok"
         else "bad"
         end]
-    | if length == 0 then "ok"
+    | if length == 0 then "missing"
       elif any(. == "pending") then "pending"
       elif any(. == "bad") then "bad"
       else "ok"
@@ -142,6 +142,10 @@ fi
 verdict=$(checks_verdict "$head")
 case $verdict in
   ok) ;;
+  missing)
+    summary checks "#${number} has no check runs at ${head}"
+    exit 0
+    ;;
   pending)
     summary checks "#${number} has pending check runs at ${head}"
     exit 0

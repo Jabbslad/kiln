@@ -231,10 +231,21 @@ else
   printf 'deploy: skipping the dashboard bundle check because installation failed\n' >&2
 fi
 
+door_caddy_rc=1
+if [ "$install_rc" -eq 0 ] && [ -f "$extract/package/deploy/door.Caddyfile" ]; then
+  door_caddy_rc=0
+  bash "$dir/install-door-caddy.sh" "$extract/package/deploy/door.Caddyfile" \
+    || door_caddy_rc=$?
+else
+  printf 'deploy: skipping door caddy install because installation failed\n' >&2
+fi
+
 door_rc=1
-if [ "$install_rc" -eq 0 ] && [ "$health_rc" -eq 0 ]; then
+if [ "$install_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] && [ "$door_caddy_rc" -eq 0 ]; then
   door_rc=0
   bash "$dir/check-door-ssh.sh" || door_rc=$?
+elif [ "$door_caddy_rc" -ne 0 ]; then
+  printf 'deploy: skipping the door ssh probe because door caddy install failed\n' >&2
 else
   printf 'deploy: skipping the door ssh probe because the API is not healthy\n' >&2
 fi
@@ -256,4 +267,4 @@ if [ "$before" != "$after" ]; then
 fi
 [ "$install_rc" -eq 0 ] && [ "$doctor_rc" -eq 0 ] && [ "$health_rc" -eq 0 ] \
   && [ "$metrics_rc" -eq 0 ] && [ "$smoke_rc" -eq 0 ] && [ "$dashboard_rc" -eq 0 ] \
-  && [ "$door_rc" -eq 0 ] && [ "$versions_rc" -eq 0 ]
+  && [ "$door_caddy_rc" -eq 0 ] && [ "$door_rc" -eq 0 ] && [ "$versions_rc" -eq 0 ]

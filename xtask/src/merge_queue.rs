@@ -387,6 +387,14 @@ fn test_docs_only_and_heavy_success_pass() {
     assert!(required_gate::evaluate(&heavy).ok());
 }
 
+fn test_code_only_pull_request_skips_docs_check() {
+    let payload = job_needs(
+        "success", "skipped", "success", "success", "success", "success", "true",
+    );
+    assert!(required_gate::evaluate(&payload).ok());
+    assert!(required_gate::evaluate(&payload).blockers.is_empty());
+}
+
 fn test_failure_and_cancelled_block_each_job() {
     for job_id in NEEDED {
         for result in ["failure", "cancelled"] {
@@ -551,6 +559,7 @@ register_cases! {
     test_queue_runs_checks_and_only_push_or_dispatch_packages,
     test_required_is_the_only_stable_check,
     test_docs_only_and_heavy_success_pass,
+    test_code_only_pull_request_skips_docs_check,
     test_failure_and_cancelled_block_each_job,
     test_unknown_result_blocks_and_outputs_are_ignored,
     test_malformed_needs_block,
