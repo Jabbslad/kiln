@@ -700,9 +700,12 @@ fn test_server_contains_prebuilt_image_not_host_snapshots_or_secrets() {
     }
     fs::write(image.join("snapshot.memory"), "private VM memory").unwrap();
     fs::write(image.join("admin.token"), "secret").unwrap();
+    let rootfs = fs::read(image.join("rootfs.ext4")).unwrap();
     let path = fix
         .package("server", "x86_64-unknown-linux-gnu", Some(&image))
         .unwrap();
+    assert_eq!(fs::read(image.join("rootfs.ext4")).unwrap(), rootfs);
+    assert_eq!(tar_bytes(&path, "image/rootfs.ext4"), rootfs);
     let names: std::collections::BTreeSet<_> = tar_names(&path).into_iter().collect();
     let expected = [
         "bin/kiln-runtime",
