@@ -31,8 +31,23 @@ async fn main() -> Result<()> {
         println!("host configuration and catalog validated");
         return Ok(());
     }
+    host.arm_jail_pool()?;
     let listener = bind_socket(&config.socket).await?;
     eprintln!("host service listening on {}", config.socket.display());
-    axum::serve(listener, host.router()).await?;
+    axum::serve(listener, host.router())
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    host.shutdown_jail_pool()?;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("SIGTERM handler");
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            let _ = result;
+        }
+        _ = terminate.recv() => {}
+    }
 }

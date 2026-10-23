@@ -23,11 +23,13 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::Arc,
     time::{Duration, Instant},
 };
 mod benchmark;
 mod checkpoint;
 mod disk;
+mod jail_pool;
 mod ssh;
 use benchmark::{Phase, scoped, take_phases};
 
@@ -81,6 +83,7 @@ pub struct Snapshot {
 pub struct Runtime {
     root: PathBuf,
     isolation: Option<Config>,
+    pool: Arc<jail_pool::Pool>,
 }
 
 pub fn random_bytes(count: usize) -> Result<Vec<u8>> {
@@ -157,7 +160,11 @@ impl Runtime {
             config.preflight()?;
             storage::atomic_json(&root.join("isolation.json"), config)?;
         }
-        Ok(Self { root, isolation })
+        Ok(Self {
+            root: root.clone(),
+            isolation,
+            pool: Arc::new(jail_pool::Pool::new(root)),
+        })
     }
 
     pub fn is_isolated(&self) -> bool {
@@ -168,35 +175,6 @@ impl Runtime {
         self.isolation
             .as_ref()
             .and_then(|config| config.cgroup(run).ok())
-    }
-
-    fn allocate_identity(&self, records: &[BoxRecord]) -> Result<Option<JailIdentity>> {
-        self.isolation
-            .as_ref()
-            .map(|config| {
-                config.allocate(
-                    &records
-                        .iter()
-                        .filter_map(|r| r.jail.clone())
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .transpose()
-    }
-
-    fn allocate_network(&self, records: &[BoxRecord]) -> Result<Option<Topology>> {
-        let Some(config) = self.isolation.as_ref().and_then(|c| c.network.as_ref()) else {
-            return Ok(None);
-        };
-        config.validate()?;
-        let slot = (0..8)
-            .find(|slot| {
-                !records
-                    .iter()
-                    .any(|r| r.network.as_ref().is_some_and(|n| n.slot == *slot))
-            })
-            .ok_or_else(|| Error::Invalid("network slot pool exhausted".into()))?;
-        Ok(Some(Topology::allocate(&config.namespace_scope, slot)?))
     }
 
     fn directory(&self, id: &str) -> Result<PathBuf> {
@@ -628,8 +606,9 @@ impl Runtime {
                         "local quota exceeded (8 boxes / 16384 MiB allocated)".into(),
                     ));
                 }
-                record.jail = self.allocate_identity(&records)?;
-                record.network = self.allocate_network(&records)?;
+                let (jail, network) = self.assign_new_box(&records, true)?;
+                record.jail = jail;
+                record.network = network;
                 storage::private_dir(&self.root.join("boxes").join(&record.id))?;
                 let _lock = storage::lock(&self.directory(&record.id)?)?;
                 let run = self.run(&record)?;
@@ -691,6 +670,17 @@ impl Runtime {
         snapshot: Option<&Snapshot>,
         initialize: bool,
     ) -> Result<()> {
+        self.boot_from(record, snapshot, initialize, jail_pool::Launch::Cold)
+            .await
+    }
+
+    async fn boot_from(
+        &self,
+        record: &mut BoxRecord,
+        snapshot: Option<&Snapshot>,
+        initialize: bool,
+        launch: jail_pool::Launch,
+    ) -> Result<()> {
         let phase = Phase::start("boot_preflight");
         if let Some(config) = &self.isolation {
             config.preflight()?;
@@ -715,10 +705,21 @@ impl Runtime {
                 record.jail.as_ref().map_or(0, |j| j.uid),
             )?;
         }
+        let pooled_pid = match &launch {
+            jail_pool::Launch::Pooled(pooled) => {
+                pooled.matches(record)?;
+                Some(pooled.pid())
+            }
+            jail_pool::Launch::Cold => None,
+        };
         let mut kernel = record.image.kernel_path.clone();
         let mut snapshot_directory = snapshot.map(|s| self.root.join("snapshots").join(&s.id));
-        let mut command = if let (Some(config), Some(identity)) = (&self.isolation, &record.jail) {
-            if run.join("firecracker").try_exists()? {
+        if let Some(identity) = record.jail.as_ref()
+            && self.is_isolated()
+        {
+            // A pooled jailer already created this generation. Cold launch still
+            // refuses to exec into a directory jailer has used.
+            if pooled_pid.is_none() && run.join("firecracker").try_exists()? {
                 return Err(Error::Invalid("refusing to reuse a jail generation".into()));
             }
             if record.disk_layer.is_some() {
@@ -753,95 +754,90 @@ impl Runtime {
                 )?;
                 kernel = "kernel".into();
             }
-            fs::create_dir(config.cgroup(&record.run)?)?;
-            let jailer_args = config.args(
-                &self.generation(record)?,
-                &record.run,
-                identity,
-                record.memory_mib,
-                record.vcpus,
-            )?;
-            let mut command =
-                if let (Some(network), Some(topology)) = (&config.network, &record.network) {
-                    let mut command = Command::new(&network.helper);
-                    command.args([
-                        "run",
-                        &record.run,
-                        &topology.namespace,
-                        config
-                            .jailer
-                            .to_str()
-                            .ok_or_else(|| Error::Invalid("non-UTF-8 jailer path".into()))?,
-                    ]);
-                    command.env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin");
-                    command
-                } else {
-                    Command::new(&config.jailer)
-                };
-            command.args(jailer_args);
-            command.env_clear();
-            command.env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin");
-            command
-        } else {
-            let mut command = Command::new(host::executable("firecracker")?);
-            command.args(["--id", &record.id, "--api-sock", "api.sock"]);
-            command
-        };
-        for socket in ["api.sock", "vsock.sock"] {
-            match fs::remove_file(run.join(socket)) {
-                Ok(()) => (),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-                Err(e) => return Err(e.into()),
-            }
+        } else if pooled_pid.is_some() {
+            return Err(Error::Invalid(
+                "pooled launch requires an isolated runtime".into(),
+            ));
         }
         let log = self.generation(record)?.join("console.log");
-        let output = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&log)?;
-        command
-            .current_dir(&run)
-            .stdin(Stdio::null())
-            .stdout(output.try_clone()?)
-            .stderr(output);
-        // SAFETY: only async-signal-safe syscalls before exec. The file budget
-        // must accommodate full memory snapshots (up to 4 GiB), as well as logs.
-        let isolated = self.is_isolated();
-        unsafe {
-            command.pre_exec(move || {
-                libc::umask(0o077);
-                if isolated && libc::setgroups(0, std::ptr::null()) != 0 {
-                    return Err(std::io::Error::last_os_error());
+        let pid = if let Some(pid) = pooled_pid {
+            // The refill thread already started the reaper. Do not unlink the
+            // live API socket or exec a second jailer into this generation.
+            pid
+        } else {
+            for socket in ["api.sock", "vsock.sock"] {
+                match fs::remove_file(run.join(socket)) {
+                    Ok(()) => (),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(e) => return Err(e.into()),
                 }
-                if libc::setsid() < 0 {
-                    return Err(std::io::Error::last_os_error());
+            }
+            failpoint("before-spawn");
+            let mut child = if let (Some(config), Some(identity)) = (&self.isolation, &record.jail)
+            {
+                jail_pool::spawn_cold(
+                    config,
+                    &self.generation(record)?,
+                    &record.run,
+                    identity,
+                    record.memory_mib,
+                    record.vcpus,
+                    record.network.as_ref(),
+                    &run,
+                    &log,
+                )?
+            } else {
+                let mut command = Command::new(host::executable("firecracker")?);
+                command.args(["--id", &record.id, "--api-sock", "api.sock"]);
+                let output = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .mode(0o600)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(&log)?;
+                command
+                    .current_dir(&run)
+                    .stdin(Stdio::null())
+                    .stdout(output.try_clone()?)
+                    .stderr(output);
+                // SAFETY: only async-signal-safe syscalls before exec. The file
+                // budget must accommodate full memory snapshots (up to 4 GiB).
+                let isolated = self.is_isolated();
+                unsafe {
+                    command.pre_exec(move || {
+                        libc::umask(0o077);
+                        if isolated && libc::setgroups(0, std::ptr::null()) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        if libc::setsid() < 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        let limit = libc::rlimit {
+                            rlim_cur: 5 * 1024 * 1024 * 1024,
+                            rlim_max: 5 * 1024 * 1024 * 1024,
+                        };
+                        if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
                 }
-                let limit = libc::rlimit {
-                    rlim_cur: 5 * 1024 * 1024 * 1024,
-                    rlim_max: 5 * 1024 * 1024 * 1024,
-                };
-                if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        failpoint("before-spawn");
-        let mut child = command.spawn()?;
-        let pid = child.id();
-        failpoint("after-spawn");
-        record.process = Some(process::identify(pid)?);
-        self.save(record)?;
-        failpoint("after-process-record");
-        // The VM outlives short CLI invocations. Long-lived callers (including
-        // benchmarks) still reap children when another operation stops them.
-        std::thread::Builder::new()
-            .name("vmm-reaper".into())
-            .spawn(move || {
-                let _ = child.wait();
-            })?;
+                command.spawn()?
+            };
+            let pid = child.id();
+            failpoint("after-spawn");
+            record.process = Some(process::identify(pid)?);
+            self.save(record)?;
+            failpoint("after-process-record");
+            // The VM outlives short CLI invocations. Long-lived callers (including
+            // benchmarks) still reap children when another operation stops them.
+            std::thread::Builder::new()
+                .name("vmm-reaper".into())
+                .spawn(move || {
+                    let _ = child.wait();
+                })?;
+            pid
+        };
         let (_directory, client) = self.connection(record)?;
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {

@@ -85,6 +85,7 @@ impl Runtime {
                     let runtime = Runtime {
                         root: self.root.clone(),
                         isolation: self.isolation.clone(),
+                        pool: std::sync::Arc::clone(&self.pool),
                     };
                     let image = image.to_owned();
                     let template = template.to_owned();

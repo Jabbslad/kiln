@@ -4,5 +4,6 @@
   "socket": "/run/kiln/host.sock",
   "isolation_config": "/etc/kiln/isolation.json",
   "allow_unsafe_development": false,
+  "jail_pool": 0,
   "templates": {}
 }

@@ -326,22 +326,44 @@ impl Runtime {
             last_error: None,
             disk_copy: String::new(),
             disk_layer: None,
-            jail: self.allocate_identity(&records)?,
-            network: if snapshot.network.is_some() {
-                self.allocate_network(&records)?
-            } else {
-                None
-            },
+            jail: None,
+            network: None,
             last_launch: None,
             owner: None,
         };
         use std::os::unix::fs::DirBuilderExt;
-        fs::DirBuilder::new()
-            .mode(0o700)
-            .create(self.root.join("boxes").join(&record.id))?;
+        let box_dir = self.root.join("boxes").join(&record.id);
+        fs::DirBuilder::new().mode(0o700).create(&box_dir)?;
         File::open(self.root.join("boxes"))?.sync_all()?;
         let _lock = storage::lock(&self.directory(&record.id)?)?;
-        self.save(&record)?;
+        let networked = snapshot.network.is_some();
+        let launch = match self.claim_template_jail(
+            &record.id,
+            snapshot.memory_mib,
+            snapshot.vcpus,
+            networked,
+        ) {
+            Ok(Some(claimed)) => match self.persist_claim(claimed, &mut record) {
+                Ok(launch) => Some(launch),
+                Err(error) => {
+                    if !box_dir.join("box.json").try_exists()? {
+                        let _ = fs::remove_dir_all(&box_dir);
+                    }
+                    return Err(error);
+                }
+            },
+            Ok(None) => {
+                let (jail, network) = self.assign_new_box(&records, networked)?;
+                record.jail = jail;
+                record.network = network;
+                self.save(&record)?;
+                None
+            }
+            Err(error) => {
+                let _ = fs::remove_dir_all(&box_dir);
+                return Err(error);
+            }
+        };
         // The durable source reference prevents deletion of backing files;
         // quota is reserved and the box lock prevents lifecycle interference.
         // Expensive checksums can now run alongside other box allocations.
@@ -356,7 +378,15 @@ impl Runtime {
                 self.save(&record)?;
                 failpoint("after-layer-publication");
                 drop(phase);
-                self.boot(&mut record, Some(&snapshot), true).await
+                self.boot_from(
+                    &mut record,
+                    Some(&snapshot),
+                    true,
+                    launch
+                        .map(super::jail_pool::Launch::Pooled)
+                        .unwrap_or(super::jail_pool::Launch::Cold),
+                )
+                .await
             }
             .await;
             (result, super::benchmark::take_phases())

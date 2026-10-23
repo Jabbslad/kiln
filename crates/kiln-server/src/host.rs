@@ -38,11 +38,15 @@ pub struct Config {
     pub isolation_config: Option<PathBuf>,
     #[serde(default)]
     pub allow_unsafe_development: bool,
+    /// Unassigned jails kept ready for template create. Zero leaves create cold.
+    #[serde(default)]
+    pub jail_pool: u8,
     pub templates: BTreeMap<String, String>,
 }
 
 pub struct Host {
     runtime: Runtime,
+    jail_pool: u8,
     runtime_dir: PathBuf,
     templates: BTreeMap<String, String>,
     catalog: Vec<TemplateView>,
@@ -75,6 +79,7 @@ fn acquire_service_lock(file: &File) -> Result<()> {
 
 impl Host {
     pub fn open(config: &Config) -> Result<Arc<Self>> {
+        ensure!(config.jail_pool <= 8, "jail pool size must be 0..=8");
         if unsafe { libc::geteuid() } == 0 {
             ensure!(
                 !config.allow_unsafe_development,
@@ -150,6 +155,7 @@ impl Host {
         metrics.prime();
         Ok(Arc::new(Self {
             runtime,
+            jail_pool: config.jail_pool,
             runtime_dir: config.runtime_dir.clone(),
             templates: config.templates.clone(),
             catalog,
@@ -159,6 +165,55 @@ impl Host {
             metrics: Mutex::new(metrics),
             _locks: [runtime_lock, journal_lock],
         }))
+    }
+
+    /// Reap leftover unclaimed jails, then keep `jail_pool` generations ready
+    /// when every published template shares one shape. `--check` does not call
+    /// this. A later start reaps anything shutdown did not reach.
+    pub fn arm_jail_pool(&self) -> Result<()> {
+        if self.jail_pool == 0 || !self.runtime.is_isolated() {
+            if self.jail_pool > 0 {
+                anyhow::bail!("jail pool requires an isolated runtime");
+            }
+            self.runtime.arm_jail_pool(0, None)?;
+            return Ok(());
+        }
+        let snapshots = self.runtime.snapshots()?;
+        let mut shape = None;
+        for id in self.templates.values() {
+            let snapshot = snapshots
+                .iter()
+                .find(|item| &item.id == id)
+                .ok_or_else(|| anyhow::anyhow!("catalog references a missing prepared template"))?;
+            let next = (
+                snapshot.memory_mib,
+                snapshot.vcpus,
+                snapshot.network.is_some(),
+            );
+            if let Some(current) = shape {
+                if current != next {
+                    eprintln!(
+                        "jail pool disabled: published templates do not share one memory, vcpu, and network shape"
+                    );
+                    self.runtime.arm_jail_pool(0, None)?;
+                    return Ok(());
+                }
+            } else {
+                shape = Some(next);
+            }
+        }
+        let Some((memory_mib, vcpus, networked)) = shape else {
+            self.runtime.arm_jail_pool(0, None)?;
+            return Ok(());
+        };
+        self.runtime
+            .arm_jail_pool(self.jail_pool, Some((memory_mib, vcpus, networked)))?;
+        Ok(())
+    }
+
+    pub fn shutdown_jail_pool(&self) -> Result<()> {
+        self.runtime.shutdown_jail_pool()?;
+        Ok(())
     }
 
     pub fn router(self: &Arc<Self>) -> Router {
@@ -897,6 +952,34 @@ mod tests {
     use kiln_api::new_id;
 
     #[test]
+    fn jail_pool_defaults_to_zero_and_rejects_a_ninth_slot() {
+        let parsed: Config = serde_json::from_value(serde_json::json!({
+            "runtime_dir": "/var/lib/kiln/runtime",
+            "journal_dir": "/var/lib/kiln/journal",
+            "socket": "/run/kiln/host.sock",
+            "isolation_config": null,
+            "allow_unsafe_development": true,
+            "templates": {}
+        }))
+        .unwrap();
+        assert_eq!(parsed.jail_pool, 0);
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let Err(error) = Host::open(&Config {
+            runtime_dir: root.path().join("runtime"),
+            journal_dir: root.path().join("journal"),
+            socket: root.path().join("host.sock"),
+            isolation_config: None,
+            allow_unsafe_development: true,
+            jail_pool: 9,
+            templates: Default::default(),
+        }) else {
+            panic!("jail pool size 9 was accepted");
+        };
+        assert!(error.to_string().contains("0..=8"), "{error}");
+    }
+
+    #[test]
     fn first_dashboard_read_reports_host_cpu() {
         let root = tempfile::tempdir().unwrap();
         fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -906,6 +989,7 @@ mod tests {
             socket: root.path().join("host.sock"),
             isolation_config: None,
             allow_unsafe_development: true,
+            jail_pool: 0,
             templates: Default::default(),
         })
         .unwrap();
@@ -933,6 +1017,7 @@ mod tests {
             socket: root.path().join("host.sock"),
             isolation_config: None,
             allow_unsafe_development: true,
+            jail_pool: 0,
             templates: Default::default(),
         };
         drop(Host::open(&config).unwrap());
@@ -1033,6 +1118,7 @@ mod tests {
             socket: root.path().join("host.sock"),
             isolation_config: None,
             allow_unsafe_development: true,
+            jail_pool: 0,
             templates: Default::default(),
         };
         let conn = rusqlite::Connection::open(journal.join("operations.sqlite")).unwrap();
@@ -1120,6 +1206,7 @@ mod tests {
             socket: root.path().join("host.sock"),
             isolation_config: None,
             allow_unsafe_development: true,
+            jail_pool: 0,
             templates: Default::default(),
         };
         drop(Host::open(&config).unwrap());
@@ -1202,6 +1289,7 @@ mod tests {
             socket: root.path().join("host.sock"),
             isolation_config: None,
             allow_unsafe_development: true,
+            jail_pool: 0,
             templates: Default::default(),
         })
         .unwrap();
@@ -1246,6 +1334,7 @@ mod tests {
             socket: root.path().join("host.sock"),
             isolation_config: None,
             allow_unsafe_development: true,
+            jail_pool: 0,
             templates: Default::default(),
         })
         .unwrap();
@@ -1281,6 +1370,7 @@ mod tests {
             socket: root.path().join("host.sock"),
             isolation_config: None,
             allow_unsafe_development: true,
+            jail_pool: 0,
             templates: Default::default(),
         })
         .unwrap();
