@@ -9,6 +9,7 @@ pub mod gateway;
 pub mod host;
 mod journal;
 mod metrics;
+pub mod revocation;
 mod ssh;
 mod terminal;
 

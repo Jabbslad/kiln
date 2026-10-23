@@ -525,7 +525,12 @@ async fn ssh_tunnel(
         .ssh_connect(&id, &key)
         .await
         .map_err(Failure::internal)?;
-    Ok(crate::ssh::upgrade(request, stream, permit))
+    Ok(crate::ssh::upgrade(
+        request,
+        stream,
+        permit,
+        crate::revocation::StreamCancel::new(),
+    ))
 }
 
 async fn boxes(State(host): State<Arc<Host>>) -> Result<Json<Vec<BoxView>>, Failure> {

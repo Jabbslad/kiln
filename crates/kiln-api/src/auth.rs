@@ -127,3 +127,16 @@ pub struct ServerClaims {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevocationQuery {
+    pub tenant_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RevocationSet {
+    pub accounts: Vec<String>,
+    pub credentials: Vec<String>,
+}

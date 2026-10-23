@@ -110,6 +110,7 @@ async fn authenticate(
             )
         })?;
     if required == Scope::Operate && scope != Scope::Operate {
+        let _ = crate::auth::deny("insufficient_scope");
         return Err(Failure::new(
             StatusCode::FORBIDDEN,
             "insufficient_scope",
@@ -147,6 +148,12 @@ async fn ssh_tunnel(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
+    let token = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .unwrap_or("");
     let (caller, authorization) = authenticate(
         &state,
         request.headers(),
@@ -158,6 +165,10 @@ async fn ssh_tunnel(
     if let Some(box_id) = crate::box_access::box_id_from_path(request.uri().path(), "ssh") {
         ensure_box_access(&state, &box_id, &caller, &authorization).await?;
     }
+    let cancel = match state.auth.central_identity(token).await {
+        Ok(identity) => state.auth.track_stream(&identity),
+        Err(_) => crate::revocation::StreamCancel::new(),
+    };
     let key = crate::ssh::admission(&request)?;
     let permit = state
         .sessions
@@ -185,7 +196,7 @@ async fn ssh_tunnel(
         return Err(upstream_error());
     }
     let upstream = upstream.upgrade().await.map_err(|_| upstream_error())?;
-    Ok(crate::ssh::upgrade(request, upstream, permit))
+    Ok(crate::ssh::upgrade(request, upstream, permit, cancel))
 }
 
 async fn dashboard(

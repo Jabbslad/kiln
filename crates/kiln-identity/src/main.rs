@@ -1,3 +1,4 @@
+use anyhow::Context;
 use clap::{CommandFactory, FromArgMatches, Parser};
 use kiln_identity::{Config, Store, router, unix_now};
 use std::{net::SocketAddr, path::PathBuf};
@@ -73,8 +74,40 @@ fn parse_args() -> Args {
     Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
 }
 
+fn run_audit_query(args: &[String]) -> anyhow::Result<()> {
+    let mut database = None;
+    let mut account = None;
+    let mut since = None;
+    let mut until = None;
+    let mut index = 0;
+    while index < args.len() {
+        let key = args[index].as_str();
+        let value = args.get(index + 1).map(String::as_str);
+        match key {
+            "--database" => database = value,
+            "--account" => account = value,
+            "--since" => since = value,
+            "--until" => until = value,
+            _ => anyhow::bail!("unknown argument"),
+        }
+        index += 2;
+    }
+    let database = database.context("missing --database")?;
+    let account = account.context("missing --account")?;
+    let since = since.context("missing --since")?;
+    let until = until.context("missing --until")?;
+    let rows =
+        kiln_identity::query_signin_audit(std::path::Path::new(database), account, since, until)?;
+    println!("{}", serde_json::to_string(&rows)?);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(args.first().map(String::as_str), Some("doctor" | "admin")) {
+        return run_audit_query(&args[1..]);
+    }
     let x = parse_args();
     anyhow::ensure!(
         x.listen.ip().is_loopback(),

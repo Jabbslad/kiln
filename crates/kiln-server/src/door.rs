@@ -476,6 +476,7 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
         }
     };
     if scope != Scope::Operate {
+        let _ = crate::auth::deny("insufficient_scope");
         door.ssh_audit
             .record("insufficient_scope", &box_id, &caller.sub, addr);
         return deny(
@@ -590,7 +591,11 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
     };
     door.ssh_audit
         .record("upgraded", &box_id, &caller.sub, addr);
-    crate::ssh::upgrade(request, upstream, permit)
+    let cancel = match door.auth.central_identity(bearer).await {
+        Ok(identity) => door.auth.track_stream(&identity),
+        Err(_) => crate::revocation::StreamCancel::new(),
+    };
+    crate::ssh::upgrade(request, upstream, permit, cancel)
 }
 
 async fn ssh_refusal(upstream: reqwest::Response) -> Response {

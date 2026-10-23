@@ -3,7 +3,7 @@
 //! existing SSH upgrade, then runs OpenSSH on a PTY the way `kiln ssh` does.
 //! The key exists only for that one admission.
 
-use crate::Failure;
+use crate::{Failure, revocation::StreamCancel};
 use axum::{
     extract::ws::{Message, WebSocket},
     http::{HeaderValue, StatusCode, header},
@@ -183,7 +183,13 @@ fn stop_child(pid: libc::pid_t) {
     }
 }
 
-pub async fn bridge(mut socket: WebSocket, session: Session, idle: Duration, max: Duration) {
+pub async fn bridge(
+    mut socket: WebSocket,
+    session: Session,
+    idle: Duration,
+    max: Duration,
+    cancel: StreamCancel,
+) {
     let started = Instant::now();
     let mut last = Instant::now();
     let mut reason = "eof";
@@ -234,6 +240,10 @@ pub async fn bridge(mut socket: WebSocket, session: Session, idle: Duration, max
             }
             () = sleep(remaining) => {
                 reason = if started.elapsed() >= max { "max" } else { "idle" };
+                break;
+            }
+            () = cancel.wait(), if !cancel.is_cancelled() => {
+                reason = "revoked";
                 break;
             }
         }
