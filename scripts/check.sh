@@ -5,6 +5,19 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
+# Pre-push and local runs have no GITHUB_ACTIONS. Force the low-memory path
+# before clippy so an agent VM cannot launch three nextest shards after the
+# balloon deflates and MemAvailable looks large. CI sets GITHUB_ACTIONS and
+# keeps the parallel runner when the machine has the RAM.
+if [ -z "${GITHUB_ACTIONS:-}" ]; then
+  export KILN_NEXTEST_SERIAL=1
+fi
+if [ "${KILN_NEXTEST_SERIAL:-}" = 1 ]; then
+  : "${CARGO_PROFILE_DEV_DEBUG:=0}"
+  : "${CARGO_PROFILE_TEST_DEBUG:=0}"
+  export CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_TEST_DEBUG
+fi
+
 docs=0
 release=0
 while [ $# -gt 0 ]; do
@@ -50,9 +63,15 @@ run_check fmt sh scripts/fmt.sh --check
 run_server_check() {
   cargo fmt --all -- --check &&
   cargo clippy --workspace --all-targets --all-features --locked -- -D warnings &&
-  sh scripts/run-workspace-nextest.sh &&
+  if [ "${KILN_NEXTEST_SERIAL:-}" = 1 ]; then
+    sh scripts/test-nextest-memory-cap.sh
+  else
+    sh scripts/run-workspace-nextest.sh
+  fi &&
   if command -v shellcheck >/dev/null 2>&1; then
-    shellcheck -S error scripts/check.sh scripts/test-check.sh scripts/check-docs.sh
+    shellcheck -S error scripts/check.sh scripts/test-check.sh scripts/check-docs.sh \
+      scripts/run-workspace-nextest.sh scripts/nextest-low-memory.sh \
+      scripts/test-nextest-memory-cap.sh
   else
     printf 'shellcheck not installed, skipped\n'
   fi
