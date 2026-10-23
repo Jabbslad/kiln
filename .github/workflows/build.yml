@@ -29,6 +29,7 @@ permissions:
   contents: read
 
 # Main pushes each get their own group so a second merge cannot cancel a deploy.
+# Tag, publish, and deploy run only while this commit is still the tip of main.
 # Pull requests and merge groups still cancel the previous run on that ref.
 concurrency:
   group: ${{ github.ref == 'refs/heads/main' && format('build-main-{0}', github.sha) || format('build-{0}-{1}', github.workflow, github.ref) }}
@@ -154,6 +155,7 @@ jobs:
           sh scripts/test-releasable.sh
           sh scripts/test-next-release-tag.sh
           sh scripts/test-plan-release.sh
+          sh scripts/test-release-tip-gate.sh
           sh scripts/test-check-stamped-clients.sh
           sh scripts/test-release-budget.sh
           sh scripts/test-verify-release-attestations.sh
@@ -888,6 +890,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -907,6 +911,7 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Verify packages and publish the release
+        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -915,6 +920,15 @@ jobs:
           KILN_RELEASE_NOTES_STRICT: "1"
           KILN_RELEASE_NOTES_PUBLISHED_BASE: "1"
         run: |
+          status=0
+          sh scripts/release-tip-gate.sh || status=$?
+          if [ "$status" -eq 2 ]; then
+            echo 'published=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
           started=$(date +%s)
           cargo xtask reuse-release finish --version "$VERSION" --dist dist
           (cd dist && sha256sum -c ./*.sha256)
@@ -922,6 +936,7 @@ jobs:
           notes=$(sh scripts/release-notes-markdown.sh "$TAG")
           gh release create "$TAG" dist/* --verify-tag --target "$GITHUB_SHA" --title "$TAG" \
             --notes "$notes"
+          echo 'published=true' >> "$GITHUB_OUTPUT"
           if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
             seconds=$(( $(date +%s) - started ))
             printf '| Stage | Seconds |\n| --- | ---: |\n| publish | %s |\n' "$seconds" >> "$GITHUB_STEP_SUMMARY"
@@ -934,6 +949,7 @@ jobs:
     if: >-
       !cancelled() &&
       needs.draft-release.result == 'success' &&
+      needs.draft-release.outputs.published == 'true' &&
       needs.release-plan.result == 'success'
     # rehearsal: tag-path-dry-run
     concurrency:
@@ -944,6 +960,7 @@ jobs:
     uses: ./.github/workflows/deploy.yml
     with:
       tag: ${{ needs.release-plan.outputs.tag }}
+      sha: ${{ github.sha }}
     secrets: inherit
 
   dry-run-assets:
