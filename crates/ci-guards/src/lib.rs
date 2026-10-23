@@ -343,20 +343,44 @@ pub fn download_violations(script: &str) -> Vec<String> {
 pub fn external_host_violations(source: &str) -> Vec<String> {
     let mut violations = Vec::new();
     for function in rust_functions(source) {
-        if !invokes_curl_or_wget(function) {
-            continue;
-        }
-        for literal in string_literals(function) {
+        let name = function_name(function);
+        let curls = invokes_curl_or_wget(function);
+        for (quote_at, literal) in string_literals(function) {
             let Some(host) = http_host(literal) else {
                 continue;
             };
             if local_host(&host) || resolves_host(function, &host) {
                 continue;
             }
-            violations.push(format!("curl reaches external host {host}"));
+            if !curls && !literal_is_client_target(function, quote_at) {
+                continue;
+            }
+            let hit = format!("{name} reaches external host {host}");
+            if !violations.contains(&hit) {
+                violations.push(hit);
+            }
         }
     }
     violations
+}
+
+fn function_name(function: &str) -> &str {
+    let line = function.lines().next().unwrap_or("");
+    let Some((_, rest)) = line.trim_start().split_once("fn ") else {
+        return "fn";
+    };
+    rest.split(['(', '<', ' '])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("fn")
+}
+
+fn literal_is_client_target(function: &str, quote_at: usize) -> bool {
+    let before = function[..quote_at].trim_end();
+    let Some(before) = before.strip_suffix('(') else {
+        return false;
+    };
+    before.trim_end().ends_with("Client::new")
 }
 
 fn rust_functions(source: &str) -> Vec<&str> {
@@ -395,7 +419,7 @@ fn invokes_curl_or_wget(function: &str) -> bool {
     function.contains("Command::new(\"curl\")") || function.contains("Command::new(\"wget\")")
 }
 
-fn string_literals(text: &str) -> Vec<&str> {
+fn string_literals(text: &str) -> Vec<(usize, &str)> {
     let bytes = text.as_bytes();
     let mut literals = Vec::new();
     let mut index = 0;
@@ -404,6 +428,7 @@ fn string_literals(text: &str) -> Vec<&str> {
             index += 1;
             continue;
         }
+        let quote_at = index;
         index += 1;
         let start = index;
         while index < bytes.len() && bytes[index] != b'"' && bytes[index] != b'\n' {
@@ -413,7 +438,7 @@ fn string_literals(text: &str) -> Vec<&str> {
             }
             index += 1;
         }
-        literals.push(&text[start..index]);
+        literals.push((quote_at, &text[start..index]));
         if index < bytes.len() && bytes[index] == b'"' {
             index += 1;
         }
@@ -448,7 +473,7 @@ fn local_host(host: &str) -> bool {
 
 fn resolves_host(function: &str, host: &str) -> bool {
     let needle = format!("{host}:");
-    string_literals(function).into_iter().any(|literal| {
+    string_literals(function).into_iter().any(|(_, literal)| {
         !literal.starts_with("http://")
             && !literal.starts_with("https://")
             && literal.starts_with(&needle)

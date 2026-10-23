@@ -211,6 +211,14 @@ async fn private_ca_does_not_trust_public_roots() {
             violations.push(format!("{}: {hit}", rel.display()));
         }
     }
+    // These dial example.com so a public-root handshake can finish.
+    // A loopback certificate cannot prove that. private_ca must stay
+    // off this list: that constructor is what the guard now catches.
+    let public_root_handshake = [
+        "crates/kiln-client/src/lib.rs: old_profile_fails_closed_and_login_adopts_public_roots reaches external host example.com",
+        "crates/kiln-client/src/lib.rs: identity_client_keeps_public_roots reaches external host example.com",
+    ];
+    violations.retain(|hit| !public_root_handshake.contains(&hit.as_str()));
     assert!(violations.is_empty(), "{violations:?}");
 }
 
