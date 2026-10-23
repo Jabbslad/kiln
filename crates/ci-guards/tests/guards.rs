@@ -39,6 +39,36 @@ fn shell_files(root: &Path) -> Vec<PathBuf> {
     paths
 }
 
+fn rust_sources(root: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for dir in ["crates", "xtask"] {
+        walk_rs(&root.join(dir), &mut paths);
+    }
+    paths.sort();
+    paths
+}
+
+fn walk_rs(dir: &Path, paths: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if name == "target" || name == "fixtures" {
+            continue;
+        }
+        if path.is_dir() {
+            walk_rs(&path, paths);
+        } else if name.ends_with(".rs") {
+            paths.push(path);
+        }
+    }
+}
+
 fn walk_sh(dir: &Path, paths: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
@@ -116,6 +146,54 @@ fn downloaded_tools_are_checksummed_before_use() {
 }
 
 #[test]
+fn tests_do_not_reach_an_external_host() {
+    let planted = "\
+fn planted() {
+    let url = \"https://github.com/Jabbslad/kiln/releases/download/v0.4.14/kiln.tar.gz\";
+    let _ = Command::new(\"curl\").arg(\"--output\").arg(\"kiln.tar.gz\").arg(url).status();
+}
+";
+    let hits = ci_guards::external_host_violations(planted);
+    assert!(
+        hits.iter()
+            .any(|violation| violation.contains("github.com")),
+        "{hits:?}"
+    );
+
+    let local = "\
+fn local() {
+    let _ = Command::new(\"curl\").arg(\"https://127.0.0.1:9/\").status();
+}
+";
+    assert!(
+        ci_guards::external_host_violations(local).is_empty(),
+        "{local}"
+    );
+
+    let resolved = "\
+fn resolved() {
+    let _ = Command::new(\"curl\")
+        .args([\"--resolve\", \"cli.dark-forge.dev:443:127.0.0.1\", \"https://cli.dark-forge.dev/v1/templates\"])
+        .output();
+}
+";
+    assert!(
+        ci_guards::external_host_violations(resolved).is_empty(),
+        "{resolved}"
+    );
+
+    let root = repo_root();
+    let mut violations = Vec::new();
+    for path in rust_sources(&root) {
+        for hit in ci_guards::external_host_violations(&read(&path)) {
+            let rel = path.strip_prefix(&root).unwrap_or(&path);
+            violations.push(format!("{}: {hit}", rel.display()));
+        }
+    }
+    assert!(violations.is_empty(), "{violations:?}");
+}
+
+#[test]
 fn a_tag_that_differs_from_cargo_toml_is_stamped_before_publish() {
     let root = repo_root();
     assert!(
@@ -179,34 +257,13 @@ fn published_v0_4_14_linux_binary_fails_the_tag_version_check() {
     let dir = std::env::temp_dir().join(format!("kiln-v0414-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap_or_else(|error| panic!("mkdir {}: {error}", dir.display()));
-    let archive = dir.join("kiln.tar.gz");
-    let url = "https://github.com/Jabbslad/kiln/releases/download/v0.4.14/kiln-v0.4.14-x86_64-unknown-linux-gnu.tar.gz";
-    let download = Command::new("curl")
-        .args([
-            "--fail",
-            "--silent",
-            "--show-error",
-            "--location",
-            "--output",
-        ])
-        .arg(&archive)
-        .arg(url)
-        .status()
-        .unwrap_or_else(|error| panic!("curl: {error}"));
-    assert!(download.success(), "download {url}");
-    let extract = Command::new("tar")
-        .arg("-xzf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(&dir)
-        .arg("kiln")
-        .status()
-        .unwrap_or_else(|error| panic!("tar: {error}"));
-    assert!(
-        extract.success(),
-        "extract kiln from the v0.4.14 Linux archive"
-    );
     let binary = dir.join("kiln");
+    fs::write(&binary, fixture("kiln-v0.4.14")).unwrap_or_else(|error| {
+        panic!("write {}: {error}", binary.display());
+    });
+    let mut perms = fs::metadata(&binary).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&binary, perms).unwrap();
     let output = Command::new("cargo")
         .current_dir(&root)
         .args([
