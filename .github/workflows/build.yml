@@ -147,6 +147,8 @@ jobs:
           sh scripts/test-batch-merge.sh
           sh scripts/test-tag-path-dry-run.sh
           sh scripts/test-tag-path-pr-stamp-order.sh
+          sh scripts/test-tag-path-parallel.sh
+          sh scripts/test-ci-budget.sh
           sh scripts/test-deploy-host-tools.sh
           sh scripts/test-release-json-field.sh
           sh scripts/test-check-dashboard-bundle.sh
@@ -297,30 +299,6 @@ jobs:
           path: server-check-test-and-lint.log
           if-no-files-found: ignore
           retention-days: 7
-      - name: Build release binaries for tag-path reuse
-        if: >-
-          github.event_name == 'pull_request' &&
-          needs.changes.outputs.release_path == 'true' &&
-          steps.queue.outputs.skip_tests != 'true'
-        run: |
-          cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client
-          cargo build --release --locked -p kiln-identity
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: >-
-          github.event_name == 'pull_request' &&
-          needs.changes.outputs.release_path == 'true' &&
-          steps.queue.outputs.skip_tests != 'true'
-        with:
-          name: server-check-release-bins
-          path: |
-            target/release/kiln
-            target/release/kiln-runtime
-            target/release/kiln-host
-            target/release/kiln-api
-            target/release/kiln-identity
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
 
   # A manual dry run fetches main's packages. A push builds in this run.
   reuse:
@@ -858,6 +836,9 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -865,7 +846,13 @@ jobs:
       - name: Required check
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-        run: cargo xtask required-gate
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          budget=0
+          sh scripts/ci-budget.sh || budget=$?
+          cargo xtask required-gate
+          exit "$budget"
 
   draft-release:
     # Publish this run's packages. Attestations are bound to refs/heads/main.
@@ -1011,13 +998,13 @@ jobs:
   # packages onto v<patch+1>-dryrun. The real scripts do the work. Nothing
   # is published and no tag is pushed.
   tag-path-dry-run:
-    needs: [changes, server-check]
+    needs: [changes]
     if: >-
       !cancelled() &&
       needs.changes.result == 'success' &&
       needs.changes.outputs.release_path == 'true' &&
       (github.event_name == 'push' && github.ref == 'refs/heads/main' ||
-        (github.event_name == 'pull_request' && needs.server-check.result == 'success'))
+        github.event_name == 'pull_request')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -1035,26 +1022,11 @@ jobs:
         if: github.event_name == 'pull_request'
         with:
           cache-workspace-crates: 'true'
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: github.event_name == 'pull_request'
-        with:
-          name: server-check-release-bins
-          path: server-check-release-bins
-      - name: Make reused release binaries executable
-        if: github.event_name == 'pull_request'
-        run: |
-          chmod +x \
-            server-check-release-bins/kiln \
-            server-check-release-bins/kiln-runtime \
-            server-check-release-bins/kiln-host \
-            server-check-release-bins/kiln-api \
-            server-check-release-bins/kiln-identity
       - name: Dry-run the tag path
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
-          TAG_PATH_RELEASE_BIN_DIR: ${{ github.workspace }}/server-check-release-bins
         run: sh scripts/tag-path-dry-run.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: github.event_name == 'pull_request'

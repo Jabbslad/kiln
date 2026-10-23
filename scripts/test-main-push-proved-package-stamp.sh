@@ -50,28 +50,30 @@ printf '%s\n' "$proved_block" | grep -q 'RELEASE_BIN_DIR="\$reuse_bin_dir"' \
 printf '%s\n' "$proved_block" | grep -q 'KILN_PACKAGE_IMAGE_DIR=' \
   || fail 'proved package-server must reuse the reuse image instead of rebuilding'
 printf '%s\n' "$proved_block" | grep -q 'TAG_PATH_RELEASE_BIN_DIR' \
-  || fail 'tag-path-dry-run must require TAG_PATH_RELEASE_BIN_DIR on pull requests'
+  || fail 'proved package-server may still honor TAG_PATH_RELEASE_BIN_DIR'
+printf '%s\n' "$proved_block" | grep -q 'if \[ -z "\$reuse_bin_dir" \]' \
+  || fail 'empty reuse dir must build from-tag binaries inside tag-path'
+if printf '%s\n' "$proved_block" | grep -q 'TAG_PATH_RELEASE_BIN_DIR is required'; then
+  fail 'pull requests must build from-tag binaries when reuse bins are absent'
+fi
 
 workflow=$root/.github/workflows/build.yml
 server=$(
   awk '/^  server-check:/{flag=1} flag && /^  [a-z].*:/ && !/^  server-check:/{exit} flag{print}' \
     "$workflow"
 )
-printf '%s\n' "$server" | grep -q 'server-check-release-bins' \
-  || fail 'server-check must upload server-check-release-bins for tag-path reuse'
+if printf '%s\n' "$server" | grep -q 'server-check-release-bins'; then
+  fail 'server-check must not upload release bins for tag-path'
+fi
 
 tag_job=$(
   awk '/^  tag-path-dry-run:/{flag=1} flag && /^  [a-z].*:/ && !/^  tag-path-dry-run:/{exit} flag{print}' \
     "$workflow"
 )
-printf '%s\n' "$tag_job" | grep -q 'server-check-release-bins' \
-  || fail 'tag-path-dry-run must download server-check-release-bins on pull requests'
-printf '%s\n' "$tag_job" | grep -q 'chmod +x' \
-  || fail 'tag-path-dry-run must chmod reused release binaries after artifact download'
 printf '%s\n' "$tag_job" | grep -q 'Swatinem/rust-cache@' \
   || fail 'tag-path-dry-run must use rust-cache on pull requests'
-printf '%s\n' "$tag_job" | grep -Fq 'needs: [changes, server-check]' \
-  || fail 'tag-path-dry-run must wait for server-check on pull requests'
+printf '%s\n' "$tag_job" | grep -Fqx '    needs: [changes]' \
+  || fail 'tag-path-dry-run must run beside server-check'
 
 printf '%s\n' 'scripts/run-workspace-nextest.sh' | cargo xtask ci-job-paths \
   | grep -q 'release_path=false' \
