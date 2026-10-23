@@ -67,13 +67,12 @@ are blocked by `~/.local/bin/.kiln-install.lock`; if an installer was forcibly
 killed, confirm it is no longer running before removing that empty directory.
 The client command does not update a server or its guest images.
 
-## Website and dashboard preview
+## Website and dashboard
 
 [v0.4.10](https://github.com/Jabbslad/kiln/releases/tag/v0.4.10) includes the separate
 `kiln-dashboard-v0.4.10.tar.gz` static frontend and checksum. The installer does
 not deploy it. `/` is the public landing page, styled from the committed `design.md`.
-Its `/boxes?preview=1` view uses labelled read-only examples;
-browser authentication and live VM controls are not integrated yet. See the
+`/boxes` is the live console. See the
 [dashboard guide](https://github.com/Jabbslad/kiln/tree/main/web#readme).
 
 ## Server: dedicated Ubuntu 24.04, Ubuntu 26.04, or Debian 13 x86-64/KVM

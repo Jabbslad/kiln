@@ -1,7 +1,7 @@
 import { ArrowUpRight, BookOpen, KeyRound, Lock, Server, ShieldCheck } from 'lucide-react'
 import { AppLink, PageHeading, type PageProps } from './ui'
 
-export function Settings({ data, preview }: PageProps) {
+export function Settings({ data }: PageProps) {
   return (
     <>
       <PageHeading
@@ -29,7 +29,7 @@ export function Settings({ data, preview }: PageProps) {
             </div>
             <div>
               <dt>Console mode</dt>
-              <dd>{preview ? 'Design preview' : 'Read-only'}</dd>
+              <dd>Read-only</dd>
             </div>
             <div>
               <dt>API contract</dt>
@@ -137,13 +137,8 @@ export function Docs() {
             or incompatible response shows a connection error, never example data.
           </p>
           <p>
-            Kiln has an authenticated CLI and HTTP API, but this dashboard’s aggregate endpoint and
-            browser authentication are not integrated yet. Use the CLI for live VM operations. Do
-            not expose private Firecracker sockets or administrator tokens to the browser.
-          </p>
-          <p>
-            Preview mode is explicitly enabled with <code>?preview=1</code>. Its fixtures are
-            read-only; no buttons create, stop or change a VM.
+            Kiln has an authenticated CLI and HTTP API. Use the CLI for live VM operations. Do not
+            expose private Firecracker sockets or administrator tokens to the browser.
           </p>
           <h3>Before enabling mutations</h3>
           <p>

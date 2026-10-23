@@ -12,7 +12,7 @@ import {
 } from './ui'
 import { CreateDrawer } from './dialogs'
 
-export default function Inventory({ data, preview }: PageProps) {
+export default function Inventory({ data }: PageProps) {
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<BoxState | 'all'>('all')
   const [descending, setDescending] = useState(false)
@@ -229,8 +229,7 @@ export default function Inventory({ data, preview }: PageProps) {
             {boxes.length} of {data.boxes.length} boxes
           </span>
           <span>
-            <span className="status-dot" />{' '}
-            {preview ? 'Example inventory · read only' : 'Observed state · refresh to update'}
+            <span className="status-dot" /> Observed state · refresh to update
           </span>
         </div>
       </section>
@@ -259,8 +258,7 @@ export default function Inventory({ data, preview }: PageProps) {
       {creating && (
         <CreateDrawer
           data={data}
-          preview={preview}
-          authenticated={!preview && data.host.state === 'online'}
+          authenticated={data.host.state === 'online'}
           onClose={() => setCreating(false)}
         />
       )}

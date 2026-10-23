@@ -2,7 +2,7 @@
 
 **Goal:** Implement the approved inventory-first, dark kiln dashboard without representing fixture data or unavailable services as real VM functionality.
 
-**Architecture:** An independently built React/TypeScript application in `web/`. A validated, read-only dashboard API boundary supplies observed state. Explicit preview mode supplies immutable, labelled design fixtures. The existing Rust runtime is not exposed through a development HTTP shell bridge. Backend mutations and interactive sessions remain gated pending the authenticated control plane.
+**Architecture:** An independently built React/TypeScript application in `web/`. A validated, read-only dashboard API boundary supplies observed state. The existing Rust runtime is not exposed through a development HTTP shell bridge. Backend mutations and interactive sessions remain gated pending the authenticated control plane.
 
 **Design:** Geist and Geist Mono, surfaces `#0e0e0e`/`#111111`, borders `#202020`/`#2a2a2a`, text `#f4f4f4`/`#949494`, status green `#78e772`, square controls and white primary actions. Approved references remain in the pre-rename web mockups directory under `.amp/in/artifacts/`.
 
@@ -12,7 +12,6 @@
 - No fabricated usage, inferred zero metrics, optimistic lifecycle transitions, or automatically retried commands.
 - Preserve distinctions between pause, stop, same-box restore and prepared-template clone.
 - Default to live mode with an explicit disconnected state when the API is absent. Never silently substitute examples.
-- Preview mode is read-only, labelled throughout, and cannot submit mutations.
 - Do not implement authentication, networking, PostgreSQL or a host service as part of this frontend task.
 
 ## Tasks

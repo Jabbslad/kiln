@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, Route, Routes, useLocation, useSearchParams } from 'react-router-dom'
+import { Link, Route, Routes, useLocation } from 'react-router-dom'
 import {
   ArrowUpRight,
   Box,
@@ -7,8 +7,6 @@ import {
   ChevronDown,
   CircleAlert,
   Command,
-  ExternalLink,
-  FlaskConical,
   Layers,
   Radio,
   RefreshCw,
@@ -19,7 +17,6 @@ import {
 } from 'lucide-react'
 import { fetchDashboard, readCsrf, setDashboardObserver, timestamp, type Dashboard } from './data'
 import { isUnreachableError } from './kilnFetch'
-import { previewDashboard } from './fixtures'
 import Inventory from './Inventory'
 import BoxDetail from './BoxDetail'
 import Templates from './Templates'
@@ -57,14 +54,11 @@ export default function App() {
 }
 
 function Dashboard() {
-  const [params] = useSearchParams()
   const location = useLocation()
-  const preview = params.get('preview') === '1'
   const [connection, setConnection] = useState<Connection>({ state: 'loading' })
   const [attempt, setAttempt] = useState(0)
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false)
   useEffect(() => {
-    if (preview) return
     setConnection({ state: 'loading' })
     const controller = new AbortController()
     let active = true
@@ -89,15 +83,15 @@ function Dashboard() {
       controller.abort()
       window.clearTimeout(timeout)
     }
-  }, [preview, attempt])
+  }, [attempt])
   useEffect(() => {
-    if (preview || connection.state !== 'error' || !connection.unreachable) return
+    if (connection.state !== 'error' || !connection.unreachable) return
     const retry = () => setAttempt((value) => value + 1)
     window.addEventListener('online', retry)
     return () => window.removeEventListener('online', retry)
-  }, [preview, connection])
+  }, [connection])
   useEffect(() => {
-    if (preview || connection.state !== 'error' || !connection.unreachable) return
+    if (connection.state !== 'error' || !connection.unreachable) return
     let cancelled = false
     let delayMs = 2_000
     let timer = 0
@@ -114,13 +108,12 @@ function Dashboard() {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [preview, connection])
-  const data = preview ? previewDashboard : connection.state === 'ready' ? connection.data : null
+  }, [connection])
+  const data = connection.state === 'ready' ? connection.data : null
   useEffect(() => {
-    if (preview) return
     setDashboardObserver((next) => setConnection({ state: 'ready', data: next }))
     return () => setDashboardObserver(undefined)
-  }, [preview])
+  }, [])
   const routeLabel =
     navigation.find((item) => location.pathname.startsWith(item.path))?.label ?? 'Guide'
   useEffect(() => {
@@ -142,15 +135,13 @@ function Dashboard() {
           <span className="topbar-label">Single-host console</span>
         </div>
         <div className="topbar-right">
-          <span className={`connection-label ${preview ? 'preview-label' : ''}`}>
-            {preview ? <FlaskConical size={13} /> : <Radio size={13} />}
-            {preview
-              ? 'Design preview'
-              : data
-                ? 'Read-only connection'
-                : connection.state === 'loading'
-                  ? 'Connecting'
-                  : 'Not connected'}
+          <span className="connection-label">
+            <Radio size={13} />
+            {data
+              ? 'Read-only connection'
+              : connection.state === 'loading'
+                ? 'Connecting'
+                : 'Not connected'}
           </span>
           <button
             type="button"
@@ -160,7 +151,7 @@ function Dashboard() {
           >
             {kilnVersionLabel(data?.version)}
           </button>
-          {data && !preview && (
+          {data && (
             <button className="button" type="button" onClick={() => void signOut()}>
               Sign out
             </button>
@@ -202,11 +193,7 @@ function Dashboard() {
             <span>{data?.host.name ?? 'Host unavailable'}</span>
             <span className={`status-dot ${data?.host.state === 'online' ? 'green' : ''}`} />
             <small>
-              {preview
-                ? 'EXAMPLE HOST'
-                : data?.host.state === 'online'
-                  ? 'REPORTED ONLINE'
-                  : 'NO HOST CONNECTION'}
+              {data?.host.state === 'online' ? 'REPORTED ONLINE' : 'NO HOST CONNECTION'}
             </small>
           </div>
           <AppLink
@@ -222,8 +209,8 @@ function Dashboard() {
               <UserRound size={14} />
             </span>
             <div>
-              {preview ? 'Administrator' : 'Authentication pending'}
-              <small>{preview ? 'Example account' : 'No identity configured'}</small>
+              Authentication pending
+              <small>No identity configured</small>
             </div>
           </div>
         </div>
@@ -239,26 +226,16 @@ function Dashboard() {
           </div>
           <div>
             <span className="contextbar-note">
-              {preview
-                ? 'EXAMPLE DATA · NO VM OPERATIONS'
-                : data
-                  ? timestamp(data.observed_at)
-                  : 'AWAITING CONTROL PLANE'}
+              {data ? timestamp(data.observed_at) : 'AWAITING CONTROL PLANE'}
             </span>
-            {preview ? (
-              <Link className="context-link" to="/boxes">
-                Exit preview <ExternalLink size={11} />
-              </Link>
-            ) : (
-              <button
-                className="icon-button"
-                aria-label="Refresh dashboard"
-                disabled={connection.state === 'loading'}
-                onClick={() => setAttempt((value) => value + 1)}
-              >
-                <RefreshCw size={13} />
-              </button>
-            )}
+            <button
+              className="icon-button"
+              aria-label="Refresh dashboard"
+              disabled={connection.state === 'loading'}
+              onClick={() => setAttempt((value) => value + 1)}
+            >
+              <RefreshCw size={13} />
+            </button>
           </div>
         </div>
         <main id="main" tabIndex={-1}>
@@ -269,20 +246,14 @@ function Dashboard() {
               element={
                 data ? (
                   <Routes>
-                    <Route path="/boxes" element={<Inventory data={data} preview={preview} />} />
+                    <Route path="/boxes" element={<Inventory data={data} />} />
                     <Route
                       path="/boxes/:id"
-                      element={<BoxDetail key={location.pathname} data={data} preview={preview} />}
+                      element={<BoxDetail key={location.pathname} data={data} />}
                     />
-                    <Route
-                      path="/templates"
-                      element={<Templates data={data} preview={preview} />}
-                    />
-                    <Route
-                      path="/operations"
-                      element={<Operations data={data} preview={preview} />}
-                    />
-                    <Route path="/settings" element={<Settings data={data} preview={preview} />} />
+                    <Route path="/templates" element={<Templates data={data} />} />
+                    <Route path="/operations" element={<Operations data={data} />} />
+                    <Route path="/settings" element={<Settings data={data} />} />
                     <Route
                       path="*"
                       element={
@@ -317,7 +288,7 @@ function Dashboard() {
           </span>
           <span>
             <Command size={11} />
-            {preview ? 'READ-ONLY DESIGN PREVIEW' : 'SINGLE-HOST CONSOLE'}
+            SINGLE-HOST CONSOLE
           </span>
         </footer>
       </div>
@@ -377,13 +348,7 @@ function Disconnected({ message, retry }: { message: string; retry: () => void }
           <RefreshCw size={14} />
           Retry connection
         </button>
-        <Link className="button" to="/boxes?preview=1">
-          Explore design preview <ArrowUpRight size={15} />
-        </Link>
       </div>
-      <p className="connection-footnote">
-        Preview uses labelled, read-only examples. Nothing is created on your host.
-      </p>
       <AppLink className="text-action" to="/docs">
         Connection guide <ArrowUpRight size={14} />
       </AppLink>
