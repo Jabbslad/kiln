@@ -23,6 +23,7 @@ printf '%s\n' "$block" | grep -q 'id: playwright-browsers' \
   || fail 'browser cache step needs id playwright-browsers'
 printf '%s\n' "$block" | grep -q 'id: playwright-version' \
   || fail 'dashboard must resolve the Playwright version from the lockfile'
+# shellcheck disable=SC2016 # GitHub Actions expression, matched literally
 printf '%s\n' "$block" | grep -F 'key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}' >/dev/null \
   || fail 'cache key must be the runner OS plus the resolved Playwright version'
 if printf '%s\n' "$block" | grep -q 'hashFiles('; then
