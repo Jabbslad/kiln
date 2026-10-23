@@ -340,6 +340,146 @@ pub fn download_violations(script: &str) -> Vec<String> {
     violations
 }
 
+pub fn external_host_violations(source: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    for function in rust_functions(source) {
+        let name = function_name(function);
+        let curls = invokes_curl_or_wget(function);
+        for (quote_at, literal) in string_literals(function) {
+            let Some(host) = http_host(literal) else {
+                continue;
+            };
+            if local_host(&host) || resolves_host(function, &host) {
+                continue;
+            }
+            if !curls && !literal_is_client_target(function, quote_at) {
+                continue;
+            }
+            let hit = format!("{name} reaches external host {host}");
+            if !violations.contains(&hit) {
+                violations.push(hit);
+            }
+        }
+    }
+    violations
+}
+
+fn function_name(function: &str) -> &str {
+    let line = function.lines().next().unwrap_or("");
+    let Some((_, rest)) = line.trim_start().split_once("fn ") else {
+        return "fn";
+    };
+    rest.split(['(', '<', ' '])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("fn")
+}
+
+fn literal_is_client_target(function: &str, quote_at: usize) -> bool {
+    let before = function[..quote_at].trim_end();
+    let Some(before) = before.strip_suffix('(') else {
+        return false;
+    };
+    before.trim_end().ends_with("Client::new")
+}
+
+fn rust_functions(source: &str) -> Vec<&str> {
+    let mut starts = Vec::new();
+    let mut offset = 0usize;
+    for line in source.split_inclusive('\n') {
+        if is_fn_line(line.trim_end_matches(['\n', '\r'])) {
+            starts.push(offset);
+        }
+        offset += line.len();
+    }
+    if starts.is_empty() {
+        return vec![source];
+    }
+    let mut functions = Vec::new();
+    for (index, start) in starts.iter().enumerate() {
+        let end = starts.get(index + 1).copied().unwrap_or(source.len());
+        functions.push(&source[*start..end]);
+    }
+    functions
+}
+
+fn is_fn_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let rest = trimmed
+        .strip_prefix("pub(crate) ")
+        .or_else(|| trimmed.strip_prefix("pub(super) "))
+        .or_else(|| trimmed.strip_prefix("pub "))
+        .unwrap_or(trimmed);
+    let rest = rest.strip_prefix("async ").unwrap_or(rest);
+    let rest = rest.strip_prefix("unsafe ").unwrap_or(rest);
+    rest.starts_with("fn ")
+}
+
+fn invokes_curl_or_wget(function: &str) -> bool {
+    function.contains("Command::new(\"curl\")") || function.contains("Command::new(\"wget\")")
+}
+
+fn string_literals(text: &str) -> Vec<(usize, &str)> {
+    let bytes = text.as_bytes();
+    let mut literals = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'"' {
+            index += 1;
+            continue;
+        }
+        let quote_at = index;
+        index += 1;
+        let start = index;
+        while index < bytes.len() && bytes[index] != b'"' && bytes[index] != b'\n' {
+            if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                index += 2;
+                continue;
+            }
+            index += 1;
+        }
+        literals.push((quote_at, &text[start..index]));
+        if index < bytes.len() && bytes[index] == b'"' {
+            index += 1;
+        }
+    }
+    literals
+}
+
+fn http_host(literal: &str) -> Option<String> {
+    let rest = literal
+        .strip_prefix("https://")
+        .or_else(|| literal.strip_prefix("http://"))?;
+    let rest = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let host = rest.rsplit('@').next().unwrap_or(rest);
+    let host = if let Some(stripped) = host.strip_prefix('[') {
+        stripped.split(']').next().unwrap_or(stripped)
+    } else {
+        host.split(':').next().unwrap_or(host)
+    };
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
+fn local_host(host: &str) -> bool {
+    matches!(
+        host,
+        "127.0.0.1" | "localhost" | "::1" | "0.0.0.0" | "example.invalid"
+    ) || host.starts_with("127.")
+}
+
+fn resolves_host(function: &str, host: &str) -> bool {
+    let needle = format!("{host}:");
+    string_literals(function).into_iter().any(|(_, literal)| {
+        !literal.starts_with("http://")
+            && !literal.starts_with("https://")
+            && literal.starts_with(&needle)
+    })
+}
+
 struct JobState<'a> {
     result: &'a str,
     outputs: &'a [(&'a str, &'a str)],
