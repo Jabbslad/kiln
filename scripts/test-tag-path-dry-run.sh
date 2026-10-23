@@ -38,6 +38,48 @@ grep -q 'REUSE_RUN_ID' "$root/scripts/tag-path-dry-run.sh" \
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
+# Off CI, invalid gh auth must skip. CI must still fail closed. The stub never
+# reaches the network; only its exit status is consulted.
+auth_bin=$work/auth-bin
+mkdir -p "$auth_bin"
+cat >"$auth_bin/gh" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
+  exit 1
+fi
+printf '%s\n' 'HTTP 401: Bad credentials' >&2
+exit 1
+EOF
+chmod +x "$auth_bin/gh"
+skip_line='tag-path-dry-run: skipped: no valid local GitHub credentials, CI covers this'
+
+if ! env -u GITHUB_ACTIONS \
+  TAG_PATH_GREEN_MAIN_RUN_TEST=1 \
+  GH_REPO=Jabbslad/kiln \
+  GH_TOKEN=invalid \
+  PATH="$auth_bin:$PATH" \
+  sh "$root/scripts/tag-path-dry-run.sh" >"$work/auth-off.out" 2>"$work/auth-off.err"; then
+  cat "$work/auth-off.out" "$work/auth-off.err" >&2
+  fail 'off CI, invalid gh auth must skip and exit 0'
+fi
+cat "$work/auth-off.out" "$work/auth-off.err" >"$work/auth-off.combined"
+printf '%s\n' "$skip_line" >"$work/auth-off.want"
+cmp -s "$work/auth-off.combined" "$work/auth-off.want" \
+  || fail "off CI must print exactly: ${skip_line}"
+
+if env GITHUB_ACTIONS=true \
+  TAG_PATH_GREEN_MAIN_RUN_TEST=1 \
+  GH_REPO=Jabbslad/kiln \
+  GH_TOKEN=invalid \
+  PATH="$auth_bin:$PATH" \
+  sh "$root/scripts/tag-path-dry-run.sh" >"$work/auth-ci.out" 2>"$work/auth-ci.err"; then
+  cat "$work/auth-ci.out" "$work/auth-ci.err" >&2
+  fail 'CI must fail when gh auth is invalid'
+fi
+if grep -F -x "$skip_line" "$work/auth-ci.out" "$work/auth-ci.err" >/dev/null; then
+  fail 'CI must not skip tag-path-dry-run when gh auth is invalid'
+fi
+
 slot() {
   mkdir -p "$(dirname "$1")"
   {
@@ -179,6 +221,9 @@ real_gh=$(command -v gh)
 mkdir -p "$work/bin"
 cat >"$work/bin/gh" <<EOF
 #!/bin/sh
+if [ "\$1" = auth ] && [ "\$2" = status ]; then
+  exit 0
+fi
 if [ "\$1" = run ] && [ "\$2" = list ]; then
   case "\$*" in
     *--commit*)
