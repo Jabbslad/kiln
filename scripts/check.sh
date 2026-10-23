@@ -71,7 +71,8 @@ run_server_check() {
   if command -v shellcheck >/dev/null 2>&1; then
     shellcheck -S error scripts/check.sh scripts/test-check.sh scripts/check-docs.sh \
       scripts/run-workspace-nextest.sh scripts/nextest-low-memory.sh \
-      scripts/test-nextest-memory-cap.sh
+      scripts/test-nextest-memory-cap.sh scripts/test-nextest-cap-verdict.sh \
+      scripts/test-tag-path-image-once.sh
   else
     printf 'shellcheck not installed, skipped\n'
   fi
