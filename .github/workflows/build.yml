@@ -109,6 +109,10 @@ jobs:
           persist-credentials: false
       - name: Install Caddy
         run: bash scripts/install-caddy.sh
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.104
       - name: Repository checks
         env:
           GITHUB_TOKEN: ${{ github.token }}
