@@ -182,6 +182,27 @@ fn resolved() {
         "{resolved}"
     );
 
+    let client = "\
+async fn private_ca_does_not_trust_public_roots() {
+    let private = Client::new(
+        \"https://example.com/\",
+        &token,
+        Some(ca.cert.pem().as_bytes()),
+    )
+    .unwrap();
+    let _ = private.templates().await;
+    let public = Client::new(\"https://example.com/\", &token, None).unwrap();
+    let _ = public.templates().await;
+}
+";
+    let client_hits = ci_guards::external_host_violations(client);
+    assert!(
+        client_hits
+            .iter()
+            .any(|violation| violation.contains("example.com")),
+        "{client_hits:?}"
+    );
+
     let root = repo_root();
     let mut violations = Vec::new();
     for path in rust_sources(&root) {
