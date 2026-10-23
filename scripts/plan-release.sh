@@ -3,6 +3,7 @@
 # PLAN_RELEASE_APPLY=1 creates that tag with the workflow token. A tag push
 # does not start a second workflow, so the same run still publishes and deploys.
 # The tag is created before this script returns. The next queued release sees it.
+# A commit that is no longer the tip of main does not get a tag. The newer build releases.
 set -eu
 
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -58,6 +59,23 @@ if [ "$decision" != release=true ]; then
   exit 0
 fi
 
+sha=${PLAN_RELEASE_SHA:-${GITHUB_SHA:-}}
+printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{40}$' || fail 'release sha is not a commit'
+apply=${PLAN_RELEASE_APPLY:-0}
+if [ "$apply" = 1 ]; then
+  status=0
+  RELEASE_SHA=$sha sh "$root/scripts/release-tip-gate.sh" || status=$?
+  if [ "$status" -eq 2 ]; then
+    emit 'release=false'
+    emit 'tag='
+    emit "from=${from}"
+    exit 0
+  fi
+  if [ "$status" -ne 0 ]; then
+    exit "$status"
+  fi
+fi
+
 if [ -n "${PLAN_RELEASE_TAGS:-}" ]; then
   tags=$(cat "$PLAN_RELEASE_TAGS")
 else
@@ -70,9 +88,6 @@ if ! printf '%s\n' "$tags" | sh "$root/scripts/next-release-tag.sh" --check "$ta
   fail "refusing ${tag}; tag already exists"
 fi
 
-sha=${PLAN_RELEASE_SHA:-${GITHUB_SHA:-}}
-printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{40}$' || fail 'release sha is not a commit'
-apply=${PLAN_RELEASE_APPLY:-0}
 if [ "$apply" = 1 ]; then
   repo=${GH_REPO:?}
   [ -n "${GH_TOKEN:-}" ] || fail 'GH_TOKEN is required'

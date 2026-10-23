@@ -50,6 +50,7 @@ sh scripts/test-check-installed-versions.sh
 sh scripts/test-releasable.sh
 sh scripts/test-next-release-tag.sh
 sh scripts/test-plan-release.sh
+sh scripts/test-release-tip-gate.sh
 sh scripts/test-check-stamped-clients.sh
 sh scripts/test-release-budget.sh
 sh scripts/test-verify-release-attestations.sh
@@ -97,6 +98,7 @@ shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-b
   scripts/releasable.sh scripts/test-releasable.sh \
   scripts/next-release-tag.sh scripts/test-next-release-tag.sh \
   scripts/plan-release.sh scripts/test-plan-release.sh \
+  scripts/release-tip-gate.sh scripts/test-release-tip-gate.sh \
   scripts/check-stamped-clients.sh scripts/test-check-stamped-clients.sh \
   scripts/check-dropped-platform.sh scripts/test-check-dropped-platform.sh \
   scripts/test-release-budget.sh \

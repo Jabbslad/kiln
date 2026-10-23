@@ -20,6 +20,11 @@ on:
         required: false
         default: latest
         type: string
+      sha:
+        description: Build commit that must still be the tip of main. Empty on a manual deploy.
+        required: false
+        default: ''
+        type: string
       address:
         description: Private or VPN IPv4 for the API. Empty detects one private source address.
         required: false
@@ -44,12 +49,31 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.workflow_sha }}
+      - name: Skip deploy when main has moved on
+        id: tip
+        if: inputs.sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ inputs.sha }}
+        run: |
+          status=0
+          sh scripts/release-tip-gate.sh || status=$?
+          if [ "$status" -eq 2 ]; then
+            echo 'proceed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          echo 'proceed=true' >> "$GITHUB_OUTPUT"
       - name: Require a published release
+        if: inputs.sha == '' || steps.tip.outputs.proceed == 'true'
         env:
           TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}
         run: bash deploy/github/require-release.sh
       - name: Install the release
+        if: inputs.sha == '' || steps.tip.outputs.proceed == 'true'
         env:
           DARK_FORGE_SSH_KEY: ${{ secrets.DARK_FORGE_SSH_KEY }}
           DARK_FORGE_KNOWN_HOSTS: ${{ secrets.DARK_FORGE_KNOWN_HOSTS }}
