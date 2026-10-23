@@ -889,7 +889,7 @@ async fn forward(
 
 fn page(app: &App, request: &Request) -> Response {
     let query = request.uri().query();
-    if query.is_some() && query != Some("preview=1") {
+    if query.is_some() {
         return deny(
             StatusCode::BAD_REQUEST,
             "invalid_request",

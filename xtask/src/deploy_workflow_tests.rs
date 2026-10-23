@@ -320,6 +320,15 @@ fn test_deploy_ssh_and_scp_run_while_multiplex_master_is_open() {
         result.captured.stdout
     );
     assert!(
+        result.ssh_calls.iter().any(|call| {
+            call.contains("install-remote.sh")
+                && call.contains("GITHUB_RUN_ID=39877921457")
+                && call.contains("GITHUB_RUN_ATTEMPT=1")
+        }),
+        "smoke run id was not forwarded: {:?}",
+        result.ssh_calls
+    );
+    assert!(
         result.captured.stdout.contains("ssh session opened\n"),
         "{}",
         result.captured.stdout
@@ -911,7 +920,11 @@ fn test_smoke_deletes_the_box_when_exec_or_output_fails() {
     assert_eq!(command_names(&ok.log), ["add", "create", "exec", "delete"]);
     let flat = ok.log.join("\n").replace('\0', " ");
     assert!(
-        flat.contains("--template ubuntu-4g --name kiln-smoke"),
+        flat.contains("--template ubuntu-4g --name kiln-smoke-39877921457-1"),
+        "{flat}"
+    );
+    assert!(
+        !flat.contains("--name kiln-smoke ") && !flat.contains("--name kiln-smoke\n"),
         "{flat}"
     );
     assert!(
@@ -1164,6 +1177,8 @@ fn run_deploy(
     command.env_remove("KILN_SSH_SH");
     command.env("PATH", prepend_path(tmp.path()));
     command.env("KILN_RELEASE_TAG", tag);
+    command.env("GITHUB_RUN_ID", "39877921457");
+    command.env("GITHUB_RUN_ATTEMPT", "1");
     if archive_installer.is_some() {
         command.env(
             "DARK_FORGE_SSH_KEY",
@@ -1486,6 +1501,8 @@ esac
     command.env("KILN_API_BIN", &kiln_api);
     command.env("KILN_ADMIN_TOKEN_FILE", &token);
     command.env("KILN_CA_FILE", &ca);
+    command.env("GITHUB_RUN_ID", "39877921457");
+    command.env("GITHUB_RUN_ATTEMPT", "1");
     for (key, value) in extra {
         command.env(key, value);
     }
@@ -1520,6 +1537,10 @@ has() {
   return 1
 }
 if has add "$@"; then
+  exit 0
+fi
+if has list "$@"; then
+  printf 'No boxes yet. Create one with `kiln create`.\n'
   exit 0
 fi
 if has create "$@"; then

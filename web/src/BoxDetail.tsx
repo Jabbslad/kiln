@@ -43,7 +43,7 @@ import { capabilityAvailable } from './capabilities'
 
 const tabs = ['Terminal', 'Exec', 'Previews', 'Checkpoints', 'Metrics', 'Activity']
 
-export default function BoxDetail({ data, preview }: PageProps) {
+export default function BoxDetail({ data }: PageProps) {
   const { id } = useParams()
   const [params, setParams] = useSearchParams()
   const requestedTab = params.get('tab') ?? 'terminal'
@@ -68,7 +68,7 @@ export default function BoxDetail({ data, preview }: PageProps) {
       </Empty>
     )
   const checkpoints = data.checkpoints.filter((checkpoint) => checkpoint.box_id === box.id)
-  const authenticated = !preview && data.host.state === 'online'
+  const authenticated = data.host.state === 'online'
   return (
     <>
       <div className="breadcrumb">
@@ -187,7 +187,7 @@ export default function BoxDetail({ data, preview }: PageProps) {
       {activeTab === 'terminal' && (
         <>
           <div className="workspace-grid">
-            <TerminalPane box={box} preview={preview} authenticated={authenticated} />
+            <TerminalPane box={box} authenticated={authenticated} />
             <div className="access-column">
               <Access boxId={box.id} />
               <ResourceMetrics
@@ -201,7 +201,7 @@ export default function BoxDetail({ data, preview }: PageProps) {
           <LaunchTiming box={box} />
         </>
       )}
-      {activeTab === 'exec' && <Exec box={box} preview={preview} authenticated={authenticated} />}
+      {activeTab === 'exec' && <Exec box={box} authenticated={authenticated} />}
       {activeTab === 'previews' && (
         <section className="panel preview-panel">
           <div className="panel-heading">
@@ -299,19 +299,13 @@ export default function BoxDetail({ data, preview }: PageProps) {
         />
       )}
       {action === 'Delete' ? (
-        <DeleteDialog
-          box={box}
-          preview={preview}
-          authenticated={authenticated}
-          onClose={() => setAction(null)}
-        />
+        <DeleteDialog box={box} authenticated={authenticated} onClose={() => setAction(null)} />
       ) : (
         action && (
           <LifecycleDialog
             action={action}
             box={box}
-            preview={preview}
-            authenticated={!preview && data.host.state === 'online'}
+            authenticated={authenticated}
             onClose={() => setAction(null)}
           />
         )
@@ -320,7 +314,6 @@ export default function BoxDetail({ data, preview }: PageProps) {
         <RestoreDialog
           box={box}
           checkpoint={restoring}
-          preview={preview}
           authenticated={authenticated}
           onClose={() => setRestoring(null)}
         />
@@ -375,15 +368,7 @@ function Access({ boxId }: { boxId: string }) {
   )
 }
 
-function Exec({
-  box,
-  preview,
-  authenticated,
-}: {
-  box: Box
-  preview: boolean
-  authenticated: boolean
-}) {
+function Exec({ box, authenticated }: { box: Box; authenticated: boolean }) {
   const [argv, setArgv] = useState('["/bin/pwd"]')
   const [cwd, setCwd] = useState('')
   const [timeout, setTimeoutMs] = useState('10000')
@@ -481,7 +466,7 @@ function Exec({
             <p className="field-hint">Commands run only while the box is running.</p>
           )
         ) : (
-          <Unavailable preview={preview} />
+          <Unavailable />
         )}
         {pending && (
           <p className="field-hint" role="status">
@@ -519,14 +504,12 @@ function Exec({
 }
 
 function terminalHint(
-  preview: boolean,
   authenticated: boolean,
   state: string,
   status: 'idle' | 'opening' | 'open' | 'ended',
 ) {
   if (status === 'open') return 'Session active'
   if (status === 'ended') return 'Session ended'
-  if (preview) return 'Preview mode does not open a shell.'
   if (!authenticated) return 'Sign in on a live console to open a shell.'
   if (state !== 'running') return 'Start this box to open a shell.'
   return 'Opens a shell in this box.'
@@ -537,21 +520,13 @@ function terminalUrl(id: string) {
   return `${protocol}//${window.location.host}/v1/boxes/${id}/terminal`
 }
 
-function TerminalPane({
-  box,
-  preview,
-  authenticated,
-}: {
-  box: Box
-  preview: boolean
-  authenticated: boolean
-}) {
+function TerminalPane({ box, authenticated }: { box: Box; authenticated: boolean }) {
   const canConnect = authenticated && box.state === 'running'
   const [attempt, setAttempt] = useState(0)
   const [status, setStatus] = useState<'idle' | 'opening' | 'open' | 'ended'>('idle')
   const screenRef = useRef<HTMLDivElement>(null)
   const socketRef = useRef<WebSocket | null>(null)
-  const hint = terminalHint(preview, authenticated, box.state, status)
+  const hint = terminalHint(authenticated, box.state, status)
   useEffect(() => {
     if (attempt === 0) return
     const screen = screenRef.current
