@@ -5,6 +5,12 @@ set -eu
 root=$(git rev-parse --show-toplevel)
 cd "$root"
 
+# Checks create disposable Git repositories. Do not let Git's hook environment
+# redirect their init/config/commit commands into the repository being pushed.
+# Keep process-local configuration overrides (for example remote URL rewrites).
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_PREFIX \
+  GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+
 zero=0000000000000000000000000000000000000000
 needs_release=0
 

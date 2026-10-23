@@ -1,18 +1,7 @@
 use crate::Failure;
 use axum::http::{HeaderValue, StatusCode, header};
-use kiln_api::{BoxView, Caller, Role, may_access_box, valid_id};
+use kiln_api::{BoxView, Caller, Role, may_access_box};
 use reqwest::Url;
-
-pub fn box_id_from_path(path: &str, suffix: &str) -> Option<String> {
-    let rest = path.strip_prefix("/v1/boxes/")?;
-    let (id, tail) = rest.split_once('/')?;
-    (tail == suffix && valid_id(id)).then(|| id.to_owned())
-}
-
-pub fn single_box_id(path: &str) -> Option<String> {
-    let id = path.strip_prefix("/v1/boxes/")?;
-    (!id.contains('/') && valid_id(id)).then(|| id.to_owned())
-}
 
 /// Members may only reach boxes they own; owners skip the metadata read.
 pub async fn ensure_member_box_access(

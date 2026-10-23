@@ -1,7 +1,6 @@
 //! Unprivileged TLS edge. The only upstream is the configured Unix socket.
 use crate::{Failure, auth::Authenticator};
 use anyhow::Result;
-use axum::http::HeaderValue;
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -10,7 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use kiln_api::{Caller, OperationSubmitQuery, Scope};
+use kiln_api::{Caller, OperationSubmitQuery, Role, Scope};
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
@@ -92,7 +91,7 @@ async fn authenticate(
     method: &axum::http::Method,
     uri: &Uri,
     required: Scope,
-) -> Result<(Caller, HeaderValue), Failure> {
+) -> Result<Caller, Failure> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -118,30 +117,21 @@ async fn authenticate(
         ));
     }
     validate_uri_query(method, uri)?;
-    let authorization =
-        HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| Failure::missing())?;
-    Ok((caller, authorization))
+    Ok(caller)
 }
 
-async fn ensure_box_access(
-    state: &Gateway,
-    box_id: &str,
-    caller: &Caller,
-    authorization: &HeaderValue,
-) -> Result<(), Failure> {
-    let Some(tenant_owner) = state.auth.tenant_owner() else {
-        return Ok(());
-    };
-    let upstream = reqwest::Url::parse("http://localhost").map_err(|_| Failure::missing())?;
-    crate::box_access::ensure_member_box_access(
-        &state.client,
-        &upstream,
-        authorization,
-        box_id,
-        caller,
-        &tenant_owner,
-    )
-    .await
+fn trusted_request(request: reqwest::RequestBuilder, caller: &Caller) -> reqwest::RequestBuilder {
+    // Only authenticated context crosses the Unix socket; incoming identity
+    // headers and bearer credentials are never forwarded. Host authorizes all paths.
+    request
+        .header(kiln_api::OPERATION_ACTOR_HEADER, &caller.sub)
+        .header(
+            crate::host::CALLER_ROLE_HEADER,
+            match caller.role {
+                Role::Owner => "owner",
+                Role::Member => "member",
+            },
+        )
 }
 
 async fn ssh_tunnel(
@@ -154,7 +144,7 @@ async fn ssh_tunnel(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
-    let (caller, authorization) = authenticate(
+    let caller = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -162,9 +152,6 @@ async fn ssh_tunnel(
         Scope::Operate,
     )
     .await?;
-    if let Some(box_id) = crate::box_access::box_id_from_path(request.uri().path(), "ssh") {
-        ensure_box_access(&state, &box_id, &caller, &authorization).await?;
-    }
     let cancel = match state.auth.central_identity(token).await {
         Ok(identity) => state.auth.track_stream(&identity),
         Err(_) => crate::revocation::StreamCancel::new(),
@@ -175,15 +162,18 @@ async fn ssh_tunnel(
         .clone()
         .try_acquire_owned()
         .map_err(|_| crate::ssh::busy())?;
-    let upstream = state
-        .client
-        .get(format!("http://localhost{}", request.uri().path()))
-        .header(header::CONNECTION, "upgrade")
-        .header(header::UPGRADE, kiln_api::SSH_UPGRADE)
-        .header(kiln_api::SSH_KEY_HEADER, key)
-        .send()
-        .await
-        .map_err(|_| upstream_error())?;
+    let upstream = trusted_request(
+        state
+            .client
+            .get(format!("http://localhost{}", request.uri().path()))
+            .header(header::CONNECTION, "upgrade")
+            .header(header::UPGRADE, kiln_api::SSH_UPGRADE)
+            .header(kiln_api::SSH_KEY_HEADER, key),
+        &caller,
+    )
+    .send()
+    .await
+    .map_err(|_| upstream_error())?;
     if upstream.status() != StatusCode::SWITCHING_PROTOCOLS {
         return Err(host_ssh_error(upstream).await);
     }
@@ -203,7 +193,7 @@ async fn dashboard(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    let (caller, _) = authenticate(
+    let caller = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -220,7 +210,7 @@ async fn dashboard(
             wait: false,
             wait_seconds: kiln_api::DEFAULT_OPERATION_WAIT_SECONDS,
         },
-        None,
+        &caller,
     )
     .await
     {
@@ -285,7 +275,7 @@ async fn read_proxy(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    let (caller, authorization) = authenticate(
+    let caller = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -293,9 +283,6 @@ async fn read_proxy(
         Scope::Read,
     )
     .await?;
-    if let Some(box_id) = crate::box_access::single_box_id(request.uri().path()) {
-        ensure_box_access(&state, &box_id, &caller, &authorization).await?;
-    }
     proxy(
         state,
         request,
@@ -303,7 +290,7 @@ async fn read_proxy(
             wait: false,
             wait_seconds: kiln_api::DEFAULT_OPERATION_WAIT_SECONDS,
         },
-        None,
+        &caller,
     )
     .await
 }
@@ -313,13 +300,7 @@ async fn operate_proxy(
     request: Request,
 ) -> Result<Response, Failure> {
     let query = validate_uri_query(request.method(), request.uri())?;
-    let token = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "))
-        .unwrap_or("");
-    let (caller, authorization) = authenticate(
+    let caller = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -327,18 +308,14 @@ async fn operate_proxy(
         Scope::Operate,
     )
     .await?;
-    if let Some(box_id) = crate::box_access::box_id_from_path(request.uri().path(), "ssh-key") {
-        ensure_box_access(&state, &box_id, &caller, &authorization).await?;
-    }
-    let actor = state.auth.central_subject(token).await;
-    proxy(state, request, query, actor).await
+    proxy(state, request, query, &caller).await
 }
 
 async fn proxy(
     state: Arc<Gateway>,
     request: Request,
     query: OperationSubmitQuery,
-    actor: Option<String>,
+    caller: &Caller,
 ) -> Result<Response, Failure> {
     let _permit = state.capacity.try_acquire().map_err(|_| {
         Failure::new(
@@ -373,12 +350,9 @@ async fn proxy(
             "Request body exceeds 128 KiB.",
         )
     })?;
-    let mut upstream = state.client.request(method, uri).body(bytes);
+    let mut upstream = trusted_request(state.client.request(method, uri).body(bytes), caller);
     if let Some(content_type) = content_type {
         upstream = upstream.header(header::CONTENT_TYPE, content_type);
-    }
-    if let Some(actor) = actor {
-        upstream = upstream.header(kiln_api::OPERATION_ACTOR_HEADER, actor);
     }
     if query.wait {
         upstream = upstream.timeout(Duration::from_secs(query.wait_seconds.saturating_add(5)));

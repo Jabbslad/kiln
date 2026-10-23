@@ -284,6 +284,19 @@ impl Runtime {
         name: &str,
         box_id: &str,
     ) -> Result<BoxRecord> {
+        self.clone_template_for_owner(snapshot_id, name, box_id, None)
+            .await
+    }
+
+    /// Persist the authenticated creator with the initial reservation, including
+    /// when launch later fails. Direct runtime callers retain legacy ownership.
+    pub async fn clone_template_for_owner(
+        &self,
+        snapshot_id: &str,
+        name: &str,
+        box_id: &str,
+        owner: Option<&str>,
+    ) -> Result<BoxRecord> {
         if !storage::valid_id(box_id) {
             return Err(Error::Invalid("invalid box ID".into()));
         }
@@ -333,7 +346,7 @@ impl Runtime {
                 None
             },
             last_launch: None,
-            owner: None,
+            owner: owner.map(str::to_owned),
         };
         use std::os::unix::fs::DirBuilderExt;
         fs::DirBuilder::new()

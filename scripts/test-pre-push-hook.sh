@@ -41,6 +41,9 @@ if [ -f "${CHECK_FAIL:-}" ]; then
   printf 'check stub failed\n' >&2
   exit 1
 fi
+if [ -n "${CHECK_NESTED_GIT:-}" ]; then
+  git init --bare "$CHECK_NESTED_GIT" >/dev/null 2>&1
+fi
 exit 0
 EOF
   chmod +x scripts/check.sh
@@ -113,5 +116,15 @@ rc=${rc:-0}
 [ "$rc" -eq 0 ] || fail 'docs push must succeed'
 unset rc
 grep -qx 'scripts/check.sh --release' "$work/log" && fail 'docs-only diff must not pass --release'
+
+# Git exports repository selectors to hooks. A check creating its own fixture
+# must not turn the repository being pushed into that fixture's bare Git dir.
+CHECK_NESTED_GIT=$work/disposable.git
+export CHECK_NESTED_GIT
+GIT_DIR=$work/.git GIT_WORK_TREE=$work run_hook refs/heads/main "$head" refs/heads/main "$parent" \
+  || fail 'hook failed with Git-supplied repository environment'
+[ "$(git config core.bare)" = false ] || fail 'nested test changed the real repository configuration'
+[ "$(git rev-parse HEAD)" = "$head" ] || fail 'nested test changed the branch being pushed'
+[ -d "$CHECK_NESTED_GIT/objects" ] || fail 'nested test did not use its disposable repository'
 
 printf 'pre-push hook tests ok\n'

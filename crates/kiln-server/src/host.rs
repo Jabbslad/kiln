@@ -4,14 +4,15 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{DefaultBodyLimit, Path, RawQuery, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     routing::{get, post},
 };
 use kiln_api::{
-    Action, ApiError, BoxView, CheckpointView, Operation, OperationState, OperationSubmitQuery,
-    Outcome, Submit, TemplateView, valid_alias, valid_id,
+    Action, ApiError, BoxView, Caller, CheckpointView, Operation, OperationState,
+    OperationSubmitQuery, Outcome, Role, Submit, TemplateView, may_access_box, valid_alias,
+    valid_id,
 };
 use kiln_runtime::{
     isolation,
@@ -28,6 +29,59 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{net::UnixListener, sync::Semaphore};
+
+pub(crate) const CALLER_ROLE_HEADER: &str = "x-kiln-account-role";
+
+// This listener is private: filesystem permissions restrict the socket to trusted
+// local operators and the gateway. The gateway replaces, never relays, these headers.
+async fn caller_context(
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, Failure> {
+    let headers = request.headers();
+    let sub = headers.get(kiln_api::OPERATION_ACTOR_HEADER);
+    let role = headers.get(CALLER_ROLE_HEADER);
+    let caller = if sub.is_none() && role.is_none() {
+        Caller {
+            sub: String::new(),
+            tenant_id: String::new(),
+            role: Role::Owner,
+        }
+    } else {
+        let invalid = || {
+            Failure::new(
+                StatusCode::UNAUTHORIZED,
+                "invalid_caller",
+                "Invalid trusted caller context.",
+            )
+        };
+        let sub = sub.and_then(|v| v.to_str().ok()).ok_or_else(invalid)?;
+        if sub.is_empty()
+            || sub.len() > 128
+            || headers
+                .get_all(kiln_api::OPERATION_ACTOR_HEADER)
+                .iter()
+                .count()
+                != 1
+            || headers.get_all(CALLER_ROLE_HEADER).iter().count() != 1
+        {
+            return Err(invalid());
+        }
+        let role = match role.and_then(|v| v.to_str().ok()) {
+            Some("owner") => Role::Owner,
+            Some("member") => Role::Member,
+            _ => return Err(invalid()),
+        };
+        // Tenant and server binding have already been verified at the gateway.
+        Caller {
+            sub: sub.into(),
+            tenant_id: String::new(),
+            role,
+        }
+    };
+    request.extensions_mut().insert(caller);
+    Ok(next.run(request).await)
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -172,6 +226,7 @@ impl Host {
             .route("/v1/operations/{id}", get(operation))
             .route("/v1/operations", post(submit))
             .layer(DefaultBodyLimit::max(kiln_api::MAX_REQUEST_BYTES))
+            .layer(axum::middleware::from_fn(caller_context))
             .with_state(self.clone())
     }
 
@@ -187,6 +242,18 @@ impl Host {
             return Err(Failure::missing());
         }
         Ok(())
+    }
+
+    fn ensure_box_access(&self, id: &str, caller: &Caller) -> Result<(), Failure> {
+        if caller.role == Role::Owner {
+            return Ok(());
+        }
+        let record = read_box(&self.runtime_dir, id).map_err(Failure::internal)?;
+        if record.is_some_and(|r| may_access_box(caller, r.owner.as_deref(), "")) {
+            Ok(())
+        } else {
+            Err(Failure::missing())
+        }
     }
 
     fn box_on_disk(&self, box_id: &str) -> Result<bool, Failure> {
@@ -213,11 +280,16 @@ impl Host {
         Ok(record.state == "running")
     }
 
-    async fn execute(&self, action: Action, box_id: &str) -> kiln_runtime::Result<Outcome> {
+    async fn execute(
+        &self,
+        action: Action,
+        box_id: &str,
+        owner: Option<&str>,
+    ) -> kiln_runtime::Result<Outcome> {
         let record = match action {
             Action::Create { template, name } => {
                 self.runtime
-                    .clone_template_with_id(&self.templates[&template], &name, box_id)
+                    .clone_template_for_owner(&self.templates[&template], &name, box_id, owner)
                     .await?
             }
             Action::Pause { id } => self.runtime.set_paused(&id, true).await?,
@@ -488,8 +560,17 @@ fn view(record: BoxRecord) -> BoxView {
 
 async fn dashboard(
     State(host): State<Arc<Host>>,
+    Extension(caller): Extension<Caller>,
 ) -> Result<Json<crate::dashboard::Document>, Failure> {
-    host.dashboard().map(Json).map_err(Failure::internal)
+    host.dashboard()
+        .map(|document| {
+            Json(if caller.role == Role::Owner {
+                document
+            } else {
+                crate::dashboard::scope_to_caller(document, &caller, "")
+            })
+        })
+        .map_err(Failure::internal)
 }
 
 async fn templates(State(host): State<Arc<Host>>) -> Json<Vec<TemplateView>> {
@@ -498,9 +579,11 @@ async fn templates(State(host): State<Arc<Host>>) -> Json<Vec<TemplateView>> {
 
 async fn ssh_key(
     State(host): State<Arc<Host>>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<String>,
 ) -> Result<Json<kiln_api::SshReady>, Failure> {
     host.owns(&id)?;
+    host.ensure_box_access(&id, &caller)?;
     host.runtime
         .ssh_host_key(&id)
         .await
@@ -510,10 +593,12 @@ async fn ssh_key(
 
 async fn ssh_tunnel(
     State(host): State<Arc<Host>>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<String>,
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, Failure> {
     host.owns(&id)?;
+    host.ensure_box_access(&id, &caller)?;
     let key = crate::ssh::admission(&request)?;
     let permit = host
         .sessions
@@ -533,7 +618,10 @@ async fn ssh_tunnel(
     ))
 }
 
-async fn boxes(State(host): State<Arc<Host>>) -> Result<Json<Vec<BoxView>>, Failure> {
+async fn boxes(
+    State(host): State<Arc<Host>>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Json<Vec<BoxView>>, Failure> {
     let ids = host
         .journal
         .lock()
@@ -550,6 +638,10 @@ async fn boxes(State(host): State<Arc<Host>>) -> Result<Json<Vec<BoxView>>, Fail
             .try_exists()
             .map_err(Failure::internal)?
         {
+            let record = read_box(&host.runtime_dir, &id).map_err(Failure::internal)?;
+            if !record.is_some_and(|r| may_access_box(&caller, r.owner.as_deref(), "")) {
+                continue;
+            }
             records.push(view(
                 host.runtime.inspect(&id).await.map_err(Failure::internal)?,
             ));
@@ -560,9 +652,11 @@ async fn boxes(State(host): State<Arc<Host>>) -> Result<Json<Vec<BoxView>>, Fail
 
 async fn inspect(
     State(host): State<Arc<Host>>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<String>,
 ) -> Result<Json<BoxView>, Failure> {
     host.owns(&id)?;
+    host.ensure_box_access(&id, &caller)?;
     if !host
         .runtime_dir
         .join("boxes")
@@ -580,15 +674,15 @@ async fn inspect(
 
 async fn operation(
     State(host): State<Arc<Host>>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<String>,
 ) -> Result<Json<Operation>, Failure> {
     if !valid_id(&id) {
         return Err(Failure::missing());
     }
-    host.journal
-        .lock()
-        .unwrap()
-        .get(&id)
+    let db = host.journal.lock().unwrap();
+    ensure_operation_access(&db, &id, &caller)?;
+    db.get(&id)
         .map_err(Failure::internal)?
         .map(Json)
         .ok_or_else(Failure::missing)
@@ -650,6 +744,7 @@ fn spawn_operation_worker(
     request: Submit,
     mut op: Operation,
     permit: tokio::sync::OwnedSemaphorePermit,
+    owner: Option<String>,
 ) {
     let worker_host = host.clone();
     let journal_host = host;
@@ -659,8 +754,12 @@ fn spawn_operation_worker(
     tokio::spawn(async move {
         let _permit = permit;
         let box_id = op.box_id.clone();
-        let result =
-            tokio::spawn(async move { worker_host.execute(request.action, &box_id).await }).await;
+        let result = tokio::spawn(async move {
+            worker_host
+                .execute(request.action, &box_id, owner.as_deref())
+                .await
+        })
+        .await;
         match result {
             Ok(Ok(outcome)) => {
                 op.state = OperationState::Succeeded;
@@ -693,10 +792,11 @@ async fn finish_create_inline(
     request: Submit,
     mut op: Operation,
     _permit: tokio::sync::OwnedSemaphorePermit,
+    owner: Option<&str>,
 ) -> Operation {
     let box_id = op.box_id.clone();
     let is_exec = matches!(request.action, Action::Exec { .. });
-    let result = host.execute(request.action, &box_id).await;
+    let result = host.execute(request.action, &box_id, owner).await;
     match result {
         Ok(outcome) => {
             op.state = OperationState::Succeeded;
@@ -727,8 +827,9 @@ async fn submit_create_wait(
     accepted: Operation,
     permit: tokio::sync::OwnedSemaphorePermit,
     wait_seconds: u64,
+    owner: Option<&str>,
 ) -> Result<(StatusCode, Json<Operation>), Failure> {
-    let finished = finish_create_inline(&host, request, accepted, permit).await;
+    let finished = finish_create_inline(&host, request, accepted, permit, owner).await;
     let op = wait_for_create(host, &finished.id, wait_seconds).await?;
     Ok((StatusCode::OK, Json(op)))
 }
@@ -742,22 +843,20 @@ enum SubmitPlan {
     },
 }
 
-fn operation_actor(headers: &HeaderMap) -> Option<&str> {
-    let value = headers
-        .get(kiln_api::OPERATION_ACTOR_HEADER)
-        .and_then(|v| v.to_str().ok())?;
-    if value.is_empty() || value.len() > 128 {
-        return None;
+fn ensure_operation_access(db: &Journal, id: &str, caller: &Caller) -> Result<(), Failure> {
+    if caller.role != Role::Owner
+        && !db
+            .allows_actor(id, &caller.sub)
+            .map_err(Failure::internal)?
+    {
+        return Err(Failure::missing());
     }
-    Some(value)
+    Ok(())
 }
 
-fn plan_submit(
-    host: &Arc<Host>,
-    request: &Submit,
-    actor: Option<&str>,
-) -> Result<SubmitPlan, Failure> {
+fn plan_submit(host: &Arc<Host>, request: &Submit, caller: &Caller) -> Result<SubmitPlan, Failure> {
     let mut db = host.journal.lock().unwrap();
+    ensure_operation_access(&db, &request.id, caller)?;
     if let Some(existing) = db.existing(request).map_err(|e| {
         if e.is::<Conflict>() {
             Failure::new(
@@ -785,6 +884,9 @@ fn plan_submit(
         }
         _ => {}
     }
+    if let Some(id) = request.action.box_id() {
+        host.ensure_box_access(id, caller)?;
+    }
     let permit = host.capacity.clone().try_acquire_owned().map_err(|_| {
         Failure::new(
             StatusCode::TOO_MANY_REQUESTS,
@@ -795,7 +897,7 @@ fn plan_submit(
     let live_ids = live_box_ids(&host.runtime_dir).map_err(Failure::internal)?;
     let live_refs: Vec<&str> = live_ids.iter().map(String::as_str).collect();
     let accepted = db
-        .accept(request, &live_refs, actor)
+        .accept(request, &live_refs, (!caller.sub.is_empty()).then_some(caller.sub.as_str()))
         .map_err(|error| {
         if error.is::<JournalFull>() {
             Failure::new(
@@ -816,8 +918,8 @@ fn plan_submit(
 
 async fn submit(
     State(host): State<Arc<Host>>,
+    Extension(caller): Extension<Caller>,
     RawQuery(raw_query): RawQuery,
-    headers: HeaderMap,
     Json(request): Json<Submit>,
 ) -> Result<(StatusCode, Json<Operation>), Failure> {
     let query = OperationSubmitQuery::parse("/v1/operations", raw_query.as_deref())
@@ -836,7 +938,8 @@ async fn submit(
         .action
         .validate()
         .map_err(|e| Failure::new(StatusCode::BAD_REQUEST, "invalid_request", e))?;
-    let plan = plan_submit(&host, &request, operation_actor(&headers))?;
+    let plan = plan_submit(&host, &request, &caller)?;
+    let owner = (!caller.sub.is_empty()).then_some(caller.sub.as_str());
     match plan {
         SubmitPlan::ReplayExisting(existing) => {
             if query.wait {
@@ -851,10 +954,23 @@ async fn submit(
             permit,
         } => {
             if query.wait {
-                return submit_create_wait(host, request, accepted, permit, query.wait_seconds)
-                    .await;
+                return submit_create_wait(
+                    host,
+                    request,
+                    accepted,
+                    permit,
+                    query.wait_seconds,
+                    owner,
+                )
+                .await;
             }
-            spawn_operation_worker(host, request, accepted.clone(), permit);
+            spawn_operation_worker(
+                host,
+                request,
+                accepted.clone(),
+                permit,
+                owner.map(str::to_owned),
+            );
             Ok((StatusCode::ACCEPTED, Json(accepted)))
         }
     }
@@ -893,7 +1009,7 @@ pub async fn bind_socket(path: &FsPath) -> Result<UnixListener> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::response::IntoResponse;
+
     use kiln_api::new_id;
 
     #[test]
@@ -1224,10 +1340,16 @@ mod tests {
         let _held: Vec<_> = (0..32)
             .map(|_| host.sessions.clone().try_acquire_owned().unwrap())
             .collect();
-        let response = ssh_key(State(host), Path(operation.box_id))
+        use tower::ServiceExt;
+        let response = host
+            .router()
+            .oneshot(
+                axum::http::Request::get(format!("/v1/boxes/{}/ssh-key", operation.box_id))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
             .await
-            .unwrap_err()
-            .into_response();
+            .unwrap();
         assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         let body = axum::body::to_bytes(response.into_body(), 1024)
             .await

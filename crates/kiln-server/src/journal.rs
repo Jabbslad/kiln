@@ -299,6 +299,18 @@ impl Journal {
             .transpose()
     }
 
+    /// Check before replay/fingerprint comparison. A new ID is available to any
+    /// caller; existing IDs (including deleted boxes) remain bound to their actor.
+    /// Legacy NULL actors are accessible only through the owner's bypass.
+    pub fn allows_actor(&self, id: &str, actor: &str) -> Result<bool> {
+        Ok(self.0.query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM operations
+             WHERE id=?1 AND (actor IS NULL OR actor != ?2))",
+            params![id, actor],
+            |row| row.get(0),
+        )?)
+    }
+
     pub fn finish(&mut self, op: &Operation) -> Result<()> {
         ensure!(
             op.state != OperationState::Running,
