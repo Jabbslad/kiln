@@ -11,17 +11,31 @@ kiln=${KILN_BIN:-/opt/kiln/bin/kiln}
 printf '%s\n' "$address" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' \
   || fail 'address must be an IPv4 literal'
 
+# GitHub Actions sets these on the runner. deploy.sh forwards them onto the host.
+run_id=${GITHUB_RUN_ID:-}
+attempt=${GITHUB_RUN_ATTEMPT:-}
+printf '%s\n' "$run_id" | grep -Eq '^[0-9]{1,18}$' \
+  || fail 'GITHUB_RUN_ID must be 1-18 digits'
+printf '%s\n' "$attempt" | grep -Eq '^[0-9]{1,4}$' \
+  || fail 'GITHUB_RUN_ATTEMPT must be 1-4 digits'
+box_name="kiln-smoke-${run_id}-${attempt}"
+
 work=$(mktemp -d)
 config=$work/profiles.json
 box_id=
 delete_rc=0
 deleted=false
+created=false
 
 delete_box() {
-  if [ -z "$box_id" ] || [ "$deleted" = true ]; then
+  if [ "$created" != true ] || [ "$deleted" = true ]; then
     return 0
   fi
-  "$kiln" --config "$config" --profile default delete "$box_id" || delete_rc=$?
+  target=$box_name
+  if [ -n "$box_id" ]; then
+    target=$box_id
+  fi
+  "$kiln" --config "$config" --profile default delete "$target" || delete_rc=$?
   deleted=true
   return "$delete_rc"
 }
@@ -34,16 +48,40 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 "$kiln" --config "$config" profile add default \
   --url "https://${address}:8443" \
   --token-file /etc/kiln/admin.token \
   --ca-file /etc/kiln/ca.crt
 
+# Drop boxes left by an earlier smoke. Match only the kiln-smoke prefix.
+delete_stale_smoke_boxes() {
+  list_rc=0
+  list_out=$("$kiln" --config "$config" --profile default list) || list_rc=$?
+  if [ "$list_rc" -ne 0 ]; then
+    printf 'smoke: box list failed\n' >&2
+    return 1
+  fi
+  names=$work/stale-names
+  printf '%s\n' "$list_out" | awk '$1 ~ /^kiln-smoke/ { print $1 }' >"$names"
+  while IFS= read -r name || [ -n "$name" ]; do
+    [ -n "$name" ] || continue
+    case "$name" in
+      kiln-smoke*) ;;
+      *) continue ;;
+    esac
+    "$kiln" --config "$config" --profile default delete "$name" || return 1
+  done <"$names"
+}
+
+delete_stale_smoke_boxes || fail 'stale smoke box delete failed'
+
 create_rc=0
 create_out=$(
   "$kiln" --config "$config" --profile default --json \
-    create --template ubuntu-4g --name kiln-smoke
+    create --template ubuntu-4g --name "$box_name"
 ) || create_rc=$?
 box_id=$(printf '%s' "$create_out" | tr -d '[:space:]' | awk '
   {
@@ -68,6 +106,9 @@ box_id=$(printf '%s' "$create_out" | tr -d '[:space:]' | awk '
     printf "%s", id
   }
 ') || box_id=
+if [ "$create_rc" -eq 0 ] || [ -n "$box_id" ]; then
+  created=true
+fi
 
 exec_rc=0
 exec_out=
@@ -87,7 +128,7 @@ if [ -n "$box_id" ] && [ -r "$token_file" ] && [ -r "$ca_file" ]; then
   kiln_api=${KILN_API_BIN:-/usr/local/libexec/kiln-api}
   : >"$metrics_log"
   "$kiln_api" self-check --address "$address" \
-    --require-launch-timing kiln-smoke >>"$metrics_log" 2>&1 || metrics_rc=$?
+    --require-launch-timing "$box_name" >>"$metrics_log" 2>&1 || metrics_rc=$?
   cat "$metrics_log"
 fi
 
