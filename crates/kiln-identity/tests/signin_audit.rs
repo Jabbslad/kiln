@@ -685,3 +685,48 @@ async fn slow_down_is_not_recorded() {
     fixture.flush();
     assert!(read_signin_audit(&fixture.database()).unwrap().is_empty());
 }
+
+async fn logout(app: &axum::Router, cookie: Option<&str>) -> (StatusCode, String) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/logout")
+        .extension(ConnectInfo("192.0.2.40:9".parse::<SocketAddr>().unwrap()))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("origin", "https://identity.example.test")
+        .header("user-agent", "KilnAudit");
+    if let Some(cookie) = cookie {
+        req = req.header("cookie", cookie);
+    }
+    let response = app
+        .clone()
+        .oneshot(req.body(Body::from("csrf=unused")).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 65_536).await.unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[tokio::test]
+async fn empty_session_cookie_logout_is_invalid_csrf() {
+    CLOCK.store(1_700_000_700, Ordering::SeqCst);
+    let fixture = Fixture::open();
+    let (status, body) = logout(&fixture.app, Some("__Host-kiln_session=")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body, "{\"error\":\"invalid_csrf\"}");
+    let (status, body) = logout(&fixture.app, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body, "{\"error\":\"login_required\"}");
+    fixture.flush();
+    let rows = read_signin_audit(&fixture.database()).unwrap();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0].event, "revocation");
+    assert_eq!(rows[0].outcome, "failure");
+    assert_eq!(rows[0].reason, "invalid_csrf");
+    assert_eq!(rows[0].auth_method, "session");
+    assert!(rows[0].session_id_hash.is_empty());
+    assert_eq!(rows[1].event, "revocation");
+    assert_eq!(rows[1].outcome, "failure");
+    assert_eq!(rows[1].reason, "login_required");
+    assert_eq!(rows[1].auth_method, "session");
+}

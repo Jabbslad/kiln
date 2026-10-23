@@ -215,7 +215,9 @@ async fn logout(
     h: HeaderMap,
     Form(form): Form<LogoutForm>,
 ) -> Response {
-    let session = cookie(&h, "__Host-kiln_session").unwrap_or_default();
+    let session = cookie(&h, "__Host-kiln_session");
+    let missing = session.is_none();
+    let session = session.unwrap_or_default();
     let revoke = |outcome: &'static str,
                   reason: &'static str,
                   account: &str,
@@ -246,7 +248,7 @@ async fn logout(
             err(StatusCode::FORBIDDEN, "invalid_origin"),
         );
     }
-    if session.is_empty() {
+    if missing {
         return revoke(
             "failure",
             "login_required",
