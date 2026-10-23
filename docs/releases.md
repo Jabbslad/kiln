@@ -42,13 +42,10 @@ pins the published v0.4.9 assets and runs `install.sh`.
 The static dashboard archive now includes a public landing page at `/` and the
 existing console at `/boxes`. The imported root `design.md` records the shared
 visual system and Kiln adaptations. The landing page uses original, locally
-bundled artwork, real client installation instructions, and explicit links to the
-read-only preview. It makes no host API requests. Console navigation, headings,
+bundled artwork and real client installation instructions. It makes no host API requests. Console navigation, headings,
 borders, and selection treatments follow the same system.
 
-Browser authentication and live dashboard controls are still not integrated.
-Existing preview gates remain; no VM operations are simulated. The static archive
-is separate from server installation. Publishing it does not deploy either surface,
+The static archive is separate from server installation. Publishing it does not deploy either surface,
 restart services, or change runtime state. The runtime behavior is unchanged from
 v0.4.6. Browser validation covers phone/desktop layouts, accessibility, navigation,
 clipboard success and denial, and the existing console interactions.
@@ -111,11 +108,9 @@ and a SHA-256 checksum. It contains responsive inventory, detail views, template
 operations, settings and a console guide, with locally bundled fonts. See the
 [dashboard guide](../web/README.md) for static hosting and the proposed API contract.
 
-**This is a frontend preview, not a connected management console.** Open
-`/boxes?preview=1` for labelled, read-only fixtures. The default live view reports
-a disconnected state because `/api/v1/dashboard` and browser authentication are
-not integrated with the existing CLI API. VM mutations, terminal, SSH and token
-controls remain disabled. No live VM operations are claimed by browser tests.
+**This release shipped a static frontend.** The live view reports
+a disconnected state until `/api/v1/dashboard` answers. VM mutations, terminal, SSH and token
+controls in that archive stayed disabled until a later console. No live VM operations are claimed by browser tests.
 
 CI tests and builds the dashboard and includes it in the release separately from
 the server installer. Publishing does not deploy it or change live services.

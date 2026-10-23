@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { capabilities, type Capability } from './capabilities'
+import { previewDashboard } from './fixtures'
 
 afterEach(() => {
   cleanup()
@@ -17,7 +18,7 @@ function forbiddenPlaceholder(text: string) {
 }
 
 function open(path: string) {
-  vi.stubGlobal('fetch', vi.fn())
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(previewDashboard)))
   render(
     <MemoryRouter initialEntries={[path]}>
       <App />
@@ -58,12 +59,12 @@ function assertAvailable(node: HTMLElement) {
 }
 
 const panelPaths: Partial<Record<Capability, string[]>> = {
-  metrics: ['/boxes?preview=1', '/boxes/box-7f3a2c1e?preview=1&tab=metrics'],
-  terminal: ['/boxes/box-7f3a2c1e?preview=1'],
-  ssh: ['/boxes/box-7f3a2c1e?preview=1'],
-  httpPreview: ['/boxes/box-7f3a2c1e?preview=1&tab=previews'],
-  publicUrl: ['/boxes/box-7f3a2c1e?preview=1'],
-  launchTiming: ['/boxes/box-7f3a2c1e?preview=1', '/boxes/box-7f3a2c1e?preview=1&tab=metrics'],
+  metrics: ['/boxes', '/boxes/box-7f3a2c1e?tab=metrics'],
+  terminal: ['/boxes/box-7f3a2c1e'],
+  ssh: ['/boxes/box-7f3a2c1e'],
+  httpPreview: ['/boxes/box-7f3a2c1e?tab=previews'],
+  publicUrl: ['/boxes/box-7f3a2c1e'],
+  launchTiming: ['/boxes/box-7f3a2c1e', '/boxes/box-7f3a2c1e?tab=metrics'],
 }
 
 describe('capability guard', () => {

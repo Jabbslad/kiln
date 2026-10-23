@@ -2,13 +2,14 @@ import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, expect, it, vi } from 'vitest'
 import App from './App'
+import { previewDashboard } from './fixtures'
 
 afterEach(() => vi.unstubAllGlobals())
 
 it('labels SSH access as not available yet without kiln ssh command hints', async () => {
-  vi.stubGlobal('fetch', vi.fn())
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(previewDashboard)))
   render(
-    <MemoryRouter initialEntries={['/boxes/box-7f3a2c1e?preview=1']}>
+    <MemoryRouter initialEntries={['/boxes/box-7f3a2c1e']}>
       <App />
     </MemoryRouter>,
   )
