@@ -91,6 +91,7 @@ async fn tenant_revocation_feed_rejects_within_one_refresh_cycle() {
         issuer: format!("https://127.0.0.1:{port}"),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
+        tenant_id: None,
     };
     let http = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
@@ -121,6 +122,7 @@ async fn member_tokens_fail_closed_when_revocation_feed_is_stale() {
             issuer: "https://identity.example.test".into(),
             owner_id: "owner-a".into(),
             server_id: "server-b".into(),
+            tenant_id: None,
         },
         "login-secret".into(),
         reqwest::Client::builder().https_only(true).build().unwrap(),
@@ -138,6 +140,7 @@ async fn authenticator_checks_the_tenant_revocation_feed() {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
+        tenant_id: None,
     };
     std::fs::write(
         &cache,
