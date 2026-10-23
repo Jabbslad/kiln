@@ -9,7 +9,10 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use kiln_api::{OperationSubmitQuery, auth::Scope};
+use kiln_api::{
+    OperationSubmitQuery,
+    auth::{AuthGrant, Scope},
+};
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
@@ -91,20 +94,21 @@ async fn authenticate(
     method: &axum::http::Method,
     uri: &Uri,
     required: Scope,
-) -> Result<(), Failure> {
+) -> Result<AuthGrant, Failure> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
-    let scope = state.auth.authenticate(token).await.map_err(|_| {
+    let grant = state.auth.authenticate(token).await.map_err(|_| {
         Failure::new(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "A valid credential is required.",
         )
     })?;
-    if required == Scope::Operate && scope != Scope::Operate {
+    if required == Scope::Operate && grant.scope != Scope::Operate {
+        let _ = crate::auth::deny("insufficient_scope");
         return Err(Failure::new(
             StatusCode::FORBIDDEN,
             "insufficient_scope",
@@ -112,21 +116,43 @@ async fn authenticate(
         ));
     }
     validate_uri_query(method, uri)?;
-    Ok(())
+    Ok(grant)
 }
 
 async fn ssh_tunnel(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    authenticate(
-        &state,
-        request.headers(),
-        request.method(),
-        request.uri(),
-        Scope::Operate,
-    )
-    .await?;
+    let token = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .unwrap_or("");
+    let cancel = match state.auth.central_identity(token).await {
+        Ok(identity) => {
+            if identity.scope != Scope::Operate {
+                let _ = crate::auth::deny("insufficient_scope");
+                return Err(Failure::new(
+                    StatusCode::FORBIDDEN,
+                    "insufficient_scope",
+                    "An operate credential is required.",
+                ));
+            }
+            state.auth.track_stream(&identity)
+        }
+        Err(_) if state.auth.authenticate(token).await.is_ok() => {
+            crate::revocation::StreamCancel::new()
+        }
+        Err(_) => {
+            return Err(Failure::new(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "A valid credential is required.",
+            ));
+        }
+    };
+    validate_uri_query(request.method(), request.uri())?;
     let key = crate::ssh::admission(&request)?;
     let permit = state
         .sessions
@@ -154,14 +180,14 @@ async fn ssh_tunnel(
         return Err(upstream_error());
     }
     let upstream = upstream.upgrade().await.map_err(|_| upstream_error())?;
-    Ok(crate::ssh::upgrade(request, upstream, permit))
+    Ok(crate::ssh::upgrade(request, upstream, permit, cancel))
 }
 
 async fn dashboard(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    authenticate(
+    let _grant = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -231,7 +257,7 @@ async fn read_proxy(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    authenticate(
+    let _grant = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -262,7 +288,7 @@ async fn operate_proxy(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
-    authenticate(
+    let _grant = authenticate(
         &state,
         request.headers(),
         request.method(),

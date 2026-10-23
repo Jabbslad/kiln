@@ -466,16 +466,17 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
     let box_id = ssh_box_id(request.uri().path()).unwrap_or("").to_owned();
     let bearer = ssh_bearer(&request);
     let addr = ssh_audit_addr(&request);
-    let scope = match door.auth.authenticate_central(bearer).await {
-        Ok(scope) => scope,
+    let identity = match door.auth.central_identity(bearer).await {
+        Ok(identity) => identity,
         Err(_) => {
             door.ssh_audit
                 .record("unauthorized", &box_id, "anonymous", addr);
             return unauthorized();
         }
     };
-    let caller = door.auth.central_caller(bearer).await;
-    if scope != Scope::Operate {
+    let caller = identity.sub.clone();
+    if identity.scope != Scope::Operate {
+        let _ = crate::auth::deny("insufficient_scope");
         door.ssh_audit
             .record("insufficient_scope", &box_id, &caller, addr);
         return deny(
@@ -564,7 +565,8 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
         }
     };
     door.ssh_audit.record("upgraded", &box_id, &caller, addr);
-    crate::ssh::upgrade(request, upstream, permit)
+    let cancel = door.auth.track_stream(&identity);
+    crate::ssh::upgrade(request, upstream, permit, cancel)
 }
 
 async fn ssh_refusal(upstream: reqwest::Response) -> Response {
@@ -890,7 +892,7 @@ async fn approve(door: &Door, dash: &Dash, tokens: DeviceTokens) -> Approve {
     };
     if !matches!(
         door.auth.authenticate_central(&grant.access_token).await,
-        Ok(Scope::Operate)
+        Ok(grant) if grant.scope == Scope::Operate
     ) {
         let _ = revoke_device(dash, &device_id, &central).await;
         return Approve::Denied;
@@ -1067,7 +1069,7 @@ async fn operate_jwt(door: &Door, dash: &Dash, slot: &SessionSlot) -> Jwt {
     };
     if !matches!(
         door.auth.authenticate_central(&grant.access_token).await,
-        Ok(Scope::Operate)
+        Ok(central) if central.scope == Scope::Operate
     ) || !(1..=300).contains(&grant.expires_in)
     {
         kill(dash, &mut session);

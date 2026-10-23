@@ -65,8 +65,13 @@ grep -q 'sh scripts/test-verify-release-attestations.sh' "$docs" \
 grep -q 'sh scripts/test-server-check-hang-evidence.sh' "$docs" \
   || fail 'check-docs.sh must run test-server-check-hang-evidence.sh (docs-check parity)'
 
-printf '%s\n' "$body" | awk '/^run_server_check\(\)/,/^}/' | grep -q 'run-workspace-nextest.sh &&' \
-  || fail 'run_server_check must chain steps with && so failures propagate under run_check'
+server_fn=$(printf '%s\n' "$body" | awk '/^run_server_check\(\)/,/^}/')
+printf '%s\n' "$server_fn" | grep -q 'run-workspace-nextest.sh' \
+  || fail 'run_server_check must run workspace nextest'
+printf '%s\n' "$server_fn" | grep -q 'test-nextest-memory-cap.sh' \
+  || fail 'run_server_check must run the memory-cap check when memory is low'
+printf '%s\n' "$server_fn" | grep -q 'fi &&' \
+  || fail 'run_server_check must chain the nextest step with && so failures propagate'
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
