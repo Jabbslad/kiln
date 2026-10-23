@@ -347,6 +347,7 @@ jobs:
             scripts/test-check-dashboard-bundle.sh \
             scripts/test-check-installed-versions.sh \
             scripts/test-deploy-host-tools.sh \
+            scripts/test-smoke-box.sh \
             deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
             scripts/test-listener-restart.sh \
             scripts/test-install-upgrade-failure-message.sh \
