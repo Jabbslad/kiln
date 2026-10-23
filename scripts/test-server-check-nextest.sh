@@ -98,6 +98,8 @@ run_fake() {
 run_fake 1
 run_fake 0
 
+sh "$root/scripts/test-flaky-retry.sh"
+
 if ! cargo nextest list --profile ci --workspace --all-features --locked >/dev/null 2>&1; then
   cargo nextest list --profile ci --workspace --all-features --locked 2>&1 | head -n 20 >&2
   fail 'nextest must parse .config/nextest.toml for the ci profile'

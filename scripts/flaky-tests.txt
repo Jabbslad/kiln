@@ -1,0 +1,3 @@
+# Known-flaky tests. One line each: package test-name.
+# scripts/run-workspace-nextest.sh gives every entry one nextest retry.
+kiln-runtime generation_disk_relocate_beats_copy_for_storage_ms
