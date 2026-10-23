@@ -8,6 +8,15 @@ set -eu
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 
+# Local agent VMs often have an invalid GH_TOKEN. gh auth status is the only
+# signal; its output is discarded. CI (GITHUB_ACTIONS=true) still fails closed.
+if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
+  if ! gh auth status >/dev/null 2>&1; then
+    printf 'tag-path-dry-run: skipped: no valid local GitHub credentials, CI covers this\n'
+    exit 0
+  fi
+fi
+
 fail() {
   printf 'tag-path-dry-run: %s\n' "$*" >&2
   exit 1
