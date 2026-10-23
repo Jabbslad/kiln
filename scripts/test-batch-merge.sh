@@ -118,6 +118,11 @@ case "$1" in
         fi
         printf 'true\n' >"$root/pr_${n}_merged_after"
         printf '%040d\n' "$n" >"$root/pr_${n}_squash_sha"
+        if [ -f "$root/main_after" ]; then
+          cat "$root/main_after" >"$root/main_sha"
+        else
+          cat "$root/pr_${n}_squash_sha" >"$root/main_sha"
+        fi
         ;;
       comment)
         shift
@@ -417,5 +422,15 @@ assert_dispatch_count 0
 reset_prs
 run_merge '999' true
 grep -q 'not an open non-draft' "$tmp/summary.md" || fail 'missing cut-list PR should be skipped in summary'
+
+reset_prs
+setup_pr 70 7777777777777777777777777777777777777777 2026-01-13T00:00:00Z false ok
+printf '%s\n' "$(printf '%040d' 0 | tr 0 b)" >"$tmp/main_after"
+run_merge
+assert_dispatch_count 0
+moved=$(printf '%040d' 0 | tr 0 b)
+grep -q "release skipped: main moved to ${moved}, the newer build releases" "$tmp/out" \
+  || fail "batch-merge should skip dispatch when main moved: $(cat "$tmp/out")"
+rm -f "$tmp/main_after"
 
 printf 'batch merge tests ok\n'

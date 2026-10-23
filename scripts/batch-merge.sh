@@ -22,6 +22,7 @@ summary_header() {
 }
 
 repo=${GH_REPO:?}
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 workflow_name=${BATCH_BUILD_WORKFLOW:-Build and package}
 workflow_file=${BATCH_BUILD_WORKFLOW_FILE:-build.yml}
 dry_run=0
@@ -264,6 +265,7 @@ order=$(stack_order_numbers "$candidate_json") || fail 'could not order pull req
 summary_line "- **merge order:** $(printf '%s\n' "$order" | tr '\n' ' ' | sed 's/ $//')"
 
 merged_count=0
+last_squash=
 for number in $order; do
   head=$(printf '%s' "$candidate_json" | jq -r --argjson n "$number" '.[] | select(.number == $n) | .headRefOid')
   [ -n "$head" ] || continue
@@ -289,6 +291,7 @@ for number in $order; do
   squash_sha=$(merge_commit_sha "$number")
   merged_count=$((merged_count + 1))
   if [ -n "$squash_sha" ]; then
+    last_squash=$squash_sha
     printf 'merged pull request #%s at %s (squash %s)\n' "$number" "$head" "$squash_sha"
     summary_line "- **merged:** #${number} squash \`${squash_sha}\` (matched head \`${head}\`)"
   else
@@ -307,6 +310,18 @@ if [ "$dry_run" = 1 ]; then
   printf 'dry-run: would dispatch Build and package on main (batch_base_sha=%s)\n' "$main_before"
   summary_line "- **would dispatch:** Build and package on main (\`batch_base_sha=${main_before}\`)"
   exit 0
+fi
+
+if [ -n "$last_squash" ]; then
+  status=0
+  RELEASE_SHA=$last_squash sh "$script_dir/release-tip-gate.sh" || status=$?
+  if [ "$status" -eq 2 ]; then
+    summary_line '- **release skipped:** main moved on; the newer build releases'
+    exit 0
+  fi
+  if [ "$status" -ne 0 ]; then
+    fail 'could not read main tip'
+  fi
 fi
 
 dispatch_build "$main_before" || fail 'workflow dispatch failed after merge'

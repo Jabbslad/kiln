@@ -5,13 +5,13 @@ A green push to `main` can publish the next patch release and deploy it to dark-
 ## Sub-features
 
 - `required` aggregate: fmt, clippy, tests, packaging, dashboard, and docs guards must succeed.
-- `release-plan`: `scripts/plan-release.sh` with `PLAN_RELEASE_APPLY=1` decides `release=true|false` and the next `vX.Y.Z` tag from the push diff.
+- `release-plan`: `scripts/plan-release.sh` with `PLAN_RELEASE_APPLY=1` decides `release=true|false` and the next `vX.Y.Z` tag from the push diff. `scripts/release-tip-gate.sh` runs first. If this commit is no longer the tip of main, the script prints `release skipped: main moved to <sha>, the newer build releases`, sets `release=false`, and exits 0. The newer build is the one that tags.
 - `version-guard`: when `release=true`, stamps artifacts to the planned tag and runs `scripts/check-stamped-clients.sh`.
 - `attest`: build provenance on `dist/*.tar.gz` and `dist/*.zip` for main pushes.
-- `draft-release`: verifies checksums and attestations (`scripts/verify-release-attestations.sh` retries Sigstore verifier init flakes), then `gh release create` for the planned tag.
-- `deploy`: reusable `deploy.yml` with `tag: ${{ needs.release-plan.outputs.tag }}`. One multiplexed SSH connection per job (`deploy/github/ssh-session.sh`, `ControlPath` under `RUNNER_TEMP`); master open retries pre-auth failures only. Staging-dir cleanup and every `ssh`/`scp` run while the master is open; deploy logs `ssh session opened` / `ssh session closed`.
+- `draft-release`: verifies checksums and attestations (`scripts/verify-release-attestations.sh` retries Sigstore verifier init flakes), then `gh release create` for the planned tag. The same tip check runs before publish. A skip sets `published=false` and does not create the GitHub release. The build stays green.
+- `deploy`: reusable `deploy.yml` with `tag: ${{ needs.release-plan.outputs.tag }}` and `sha: ${{ github.sha }}`. The job runs only when publish sets `published=true`. It runs the same tip check and skips SSH when main has moved. A manual Deploy leaves `sha` empty and still installs the chosen tag. One multiplexed SSH connection per job (`deploy/github/ssh-session.sh`, `ControlPath` under `RUNNER_TEMP`); master open retries pre-auth failures only. Staging-dir cleanup and every `ssh`/`scp` run while the master is open; deploy logs `ssh session opened` / `ssh session closed`.
 - Post-checks on the host (`deploy/github/install-remote.sh`): `install.sh --healthcheck`, `kiln-api self-check` (typed dashboard metrics right after restart), `smoke.sh` (with `--require-launch-timing` for the smoke box), `check-dashboard-bundle.sh` against live `kiln-app` HTML, `install-door-caddy.sh` (write `deploy/door.Caddyfile` to the Kiln snippet, validate `/etc/caddy/Caddyfile` in the container, reload), `check-door-ssh.sh`, and a kiln-identity stamp guard.
-- **Batch merge** workflow (`workflow_dispatch` only, Kiln Ops): `scripts/batch-merge.sh` squash-merges ready open pull requests in stack order (optional `prs` cut list, optional `dry_run` plan). Skips drafts, non-green checks, do-not-merge body/labels, `.py` diffs, and conflicts. One **Build and package** dispatch on main follows the batch (`batch_base_sha` for release planning).
+- **Batch merge** workflow (`workflow_dispatch` only, Kiln Ops): `scripts/batch-merge.sh` squash-merges ready open pull requests in stack order (optional `prs` cut list, optional `dry_run` plan). Skips drafts, non-green checks, do-not-merge body/labels, `.py` diffs, and conflicts. One **Build and package** dispatch on main follows the batch (`batch_base_sha` for release planning). Before that dispatch it runs the same tip check on the last squash. If main has moved, it skips the dispatch and the newer build releases. Hand merges do not use this workflow. The tip check on each main build is what keeps a hand-merged batch to one release.
 
 ## How to get to it (operator POV)
 
@@ -34,6 +34,7 @@ Rehearse without publishing:
 
 ```sh
 sh scripts/test-plan-release.sh
+sh scripts/test-release-tip-gate.sh
 sh scripts/test-tag-path-dry-run.sh
 sh scripts/test-batch-merge.sh
 sh scripts/test-tag-path-pr-stamp-order.sh
@@ -50,6 +51,7 @@ The tag-path dry run on pull requests stamps packages to a `-dryrun` tag locally
 ## Gotchas
 
 - Deploy never runs on pull requests; only `workflow_dispatch`, `workflow_call` from a successful main release, or tag-shaped refs reach `deploy/github/deploy.sh`.
+- A main build that is no longer the tip of main skips the tag, the GitHub release, and deploy, and the workflow stays green. The build whose commit is still the tip releases, so a batch of merges does not end with nothing shipped. Manual Deploy does not use that check.
 - Parallel `scp` on separate connections used to compete with sshd `MaxStartups`; deploy and diagnose now reuse one control socket and upload serially.
 - `release-plan` needs `contents: write` to create the git tag before downstream jobs read `needs.release-plan.outputs.tag`.
 - Skipping `required` or any package job blocks `release-plan`, so a half-green main push does not publish.

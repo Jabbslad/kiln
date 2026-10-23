@@ -37,6 +37,7 @@ cargo test -p kiln-server --test dashboard_self_check --locked
 sh scripts/test-releasable.sh
 sh scripts/test-next-release-tag.sh
 sh scripts/test-plan-release.sh
+sh scripts/test-release-tip-gate.sh
 sh scripts/test-check-stamped-clients.sh
 sh scripts/test-release-budget.sh
 sh scripts/test-verify-release-attestations.sh
