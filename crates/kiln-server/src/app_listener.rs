@@ -445,6 +445,7 @@ async fn open_terminal(app: Arc<App>, peer: SocketAddr, id: String, request: Req
     let identity = match app.auth.central_identity(&jwt).await {
         Ok(identity) if identity.scope == Scope::Operate => identity,
         Ok(_) => {
+            let _ = crate::auth::deny("insufficient_scope");
             audit_terminal(&app, "insufficient_scope", &id);
             return deny(
                 StatusCode::FORBIDDEN,

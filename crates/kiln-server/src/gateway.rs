@@ -108,6 +108,7 @@ async fn authenticate(
         )
     })?;
     if required == Scope::Operate && grant.scope != Scope::Operate {
+        let _ = crate::auth::deny("insufficient_scope");
         return Err(Failure::new(
             StatusCode::FORBIDDEN,
             "insufficient_scope",
@@ -131,6 +132,7 @@ async fn ssh_tunnel(
     let cancel = match state.auth.central_identity(token).await {
         Ok(identity) => {
             if identity.scope != Scope::Operate {
+                let _ = crate::auth::deny("insufficient_scope");
                 return Err(Failure::new(
                     StatusCode::FORBIDDEN,
                     "insufficient_scope",

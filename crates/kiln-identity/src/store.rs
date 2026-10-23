@@ -11,6 +11,7 @@ use std::{
 #[derive(Clone)]
 pub struct Store {
     pub(crate) db: Arc<Mutex<Connection>>,
+    audit: crate::audit::AuditLog,
 }
 pub(crate) fn hash(s: &str) -> Vec<u8> {
     Sha256::digest(s.as_bytes()).to_vec()
@@ -123,6 +124,7 @@ impl Store {
         }
         Ok(Self {
             db: Arc::new(Mutex::new(c)),
+            audit: crate::audit::AuditLog::open(&crate::audit::signin_audit_path(path)),
         })
     }
     pub fn open_memory() -> anyhow::Result<Self> {
@@ -132,7 +134,17 @@ impl Store {
         c.pragma_update(None, "user_version", 3)?;
         Ok(Self {
             db: Arc::new(Mutex::new(c)),
+            audit: crate::audit::AuditLog::open_temp(),
         })
+    }
+    pub fn flush_signin_audit(&self) {
+        self.audit.flush();
+    }
+    pub fn signin_audit_failures(&self) -> u64 {
+        self.audit.failures()
+    }
+    pub(crate) fn audit(&self) -> &crate::audit::AuditLog {
+        &self.audit
     }
     pub fn create_device(
         &self,
