@@ -116,6 +116,7 @@ jobs:
           cargo xtask test-ci-docs-only
           cargo xtask test-ci-job-paths
           sh scripts/test-dashboard-npm-ci.sh
+          sh scripts/test-playwright-ci-cache.sh
           cargo xtask test-release-version
           cargo xtask test-release
           cargo xtask test-install
@@ -293,6 +294,7 @@ jobs:
           cargo xtask test-ci-docs-only
           cargo xtask test-ci-job-paths
           sh scripts/test-dashboard-npm-ci.sh
+          sh scripts/test-playwright-ci-cache.sh
           cargo xtask test-reuse-release
           cargo xtask test-merge-queue-tested
           sh scripts/test-reuse-proved-server-package.sh
@@ -696,7 +698,30 @@ jobs:
           GH_REPO: ${{ github.repository }}
           KILN_RELEASE_NOTES_PUBLISHED_BASE: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
         run: sh scripts/check-embedded-release-notes.sh "$VERSION"
+      - name: Resolve Playwright version
+        id: playwright-version
+        if: >-
+          steps.queue.outputs.skip_tests != 'true' &&
+          ((github.event_name != 'pull_request' && github.event_name != 'merge_group') ||
+            needs.changes.outputs.web == 'true')
+        run: |
+          set -eu
+          version=$(
+            awk '
+              index($0, "\"node_modules/playwright\":") { found = 1; next }
+              found && index($0, "\"version\":") {
+                line = $0
+                sub(/.*"version": "/, "", line)
+                sub(/".*/, "", line)
+                print line
+                exit
+              }
+            ' web/package-lock.json
+          )
+          printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: playwright-browsers
         if: >-
           steps.queue.outputs.skip_tests != 'true' &&
           !startsWith(github.ref, 'refs/tags/v') &&
@@ -704,16 +729,31 @@ jobs:
             needs.changes.outputs.web == 'true')
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('web/package-lock.json') }}
-      - name: Browser tests
+          key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
+      - name: Install Playwright
         if: >-
           steps.queue.outputs.skip_tests != 'true' &&
           ((github.event_name != 'pull_request' && github.event_name != 'merge_group') ||
             needs.changes.outputs.web == 'true')
         working-directory: web
         run: |
-          npx playwright install --with-deps chromium
-          npm run test:browser
+          set -eu
+          if [ "${{ steps.playwright-browsers.outputs.cache-hit }}" = "true" ]; then
+            set -- npx playwright install-deps chromium
+          else
+            set -- npx playwright install --with-deps chromium
+          fi
+          if ! timeout 300 "$@"; then
+            sleep 2
+            timeout 300 "$@"
+          fi
+      - name: Browser tests
+        if: >-
+          steps.queue.outputs.skip_tests != 'true' &&
+          ((github.event_name != 'pull_request' && github.event_name != 'merge_group') ||
+            needs.changes.outputs.web == 'true')
+        working-directory: web
+        run: npm run test:browser
       - name: Proof smoke
         if: >-
           steps.queue.outputs.skip_tests != 'true' &&
