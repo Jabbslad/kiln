@@ -159,9 +159,9 @@ if grep -q 'check_bootstrap_pins.py' "$workflow" "$build"; then
     fail 'workflow still calls python'
 fi
 lint=$root/scripts/server-check-test-and-lint.sh
-n=$(grep -h '^[[:space:]]*sh scripts/test-bootstrap-pins.sh$' "$build" "$lint" | wc -l | tr -d ' ')
+n=$(grep -ch '^[[:space:]]*sh scripts/test-bootstrap-pins.sh$' "$build" "$lint" 2>/dev/null | awk '{s+=$1} END {print s+0}')
 [ "$n" -eq 2 ] || fail "build runs the pin test $n times"
-n=$(grep -h '^[[:space:]]*sh scripts/test-caddy-endings.sh$' "$build" "$lint" | wc -l | tr -d ' ')
+n=$(grep -ch '^[[:space:]]*sh scripts/test-caddy-endings.sh$' "$build" "$lint" 2>/dev/null | awk '{s+=$1} END {print s+0}')
 [ "$n" -eq 2 ] || fail "build runs the ending test $n times"
 
 printf '%s\n' 'ok'
