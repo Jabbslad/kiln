@@ -1,11 +1,11 @@
 # Kiln feature map
 
-User-facing surfaces on current `main`. Each file is one journey. KVM means a real Firecracker guest; the dashboard preview and the installer harness do not boot one. The public client ships for Linux and macOS only; Windows builds were dropped (#110).
+User-facing surfaces on current `main`. Each file is one journey. KVM means a real Firecracker guest; the dashboard dev server and the installer harness do not boot one. The public client ships for Linux and macOS only; Windows builds were dropped (#110).
 
 | Feature | File | What the user does | KVM |
 | --- | --- | --- | --- |
 | PR proof capture | [proof.md](proof.md) | Run `scripts/proof.sh` before/after UI or CLI output changes and attach PNGs or video to the PR | No |
-| Dashboard | [dashboard.md](dashboard.md) | Preview inventory, sign in for live mutations and exec, open a shell session on a running box, and read `GET /api/v1/dashboard` | No for preview. Live mutations need an enrolled host. A live shell needs a running box |
+| Dashboard | [dashboard.md](dashboard.md) | Open the console, sign in for live mutations and exec, open a shell session on a running box, and read `GET /api/v1/dashboard` | No for the dev server. Live mutations need an enrolled host. A live shell needs a running box |
 | Auto-release | [auto-release.md](auto-release.md) | Follow a green main push through release-plan, publish, and dark-forge deploy | No |
 | Boxes | [boxes.md](boxes.md) | Create, list, inspect, pause, resume, stop, start, delete | Yes for a guest |
 | Exec | [exec.md](exec.md) | Run a command in a box and read its stdout and exit code | Yes |

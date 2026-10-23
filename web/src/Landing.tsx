@@ -117,15 +117,11 @@ export default function Landing() {
         </section>
         <section className="console-feature" aria-labelledby="console-title">
           <div>
-            <p className="eyebrow">The console / design preview</p>
+            <p className="eyebrow">The console</p>
             <h2 id="console-title">Keep the whole host in view.</h2>
             <p>
-              Explore box inventory, templates, and operation details in a read-only design preview.
-              Browser login and live controls are not integrated yet.
+              The console lists boxes, templates, and operations reported by your enrolled host.
             </p>
-            <Link className="button" to="/boxes?preview=1">
-              Explore design preview <ArrowUpRight size={14} />
-            </Link>
           </div>
           <div
             className="console-figure"

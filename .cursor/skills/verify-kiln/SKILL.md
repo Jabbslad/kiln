@@ -1,6 +1,6 @@
 ---
 name: verify-kiln
-description: Drive Kiln (self-hosted Linux microVMs) the way a user does and keep evidence. Covers kiln-runtime, the kiln laptop client, browser login, the installer, and the web dashboard (preview, a live operate session, or a box terminal session). Use when checking a Kiln change against a real checkout.
+description: Drive Kiln (self-hosted Linux microVMs) the way a user does and keep evidence. Covers kiln-runtime, the kiln laptop client, browser login, the installer, and the web dashboard (a live operate session, or a box terminal session). Use when checking a Kiln change against a real checkout.
 ---
 
 # Verify Kiln
@@ -14,7 +14,7 @@ Surfaces:
 - `kiln login` against the identity service. The client default issuer is `https://dark-forge.dev`.
 - The public door in `features/public-door.md`. A laptop dials `https://cli.dark-forge.dev` on port 443 after identity approval. The door checks the token before it dials loopback `kiln-api`. tcp/8443 is closed.
 - `deploy/bootstrap/install.sh` for client and server install.
-- The dashboard in `web/`. It is a static React app. Preview mode does not call a VM API. `GET /api/v1/dashboard` is served by `kiln-host` and by loopback `kiln-api`. `kiln-door` forwards it for a read-scope owner JWT. The public name is `https://cli.dark-forge.dev` on port 443. A running box also has a same-origin terminal session on `kiln-app`. The drive is in `features/dashboard.md`.
+- The dashboard in `web/`. It is a static React app. `GET /api/v1/dashboard` is served by `kiln-host` and by loopback `kiln-api`. `kiln-door` forwards it for a read-scope owner JWT. The public name is `https://cli.dark-forge.dev` on port 443. A running box also has a same-origin terminal session on `kiln-app`. The drive is in `features/dashboard.md`.
 
 Workspace version is `0.4.17` (`Cargo.toml`).
 
@@ -26,7 +26,7 @@ From the repository root.
 
 ### Dashboard
 
-Preview needs no KVM and no Rust build. Node 22.12+ and npm. The live GET needs `kiln-host` and `kiln-api`, as in `features/dashboard.md`.
+The dev server needs no KVM and no Rust build. Node 22.12+ and npm. The live GET needs `kiln-host` and `kiln-api`, as in `features/dashboard.md`.
 
 ```sh
 cd web
@@ -35,7 +35,7 @@ npx playwright install chromium
 tmux new-session -d -s kiln-dash -c "$PWD" -- npm run dev -- --host 127.0.0.1 --port 4173 --strictPort
 ```
 
-Record the pane pid (`tmux list-panes -t kiln-dash -F '#{pane_pid}'`). Ready means `http://127.0.0.1:4173/boxes?preview=1` renders the heading `Boxes` and the label `Design preview`. A listening port is not enough; run Doctor. That check is the design preview. `GET /api/v1/dashboard` is a separate drive in `features/dashboard.md`.
+Record the pane pid (`tmux list-panes -t kiln-dash -F '#{pane_pid}'`). Ready means `http://127.0.0.1:4173/` renders the landing heading and `http://127.0.0.1:4173/boxes` renders the console. A listening port is not enough; run Doctor. `GET /api/v1/dashboard` is a separate drive in `features/dashboard.md`.
 
 ### Host runtime
 
@@ -60,11 +60,11 @@ Ready means Doctor exits 0 and prints `"development_ready": true`. `kiln-runtime
 
 ### Laptop API, login, installer
 
-Those launches are in `features/private-ca.md`, `features/login.md`, and `features/installer.md`. The design preview and a runtime drive do not start them. The live `GET /api/v1/dashboard` curl uses the loopback `kiln-api` from `features/private-ca.md`.
+Those launches are in `features/private-ca.md`, `features/login.md`, and `features/installer.md`. A dashboard drive and a runtime drive do not start them. The live `GET /api/v1/dashboard` curl uses the loopback `kiln-api` from `features/private-ca.md`.
 
 ## Doctor
 
-Dashboard, after Launch. This opens the preview and checks the rendered page. It does not click through the inventory.
+Dashboard, after Launch. This opens the landing page and the console. It does not click through the inventory.
 
 ```sh
 cd web
@@ -72,21 +72,20 @@ node --input-type=module <<'EOF'
 import { chromium } from '@playwright/test'
 const browser = await chromium.launch()
 const page = await browser.newPage()
-const api = []
-page.on('request', (request) => {
-  if (request.url().includes('/api/')) api.push(request.url())
-})
-await page.goto('http://127.0.0.1:4173/boxes?preview=1')
-const title = await page.title()
-const heading = await page.getByRole('heading', { name: 'Boxes' }).isVisible()
-const preview = await page.getByText('Design preview', { exact: true }).isVisible()
-console.log(JSON.stringify({ title, heading, preview, api }))
+await page.goto('http://127.0.0.1:4173/')
+const landingTitle = await page.title()
+const heading = await page.getByRole('heading', { name: /Your machine/ }).isVisible()
+await page.goto('http://127.0.0.1:4173/boxes')
+const consoleTitle = await page.title()
+const consoleHeading = await page.getByRole('heading', { name: 'Connect your control plane' }).isVisible()
+const preview = await page.getByText('Design preview', { exact: true }).count()
+console.log(JSON.stringify({ landingTitle, heading, consoleTitle, consoleHeading, preview }))
 await browser.close()
-if (title !== 'Boxes — kiln' || !heading || !preview || api.length !== 0) process.exit(1)
+if (landingTitle !== 'kiln — Linux boxes on your terms' || consoleTitle !== 'Boxes — kiln' || !heading || !consoleHeading || preview !== 0) process.exit(1)
 EOF
 ```
 
-Worth driving when that process exits 0. Preview must make no `/api/` request. If the heading is missing, stop.
+Worth driving when that process exits 0. If either heading is missing, stop.
 
 Runtime:
 
@@ -113,7 +112,7 @@ export VERIFY_EVIDENCE="${VERIFY_EVIDENCE:-/tmp/verify-kiln-evidence}"
 mkdir -p "$VERIFY_EVIDENCE"
 ```
 
-Cleanup must not delete this directory. For each command, save stdout, stderr, and the exit code. Save `tmux capture-pane -p` as well. For the dashboard, set `KILN_SCREENSHOT_DIR` to a directory inside `$VERIFY_EVIDENCE` before `npm run test:browser`. Screenshots are the rendered preview, not a running VM.
+Cleanup must not delete this directory. For each command, save stdout, stderr, and the exit code. Save `tmux capture-pane -p` as well. For the dashboard, set `KILN_SCREENSHOT_DIR` to a directory inside `$VERIFY_EVIDENCE` before `npm run test:browser`. Screenshots are the rendered dashboard, not a running VM.
 
 A box drive is done when create JSON has `"state": "running"`, exec stdout is the bytes you asked the guest to print, list contains that id, delete reports it, and a later list has no boxes. Then `kill -0` on the recorded pid must fail.
 
