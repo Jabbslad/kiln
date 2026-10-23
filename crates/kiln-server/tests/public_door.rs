@@ -29,18 +29,26 @@ fn sockets(port: u16) -> usize {
 }
 
 fn token(key: &EncodingKey, sub: &str, audience: &str) -> String {
+    token_with_tenant(key, sub, "tenant-a", audience)
+}
+
+fn token_with_tenant(key: &EncodingKey, sub: &str, tenant_id: &str, audience: &str) -> String {
     let now = jsonwebtoken::get_current_timestamp();
     let claims = ServerClaims {
         iss: "https://identity.example.test".into(),
         sub: sub.into(),
         aud: audience.into(),
-        tenant_id: Some("tenant-a".into()),
+        tenant_id: Some(tenant_id.into()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-1".into(),
         scope: Scope::Operate,
-        role: Some(Role::Owner),
+        role: Some(if sub == "owner-a" {
+            Role::Owner
+        } else {
+            Role::Member
+        }),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -167,10 +175,10 @@ async fn unauthenticated_and_wrong_account_requests_do_not_reach_the_api() {
         ("missing", None),
         ("admin", Some(format!("Bearer {}", "ab".repeat(32)))),
         (
-            "wrong-account",
+            "wrong-tenant",
             Some(format!(
                 "Bearer {}",
-                token(&key, "owner-b", "kiln:server:server-b")
+                token_with_tenant(&key, "member-z", "tenant-other", "kiln:server:server-b")
             )),
         ),
         (
