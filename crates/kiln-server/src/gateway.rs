@@ -123,14 +123,36 @@ async fn ssh_tunnel(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    let _grant = authenticate(
-        &state,
-        request.headers(),
-        request.method(),
-        request.uri(),
-        Scope::Operate,
-    )
-    .await?;
+    let token = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .unwrap_or("");
+    let cancel = match state.auth.central_identity(token).await {
+        Ok(identity) => {
+            if identity.scope != Scope::Operate {
+                let _ = crate::auth::deny("insufficient_scope");
+                return Err(Failure::new(
+                    StatusCode::FORBIDDEN,
+                    "insufficient_scope",
+                    "An operate credential is required.",
+                ));
+            }
+            state.auth.track_stream(&identity)
+        }
+        Err(_) if state.auth.authenticate(token).await.is_ok() => {
+            crate::revocation::StreamCancel::new()
+        }
+        Err(_) => {
+            return Err(Failure::new(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "A valid credential is required.",
+            ));
+        }
+    };
+    validate_uri_query(request.method(), request.uri())?;
     let key = crate::ssh::admission(&request)?;
     let permit = state
         .sessions
@@ -158,7 +180,7 @@ async fn ssh_tunnel(
         return Err(upstream_error());
     }
     let upstream = upstream.upgrade().await.map_err(|_| upstream_error())?;
-    Ok(crate::ssh::upgrade(request, upstream, permit))
+    Ok(crate::ssh::upgrade(request, upstream, permit, cancel))
 }
 
 async fn dashboard(

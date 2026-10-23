@@ -45,6 +45,7 @@ Do not run this against `https://dark-forge.dev` from an unattended agent. Appro
 - First-use interactive VM commands can start login. `--json`, SSH proxy, and a missing explicit profile do not open a browser.
 - `cargo xtask central-login` checks an already approved profile. It is not a substitute for this journey.
 - Device requests last ten minutes. The client poll interval starts at the value the server returns (5 seconds in the identity store).
+- Enrolled servers persist a `tenant_id` from identity. Central JWTs carry the same claim; `kiln-server` rejects tokens whose `tenant_id` does not match the enrollment (`crates/kiln-server/src/auth.rs`, `crates/kiln-server/tests/central_auth.rs`). Servers poll `POST /v1/revocations` with that tenant id so credential and account revocations apply without waiting for JWT expiry (`crates/kiln-server/src/revocation.rs`).
 
 ## Sign-in audit
 

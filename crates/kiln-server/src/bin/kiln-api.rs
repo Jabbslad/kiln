@@ -24,6 +24,8 @@ struct Args {
     enrollment_file: PathBuf,
     #[arg(long, default_value = "/var/lib/kiln-api/jwks.json")]
     jwks_cache: PathBuf,
+    #[arg(long, default_value = "/etc/kiln/login.token")]
+    login_token_file: PathBuf,
 }
 
 #[derive(Subcommand)]
@@ -51,6 +53,8 @@ enum Command {
         dashboard_root: Option<PathBuf>,
         #[arg(long, default_value = "/var/lib/kiln-api/dashboard-session")]
         session_dir: PathBuf,
+        #[arg(long, default_value = "/etc/kiln/login.token")]
+        login_token_file: PathBuf,
     },
     /// Create /etc/kiln/login.token when that path is absent.
     #[command(hide = true)]
@@ -117,6 +121,7 @@ async fn main() -> Result<()> {
                 jwks_cache,
                 dashboard_root,
                 session_dir,
+                login_token_file,
             } => {
                 let enrollment = kiln_server::auth::Enrollment::load(&enrollment_file)?
                     .context("server is not enrolled")?;
@@ -124,7 +129,8 @@ async fn main() -> Result<()> {
                     enrollment.clone(),
                     jwks_cache,
                     Some(enrollment_file.clone()),
-                )?;
+                )?
+                .attach_login_secret_file(&login_token_file)?;
                 let ca = std::fs::read(&upstream_ca).context("upstream CA required")?;
                 kiln_server::door::serve(
                     listen,
@@ -201,7 +207,8 @@ async fn main() -> Result<()> {
             args.enrollment_file,
         )?,
         None => kiln_server::auth::Authenticator::new(&token, None)?,
-    };
+    }
+    .attach_login_secret_file(&args.login_token_file)?;
     let router = kiln_server::gateway::router_with_workspace(
         &args.host_socket.context("host socket required")?,
         auth,

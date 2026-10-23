@@ -355,7 +355,8 @@ pub async fn run(options: Options) -> Result<()> {
         enrollment,
         options.jwks_cache,
         Some(options.enrollment_file),
-    )?;
+    )?
+    .attach_login_secret_file(Path::new("/etc/kiln/login.token"))?;
     let ca = fs::read(&options.upstream_ca).context("upstream CA required")?;
     let login_secret = read_login_secret(Path::new("/etc/kiln/login.token"))?;
     let router = router_with(
@@ -441,10 +442,8 @@ async fn open_terminal(app: Arc<App>, peer: SocketAddr, id: String, request: Req
         audit_terminal(&app, "unauthorized", &id);
         return unauthorized();
     };
-    match app.auth.authenticate_central(&jwt).await {
-        Ok(grant) if grant.scope == Scope::Operate => {
-            let _caller = grant.caller;
-        }
+    let identity = match app.auth.central_identity(&jwt).await {
+        Ok(identity) if identity.scope == Scope::Operate => identity,
         Ok(_) => {
             let _ = crate::auth::deny("insufficient_scope");
             audit_terminal(&app, "insufficient_scope", &id);
@@ -458,7 +457,8 @@ async fn open_terminal(app: Arc<App>, peer: SocketAddr, id: String, request: Req
             audit_terminal(&app, "unauthorized", &id);
             return unauthorized();
         }
-    }
+    };
+    let cancel = app.auth.track_stream(&identity);
     if request.uri().query().is_some() {
         audit_terminal(&app, "rejected", &id);
         return deny(
@@ -538,6 +538,7 @@ async fn open_terminal(app: Arc<App>, peer: SocketAddr, id: String, request: Req
                 session,
                 crate::terminal::IDLE,
                 crate::terminal::MAX_SESSION,
+                cancel,
             )
         })
 }

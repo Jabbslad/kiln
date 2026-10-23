@@ -466,16 +466,16 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
     let box_id = ssh_box_id(request.uri().path()).unwrap_or("").to_owned();
     let bearer = ssh_bearer(&request);
     let addr = ssh_audit_addr(&request);
-    let grant = match door.auth.authenticate_central(bearer).await {
-        Ok(grant) => grant,
+    let identity = match door.auth.central_identity(bearer).await {
+        Ok(identity) => identity,
         Err(_) => {
             door.ssh_audit
                 .record("unauthorized", &box_id, "anonymous", addr);
             return unauthorized();
         }
     };
-    let caller = grant.caller.sub.clone();
-    if grant.scope != Scope::Operate {
+    let caller = identity.sub.clone();
+    if identity.scope != Scope::Operate {
         let _ = crate::auth::deny("insufficient_scope");
         door.ssh_audit
             .record("insufficient_scope", &box_id, &caller, addr);
@@ -565,7 +565,8 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
         }
     };
     door.ssh_audit.record("upgraded", &box_id, &caller, addr);
-    crate::ssh::upgrade(request, upstream, permit)
+    let cancel = door.auth.track_stream(&identity);
+    crate::ssh::upgrade(request, upstream, permit, cancel)
 }
 
 async fn ssh_refusal(upstream: reqwest::Response) -> Response {

@@ -10,10 +10,13 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
+
+use crate::revocation::{RevocationWatch, StreamCancel};
 
 const DENIAL_LIMIT: usize = 256;
 static DENIALS: StdMutex<Vec<&'static str>> = StdMutex::new(Vec::new());
@@ -171,6 +174,14 @@ impl Enrollment {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CentralIdentity {
+    pub scope: Scope,
+    pub sub: String,
+    pub credential_id: String,
+    pub role: Role,
+}
+
 fn keys(value: &Value) -> Result<JwkSet> {
     let entries = value
         .get("keys")
@@ -299,6 +310,14 @@ pub fn verify_claims(
     Ok(c)
 }
 
+fn role_from_claims(c: &ServerClaims, enrollment: &Enrollment) -> Role {
+    c.role.unwrap_or(if c.sub == enrollment.owner_id {
+        Role::Owner
+    } else {
+        Role::Member
+    })
+}
+
 fn auth_grant_from_claims(c: &ServerClaims, enrollment: &Enrollment) -> AuthGrant {
     let sub = c.sub.clone();
     let tenant_id = c
@@ -346,6 +365,7 @@ pub struct Authenticator {
     central: Option<CentralAuth>,
     cache: Mutex<Cache>,
     http: reqwest::Client,
+    revocations: Option<Arc<RevocationWatch>>,
 }
 
 impl Authenticator {
@@ -410,6 +430,7 @@ impl Authenticator {
                 .connect_timeout(Duration::from_secs(3))
                 .timeout(Duration::from_secs(10))
                 .build()?,
+            revocations: None,
         })
     }
 
@@ -442,6 +463,30 @@ impl Authenticator {
         )?;
         auth.admin_hash = None;
         Ok(auth)
+    }
+
+    pub fn with_login_secret(mut self, login_secret: String) -> Result<Self> {
+        let enrollment = self
+            .central
+            .as_ref()
+            .context("revocation polling requires central enrollment")?
+            .enrollment
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
+        self.revocations = Some(RevocationWatch::new(
+            enrollment,
+            login_secret,
+            self.http.clone(),
+        ));
+        Ok(self)
+    }
+
+    pub fn attach_login_secret_file(mut self, path: &Path) -> Result<Self> {
+        if let Some(secret) = crate::revocation::read_login_secret(path)? {
+            self = self.with_login_secret(secret)?;
+        }
+        Ok(self)
     }
 
     pub async fn authenticate(&self, bearer: &str) -> Result<AuthGrant> {
@@ -485,6 +530,36 @@ impl Authenticator {
         self.central_jwt(bearer).await
     }
 
+    pub async fn central_identity(&self, bearer: &str) -> Result<CentralIdentity> {
+        ensure!(bearer.len() <= 8192, "invalid token");
+        let enrollment = self
+            .central
+            .as_ref()
+            .context("central authentication not enrolled")?
+            .enrollment
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
+        let claims = self.central_claims(bearer).await?;
+        let role = role_from_claims(&claims, &enrollment);
+        if let Some(watch) = &self.revocations {
+            watch.allow(&claims.sub, &claims.credential_id, role)?;
+        }
+        Ok(CentralIdentity {
+            scope: claims.scope,
+            sub: claims.sub,
+            credential_id: claims.credential_id,
+            role,
+        })
+    }
+
+    pub fn track_stream(&self, identity: &CentralIdentity) -> StreamCancel {
+        self.revocations
+            .as_ref()
+            .map(|watch| watch.track(&identity.sub, &identity.credential_id))
+            .unwrap_or_default()
+    }
+
     /// JWT `sub` when the bearer is a valid central token; otherwise `anonymous`.
     pub async fn central_caller(&self, bearer: &str) -> String {
         self.central_subject(bearer)
@@ -509,6 +584,10 @@ impl Authenticator {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone();
+        let role = role_from_claims(&claims, &enrollment);
+        if let Some(watch) = &self.revocations {
+            watch.allow(&claims.sub, &claims.credential_id, role)?;
+        }
         Ok(auth_grant_from_claims(&claims, &enrollment))
     }
 

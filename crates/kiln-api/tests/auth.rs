@@ -1,4 +1,4 @@
-use kiln_api::auth::{Role, Scope, ServerClaims};
+use kiln_api::auth::{RevocationQuery, RevocationSet, Role, Scope, ServerClaims};
 use serde_json::json;
 
 #[test]
@@ -58,4 +58,21 @@ fn server_claims_require_every_authority_and_time_field() {
     let mut unknown = value;
     unknown["admin"] = json!(true);
     assert!(serde_json::from_value::<ServerClaims>(unknown).is_err());
+}
+
+#[test]
+fn revocation_wire_types_round_trip() {
+    let query = RevocationQuery {
+        tenant_id: "ten_a".into(),
+    };
+    let set = RevocationSet {
+        accounts: vec!["acct_1".into()],
+        credentials: vec!["dev_1".into()],
+    };
+    let query_back: RevocationQuery =
+        serde_json::from_value(serde_json::to_value(&query).unwrap()).unwrap();
+    assert_eq!(query_back.tenant_id, "ten_a");
+    let set_back: RevocationSet =
+        serde_json::from_value(serde_json::to_value(&set).unwrap()).unwrap();
+    assert_eq!(set_back, set);
 }
