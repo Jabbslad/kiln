@@ -1,5 +1,6 @@
 //! Legacy `/etc/kiln/identity.json` without `tenant_id` must accept owner app tokens
-//! that carry the v3 tenant UUID (as `issue_app` stamps), and still refuse other tenants.
+//! that carry the v3 tenant UUID (as `issue_app` stamps) and pre-v3 owner tokens that
+//! omit `tenant_id`, and still refuse other tenants and non-owner subjects.
 
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use kiln_api::auth::{Role, Scope, ServerClaims};
@@ -46,7 +47,7 @@ fn issue_app_token(
     key: &EncodingKey,
     enrollment: &Enrollment,
     sub: &str,
-    tenant_id: &str,
+    tenant_id: Option<&str>,
     role: Role,
     scope: Scope,
 ) -> String {
@@ -55,7 +56,7 @@ fn issue_app_token(
         iss: enrollment.issuer.clone(),
         sub: sub.into(),
         aud: format!("kiln:server:{}", enrollment.server_id),
-        tenant_id: Some(tenant_id.into()),
+        tenant_id: tenant_id.map(str::to_owned),
         iat: now,
         nbf: now,
         exp: now + 300,
@@ -75,7 +76,7 @@ async fn legacy_enrollment_accepts_owner_app_token_with_v3_tenant_id() {
         &key,
         &enrollment,
         "acct_owner",
-        "ten_production_uuid",
+        Some("ten_production_uuid"),
         Role::Owner,
         Scope::Operate,
     );
@@ -115,7 +116,7 @@ async fn legacy_enrollment_refuses_wrong_tenant_after_owner_bind() {
         &key,
         &enrollment,
         "acct_owner",
-        "ten_bound",
+        Some("ten_bound"),
         Role::Owner,
         Scope::Operate,
     );
@@ -124,7 +125,7 @@ async fn legacy_enrollment_refuses_wrong_tenant_after_owner_bind() {
         &key,
         &enrollment,
         "acct_owner",
-        "ten_other",
+        Some("ten_other"),
         Role::Owner,
         Scope::Operate,
     );
@@ -138,9 +139,41 @@ async fn legacy_enrollment_refuses_member_token_for_another_tenant() {
         &key,
         &enrollment,
         "acct_member",
-        "ten_other_tenant",
+        Some("ten_other_tenant"),
         Role::Member,
         Scope::Read,
+    );
+    assert!(auth.authenticate_central(&token).await.is_err());
+}
+
+#[tokio::test]
+async fn legacy_enrollment_accepts_pre_v3_owner_app_token_without_tenant_id() {
+    let (auth, key, enrollment) = fixture();
+    let token = issue_app_token(
+        &key,
+        &enrollment,
+        "acct_owner",
+        None,
+        Role::Owner,
+        Scope::Operate,
+    );
+    let grant = auth.authenticate_central(&token).await.unwrap();
+    assert_eq!(grant.caller.sub, "acct_owner");
+    assert_eq!(grant.caller.tenant_id, "acct_owner");
+    assert_eq!(grant.caller.role, Role::Owner);
+    assert!(matches!(grant.scope, Scope::Operate));
+}
+
+#[tokio::test]
+async fn legacy_enrollment_refuses_non_owner_token_without_tenant_id() {
+    let (auth, key, enrollment) = fixture();
+    let token = issue_app_token(
+        &key,
+        &enrollment,
+        "acct_other",
+        None,
+        Role::Owner,
+        Scope::Operate,
     );
     assert!(auth.authenticate_central(&token).await.is_err());
 }

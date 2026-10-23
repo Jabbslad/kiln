@@ -91,7 +91,7 @@ impl Enrollment {
             .tenant_id
             .as_deref()
             .filter(|id| !id.is_empty())
-            .context("invalid token authority or lifetime")?;
+            .unwrap_or(claims.sub.as_str());
         ensure!(
             !tenant.is_empty() && tenant.len() <= 128,
             "invalid token authority or lifetime"
