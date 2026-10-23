@@ -8,6 +8,7 @@ cd "$root"
 cargo xtask test-ci-docs-only
 cargo xtask test-ci-job-paths
 sh scripts/test-dashboard-npm-ci.sh
+sh scripts/test-playwright-ci-cache.sh
 cargo xtask test-release-version
 cargo xtask test-release
 cargo xtask test-install
