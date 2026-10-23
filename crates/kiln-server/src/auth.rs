@@ -1,7 +1,7 @@
 //! Local enrollment remains the authority for issuer, owner and server audience.
 use anyhow::{Context, Result, ensure};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
-use kiln_api::auth::{Scope, ServerClaims};
+use kiln_api::auth::{AuthGrant, Caller, Role, Scope, ServerClaims};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -73,6 +73,8 @@ pub struct Enrollment {
     pub issuer: String,
     pub owner_id: String,
     pub server_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
 }
 
 impl Enrollment {
@@ -96,7 +98,18 @@ impl Enrollment {
                 && self.server_id.len() <= 128,
             "invalid enrollment identity"
         );
+        if let Some(tenant_id) = &self.tenant_id {
+            ensure!(
+                !tenant_id.is_empty() && tenant_id.len() <= 128,
+                "invalid enrollment tenant"
+            );
+        }
         Ok(())
+    }
+
+    /// Tenant id bound in `/etc/kiln/identity.json` for JWT verification.
+    pub fn bound_tenant_id(&self) -> Option<&str> {
+        self.tenant_id.as_deref().filter(|id| !id.is_empty())
     }
 
     pub fn load(path: &Path) -> Result<Option<Self>> {
@@ -113,6 +126,48 @@ impl Enrollment {
         let value: Self = serde_json::from_slice(&fs::read(path)?)?;
         value.validate()?;
         Ok(Some(value))
+    }
+
+    fn bind_owner_tenant_from_claim(&mut self, claims: &ServerClaims) -> Result<()> {
+        ensure!(
+            self.bound_tenant_id().is_none(),
+            "enrollment tenant already bound"
+        );
+        ensure!(
+            claims.sub == self.owner_id,
+            "invalid token authority or lifetime"
+        );
+        let role = claims.role.unwrap_or(Role::Owner);
+        ensure!(role == Role::Owner, "invalid token authority or lifetime");
+        let tenant = claims
+            .tenant_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .unwrap_or(claims.sub.as_str());
+        ensure!(
+            !tenant.is_empty() && tenant.len() <= 128,
+            "invalid token authority or lifetime"
+        );
+        self.tenant_id = Some(tenant.to_owned());
+        Ok(())
+    }
+
+    pub fn persist(&self, path: &Path) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        self.validate()?;
+        let meta = fs::symlink_metadata(path)?;
+        ensure!(
+            meta.is_file() && meta.uid() == 0 && meta.mode() & 0o027 == 0 && meta.len() < 8192,
+            "enrollment must be a root-owned private regular file"
+        );
+        let parent = path.parent().context("enrollment directory missing")?;
+        let bytes = serde_json::to_vec(self)?;
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        file.write_all(&bytes)?;
+        file.as_file().sync_all()?;
+        file.persist(path)?;
+        fs::File::open(parent)?.sync_all()?;
+        Ok(())
     }
 }
 
@@ -146,7 +201,12 @@ fn keys(value: &Value) -> Result<JwkSet> {
     Ok(serde_json::from_value(value.clone())?)
 }
 
-pub fn verify_claims(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<ServerClaims> {
+pub fn verify_claims(
+    token: &str,
+    enrollment: &mut Enrollment,
+    enrollment_file: Option<&Path>,
+    jwks: &Value,
+) -> Result<ServerClaims> {
     if let Err(err) = enrollment.validate() {
         record_denial("invalid_enrollment");
         return Err(err);
@@ -205,7 +265,26 @@ pub fn verify_claims(token: &str, enrollment: &Enrollment, jwks: &Value) -> Resu
             return Err(err.into());
         }
     };
-    let authority_ok = c.sub == enrollment.owner_id
+    if enrollment.bound_tenant_id().is_none() {
+        if let Err(err) = enrollment.bind_owner_tenant_from_claim(&c) {
+            record_denial("invalid_token_authority");
+            return Err(err);
+        }
+        if let Some(path) = enrollment_file {
+            // identity.json is root-owned; kiln-api binds in memory when persist is not allowed.
+            let _ = enrollment.persist(path);
+        }
+    }
+    let claim_tenant = c
+        .tenant_id
+        .clone()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| c.sub.clone());
+    let Some(bound) = enrollment.bound_tenant_id().map(str::to_owned) else {
+        record_denial("invalid_token_authority");
+        anyhow::bail!("invalid token authority or lifetime");
+    };
+    let authority_ok = claim_tenant == bound
         && !c.credential_id.is_empty()
         && c.credential_id.len() <= 128
         && c.exp > c.iat
@@ -220,35 +299,96 @@ pub fn verify_claims(token: &str, enrollment: &Enrollment, jwks: &Value) -> Resu
     Ok(c)
 }
 
-pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<Scope> {
-    Ok(verify_claims(token, enrollment, jwks)?.scope)
+fn auth_grant_from_claims(c: &ServerClaims, enrollment: &Enrollment) -> AuthGrant {
+    let sub = c.sub.clone();
+    let tenant_id = c
+        .tenant_id
+        .clone()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| sub.clone());
+    let role = c.role.unwrap_or_else(|| {
+        if sub == enrollment.owner_id {
+            Role::Owner
+        } else {
+            Role::Member
+        }
+    });
+    AuthGrant {
+        caller: Caller {
+            sub,
+            tenant_id,
+            role,
+        },
+        scope: c.scope,
+    }
+}
+
+pub fn verify(token: &str, enrollment: &Enrollment, jwks: &Value) -> Result<AuthGrant> {
+    let mut enrollment = enrollment.clone();
+    Ok(auth_grant_from_claims(
+        &verify_claims(token, &mut enrollment, None, jwks)?,
+        &enrollment,
+    ))
 }
 
 struct Cache {
     jwks: Value,
     last_fetch: Option<Instant>,
 }
+struct CentralAuth {
+    enrollment: std::sync::Mutex<Enrollment>,
+    jwks_cache: PathBuf,
+    enrollment_file: Option<PathBuf>,
+}
+
 pub struct Authenticator {
     admin_hash: Option<[u8; 32]>,
-    central: Option<(Enrollment, PathBuf)>,
+    central: Option<CentralAuth>,
     cache: Mutex<Cache>,
     http: reqwest::Client,
 }
 
 impl Authenticator {
     pub fn new(admin: &str, central: Option<(Enrollment, PathBuf)>) -> Result<Self> {
+        let central = match central {
+            Some((enrollment, cache)) => Self::central(enrollment, cache, None)?,
+            None => None,
+        };
+        Self::with_central(admin, central)
+    }
+
+    pub fn new_with_enrollment_file(
+        admin: &str,
+        enrollment: Enrollment,
+        jwks_cache: PathBuf,
+        enrollment_file: PathBuf,
+    ) -> Result<Self> {
+        let central = Self::central(enrollment, jwks_cache, Some(enrollment_file))?;
+        Self::with_central(admin, central)
+    }
+
+    fn with_central(admin: &str, central: Option<CentralAuth>) -> Result<Self> {
         ensure!(
             admin.len() == 64 && admin.bytes().all(|b| b.is_ascii_hexdigit()),
             "invalid administrator token"
         );
         let mut jwks = serde_json::json!({"keys":[]});
-        if let Some((enrollment, path)) = &central {
-            enrollment.validate()?;
-            if let Ok(meta) = fs::symlink_metadata(path) {
+        if let Some(central) = &central {
+            central
+                .enrollment
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .validate()?;
+            if let Ok(meta) = fs::symlink_metadata(&central.jwks_cache) {
                 ensure!(meta.is_file() && meta.len() <= 65536, "unsafe key cache");
-                let cached: Value = serde_json::from_slice(&fs::read(path)?)?;
+                let cached: Value = serde_json::from_slice(&fs::read(&central.jwks_cache)?)?;
                 ensure!(
-                    cached["issuer"] == enrollment.issuer,
+                    cached["issuer"]
+                        == central
+                            .enrollment
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner())
+                            .issuer,
                     "key cache issuer mismatch"
                 );
                 keys(&cached["jwks"])?;
@@ -273,14 +413,38 @@ impl Authenticator {
         })
     }
 
+    fn central(
+        enrollment: Enrollment,
+        jwks_cache: PathBuf,
+        enrollment_file: Option<PathBuf>,
+    ) -> Result<Option<CentralAuth>> {
+        enrollment.validate()?;
+        Ok(Some(CentralAuth {
+            enrollment: std::sync::Mutex::new(enrollment),
+            jwks_cache,
+            enrollment_file,
+        }))
+    }
+
     /// Identity JWTs only. The local administrator token stays on the loopback API.
     pub fn central_only(enrollment: Enrollment, cache: PathBuf) -> Result<Self> {
-        let mut auth = Self::new(&"0".repeat(64), Some((enrollment, cache)))?;
+        Self::central_with_enrollment_file(enrollment, cache, None)
+    }
+
+    pub fn central_with_enrollment_file(
+        enrollment: Enrollment,
+        cache: PathBuf,
+        enrollment_file: Option<PathBuf>,
+    ) -> Result<Self> {
+        let mut auth = Self::with_central(
+            &"0".repeat(64),
+            Self::central(enrollment, cache, enrollment_file)?,
+        )?;
         auth.admin_hash = None;
         Ok(auth)
     }
 
-    pub async fn authenticate(&self, bearer: &str) -> Result<Scope> {
+    pub async fn authenticate(&self, bearer: &str) -> Result<AuthGrant> {
         if bearer.len() > 8192 {
             record_denial("invalid_token");
         }
@@ -288,13 +452,32 @@ impl Authenticator {
         if let Some(admin_hash) = self.admin_hash {
             let supplied: [u8; 32] = Sha256::digest(bearer.as_bytes()).into();
             if bool::from(supplied.ct_eq(&admin_hash)) {
-                return Ok(Scope::Operate);
+                let tenant_id = self
+                    .central
+                    .as_ref()
+                    .and_then(|central| {
+                        central
+                            .enrollment
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner())
+                            .bound_tenant_id()
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_default();
+                return Ok(AuthGrant {
+                    caller: Caller {
+                        sub: "administrator".into(),
+                        tenant_id,
+                        role: Role::Owner,
+                    },
+                    scope: Scope::Operate,
+                });
             }
         }
         self.central_jwt(bearer).await
     }
 
-    pub async fn authenticate_central(&self, bearer: &str) -> Result<Scope> {
+    pub async fn authenticate_central(&self, bearer: &str) -> Result<AuthGrant> {
         if bearer.len() > 8192 {
             record_denial("invalid_token");
         }
@@ -316,8 +499,21 @@ impl Authenticator {
         self.central_claims(bearer).await.ok().map(|c| c.sub)
     }
 
+    async fn central_jwt(&self, bearer: &str) -> Result<AuthGrant> {
+        let claims = self.central_claims(bearer).await?;
+        let enrollment = self
+            .central
+            .as_ref()
+            .context("central authentication not enrolled")?
+            .enrollment
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
+        Ok(auth_grant_from_claims(&claims, &enrollment))
+    }
+
     async fn central_claims(&self, bearer: &str) -> Result<ServerClaims> {
-        let (enrollment, path) = match self.central.as_ref() {
+        let central = match self.central.as_ref() {
             Some(central) => central,
             None => {
                 record_denial("not_enrolled");
@@ -357,11 +553,17 @@ impl Authenticator {
             }
             ensure!(key_fetch_allowed, "unknown token key");
             cache.last_fetch = Some(Instant::now());
+            let issuer = central
+                .enrollment
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .issuer
+                .clone();
             let mut response = match self
                 .http
                 .get(format!(
                     "{}/.well-known/jwks.json",
-                    enrollment.issuer.trim_end_matches('/')
+                    issuer.trim_end_matches('/')
                 ))
                 .send()
                 .await
@@ -406,7 +608,7 @@ impl Authenticator {
                 record_denial(keys_reason(&err));
                 return Err(err);
             }
-            let parent = match path.parent() {
+            let parent = match central.jwks_cache.parent() {
                 Some(parent) => parent,
                 None => {
                     record_denial("key_cache_directory_missing");
@@ -420,9 +622,8 @@ impl Authenticator {
                     return Err(err.into());
                 }
             };
-            let body = match serde_json::to_vec(
-                &serde_json::json!({"issuer":enrollment.issuer,"jwks":value}),
-            ) {
+            let body = match serde_json::to_vec(&serde_json::json!({"issuer":issuer,"jwks":value}))
+            {
                 Ok(body) => body,
                 Err(err) => {
                     record_denial("key_cache_unavailable");
@@ -437,7 +638,7 @@ impl Authenticator {
                 record_denial("key_cache_unavailable");
                 return Err(err.into());
             }
-            if let Err(err) = file.persist(path) {
+            if let Err(err) = file.persist(&central.jwks_cache) {
                 record_denial("key_cache_unavailable");
                 return Err(err.into());
             }
@@ -454,10 +655,15 @@ impl Authenticator {
             }
             cache.jwks = value;
         }
-        verify_claims(bearer, enrollment, &cache.jwks)
-    }
-
-    async fn central_jwt(&self, bearer: &str) -> Result<Scope> {
-        Ok(self.central_claims(bearer).await?.scope)
+        let mut enrollment = central
+            .enrollment
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        verify_claims(
+            bearer,
+            &mut enrollment,
+            central.enrollment_file.as_deref(),
+            &cache.jwks,
+        )
     }
 }

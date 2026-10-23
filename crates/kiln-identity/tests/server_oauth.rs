@@ -5,7 +5,7 @@ use axum::{
     http::{HeaderMap, Request, StatusCode},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use kiln_api::auth::{APP_OAUTH_REDIRECT, MemberRole, Scope, ServerClaims};
+use kiln_api::auth::{APP_OAUTH_REDIRECT, Role, Scope, ServerClaims};
 use kiln_identity::{Config, Store};
 use p256::pkcs8::EncodePrivateKey;
 use serde_json::{Value, json};
@@ -451,7 +451,7 @@ async fn server_oauth_is_single_use_and_split_from_the_directory_token() {
     assert_eq!(decoded.sub, owner);
     assert_eq!(decoded.aud, format!("kiln:server:{server}"));
     assert_eq!(decoded.scope, Scope::Operate);
-    assert_eq!(decoded.role, Some(MemberRole::Owner));
+    assert_eq!(decoded.role, Some(Role::Owner));
     assert!(
         decoded
             .tenant_id

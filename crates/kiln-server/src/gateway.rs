@@ -9,7 +9,10 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use kiln_api::{OperationSubmitQuery, auth::Scope};
+use kiln_api::{
+    OperationSubmitQuery,
+    auth::{AuthGrant, Scope},
+};
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
@@ -91,20 +94,20 @@ async fn authenticate(
     method: &axum::http::Method,
     uri: &Uri,
     required: Scope,
-) -> Result<(), Failure> {
+) -> Result<AuthGrant, Failure> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
-    let scope = state.auth.authenticate(token).await.map_err(|_| {
+    let grant = state.auth.authenticate(token).await.map_err(|_| {
         Failure::new(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "A valid credential is required.",
         )
     })?;
-    if required == Scope::Operate && scope != Scope::Operate {
+    if required == Scope::Operate && grant.scope != Scope::Operate {
         let _ = crate::auth::deny("insufficient_scope");
         return Err(Failure::new(
             StatusCode::FORBIDDEN,
@@ -113,14 +116,14 @@ async fn authenticate(
         ));
     }
     validate_uri_query(method, uri)?;
-    Ok(())
+    Ok(grant)
 }
 
 async fn ssh_tunnel(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    authenticate(
+    let _grant = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -162,7 +165,7 @@ async fn dashboard(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    authenticate(
+    let _grant = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -232,7 +235,7 @@ async fn read_proxy(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    authenticate(
+    let _grant = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -263,7 +266,7 @@ async fn operate_proxy(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
-    authenticate(
+    let _grant = authenticate(
         &state,
         request.headers(),
         request.method(),
