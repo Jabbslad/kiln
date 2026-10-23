@@ -530,6 +530,26 @@ impl Authenticator {
         self.central_jwt(bearer).await
     }
 
+    pub async fn authenticate_with_caller(&self, bearer: &str) -> Result<(Caller, Scope)> {
+        let grant = self.authenticate(bearer).await?;
+        Ok((grant.caller, grant.scope))
+    }
+
+    pub async fn authenticate_caller(&self, bearer: &str) -> Result<(Caller, Scope)> {
+        self.authenticate_with_caller(bearer).await
+    }
+
+    pub fn tenant_owner(&self) -> Option<String> {
+        self.central.as_ref().map(|central| {
+            central
+                .enrollment
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .owner_id
+                .clone()
+        })
+    }
+
     pub async fn central_identity(&self, bearer: &str) -> Result<CentralIdentity> {
         ensure!(bearer.len() <= 8192, "invalid token");
         let enrollment = self

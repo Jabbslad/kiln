@@ -12,7 +12,7 @@ use axum::{
 };
 use futures_util::{StreamExt, stream};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{Role, Scope, ServerClaims};
+use kiln_api::{Role, Scope, ServerClaims};
 use kiln_server::{
     auth::{Authenticator, Enrollment},
     door,
@@ -29,7 +29,7 @@ fn sockets(port: u16) -> usize {
 }
 
 fn token(key: &EncodingKey, sub: &str, audience: &str) -> String {
-    token_with_tenant(key, sub, "owner-a", audience)
+    token_with_tenant(key, sub, "tenant-a", audience)
 }
 
 fn token_with_tenant(key: &EncodingKey, sub: &str, tenant_id: &str, audience: &str) -> String {
@@ -144,7 +144,7 @@ fn auth(dir: &std::path::Path) -> (Authenticator, EncodingKey) {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: None,
+        tenant_id: Some("tenant-a".into()),
     };
     let cache = dir.join("jwks.json");
     std::fs::write(

@@ -17,7 +17,10 @@ use axum::{
 };
 use base64::Engine;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{AccessToken, DeviceAuthorization, DeviceTokens, Role, Scope, ServerClaims};
+use kiln_api::{
+    Role, Scope, ServerClaims,
+    auth::{AccessToken, DeviceAuthorization, DeviceTokens},
+};
 use kiln_server::{
     auth::{Authenticator, Enrollment},
     door::{self, Dashboard},
@@ -450,7 +453,7 @@ async fn world(with_root: bool) -> World {
     let identity_ca = cert.cert.pem();
     let issuer = format!("https://127.0.0.1:{identity_port}/");
     let (key, jwks) = signing_key();
-    let jwt = mint_with(&key, &issuer, "owner-a", "owner-a", Role::Owner);
+    let jwt = mint_with(&key, &issuer, "owner-a", "tenant-a", Role::Owner);
     let wrong_jwt = mint_with(&key, &issuer, "owner-b", "tenant-other", Role::Member);
     let identity = Identity {
         port: identity_port,
@@ -494,7 +497,7 @@ async fn world(with_root: bool) -> World {
         issuer: issuer.clone(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: None,
+        tenant_id: Some("tenant-a".into()),
     };
     let cache = tmp.path().join("jwks.json");
     std::fs::write(
@@ -739,7 +742,7 @@ fn mint(world: &World, sub: &str) -> String {
         &world.key,
         &world.issuer,
         sub,
-        "owner-a",
+        "tenant-a",
         if sub == "owner-a" {
             Role::Owner
         } else {
@@ -754,11 +757,11 @@ fn mint_with(key: &EncodingKey, issuer: &str, sub: &str, tenant_id: &str, role: 
         iss: issuer.into(),
         sub: sub.into(),
         aud: "kiln:server:server-b".into(),
+        tenant_id: Some(tenant_id.into()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "dev_dashboard".into(),
-        tenant_id: Some(tenant_id.into()),
         scope: Scope::Operate,
         role: Some(role),
     };

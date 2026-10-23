@@ -1,6 +1,7 @@
 //! Unprivileged TLS edge. The only upstream is the configured Unix socket.
 use crate::{Failure, auth::Authenticator};
 use anyhow::Result;
+use axum::http::HeaderValue;
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -9,10 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use kiln_api::{
-    OperationSubmitQuery,
-    auth::{AuthGrant, Scope},
-};
+use kiln_api::{Caller, OperationSubmitQuery, Scope};
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
@@ -94,20 +92,24 @@ async fn authenticate(
     method: &axum::http::Method,
     uri: &Uri,
     required: Scope,
-) -> Result<AuthGrant, Failure> {
+) -> Result<(Caller, HeaderValue), Failure> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
-    let grant = state.auth.authenticate(token).await.map_err(|_| {
-        Failure::new(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "A valid credential is required.",
-        )
-    })?;
-    if required == Scope::Operate && grant.scope != Scope::Operate {
+    let (caller, scope) = state
+        .auth
+        .authenticate_with_caller(token)
+        .await
+        .map_err(|_| {
+            Failure::new(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "A valid credential is required.",
+            )
+        })?;
+    if required == Scope::Operate && scope != Scope::Operate {
         let _ = crate::auth::deny("insufficient_scope");
         return Err(Failure::new(
             StatusCode::FORBIDDEN,
@@ -116,7 +118,30 @@ async fn authenticate(
         ));
     }
     validate_uri_query(method, uri)?;
-    Ok(grant)
+    let authorization =
+        HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| Failure::missing())?;
+    Ok((caller, authorization))
+}
+
+async fn ensure_box_access(
+    state: &Gateway,
+    box_id: &str,
+    caller: &Caller,
+    authorization: &HeaderValue,
+) -> Result<(), Failure> {
+    let Some(tenant_owner) = state.auth.tenant_owner() else {
+        return Ok(());
+    };
+    let upstream = reqwest::Url::parse("http://localhost").map_err(|_| Failure::missing())?;
+    crate::box_access::ensure_member_box_access(
+        &state.client,
+        &upstream,
+        authorization,
+        box_id,
+        caller,
+        &tenant_owner,
+    )
+    .await
 }
 
 async fn ssh_tunnel(
@@ -129,30 +154,21 @@ async fn ssh_tunnel(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
+    let (caller, authorization) = authenticate(
+        &state,
+        request.headers(),
+        request.method(),
+        request.uri(),
+        Scope::Operate,
+    )
+    .await?;
+    if let Some(box_id) = crate::box_access::box_id_from_path(request.uri().path(), "ssh") {
+        ensure_box_access(&state, &box_id, &caller, &authorization).await?;
+    }
     let cancel = match state.auth.central_identity(token).await {
-        Ok(identity) => {
-            if identity.scope != Scope::Operate {
-                let _ = crate::auth::deny("insufficient_scope");
-                return Err(Failure::new(
-                    StatusCode::FORBIDDEN,
-                    "insufficient_scope",
-                    "An operate credential is required.",
-                ));
-            }
-            state.auth.track_stream(&identity)
-        }
-        Err(_) if state.auth.authenticate(token).await.is_ok() => {
-            crate::revocation::StreamCancel::new()
-        }
-        Err(_) => {
-            return Err(Failure::new(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "A valid credential is required.",
-            ));
-        }
+        Ok(identity) => state.auth.track_stream(&identity),
+        Err(_) => crate::revocation::StreamCancel::new(),
     };
-    validate_uri_query(request.method(), request.uri())?;
     let key = crate::ssh::admission(&request)?;
     let permit = state
         .sessions
@@ -187,7 +203,7 @@ async fn dashboard(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    let _grant = authenticate(
+    let (caller, _) = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -196,6 +212,7 @@ async fn dashboard(
     )
     .await?;
     let observed_at = crate::dashboard::utc_timestamp(crate::dashboard::unix_now());
+    let tenant_owner = state.auth.tenant_owner().unwrap_or_default();
     match proxy(
         Arc::clone(&state),
         request,
@@ -208,7 +225,14 @@ async fn dashboard(
     .await
     {
         Ok(response) if response.status().is_success() => {
-            stamp(response, &state.workspace, &observed_at).await
+            stamp(
+                response,
+                &state.workspace,
+                &observed_at,
+                &caller,
+                &tenant_owner,
+            )
+            .await
         }
         Err(failure) if socket_failed(&failure) => Ok(json_document(
             StatusCode::OK,
@@ -233,14 +257,18 @@ async fn stamp(
     response: Response,
     workspace: &str,
     observed_at: &str,
+    caller: &Caller,
+    tenant_owner: &str,
 ) -> Result<Response, Failure> {
     let (parts, body) = response.into_parts();
     let bytes = to_bytes(body, kiln_api::MAX_RESPONSE_BYTES)
         .await
         .map_err(|_| upstream_error())?;
-    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+    let Ok(document) = serde_json::from_slice::<crate::dashboard::Document>(&bytes) else {
         return Ok(Response::from_parts(parts, Body::from(bytes)));
     };
+    let document = crate::dashboard::scope_to_caller(document, caller, tenant_owner);
+    let mut value = serde_json::to_value(&document).map_err(|_| upstream_error())?;
     crate::dashboard::stamp_value(&mut value, workspace, observed_at);
     Ok(json_document(parts.status, value))
 }
@@ -257,7 +285,7 @@ async fn read_proxy(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
-    let _grant = authenticate(
+    let (caller, authorization) = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -265,6 +293,9 @@ async fn read_proxy(
         Scope::Read,
     )
     .await?;
+    if let Some(box_id) = crate::box_access::single_box_id(request.uri().path()) {
+        ensure_box_access(&state, &box_id, &caller, &authorization).await?;
+    }
     proxy(
         state,
         request,
@@ -288,7 +319,7 @@ async fn operate_proxy(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
-    let _grant = authenticate(
+    let (caller, authorization) = authenticate(
         &state,
         request.headers(),
         request.method(),
@@ -296,6 +327,9 @@ async fn operate_proxy(
         Scope::Operate,
     )
     .await?;
+    if let Some(box_id) = crate::box_access::box_id_from_path(request.uri().path(), "ssh-key") {
+        ensure_box_access(&state, &box_id, &caller, &authorization).await?;
+    }
     let actor = state.auth.central_subject(token).await;
     proxy(state, request, query, actor).await
 }
@@ -407,9 +441,19 @@ mod tests {
             .status(StatusCode::OK)
             .body(Body::from(vec![b'x'; kiln_api::MAX_RESPONSE_BYTES + 1]))
             .unwrap();
-        let failure = stamp(response, "server-b", "1970-01-01T00:00:00Z")
-            .await
-            .expect_err("oversized body");
+        let failure = stamp(
+            response,
+            "server-b",
+            "1970-01-01T00:00:00Z",
+            &Caller {
+                sub: "owner-a".into(),
+                tenant_id: "tenant-a".into(),
+                role: kiln_api::Role::Owner,
+            },
+            "owner-a",
+        )
+        .await
+        .expect_err("oversized body");
         assert_eq!(failure.0, StatusCode::BAD_GATEWAY);
         assert_eq!(failure.1.code, "host_unavailable");
         let response = failure.into_response();

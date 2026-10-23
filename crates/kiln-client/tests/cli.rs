@@ -112,6 +112,7 @@ async fn box_targets_resolve_without_guessing_and_lists_keep_json_ids() {
         state: state.into(),
         memory_mib: 4096,
         vcpus: 1,
+        owner: None,
     })
     .collect();
     let list = records.clone();
@@ -252,6 +253,7 @@ async fn create_wait_then_exec_succeeds_without_a_client_sleep() {
                                         state: "running".into(),
                                         memory_mib: 4096,
                                         vcpus: 1,
+                                        owner: None,
                                     })),
                                 })
                             }
@@ -362,6 +364,7 @@ async fn create_defaults_are_replayable_and_never_guess_between_templates() {
                             state: "running".into(),
                             memory_mib: 4096,
                             vcpus: 1,
+                            owner: None,
                         })),
                     })
                 }),
@@ -441,6 +444,7 @@ async fn stopped_ssh_and_expired_auth_suggest_recovery_without_mutation() {
                             state: "stopped".into(),
                             memory_mib: 4096,
                             vcpus: 1,
+                            owner: None,
                         })
                     },
                 ),

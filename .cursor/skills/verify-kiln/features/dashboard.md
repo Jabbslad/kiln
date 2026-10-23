@@ -6,7 +6,7 @@ The console in `web/` is a React app served as static files. Release `v0.4.17` p
 
 ## Who can read it
 
-A read-scope owner JWT opens the public door. The audience is `kiln:server:` plus the enrolled server id. The door forwards `GET /api/v1/dashboard` to loopback `kiln-api` with the same `Authorization` header.
+A read-scope owner JWT opens the public door. Tenant members with read scope receive a dashboard document filtered to boxes they own (`kiln_api::may_access_box` in `crates/kiln-server/src/dashboard.rs`; shared helper in `crates/kiln-api/src/access.rs`). The audience is `kiln:server:` plus the enrolled server id. The door forwards `GET /api/v1/dashboard` to loopback `kiln-api` with the same `Authorization` header.
 
 The administrator token is a 64-character hex secret read from the token file. Loopback `kiln-api` accepts it for this GET. The door and the app listener reject it for browser traffic.
 
@@ -22,7 +22,7 @@ Live mutations (host `online`): create box, pause, resume, stop (optional force)
 
 **Access panel (#107, door SSH).** On the Terminal tab, `Access` wraps SSH, HTTP preview, and public URL in `CapabilitySurface`. `ssh` is temporarily `not-yet` at the dashboard until the public-edge proxy for door SSH is verified; the Access panel shows **Coming soon** instead of copyable CLI hints. `httpPreview` and `publicUrl` stay `not-yet`. `web/src/BoxDetail.test.tsx` checks `data-capability-state="not-yet"` on SSH and absence of `kiln ssh` copy hints.
 
-**Public-door SSH.** The door proxies `Upgrade: kiln-ssh` on `GET /v1/boxes/{id}/ssh` only for an operate-scope owner JWT and forwards that JWT to loopback `kiln-api`. See `features/public-door.md` and `features/guest-access.md`.
+**Public-door SSH.** The door proxies `Upgrade: kiln-ssh` on `GET /v1/boxes/{id}/ssh` for an operate-scope JWT when `may_access_box` allows the caller, and forwards that JWT to loopback `kiln-api`. See `features/public-door.md` and `features/guest-access.md`.
 
 ## Document
 

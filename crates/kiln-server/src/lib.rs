@@ -1,5 +1,6 @@
 pub mod app_listener;
 pub mod auth;
+mod box_access;
 mod dashboard;
 pub mod dashboard_check;
 pub mod door;

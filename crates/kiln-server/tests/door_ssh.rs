@@ -18,7 +18,7 @@ use axum::{
     response::IntoResponse,
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{Role, Scope, ServerClaims};
+use kiln_api::{BoxView, Role, Scope, ServerClaims};
 use kiln_server::{
     auth::{Authenticator, Enrollment},
     door, gateway,
@@ -29,38 +29,28 @@ const SSH_KEY: &str =
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 fn token(key: &EncodingKey, sub: &str, scope: Scope) -> String {
-    token_for_tenant(
-        key,
-        sub,
-        "owner-a",
-        if sub == "owner-a" {
-            Role::Owner
-        } else {
-            Role::Member
-        },
-        scope,
-    )
+    tenant_token(key, sub, scope, None, None)
 }
 
-fn token_for_tenant(
+fn tenant_token(
     key: &EncodingKey,
     sub: &str,
-    tenant_id: &str,
-    role: Role,
     scope: Scope,
+    tenant_id: Option<&str>,
+    role: Option<Role>,
 ) -> String {
     let now = jsonwebtoken::get_current_timestamp();
     let claims = ServerClaims {
         iss: "https://identity.example.test".into(),
         sub: sub.into(),
         aud: "kiln:server:server-b".into(),
-        tenant_id: Some(tenant_id.into()),
+        tenant_id: tenant_id.map(str::to_owned).or(Some("tenant-a".into())),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-1".into(),
         scope,
-        role: Some(role),
+        role: role.or((sub == "owner-a").then_some(Role::Owner)),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -73,7 +63,7 @@ fn enrollment() -> Enrollment {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: None,
+        tenant_id: Some("tenant-a".into()),
     }
 }
 
@@ -119,35 +109,51 @@ struct Stack {
 async fn stack() -> Stack {
     let root = tempfile::tempdir().unwrap();
     let socket = root.path().join("host.sock");
-    let host = axum::Router::new().route(
-        "/v1/boxes/{id}/ssh",
-        axum::routing::get(|mut request: Request| async move {
-            if request.headers().contains_key(header::AUTHORIZATION) {
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            }
-            let (mut stream, mut echo) = tokio::io::duplex(64 * 1024);
-            tokio::spawn(async move {
-                let mut bytes = Vec::new();
-                echo.read_to_end(&mut bytes).await.unwrap();
-                bytes.reverse();
-                echo.write_all(&bytes).await.unwrap();
-                echo.shutdown().await.unwrap();
-            });
-            let connection = hyper::upgrade::on(&mut request);
-            tokio::spawn(async move {
-                if let Ok(upgraded) = connection.await {
-                    let mut io = hyper_util::rt::TokioIo::new(upgraded);
-                    let _ = tokio::io::copy_bidirectional(&mut io, &mut stream).await;
+    let host = axum::Router::new()
+        .route(
+            "/v1/boxes/{id}",
+            axum::routing::get(
+                |axum::extract::Path(id): axum::extract::Path<String>| async move {
+                    axum::Json(BoxView {
+                        id,
+                        name: "box".into(),
+                        state: "stopped".into(),
+                        memory_mib: 512,
+                        vcpus: 1,
+                        owner: None,
+                    })
+                },
+            ),
+        )
+        .route(
+            "/v1/boxes/{id}/ssh",
+            axum::routing::get(|mut request: Request| async move {
+                if request.headers().contains_key(header::AUTHORIZATION) {
+                    return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 }
-            });
-            axum::response::Response::builder()
-                .status(StatusCode::SWITCHING_PROTOCOLS)
-                .header(header::CONNECTION, "upgrade")
-                .header(header::UPGRADE, kiln_api::SSH_UPGRADE)
-                .body(Body::empty())
-                .unwrap()
-        }),
-    );
+                let (mut stream, mut echo) = tokio::io::duplex(64 * 1024);
+                tokio::spawn(async move {
+                    let mut bytes = Vec::new();
+                    echo.read_to_end(&mut bytes).await.unwrap();
+                    bytes.reverse();
+                    echo.write_all(&bytes).await.unwrap();
+                    echo.shutdown().await.unwrap();
+                });
+                let connection = hyper::upgrade::on(&mut request);
+                tokio::spawn(async move {
+                    if let Ok(upgraded) = connection.await {
+                        let mut io = hyper_util::rt::TokioIo::new(upgraded);
+                        let _ = tokio::io::copy_bidirectional(&mut io, &mut stream).await;
+                    }
+                });
+                axum::response::Response::builder()
+                    .status(StatusCode::SWITCHING_PROTOCOLS)
+                    .header(header::CONNECTION, "upgrade")
+                    .header(header::UPGRADE, kiln_api::SSH_UPGRADE)
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        );
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
     tokio::spawn(async move {
         axum::serve(listener, host).await.unwrap();
@@ -260,12 +266,19 @@ async fn door_ssh_rejects_bad_callers_and_round_trips_an_operate_jwt() {
     let owner_box = "b".repeat(32);
     let other_box = "c".repeat(32);
     let operate = token(&world.key, "owner-a", Scope::Operate);
-    let other_tenant = token_for_tenant(
+    let tenant_member = tenant_token(
         &world.key,
-        "member-z",
-        "tenant-other",
-        Role::Member,
+        "member-b",
         Scope::Operate,
+        Some("tenant-a"),
+        Some(Role::Member),
+    );
+    let wrong_tenant = tenant_token(
+        &world.key,
+        "member-b",
+        Scope::Operate,
+        Some("tenant-other"),
+        Some(Role::Member),
     );
     let read = token(&world.key, "owner-a", Scope::Read);
     let cases = [
@@ -282,10 +295,16 @@ async fn door_ssh_rejects_bad_callers_and_round_trips_an_operate_jwt() {
             StatusCode::UNAUTHORIZED,
         ),
         (
-            "other-tenant",
-            Some(other_tenant.as_str()),
+            "wrong-tenant",
+            Some(wrong_tenant.as_str()),
             other_box.as_str(),
             StatusCode::UNAUTHORIZED,
+        ),
+        (
+            "other-member-box",
+            Some(tenant_member.as_str()),
+            other_box.as_str(),
+            StatusCode::NOT_FOUND,
         ),
         (
             "read-scope",
@@ -301,6 +320,7 @@ async fn door_ssh_rejects_bad_callers_and_round_trips_an_operate_jwt() {
         ),
     ];
     for (label, bearer, id, status) in cases {
+        let before = world.hits.load(Ordering::SeqCst);
         let response = send(ssh_request(
             &format!("{}/v1/boxes/{id}/ssh", world.door),
             bearer,
@@ -313,10 +333,11 @@ async fn door_ssh_rejects_bad_callers_and_round_trips_an_operate_jwt() {
         if label == "read-scope" {
             assert!(body.contains("insufficient_scope"), "{body}");
         }
+        let delta = world.hits.load(Ordering::SeqCst) - before;
+        let expected = if label == "other-member-box" { 1 } else { 0 };
         assert_eq!(
-            world.hits.load(Ordering::SeqCst),
-            0,
-            "{label} dialed the gateway"
+            delta, expected,
+            "{label} must not open SSH; metadata-only GET is allowed for members"
         );
     }
 
@@ -338,7 +359,11 @@ async fn door_ssh_rejects_bad_callers_and_round_trips_an_operate_jwt() {
         body.contains("SSH is not served by the public door."),
         "{body}"
     );
-    assert_eq!(world.hits.load(Ordering::SeqCst), 0);
+    let metadata_hits = world.hits.load(Ordering::SeqCst);
+    assert_eq!(
+        metadata_hits, 1,
+        "member scoping should prefetch box metadata once"
+    );
 
     let response = send(ssh_request(
         &format!("{}/v1/boxes/{owner_box}/ssh", world.door),
@@ -364,9 +389,10 @@ async fn door_ssh_rejects_bad_callers_and_round_trips_an_operate_jwt() {
         .unwrap();
     bytes.reverse();
     assert_eq!(returned, bytes);
-    assert_eq!(world.hits.load(Ordering::SeqCst), 1);
+    assert_eq!(world.hits.load(Ordering::SeqCst), metadata_hits + 1);
     let forwarded = world.forwarded.lock().unwrap().clone();
-    assert_eq!(forwarded, vec![format!("Bearer {operate}")]);
+    assert_eq!(forwarded.len(), 2, "{forwarded:?}");
+    assert_eq!(forwarded.last(), Some(&format!("Bearer {operate}")));
     assert!(forwarded.iter().all(|value| !value.contains(&world.admin)));
 
     let records = world.audit.records();
@@ -374,9 +400,15 @@ async fn door_ssh_rejects_bad_callers_and_round_trips_an_operate_jwt() {
         ("missing", "unauthorized", "anonymous", owner_box.as_str()),
         ("invalid", "unauthorized", "anonymous", owner_box.as_str()),
         (
-            "other-tenant",
+            "wrong-tenant",
             "unauthorized",
             "anonymous",
+            other_box.as_str(),
+        ),
+        (
+            "other-member-box",
+            "not_found",
+            "member-b",
             other_box.as_str(),
         ),
         (
