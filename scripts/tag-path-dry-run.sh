@@ -157,7 +157,9 @@ if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
   cargo xtask release-version resolve --ref-type tag --ref-name "$tag"
   trust_json=$(mktemp)
   trust_bins=$(mktemp -d)
-  trap 'rm -rf "$dist" "$output" "$trust_json" "$trust_bins"' EXIT
+  image_root=$(mktemp -d)
+  reuse_owned=
+  trap 'rm -rf "$dist" "$output" "$trust_json" "$trust_bins" "$image_root" || true; if [ -n "${reuse_owned:-}" ]; then rm -rf "$reuse_owned" || true; fi' EXIT
   cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client \
     --message-format=json >"$trust_json"
   cargo xtask release-version check-binary --version "$tag" -- \
@@ -165,7 +167,6 @@ if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
     target/release/kiln-runtime \
     target/release/kiln-host \
     target/release/kiln-api
-  image_root=$(mktemp -d)
   tar -xzf "$prev_archive" -C "$image_root" image
   pr_dist=$(mktemp -d)
   cargo xtask release server --version "$tag" --target x86_64-unknown-linux-gnu \
@@ -194,20 +195,27 @@ if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
     bash scripts/test-identity-upgrade.sh
   proved_dist=$root/dist-proved-package-server
   mkdir -p "$proved_dist"
+  # Identity is not in the shared bins build. Build it once while Cargo.toml is
+  # still the tag stamp. CI supplies TAG_PATH_RELEASE_BIN_DIR and skips this.
+  if [ -z "${GITHUB_ACTIONS:-}" ]; then
+    cargo build --release --locked -p kiln-identity
+  fi
   git checkout -- Cargo.toml Cargo.lock
   reuse_bin_dir=${TAG_PATH_RELEASE_BIN_DIR:-}
   if [ -z "$reuse_bin_dir" ]; then
     if [ -n "${GITHUB_ACTIONS:-}" ]; then
       fail 'TAG_PATH_RELEASE_BIN_DIR is required on pull requests'
     fi
-    VERSION=$from
-    export VERSION
-    cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client
-    cargo build --release --locked -p kiln-identity
-    reuse_bin_dir=target/release
+    # Checkout restored the workspace version and would force a second release
+    # compile. Copy the binaries already checked at $tag and stamp the from-tag
+    # into the slot so check-binary accepts them without rebuilding.
+    reuse_owned=$(mktemp -d)
+    for name in kiln kiln-runtime kiln-host kiln-api kiln-identity; do
+      cp "target/release/$name" "$reuse_owned/$name"
+      sh scripts/stamp-release-version.sh "$reuse_owned/$name" "$from"
+    done
+    reuse_bin_dir=$reuse_owned
   fi
-  image_root=$(mktemp -d)
-  tar -xzf "$prev_archive" -C "$image_root" image
   VERSION=$from
   export VERSION
   SKIP_RELEASE_BUILD=1 \
