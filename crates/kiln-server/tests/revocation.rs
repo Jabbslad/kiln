@@ -1,6 +1,6 @@
 use axum::{Json, Router, routing::post};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{MemberRole, RevocationQuery, RevocationSet, Scope, ServerClaims};
+use kiln_api::auth::{RevocationQuery, RevocationSet, Role, Scope, ServerClaims};
 use kiln_server::auth::{Authenticator, Enrollment};
 
 use std::{
@@ -40,7 +40,7 @@ fn jwt(key: &EncodingKey, enrollment: &Enrollment, credential_id: &str) -> Strin
         exp: now + 300,
         credential_id: credential_id.into(),
         scope: Scope::Operate,
-        role: Some(MemberRole::Owner),
+        role: Some(Role::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -100,7 +100,7 @@ async fn tenant_revocation_feed_rejects_within_one_refresh_cycle() {
     let watch =
         kiln_server::revocation::RevocationWatch::new(enrollment, "login-secret".into(), http);
     watch
-        .allow("owner-a", "device-live", MemberRole::Owner)
+        .allow("owner-a", "device-live", Role::Owner)
         .unwrap();
     *revocations.lock().await = RevocationSet {
         accounts: vec![],
@@ -109,7 +109,7 @@ async fn tenant_revocation_feed_rejects_within_one_refresh_cycle() {
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(300)).await;
         if watch
-            .allow("owner-a", "device-live", MemberRole::Owner)
+            .allow("owner-a", "device-live", Role::Owner)
             .is_err()
         {
             return;
@@ -132,7 +132,7 @@ async fn member_tokens_fail_closed_when_revocation_feed_is_stale() {
     );
     assert!(
         watch
-            .allow("member-b", "device-m", MemberRole::Member)
+            .allow("member-b", "device-m", Role::Member)
             .is_err()
     );
 }

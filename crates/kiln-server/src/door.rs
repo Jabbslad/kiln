@@ -891,7 +891,7 @@ async fn approve(door: &Door, dash: &Dash, tokens: DeviceTokens) -> Approve {
     };
     if !matches!(
         door.auth.authenticate_central(&grant.access_token).await,
-        Ok(Scope::Operate)
+        Ok(grant) if grant.scope == Scope::Operate
     ) {
         let _ = revoke_device(dash, &device_id, &central).await;
         return Approve::Denied;
@@ -1068,7 +1068,7 @@ async fn operate_jwt(door: &Door, dash: &Dash, slot: &SessionSlot) -> Jwt {
     };
     if !matches!(
         door.auth.authenticate_central(&grant.access_token).await,
-        Ok(Scope::Operate)
+        Ok(central) if central.scope == Scope::Operate
     ) || !(1..=300).contains(&grant.expires_in)
     {
         kill(dash, &mut session);
@@ -1316,7 +1316,7 @@ fn static_response(door: &Door, request: &Request) -> Option<Response> {
         return Some(unauthorized());
     }
     let query = request.uri().query();
-    if query.is_some() && query != Some("preview=1") {
+    if query.is_some() {
         return Some(deny(
             StatusCode::BAD_REQUEST,
             "invalid_request",

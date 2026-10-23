@@ -4,7 +4,7 @@ const artifactDir = process.env.KILN_SCREENSHOT_DIR
 
 test('proof capture: version label opens embedded release notes', async ({ page }) => {
   test.skip(!artifactDir, 'KILN_SCREENSHOT_DIR is required for proof capture')
-  await page.goto('/boxes?preview=1')
+  await page.goto('/boxes')
   await expect(page).toHaveTitle('Boxes — kiln')
   const version = page.getByRole('button', { name: /^Release notes for v/ })
   await expect(version).toBeVisible()
