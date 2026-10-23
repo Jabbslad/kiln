@@ -177,4 +177,64 @@ grep -q "inputs.sha == ''" "$deploy" \
 grep -q 'release-tip-gate.sh' "$root/scripts/batch-merge.sh" \
   || fail 'batch-merge does not use the tip gate'
 
+# Build A skips because main moved to B. B's build then fails.
+# A green B would tag. A failed B never reaches tag, publish, or deploy.
+# A's skip log names B's full commit. Neither build tags or deploys.
+finish_build() {
+  sha=$1
+  label=$2
+  if [ "$label" = B ]; then
+    printf 'build B failed\n' >&2
+    return 1
+  fi
+  plan_status=$(run_plan "$sha" "$work/${label}.out" "$work/${label}.github")
+  [ "$plan_status" -eq 0 ] || return "$plan_status"
+  gate_status=0
+  RELEASE_SHA=$sha \
+    GH_REPO=Jabbslad/kiln \
+    GH_STUB_LOG=$work/gh.log \
+    GH_STUB_REPO=$repo \
+    PATH="$stub:$PATH" \
+    sh "$root/scripts/release-tip-gate.sh" >"$work/${label}-deploy.out" || gate_status=$?
+  if [ "$gate_status" -eq 0 ]; then
+    printf 'deploy %s\n' "$sha" >>"$work/deploy.log"
+    return 0
+  fi
+  if [ "$gate_status" -eq 2 ]; then
+    return 0
+  fi
+  return "$gate_status"
+}
+
+if ! finish_build "$old" A >"$work/a-finish.out" 2>"$work/a-finish.err"; then
+  fail "build A should stay green ($(cat "$work/a-finish.err"))"
+fi
+printf '%s\n' "$new" | grep -Eq '^[0-9a-f]{40}$' || fail 'B is not a full sha'
+named=$(sed -n 's/^release skipped: main moved to \([0-9a-f]\{40\}\), the newer build releases$/\1/p' "$work/A.out")
+[ "$named" = "$new" ] || fail "build A skip log named ${named:-nothing}, want ${new}"
+[ "$named" != "$old" ] || fail 'build A skip log named itself'
+grep -qx 'release=false' "$work/A.github" || fail 'build A still planned a release'
+deploy_named=$(sed -n 's/^release skipped: main moved to \([0-9a-f]\{40\}\), the newer build releases$/\1/p' "$work/A-deploy.out")
+[ "$deploy_named" = "$new" ] || fail "build A deploy skip log named ${deploy_named:-nothing}, want ${new}"
+if [ -f "$work/deploy.log" ]; then
+  fail "build A deployed: $(cat "$work/deploy.log")"
+fi
+
+if finish_build "$new" B >"$work/b-finish.out" 2>"$work/b-finish.err"; then
+  fail 'build B should fail'
+fi
+grep -qx 'build B failed' "$work/b-finish.err" || fail "build B did not fail closed: $(cat "$work/b-finish.err")"
+if [ -f "$work/B.out" ] || [ -f "$work/B.github" ] || [ -f "$work/B-deploy.out" ]; then
+  fail 'build B reached tag or deploy after failing'
+fi
+if [ -f "$work/gh.log.post" ]; then
+  fail "a tag was created after A skipped and B failed: $(cat "$work/gh.log.post")"
+fi
+if grep -q 'refs/tags/' "$work/gh.log" 2>/dev/null; then
+  fail "a tag API call was recorded: $(cat "$work/gh.log")"
+fi
+if [ -f "$work/deploy.log" ]; then
+  fail "a deploy ran after A skipped and B failed: $(cat "$work/deploy.log")"
+fi
+
 printf 'release tip gate passed\n'
