@@ -18,6 +18,33 @@ use serde_json::{Value, json};
 use std::{fs, os::unix::fs::PermissionsExt};
 use tower::ServiceExt;
 
+// Stopped-box inspection resolves Firecracker for process discovery. Run these
+// metadata-only cases in a child with a private PATH, without changing the
+// environment of concurrent tests or depending on an installed VMM.
+fn run_with_fixture_firecracker(test: &str) -> bool {
+    if std::env::var("KILN_ISOLATION_FIXTURE_TEST").as_deref() == Ok(test) {
+        return false;
+    }
+    let bin = tempfile::tempdir().unwrap();
+    let firecracker = bin.path().join("firecracker");
+    // Discovery needs a file; preflight must fail and no launch may succeed.
+    fs::write(&firecracker, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&firecracker, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .env("PATH", bin.path())
+        .env("KILN_ISOLATION_FIXTURE_TEST", test)
+        .args(["--exact", test, "--nocapture"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{test}:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
 struct Fixture {
     root: tempfile::TempDir,
     router: Router,
@@ -272,6 +299,9 @@ async fn creator_is_persisted_and_members_only_list_their_own_boxes() {
 
 #[tokio::test]
 async fn inventories_hide_other_members_and_legacy_owner_boxes() {
+    if run_with_fixture_firecracker("inventories_hide_other_members_and_legacy_owner_boxes") {
+        return;
+    }
     let f = Fixture::new().await;
     let (_, a) = f.create("member-a", false).await;
     let (_, b) = f.create("member-b", true).await;
@@ -310,6 +340,9 @@ async fn inventories_hide_other_members_and_legacy_owner_boxes() {
 
 #[tokio::test]
 async fn cross_member_operations_reads_and_replays_are_hidden() {
+    if run_with_fixture_firecracker("cross_member_operations_reads_and_replays_are_hidden") {
+        return;
+    }
     let f = Fixture::new().await;
     let (submit, op) = f.create("member-a", false).await;
     // Acceptance persists the actor even when preflight failed before box.json.
