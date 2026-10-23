@@ -29,9 +29,7 @@ mod benchmark;
 mod checkpoint;
 mod disk;
 mod ssh;
-mod stop_state;
 use benchmark::{Phase, scoped, take_phases};
-pub use stop_state::StopState;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BoxRecord {
@@ -643,43 +641,14 @@ impl Runtime {
                 )?;
                 record.disk_copy = format!("{method:?}");
                 drop(phase);
-                self.boot(&mut record, None, None, !template).await
+                self.boot(&mut record, None, !template).await
             }
             .await;
             (result, take_phases())
         })
         .await;
-        self.finish_launch(
-            &mut record,
-            started,
-            "create",
-            "uncontrolled",
-            result,
-            phases,
-        )?;
+        self.finish_launch(&mut record, started, "create", result, phases)?;
         Ok(record)
-    }
-
-    async fn cold_start_generation(
-        &self,
-        record: &mut BoxRecord,
-        previous: &BoxRecord,
-    ) -> Result<()> {
-        if self.is_isolated() {
-            self.terminate(record)?;
-            record.run = id()?;
-            if record.disk_layer.is_none() {
-                let phase = Phase::start("disk_copy");
-                let method = storage::relocate_disk(
-                    &self.run(previous)?.join("disk.ext4"),
-                    &self.run(record)?.join("disk.ext4"),
-                )?;
-                record.disk_copy = format!("{method:?}");
-                self.save(record)?;
-                drop(phase);
-            }
-        }
-        Ok(())
     }
 
     fn finish_launch(
@@ -687,7 +656,6 @@ impl Runtime {
         record: &mut BoxRecord,
         started: Instant,
         method: &str,
-        cache: &str,
         result: Result<()>,
         phases: std::collections::BTreeMap<&'static str, f64>,
     ) -> Result<()> {
@@ -696,7 +664,6 @@ impl Runtime {
             Ok(()) => {
                 record.last_launch = Some(LaunchTiming::from_phases(
                     method,
-                    cache,
                     &record.disk_copy,
                     started.elapsed().as_secs_f64() * 1000.,
                     phases,
@@ -719,7 +686,6 @@ impl Runtime {
         &self,
         record: &mut BoxRecord,
         snapshot: Option<&Snapshot>,
-        stop_state: Option<&StopState>,
         initialize: bool,
     ) -> Result<()> {
         let phase = Phase::start("boot_preflight");
@@ -747,16 +713,8 @@ impl Runtime {
             )?;
         }
         let mut kernel = record.image.kernel_path.clone();
-        let mut snapshot_directory = if stop_state.is_some() {
-            Some(self.saved_state_dir(&record.id)?)
-        } else {
-            snapshot.map(|s| self.root.join("snapshots").join(&s.id))
-        };
+        let mut snapshot_directory = snapshot.map(|s| self.root.join("snapshots").join(&s.id));
         let mut command = if let (Some(config), Some(identity)) = (&self.isolation, &record.jail) {
-            let stale_jail = self.generation(record)?.join("firecracker");
-            if stale_jail.try_exists()? {
-                fs::remove_dir_all(&stale_jail)?;
-            }
             if run.join("firecracker").try_exists()? {
                 return Err(Error::Invalid("refusing to reuse a jail generation".into()));
             }
@@ -767,23 +725,7 @@ impl Runtime {
             } else {
                 isolation::own_file(&run.join("disk.ext4"), identity)?;
             }
-            if let Some(stop_state) = stop_state {
-                let source_dir = self.saved_state_dir(&record.id)?;
-                for name in ["state.snap", "memory.snap"] {
-                    let source = source_dir.join(name);
-                    let hash = stop_state
-                        .hashes
-                        .get(name)
-                        .ok_or_else(|| Error::Invalid("saved state hash missing".into()))?;
-                    isolation::stage_readonly(
-                        &source,
-                        &run.join(name),
-                        hash,
-                        stop_state.seals.get(name),
-                    )?;
-                }
-                snapshot_directory = Some(PathBuf::from("."));
-            } else if let Some(snapshot) = snapshot {
+            if let Some(snapshot) = snapshot {
                 for name in ["state.snap", "memory.snap"] {
                     let source = self.root.join("snapshots").join(&snapshot.id).join(name);
                     let hash = snapshot
@@ -1173,7 +1115,6 @@ impl Runtime {
         let mut record = self.read(id)?;
         if force {
             self.identify_process(&mut record)?;
-            self.remove_saved_state(id)?;
             record.last_error =
                 Some("forced stop; guest memory and unflushed writes are lost".into());
         } else {
@@ -1228,13 +1169,6 @@ impl Runtime {
                 ));
             }
         }
-        if !force
-            && matches!(record.state.as_str(), "running" | "paused")
-            && let Err(error) = self.persist_stop_state(&mut record).await
-        {
-            self.remove_saved_state(id)?;
-            record.last_error = Some(format!("memory save failed: {error}"));
-        }
         self.terminate(&mut record)?;
         record.state = "stopped".into();
         record.operation = None;
@@ -1251,54 +1185,33 @@ impl Runtime {
             return Err(Error::Invalid("box must be stopped before starting".into()));
         }
         let previous = record.clone();
-        let saved = self.stop_state(id)?;
-        let resume = saved
-            .as_ref()
-            .filter(|state| self.verify_stop_state(state, &record).is_ok());
         record.operation = Some("start".into());
         self.save(&record)?;
         let started = Instant::now();
-        let mut launch_cache = "cold_boot".to_string();
         let (result, phases) = scoped(async {
             let result = async {
-                if let Some(state) = resume {
+                if self.is_isolated() {
                     self.terminate(&mut record)?;
-                    match self.boot(&mut record, None, Some(state), false).await {
-                        Ok(()) => {
-                            launch_cache = "memory_resume".into();
-                            Ok(())
-                        }
-                        Err(error) => {
-                            self.terminate(&mut record)?;
-                            self.remove_saved_state(id)?;
-                            launch_cache = "resume_fallback".into();
-                            record.last_error =
-                                Some(format!("memory resume failed; cold boot fallback: {error}"));
-                            self.cold_start_generation(&mut record, &previous).await?;
-                            self.boot(&mut record, None, None, true).await
-                        }
+                    record.run = self::id()?;
+                    if record.disk_layer.is_none() {
+                        let phase = Phase::start("disk_copy");
+                        let method = storage::relocate_disk(
+                            &self.run(&previous)?.join("disk.ext4"),
+                            &self.run(&record)?.join("disk.ext4"),
+                        )?;
+                        record.disk_copy = format!("{method:?}");
+                        self.save(&record)?;
+                        drop(phase);
                     }
-                } else {
-                    if saved.is_some() {
-                        self.remove_saved_state(id)?;
-                    }
-                    self.cold_start_generation(&mut record, &previous).await?;
-                    self.boot(&mut record, None, None, true).await
                 }
+                self.boot(&mut record, None, true).await
             }
             .await;
             (result, take_phases())
         })
         .await;
-        self.finish_launch(
-            &mut record,
-            started,
-            "start",
-            launch_cache.as_str(),
-            result,
-            phases,
-        )?;
-        if launch_cache != "memory_resume" && self.is_isolated() {
+        self.finish_launch(&mut record, started, "start", result, phases)?;
+        if self.is_isolated() {
             fs::remove_dir_all(self.generation(&previous)?)?;
         }
         Ok(record)
@@ -1316,7 +1229,6 @@ impl Runtime {
             return Err(Error::Invalid("box restarted during deletion".into()));
         }
         self.cleanup_disk_layers(&record, None)?;
-        self.remove_saved_state(id)?;
         fs::remove_dir_all(directory)?;
         File::open(self.root.join("boxes"))?.sync_all()?;
         Ok(())
