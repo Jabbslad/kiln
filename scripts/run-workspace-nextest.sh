@@ -13,6 +13,8 @@ case "$shards" in
   '' | *[!0-9]* | 0) echo "run-workspace-nextest: NEXTEST_SHARDS must be a positive integer" >&2; exit 1 ;;
 esac
 
+profile=${NEXTEST_PROFILE:-ci}
+
 serial=0
 if [ "${KILN_NEXTEST_SERIAL:-}" = 1 ]; then
   serial=1
@@ -27,7 +29,7 @@ if [ "$serial" -eq 1 ]; then
 fi
 
 run_partition() {
-  cargo nextest run --workspace --all-features --locked --exclude xtask --exclude kiln-server \
+  cargo nextest run --profile "$profile" --workspace --all-features --locked --exclude xtask --exclude kiln-server \
     --partition "count:$1/${shards}"
 }
 
@@ -53,7 +55,7 @@ else
   done
 fi
 
-if ! cargo nextest run -p kiln-server --all-features --locked --test-threads=1; then
+if ! cargo nextest run --profile "$profile" -p kiln-server --all-features --locked --test-threads=1; then
   fail=1
 fi
 exit "$fail"

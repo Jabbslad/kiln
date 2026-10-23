@@ -24,7 +24,8 @@ if grep -n -E 'gh release|git push|git tag|ssh ' "$root/scripts/tag-path-dry-run
 fi
 grep -q 'scripts/check-release-trust.sh' "$root/scripts/tag-path-dry-run.sh" \
   || fail 'dry-run must guard release binaries'
-grep -q 'scripts/check-release-trust.sh' "$root/.github/workflows/build.yml" \
+lint=$root/scripts/server-check-test-and-lint.sh
+grep -h 'scripts/check-release-trust.sh' "$root/.github/workflows/build.yml" "$lint" >/dev/null \
   || fail 'release build must guard release binaries'
 
 grep -q 'green_main_run' "$root/scripts/tag-path-dry-run.sh" \

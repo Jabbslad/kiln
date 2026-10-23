@@ -49,3 +49,4 @@ sh scripts/test-release-notes.sh
 sh scripts/test-fmt.sh
 sh scripts/test-check.sh
 sh scripts/test-server-check-nextest.sh
+sh scripts/test-server-check-hang-evidence.sh
