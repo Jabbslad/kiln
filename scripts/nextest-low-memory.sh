@@ -12,6 +12,25 @@ if [ -z "$budget" ]; then
   budget=$threshold
 fi
 
+# A virtio balloon still holding 2 GiB or more is RAM the host can take back.
+# Count it when it is tighter than MemAvailable, so a half-deflated agent VM
+# does not look like a 16 GiB CI runner.
+if [ -r /proc/vmstat ]; then
+  inf=$(awk '/^balloon_inflate / { print $2; exit }' /proc/vmstat)
+  def=$(awk '/^balloon_deflate / { print $2; exit }' /proc/vmstat)
+  inf=${inf:-0}
+  def=${def:-0}
+  case $inf$def in
+    *[!0-9]*) inf=0; def=0 ;;
+  esac
+  if [ "$inf" -ge "$def" ]; then
+    held=$(((inf - def) * 4096))
+    if [ "$held" -ge 2147483648 ] && [ "$held" -lt "$budget" ]; then
+      budget=$held
+    fi
+  fi
+fi
+
 self=$(awk -F: '$1 == "0" { print $3; exit }' /proc/self/cgroup)
 if [ -n "$self" ]; then
   for name in memory.max memory.high; do
