@@ -1341,7 +1341,7 @@ fn static_response(door: &Door, request: &Request) -> Option<Response> {
         return Some(unauthorized());
     }
     let query = request.uri().query();
-    if query.is_some() && query != Some("preview=1") {
+    if query.is_some() {
         return Some(deny(
             StatusCode::BAD_REQUEST,
             "invalid_request",

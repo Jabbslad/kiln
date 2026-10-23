@@ -401,15 +401,13 @@ async fn wrong_account_does_not_open_a_session() {
 }
 
 #[tokio::test]
-async fn preview_document_does_not_replace_api_paths() {
+async fn static_document_does_not_replace_api_paths() {
     let world = world(true).await;
     std::fs::create_dir_all(world.session_dir.parent().unwrap().join("dash/assets")).unwrap();
     let root = world.session_dir.parent().unwrap().join("dash");
     std::fs::write(root.join("index.html"), b"<p>preview</p>").unwrap();
     std::fs::write(root.join("assets/app.js"), b"console.log(1)").unwrap();
-    let response = world
-        .call(req("GET", "/boxes?preview=1", None, None, None))
-        .await;
+    let response = world.call(req("GET", "/boxes", None, None, None)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(header_str(&response, header::CACHE_CONTROL), "no-store");
     assert!(header_str(&response, header::CONTENT_SECURITY_POLICY).contains("default-src 'self'"));
@@ -424,13 +422,7 @@ async fn preview_document_does_not_replace_api_paths() {
         "public, max-age=31536000, immutable"
     );
     let response = world
-        .call(req(
-            "GET",
-            "/boxes?preview=1",
-            None,
-            Some("Bearer not-a-jwt"),
-            None,
-        ))
+        .call(req("GET", "/boxes", None, Some("Bearer not-a-jwt"), None))
         .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(world.hits.load(Ordering::SeqCst), 0);
@@ -448,9 +440,7 @@ async fn preview_document_does_not_replace_api_paths() {
     );
 
     let bare = world_without_root().await;
-    let response = bare
-        .call(req("GET", "/boxes?preview=1", None, None, None))
-        .await;
+    let response = bare.call(req("GET", "/boxes", None, None, None)).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(bare.hits.load(Ordering::SeqCst), 0);
 }
