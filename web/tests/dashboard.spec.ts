@@ -10,7 +10,11 @@ async function capture(page: Page, name: string) {
   }
 }
 
-test('public page copies only the client installer and separates live console from preview', async ({
+async function serveDashboard(page: Page) {
+  await page.route('**/api/v1/dashboard', (route) => route.fulfill({ json: previewDashboard }))
+}
+
+test('public page copies only the client installer and opens the live console', async ({
   page,
   context,
 }) => {
@@ -28,11 +32,8 @@ test('public page copies only the client installer and separates live console fr
     'curl -fsSL https://raw.githubusercontent.com/Jabbslad/kiln/main/deploy/bootstrap/install.sh | sh',
   )
   await expect(page.getByRole('status')).toHaveText('Copied')
-  await page.getByRole('link', { name: 'Explore design preview' }).click()
-  await expect(page).toHaveURL(/\/boxes\?preview=1$/)
-  await expect(page.getByText('EXAMPLE DATA · NO VM OPERATIONS')).toBeVisible()
   expect(apiRequests).toEqual([])
-  await page.getByRole('link', { name: 'kiln home' }).click()
+  await expect(page.getByRole('link', { name: /design preview/i })).toHaveCount(0)
   await page.getByRole('link', { name: 'Open console' }).click()
   await expect(page).toHaveURL(/\/boxes$/)
   await expect(page.getByRole('heading', { name: 'Connect your control plane' })).toBeVisible()
@@ -69,13 +70,14 @@ test('public page is readable across breakpoints and explains clipboard denial',
 })
 
 test('inventory, search, sorting, navigation and actual rendered design', async ({ page }) => {
+  await serveDashboard(page)
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
   const requests: string[] = []
   page.on('request', (request) => {
     if (request.url().includes('/api/')) requests.push(request.url())
   })
-  await page.goto('/boxes?preview=1')
+  await page.goto('/boxes')
   await expect(page).toHaveTitle('Boxes — kiln')
   await expect(page.getByRole('link', { name: 'kiln home' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Boxes' })).toBeVisible()
@@ -93,21 +95,22 @@ test('inventory, search, sorting, navigation and actual rendered design', async 
     'available',
   )
   await expect(page.getByText('Session not connected')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Connect terminal' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Connect terminal' })).toBeEnabled()
   await capture(page, 'box-workspace-desktop')
   await page.getByRole('button', { name: 'Exec', exact: true }).click()
   await page.getByLabel('Arguments (JSON array)').fill('[42]')
   await expect(page.getByLabel('Arguments (JSON array)')).toHaveAttribute('aria-invalid', 'true')
   await page.getByLabel('Arguments (JSON array)').fill('["/bin/echo", "hello"]')
   await expect(page.getByLabel('Arguments (JSON array)')).toHaveAttribute('aria-invalid', 'false')
-  expect(requests).toEqual([])
+  expect(requests.some((url) => url.includes('/api/v1/dashboard'))).toBe(true)
   expect(errors).toEqual([])
 })
 
 test('template drawer validates, traps focus, closes with Escape and never submits', async ({
   page,
 }) => {
-  await page.goto('/templates?preview=1')
+  await serveDashboard(page)
+  await page.goto('/templates')
   await page.getByRole('button', { name: 'Create box', exact: true }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toBeVisible()
@@ -116,8 +119,7 @@ test('template drawer validates, traps focus, closes with Escape and never submi
   await page.getByLabel('Box name').fill('api-dev')
   await expect(page.getByText('A box with this name already exists.')).toBeVisible()
   await page.getByLabel('Box name').fill('api-staging')
-  await expect(dialog.getByRole('button', { name: 'Create box' })).toBeDisabled()
-  await expect(page.getByText(/Read-only preview/)).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'Create box' })).toBeEnabled()
   await capture(page, 'create-drawer-desktop')
   await dialog.getByRole('button', { name: 'Cancel' }).focus()
   await page.keyboard.press('Tab')
@@ -127,16 +129,17 @@ test('template drawer validates, traps focus, closes with Escape and never submi
   await expect(page.getByRole('button', { name: 'Create box', exact: true })).toBeFocused()
 })
 
-test('restore acknowledgement stays gated and checkpoint scope survives reload', async ({
+test('restore acknowledgement enables the action and checkpoint scope survives reload', async ({
   page,
 }) => {
-  await page.goto('/boxes/box-7f3a2c1e?preview=1&tab=checkpoints')
+  await serveDashboard(page)
+  await page.goto('/boxes/box-7f3a2c1e?tab=checkpoints')
   await page.reload()
   await expect(page.getByText('worker-baseline')).toHaveCount(0)
   await page.getByRole('button', { name: 'Restore before-upgrade' }).click()
   await expect(page.getByText(/External actions are not undone/)).toBeVisible()
   await page.getByRole('checkbox').check()
-  await expect(page.getByRole('button', { name: 'Restore checkpoint', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Restore checkpoint', exact: true })).toBeEnabled()
   await capture(page, 'restore-dialog-desktop')
   await page.keyboard.press('Escape')
   await expect(page.getByRole('button', { name: 'Restore before-upgrade' })).toBeFocused()
@@ -192,13 +195,14 @@ test('live loading, empty, zero metrics and service failure are distinct', async
 test('paused state and failed operation details do not fabricate lifecycle success', async ({
   page,
 }) => {
-  await page.goto('/boxes/box-9c4d8e7b?preview=1')
+  await serveDashboard(page)
+  await page.goto('/boxes/box-9c4d8e7b')
   await expect(page.getByText('Pausing does not free memory.')).toBeVisible()
   await page.getByRole('button', { name: 'Resume', exact: true }).click()
-  await expect(page.getByRole('dialog').getByRole('button', { name: 'Resume' })).toBeDisabled()
+  await expect(page.getByRole('dialog').getByRole('button', { name: 'Resume' })).toBeVisible()
   await page.keyboard.press('Escape')
   await capture(page, 'paused-desktop')
-  await page.goto('/operations?preview=1&operation=op-21b8')
+  await page.goto('/operations?operation=op-21b8')
   await expect(
     page.getByText('Template is incompatible with this host. No VM was started.'),
   ).toBeVisible()
@@ -206,8 +210,9 @@ test('paused state and failed operation details do not fabricate lifecycle succe
 })
 
 test('mobile layout and navigation remain usable without document overflow', async ({ page }) => {
+  await serveDashboard(page)
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto('/boxes?preview=1')
+  await page.goto('/boxes')
   await expect(page.getByRole('heading', { name: 'Boxes' })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   expect(
@@ -269,8 +274,9 @@ for (const width of [320, 430]) {
   test(`phone layout at ${width}px supports row taps, filters and persistent navigation`, async ({
     page,
   }) => {
+    await serveDashboard(page)
     await page.setViewportSize({ width, height: 844 })
-    await page.goto('/boxes?preview=1')
+    await page.goto('/boxes')
     await page.getByRole('button', { name: 'Failed 1' }).click()
     await expect(page.getByRole('link', { name: 'sandbox', exact: true })).toBeVisible()
     await page.getByRole('link', { name: 'Open sandbox' }).click()
@@ -278,18 +284,18 @@ for (const width of [320, 430]) {
       'aria-current',
       'page',
     )
-    await page.goto('/boxes?preview=1')
+    await page.goto('/boxes')
     await page
       .locator('tbody tr')
       .first()
       .click({ position: { x: 30, y: 65 } })
     await expect(page.getByRole('heading', { name: 'api-dev', exact: true })).toBeVisible()
     for (const path of [
-      '/boxes?preview=1',
-      '/boxes/box-7f3a2c1e?preview=1',
-      '/templates?preview=1',
-      '/operations?preview=1',
-      '/settings?preview=1',
+      '/boxes',
+      '/boxes/box-7f3a2c1e',
+      '/templates',
+      '/operations',
+      '/settings',
     ]) {
       await page.goto(path)
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
@@ -302,8 +308,9 @@ for (const width of [320, 430]) {
 }
 
 test('phone inventory retains accessible table semantics after reflow', async ({ page }) => {
+  await serveDashboard(page)
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto('/boxes?preview=1')
+  await page.goto('/boxes')
   await expect(page.getByRole('table')).toHaveCount(1)
   await expect(page.getByRole('row')).toHaveCount(5)
   await expect(page.getByRole('columnheader', { name: 'Name', exact: true })).toHaveAttribute(
@@ -317,7 +324,7 @@ test('phone inventory retains accessible table semantics after reflow', async ({
 })
 
 test('clicking the version label opens embedded release notes', async ({ page }) => {
-  await page.goto('/boxes?preview=1')
+  await page.goto('/boxes')
   const version = page.getByRole('button', { name: /^Release notes for v/ })
   await expect(version).toBeVisible()
   await capture(page, 'release-notes-header')
@@ -331,13 +338,14 @@ test('clicking the version label opens embedded release notes', async ({ page })
 })
 
 test('key screens have no automated accessibility violations', async ({ page }) => {
+  await serveDashboard(page)
   for (const path of [
-    '/boxes?preview=1',
-    '/templates?preview=1',
-    '/boxes/box-7f3a2c1e?preview=1',
-    '/operations?preview=1',
-    '/settings?preview=1',
-    '/docs?preview=1',
+    '/boxes',
+    '/templates',
+    '/boxes/box-7f3a2c1e',
+    '/operations',
+    '/settings',
+    '/docs',
   ]) {
     await page.goto(path)
     await expect(page.locator('main h1')).toBeVisible()
@@ -346,7 +354,7 @@ test('key screens have no automated accessibility violations', async ({ page }) 
         .violations,
     ).toEqual([])
   }
-  await page.goto('/templates?preview=1')
+  await page.goto('/templates')
   await page.getByRole('button', { name: 'Create box', exact: true }).click()
   expect(
     (await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze())

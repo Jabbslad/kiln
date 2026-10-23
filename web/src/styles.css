@@ -324,9 +324,6 @@ svg {
   text-transform: uppercase;
   color: var(--muted);
 }
-.preview-label {
-  color: #bababa;
-}
 .topbar-version {
   color: var(--muted);
   font: 10px var(--mono);
