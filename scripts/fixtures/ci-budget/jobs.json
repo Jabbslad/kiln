@@ -1,0 +1,40 @@
+[
+  {
+    "total_count": 4,
+    "jobs": [
+      {
+        "name": "changes",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-23T12:00:00.250000Z",
+        "completed_at": "2026-10-23T12:00:42Z"
+      },
+      {
+        "name": "docs-check",
+        "status": "completed",
+        "conclusion": "skipped",
+        "started_at": "2026-10-23T10:00:00Z",
+        "completed_at": "2026-10-23T10:00:01Z"
+      }
+    ]
+  },
+  {
+    "total_count": 4,
+    "jobs": [
+      {
+        "name": "server-check",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-10-23T12:00:15Z",
+        "completed_at": "2026-10-23T12:06:00Z"
+      },
+      {
+        "name": "tag-path-dry-run",
+        "status": "in_progress",
+        "conclusion": null,
+        "started_at": "2026-10-23T12:00:20Z",
+        "completed_at": null
+      }
+    ]
+  }
+]

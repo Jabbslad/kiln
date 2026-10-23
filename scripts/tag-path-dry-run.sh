@@ -195,11 +195,10 @@ if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
   proved_dist=$root/dist-proved-package-server
   mkdir -p "$proved_dist"
   git checkout -- Cargo.toml Cargo.lock
+  # From-tag bytes used to come from server-check. Building them here lets
+  # tag-path run beside that job. Proof adoption still requires a green run.
   reuse_bin_dir=${TAG_PATH_RELEASE_BIN_DIR:-}
   if [ -z "$reuse_bin_dir" ]; then
-    if [ -n "${GITHUB_ACTIONS:-}" ]; then
-      fail 'TAG_PATH_RELEASE_BIN_DIR is required on pull requests'
-    fi
     VERSION=$from
     export VERSION
     cargo build --release --locked --bins -p kiln-server -p kiln-runtime -p kiln-client

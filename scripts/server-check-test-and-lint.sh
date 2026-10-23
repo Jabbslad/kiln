@@ -42,6 +42,8 @@ sh scripts/test-wait-main-run.sh
 sh scripts/test-batch-merge.sh
 sh scripts/test-tag-path-dry-run.sh
 sh scripts/test-tag-path-pr-stamp-order.sh
+sh scripts/test-tag-path-parallel.sh
+sh scripts/test-ci-budget.sh
 sh scripts/test-deploy-host-tools.sh
 sh scripts/test-release-json-field.sh
 sh scripts/test-check-dashboard-bundle.sh
@@ -93,6 +95,8 @@ shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-b
   scripts/test-batch-merge.sh \
   scripts/tag-path-dry-run.sh scripts/test-tag-path-dry-run.sh \
   scripts/test-tag-path-pr-stamp-order.sh \
+  scripts/ci-budget.sh scripts/test-ci-budget.sh \
+  scripts/test-tag-path-parallel.sh \
   scripts/read-release-json-field.sh scripts/test-release-json-field.sh \
   scripts/releasable.sh scripts/test-releasable.sh \
   scripts/next-release-tag.sh scripts/test-next-release-tag.sh \
