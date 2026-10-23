@@ -13,11 +13,14 @@ pub mod verity;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const FICLONE: libc::c_ulong = 0x4004_9409;
+const FALLOC_FL_KEEP_SIZE: i32 = 0x01;
+const FALLOC_FL_PUNCH_HOLE: i32 = 0x02;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum CopyMethod {
     Reflink,
     Copy,
+    Move,
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -109,6 +112,77 @@ pub fn copy_disk(src: &Path, dst: &Path, deadline: Instant) -> Result<CopyMethod
     copy_file(src, dst, deadline, None)
 }
 
+/// Move an existing box disk into a new jail generation without copying bytes.
+pub fn relocate_disk(src: &Path, dst: &Path) -> Result<CopyMethod> {
+    if !src.is_file() {
+        return Err(Error::Invalid(format!(
+            "{} is not a regular file",
+            src.display()
+        )));
+    }
+    if dst.exists() {
+        return Err(Error::Invalid(format!("{} already exists", dst.display())));
+    }
+    if let Some(parent) = dst.parent() {
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(parent)?;
+        private_dir(parent)?;
+    }
+    fs::rename(src, dst)?;
+    File::open(dst.parent().unwrap_or(Path::new(".")))?.sync_all()?;
+    Ok(CopyMethod::Move)
+}
+
+/// Punch holes for zero-filled regions so later copies can use SEEK_DATA/HOLE.
+pub fn sparsify_in_place(path: &Path) -> Result<()> {
+    let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+    sparsify_fd(&mut file)
+}
+
+fn sparsify_fd(file: &mut File) -> Result<()> {
+    let length = file.metadata()?.len();
+    if length == 0 {
+        return Ok(());
+    }
+    const CHUNK: u64 = 1024 * 1024;
+    let mut offset = 0_u64;
+    let mut buffer = vec![0_u8; CHUNK as usize];
+    while offset < length {
+        let count = ((length - offset).min(CHUNK)) as usize;
+        file.seek(SeekFrom::Start(offset))?;
+        file.read_exact(&mut buffer[..count])?;
+        if is_zero(&buffer[..count]) {
+            punch_hole(file, offset, count as u64)?;
+        }
+        offset += count as u64;
+    }
+    file.sync_all()?;
+    Ok(())
+}
+
+fn punch_hole(file: &File, offset: u64, length: u64) -> Result<()> {
+    if length == 0 {
+        return Ok(());
+    }
+    if unsafe {
+        libc::fallocate(
+            file.as_raw_fd(),
+            FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+            offset as i64,
+            length as i64,
+        )
+    } == 0
+    {
+        return Ok(());
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::EOPNOTSUPP | libc::EINVAL) => Ok(()),
+        _ => Err(std::io::Error::last_os_error().into()),
+    }
+}
+
 /// Materialize a snapshot disk after manifest verification. Sealed sources must
 /// be read through their authenticated inode, including every logical zero.
 pub fn copy_snapshot_disk(
@@ -143,6 +217,13 @@ fn copy_file(
     }
     if let Some((expected, seal)) = sealed {
         verity::verify_file(&source, expected, seal)?;
+    } else if source_metadata.blocks().saturating_mul(512) >= source_metadata.len() / 2 {
+        drop(source);
+        let _ = sparsify_in_place(src);
+        source = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(src)?;
     }
     let mut destination = OpenOptions::new()
         .read(true)
@@ -449,6 +530,49 @@ mod tests {
             std::env::var("KILN_TEST_VERITY_DIR").expect("set KILN_TEST_VERITY_DIR"),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn sparsify_dense_image_reduces_allocated_blocks_before_copy() {
+        let root = tempdir().unwrap();
+        let source = root.path().join("dense");
+        let logical = 8 * 1024 * 1024_u64;
+        let mut file = File::create(&source).unwrap();
+        assert_eq!(
+            unsafe { libc::fallocate(file.as_raw_fd(), 0, 0, logical as i64) },
+            0
+        );
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.write_all(b"boot").unwrap();
+        file.sync_all().unwrap();
+        sparsify_in_place(&source).unwrap();
+        let blocks = fs::metadata(&source).unwrap().blocks();
+        if blocks * 512 >= logical / 4 {
+            eprintln!("skip: punch hole ineffective on this filesystem");
+            return;
+        }
+        let destination = root.path().join("copy");
+        let before = fs::read_to_string("/proc/thread-self/io")
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("rchar: "))
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        copy_disk(
+            &source,
+            &destination,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+        let after = fs::read_to_string("/proc/thread-self/io")
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("rchar: "))
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        assert!(after - before < logical / 4);
     }
 
     #[test]

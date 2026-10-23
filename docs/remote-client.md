@@ -76,6 +76,32 @@ or requiring a guest IP reachable from the laptop. SQLite is embedded; no
 PostgreSQL or Redis is required. The service exposes only catalog aliases and sanitized box records,
 not host paths, jail identities, host fingerprints or Firecracker sockets.
 
+## Member box access
+
+On an enrolled server, tenant owners can manage every box. Members can list,
+inspect, operate and SSH only into boxes with their own account ID as `owner`.
+Creation saves that ID in the initial box reservation, even if launch later
+fails. Legacy boxes without an owner remain owner-only; no metadata migration
+or journal schema change is required.
+
+Operation results and request-ID retries are also scoped to the submitting
+account. Another member receives 404, including after a failed create or box
+deletion; a conflicting retry does not reveal another account's request.
+Owners retain access to all operation records, including legacy records without
+an actor. This is API authorization, not a hostile-workload isolation guarantee.
+
+The gateway verifies the token's tenant/server binding and replaces caller
+headers before forwarding to the restricted Unix socket. Headerless direct
+socket access remains a trusted local administrator interface. **Upgrade
+`kiln-host` and `kiln-api` together**, using the installer's existing stop/start
+ordering; an old gateway does not supply the new caller context on every route.
+
+Run `sh scripts/test-tenant-isolation.sh` for the disposable JWT/gateway/host
+regressions. On a host with accessible KVM, cgroup v2 and Firecracker/jailer
+1.17 on PATH, add `--include-ignored` to verify creator persistence through
+the runtime reservation as well. That check deliberately rejects a snapshot
+with missing hashes before VM launch; it never operates on installed boxes.
+
 ## Central login in v0.4.0
 
 The installer includes browser login with `https://dark-forge.dev` built in.

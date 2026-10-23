@@ -13,10 +13,8 @@ snapshots are not migrated or renamed automatically; see the
 An experimental isolated profile now integrates jailer, per-box host identities, cgroup limits, and jail-local snapshot handling. Unit checks, development-mode regression tests, and all six privileged isolated lifecycle tests pass with both BusyBox and Ubuntu on the development runner. See the [setup and validation procedure](docs/runtime.md#experimental-isolated-profile). This single-host validation is not a production security claim.
 
 The [dashboard frontend](web/README.md) is also available as a separate static
-release archive. It provides an explicit read-only design preview; browser
-authentication, the dashboard API and live VM controls are not integrated yet.
-Use the CLI below for real VM operations. The server installer does not deploy
-the dashboard automatically.
+release archive. Use the CLI below for real VM operations. The server installer
+does not deploy the dashboard automatically.
 
 ## Use a laptop client
 

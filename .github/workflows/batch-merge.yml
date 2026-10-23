@@ -1,0 +1,45 @@
+name: Batch merge
+
+on:
+  workflow_dispatch:
+    inputs:
+      prs:
+        description: Space-separated pull request numbers to merge in stack order. Empty merges every ready open pull request.
+        type: string
+        default: ''
+      dry_run:
+        description: Print the cut list and merge order without merging or dispatching Build.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  batch-merge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: batch-merge
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Wait for idle main build and deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: sh scripts/batch-merge-idle-gate.sh
+      - name: Batch merge and dispatch Build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BATCH_MERGE_PRS: ${{ inputs.prs }}
+          BATCH_MERGE_DRY_RUN: ${{ inputs.dry_run }}
+        run: sh scripts/batch-merge.sh

@@ -68,14 +68,28 @@ fn table_has_column(connection: &Connection, column: &str) -> Result<bool> {
     Ok(names.filter_map(Result::ok).any(|name| name == column))
 }
 
-fn ensure_v3_columns(connection: &Connection) -> Result<()> {
-    if !table_has_column(connection, "create_owner")? {
-        connection.execute(
-            "ALTER TABLE operations ADD COLUMN create_owner TEXT NOT NULL DEFAULT ''",
-            [],
-        )?;
-    }
+const TIMESTAMP_MS_THRESHOLD: i64 = 1_000_000_000_000;
+
+fn migrate_seconds_timestamps_to_ms(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "UPDATE operations SET created_at = created_at * 1000
+         WHERE created_at > 0 AND created_at < ?1",
+        params![TIMESTAMP_MS_THRESHOLD],
+    )?;
+    connection.execute(
+        "UPDATE operations SET finished_at = finished_at * 1000
+         WHERE finished_at IS NOT NULL AND finished_at > 0 AND finished_at < ?1",
+        params![TIMESTAMP_MS_THRESHOLD],
+    )?;
     Ok(())
+}
+
+pub(crate) fn journal_stored_secs(stored: i64) -> i64 {
+    if stored >= TIMESTAMP_MS_THRESHOLD {
+        stored / 1000
+    } else {
+        stored
+    }
 }
 
 fn ensure_v2_columns(connection: &Connection) -> Result<()> {
@@ -87,6 +101,14 @@ fn ensure_v2_columns(connection: &Connection) -> Result<()> {
             "ALTER TABLE operations ADD COLUMN action TEXT NOT NULL DEFAULT 'unknown'",
             [],
         )?;
+    }
+    Ok(())
+}
+
+fn ensure_v4_columns(connection: &Connection) -> Result<()> {
+    if !table_has_column(connection, "actor")? {
+        // Nullable: legacy rows and pre-gateway accepts have no actor.
+        connection.execute("ALTER TABLE operations ADD COLUMN actor TEXT", [])?;
     }
     Ok(())
 }
@@ -107,17 +129,23 @@ impl Journal {
             id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
             is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
             created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-            finished_at INTEGER, action TEXT NOT NULL DEFAULT 'unknown',
-            create_owner TEXT NOT NULL DEFAULT '');
+            finished_at INTEGER, action TEXT NOT NULL DEFAULT 'unknown', actor TEXT);
             CREATE INDEX IF NOT EXISTS operation_boxes ON operations(box_id, is_create);",
         )?;
-        if version < SCHEMA_VERSION {
+        if version < 2 {
             ensure_v2_columns(&tx)?;
-            ensure_v3_columns(&tx)?;
             tx.execute(
                 "UPDATE operations SET action = 'create' WHERE is_create = 1 AND action = 'unknown'",
                 [],
             )?;
+        }
+        if version < 3 {
+            migrate_seconds_timestamps_to_ms(&tx)?;
+        }
+        if version < 4 {
+            ensure_v4_columns(&tx)?;
+        }
+        if version < SCHEMA_VERSION {
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         let interrupted = tx
@@ -168,7 +196,7 @@ impl Journal {
     /// Drops finished rows using `running = 0` and `created_at` only; operation state in
     /// `response` is not consulted. Live boxes are protected via `is_create = 1` and `box_id`.
     pub fn prune_terminal(&mut self, now: i64, live_box_ids: &[&str]) -> Result<u32> {
-        let cutoff = now.saturating_sub(RETENTION_SECS);
+        let cutoff = now.saturating_sub(RETENTION_SECS * 1000);
         let tx = self.0.transaction()?;
         let deleted = if live_box_ids.is_empty() {
             tx.execute(
@@ -228,16 +256,10 @@ impl Journal {
         &mut self,
         request: &Submit,
         live_box_ids: &[&str],
-        create_owner: Option<&str>,
+        actor: Option<&str>,
     ) -> Result<Operation> {
-        let now = unix_now();
+        let now = unix_now_ms();
         self.make_room(now, live_box_ids)?;
-        let is_create = matches!(request.action, Action::Create { .. });
-        let owner = if is_create {
-            create_owner.unwrap_or("")
-        } else {
-            ""
-        };
         let op = Operation {
             id: request.id.clone(),
             box_id: request
@@ -250,30 +272,20 @@ impl Journal {
             error: None,
         };
         self.0.execute(
-            "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,action,create_owner) VALUES (?1,?2,?3,?4,1,?5,?6,?7)",
+            "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,action,created_at,actor)
+             VALUES (?1,?2,?3,?4,1,?5,?6,?7,?8)",
             params![
                 op.id,
                 Self::fingerprint(request)?,
                 op.box_id,
-                is_create,
+                matches!(request.action, Action::Create { .. }),
                 serde_json::to_string(&op)?,
                 launch_action(&request.action),
-                owner,
+                now,
+                actor,
             ],
         )?;
         Ok(op)
-    }
-
-    pub fn create_owner(&self, box_id: &str) -> Result<Option<String>> {
-        let owner: Option<String> = self
-            .0
-            .query_row(
-                "SELECT create_owner FROM operations WHERE box_id=?1 AND is_create=1 LIMIT 1",
-                [box_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        Ok(owner.filter(|value| !value.is_empty()))
     }
 
     pub fn get(&self, id: &str) -> Result<Option<Operation>> {
@@ -287,6 +299,18 @@ impl Journal {
             .transpose()
     }
 
+    /// Check before replay/fingerprint comparison. A new ID is available to any
+    /// caller; existing IDs (including deleted boxes) remain bound to their actor.
+    /// Legacy NULL actors are accessible only through the owner's bypass.
+    pub fn allows_actor(&self, id: &str, actor: &str) -> Result<bool> {
+        Ok(self.0.query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM operations
+             WHERE id=?1 AND (actor IS NULL OR actor != ?2))",
+            params![id, actor],
+            |row| row.get(0),
+        )?)
+    }
+
     pub fn finish(&mut self, op: &Operation) -> Result<()> {
         ensure!(
             op.state != OperationState::Running,
@@ -294,8 +318,8 @@ impl Journal {
         );
         ensure!(
             self.0.execute(
-                "UPDATE operations SET running=0,response=?2,finished_at=unixepoch() WHERE id=?1 AND running=1",
-                params![op.id, serde_json::to_string(op)?]
+                "UPDATE operations SET running=0,response=?2,finished_at=?3 WHERE id=?1 AND running=1",
+                params![op.id, serde_json::to_string(op)?, unix_now_ms()]
             )? == 1,
             "operation not running"
         );
@@ -390,21 +414,27 @@ impl Journal {
     }
 }
 
-fn unix_now() -> i64 {
-    i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-    )
-    .unwrap_or(i64::MAX)
+fn unix_now_ms() -> i64 {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+}
+
+fn journal_timestamps_are_milliseconds(created_at: i64) -> bool {
+    created_at >= TIMESTAMP_MS_THRESHOLD
 }
 
 fn launch_total_ms(created_at: i64, finished_at: Option<i64>, response: &str) -> Option<f64> {
     if let Some(finished_at) = finished_at
         && finished_at > created_at
     {
-        return Some((finished_at - created_at) as f64 * 1000.);
+        let scale = if journal_timestamps_are_milliseconds(created_at) {
+            1.0
+        } else {
+            1000.0
+        };
+        return Some((finished_at - created_at) as f64 * scale);
     }
     legacy_launch_total_ms(created_at, response)
 }
@@ -602,7 +632,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("ops.sqlite");
         let mut db = Journal::open(&path).unwrap();
-        let old = unix_now() - RETENTION_SECS - 60;
+        let old = unix_now_ms() - RETENTION_SECS * 1000 - 60_000;
         for index in 0..HIGH_WATER_MARK {
             insert_terminal(
                 &db.0,
@@ -632,7 +662,7 @@ mod tests {
         let path = root.path().join("ops.sqlite");
         let mut db = Journal::open(&path).unwrap();
         let live_box = new_id();
-        let old = unix_now() - RETENTION_SECS - 60;
+        let old = unix_now_ms() - RETENTION_SECS * 1000 - 60_000;
         insert_terminal(
             &db.0,
             &new_id(),
@@ -642,7 +672,7 @@ mod tests {
             OperationState::Succeeded,
         );
         assert!(db.owns(&live_box).unwrap());
-        db.prune_terminal(unix_now(), &[&live_box]).unwrap();
+        db.prune_terminal(unix_now_ms(), &[&live_box]).unwrap();
         assert!(db.owns(&live_box).unwrap());
         assert_eq!(db.managed_ids().unwrap(), vec![live_box]);
     }
@@ -653,9 +683,9 @@ mod tests {
         let path = root.path().join("ops.sqlite");
         let mut db = Journal::open(&path).unwrap();
         let running_id = new_id();
-        let old = unix_now() - RETENTION_SECS - 60;
+        let old = unix_now_ms() - RETENTION_SECS * 1000 - 60_000;
         insert_running(&db.0, &running_id, &new_id(), old);
-        db.prune_terminal(unix_now(), &[]).unwrap();
+        db.prune_terminal(unix_now_ms(), &[]).unwrap();
         assert!(db.get(&running_id).unwrap().is_some());
         assert_eq!(
             db.get(&running_id).unwrap().unwrap().state,
@@ -664,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_journal_is_current_version_and_reopening_is_a_noop() {
+    fn fresh_journal_is_version_two_and_reopening_is_a_noop() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("ops.sqlite");
         drop(Journal::open(&path).unwrap());
@@ -675,33 +705,13 @@ mod tests {
         assert_eq!(version, SCHEMA_VERSION);
         assert!(table_has_column(&Connection::open(&path).unwrap(), "finished_at").unwrap());
         assert!(table_has_column(&Connection::open(&path).unwrap(), "action").unwrap());
-        assert!(table_has_column(&Connection::open(&path).unwrap(), "create_owner").unwrap());
+        assert!(table_has_column(&Connection::open(&path).unwrap(), "actor").unwrap());
         drop(Journal::open(&path).unwrap());
         let version: u32 = Connection::open(&path)
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
-    }
-
-    #[test]
-    fn v2_upgrade_adds_create_owner_column() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("ops.sqlite");
-        let conn = Connection::open(&path).unwrap();
-        conn.execute_batch(
-            "PRAGMA user_version=2;
-             CREATE TABLE operations (
-               id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
-               is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
-               created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-               finished_at INTEGER, action TEXT NOT NULL DEFAULT 'unknown');
-             CREATE INDEX operation_boxes ON operations(box_id, is_create);",
-        )
-        .unwrap();
-        drop(conn);
-        drop(Journal::open(&path).unwrap());
-        assert!(table_has_column(&Connection::open(&path).unwrap(), "create_owner").unwrap());
     }
 
     #[test]
@@ -734,6 +744,14 @@ mod tests {
             )
             .unwrap();
         assert!(finished_at.is_none());
+        let created_at: i64 = conn
+            .query_row(
+                "SELECT created_at FROM operations WHERE id='op1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(created_at, 100_000);
         assert_eq!(
             conn.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
                 .unwrap(),
@@ -750,8 +768,8 @@ mod tests {
         let stale_exec = format!("{:032x}", 0);
         let running_id = new_id();
         let recent_exec = new_id();
-        let old = unix_now() - RETENTION_SECS - 3600;
-        let recent = unix_now() - 3600;
+        let old = unix_now_ms() - RETENTION_SECS * 1000 - 3_600_000;
+        let recent = unix_now_ms() - 3_600_000;
         {
             let db = create_user_version_one_db(&path);
             for index in 1..=TERMINAL_KEEP_COUNT {
@@ -796,7 +814,7 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
-        journal.prune_terminal(unix_now(), &[&live_box]).unwrap();
+        journal.prune_terminal(unix_now_ms(), &[&live_box]).unwrap();
         assert!(journal.get(&create_id).unwrap().is_some());
         assert!(journal.get(&running_id).unwrap().is_some());
         assert!(journal.get(&recent_exec).unwrap().is_some());
@@ -841,6 +859,77 @@ mod tests {
     }
 
     #[test]
+    fn millisecond_journal_timestamps_report_direct_duration() {
+        let created = 1_700_000_000_000_i64;
+        let finished = created + 842;
+        assert_eq!(launch_total_ms(created, Some(finished), "{}"), Some(842.));
+    }
+
+    #[test]
+    fn v2_seconds_journal_upgrades_to_millisecond_timestamps() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("ops.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "PRAGMA user_version=2;
+             CREATE TABLE operations (
+               id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
+               is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
+               created_at INTEGER NOT NULL, finished_at INTEGER, action TEXT NOT NULL DEFAULT 'unknown');",
+        )
+        .unwrap();
+        let base = 1_700_000_000_i64;
+        for index in 0..230 {
+            let id = format!("{:032x}", index + 1);
+            let box_id = format!("{:032x}", index + 1000);
+            let response = format!(
+                r#"{{"id":"{id}","box_id":"{box_id}","state":"succeeded","result":null,"error":null}}"#
+            );
+            let finished = if index % 3 == 0 {
+                Some(base + index as i64 + 2)
+            } else {
+                None
+            };
+            conn.execute(
+                "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,created_at,finished_at,action)
+                 VALUES (?1,x'00',?2,1,0,?5,?3,?4,'create')",
+                params![id, box_id, base + index as i64, finished, response],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let db = Journal::open(&path).unwrap();
+        let version: u32 =
+            db.0.query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let (min_created, max_created): (i64, i64) =
+            db.0.query_row(
+                "SELECT min(created_at), max(created_at) FROM operations",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(min_created >= TIMESTAMP_MS_THRESHOLD);
+        assert!(max_created >= TIMESTAMP_MS_THRESHOLD);
+        let sample_id = format!("{:032x}", 1);
+        let (created, finished): (i64, i64) =
+            db.0.query_row(
+                "SELECT created_at, finished_at FROM operations WHERE id=?1",
+                [&sample_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(created, base * 1000);
+        assert_eq!(finished, (base + 2) * 1000);
+        let measured = db
+            .last_launch_ms("000000000000000000000000000003e8")
+            .unwrap()
+            .unwrap();
+        assert!((measured.1 - 2000.).abs() < 0.001, "got {}", measured.1);
+    }
+
+    #[test]
     fn legacy_response_timestamps_derive_launch_interval() {
         let created_at = 1_000;
         let response = serde_json::json!({
@@ -865,7 +954,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("ops.sqlite");
         let mut db = Journal::open(&path).unwrap();
-        let recent = unix_now() - 60;
+        let recent = unix_now_ms() - 60_000;
         for index in 0..HIGH_WATER_MARK {
             insert_terminal(
                 &db.0,
@@ -884,5 +973,57 @@ mod tests {
             },
         };
         assert!(db.accept(&request, &[], None).is_err());
+    }
+
+    #[test]
+    fn v3_upgrade_adds_actor_column_with_null_on_legacy_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("ops.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "PRAGMA user_version=3;
+             CREATE TABLE operations (
+               id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, box_id TEXT NOT NULL,
+               is_create INTEGER NOT NULL, running INTEGER NOT NULL, response TEXT NOT NULL,
+               created_at INTEGER NOT NULL, finished_at INTEGER,
+               action TEXT NOT NULL DEFAULT 'unknown');",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO operations(id,fingerprint,box_id,is_create,running,response,created_at,action)
+             VALUES ('op1', x'00', 'box1', 1, 0, '{\"state\":\"succeeded\"}', 1700000000000, 'create')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let mut db = Journal::open(&path).unwrap();
+        assert_eq!(
+            db.0.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        let actor: Option<String> =
+            db.0.query_row("SELECT actor FROM operations WHERE id='op1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(actor.is_none());
+        let request = Submit {
+            id: new_id(),
+            action: Action::Create {
+                template: "ubuntu".into(),
+                name: "owned".into(),
+            },
+        };
+        let owner = "0123456789abcdef0123456789abcdef";
+        let op = db.accept(&request, &[], Some(owner)).unwrap();
+        let actor: String =
+            db.0.query_row(
+                "SELECT actor FROM operations WHERE id=?1",
+                [&op.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(actor, owner);
     }
 }

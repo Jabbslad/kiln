@@ -20,13 +20,11 @@ import { Modal, Unavailable } from './ui'
 
 export function CreateDrawer({
   data,
-  preview,
   authenticated,
   initialTemplate,
   onClose,
 }: {
   data: Dashboard
-  preview: boolean
   authenticated: boolean
   initialTemplate?: Template
   onClose: () => void
@@ -186,7 +184,7 @@ export function CreateDrawer({
           {authenticated ? (
             <p className="field-hint">The box appears after the control plane observes it.</p>
           ) : (
-            <Unavailable preview={preview} />
+            <Unavailable />
           )}
           {pending && (
             <p className="field-hint" role="status">
@@ -222,13 +220,11 @@ export function CreateDrawer({
 export function RestoreDialog({
   box,
   checkpoint,
-  preview,
   authenticated = false,
   onClose,
 }: {
   box: Box
   checkpoint: Checkpoint
-  preview: boolean
   authenticated?: boolean
   onClose: () => void
 }) {
@@ -283,7 +279,7 @@ export function RestoreDialog({
             This box updates after the control plane observes the restore.
           </p>
         ) : (
-          <Unavailable preview={preview} />
+          <Unavailable />
         )}
         {pending && (
           <p className="field-hint" role="status">
@@ -333,13 +329,11 @@ export function RestoreDialog({
 export function LifecycleDialog({
   action,
   box,
-  preview,
   authenticated = false,
   onClose,
 }: {
   action: string
   box: Box
-  preview: boolean
   authenticated?: boolean
   onClose: () => void
 }) {
@@ -389,7 +383,7 @@ export function LifecycleDialog({
               : 'The box state updates after the control plane observes it.'}
           </p>
         ) : (
-          <Unavailable preview={preview} />
+          <Unavailable />
         )}
         {pending && (
           <p className="field-hint" role="status">
@@ -439,12 +433,10 @@ export function LifecycleDialog({
 
 export function DeleteDialog({
   box,
-  preview,
   authenticated = false,
   onClose,
 }: {
   box: Box
-  preview: boolean
   authenticated?: boolean
   onClose: () => void
 }) {
@@ -475,7 +467,7 @@ export function DeleteDialog({
             The box leaves the inventory after the control plane observes it gone.
           </p>
         ) : (
-          <Unavailable preview={preview} />
+          <Unavailable />
         )}
         {pending && (
           <p className="field-hint" role="status">

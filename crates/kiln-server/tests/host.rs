@@ -15,8 +15,6 @@ fn config(root: &std::path::Path) -> Config {
         isolation_config: None,
         allow_unsafe_development: true,
         templates: Default::default(),
-        tenant_owner_id: String::new(),
-        member_box_quota: kiln_api::auth::DEFAULT_MEMBER_BOX_QUOTA,
     }
 }
 

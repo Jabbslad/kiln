@@ -66,6 +66,7 @@ if grep -R -I -n -F -i \
   --exclude-dir=.git \
   --exclude-dir=target \
   --exclude-dir=node_modules \
+  --exclude='*.log' \
   -e windows -e .exe -e powershell \
   "$root" > "$raw"
 then

@@ -12,7 +12,7 @@ sh scripts/proof.sh dashboard --phase before   # optional baseline before edits
 sh scripts/proof.sh dashboard --phase after
 ```
 
-Artifacts land in `artifacts/proof/` (override with `KILN_PROOF_DIR`). Each run builds `web/` (`npm run build`), builds `kiln-api` (the kiln-app listener binary), serves the production bundle with Vite preview on `127.0.0.1:4174`, and runs `web/tests/proof.spec.ts`. PNGs are named `{phase}-dashboard-boxes.png`.
+Artifacts land in `artifacts/proof/` (override with `KILN_PROOF_DIR`). Each run builds `web/` (`npm run build`), builds `kiln-api` (the kiln-app listener binary), serves the production bundle with Vite preview on `127.0.0.1:4174`, and runs `web/tests/proof.spec.ts`. PNGs are named `{phase}-landing.png` and `{phase}-dashboard-boxes.png`.
 
 For live-route unreachable vs recovered screenshots on the built bundle:
 
@@ -59,6 +59,6 @@ When guarded paths change (`web/src`, `web/public`, `crates/kiln-client/src`, `c
 
 ## Gotchas
 
-- Preview proof uses `?preview=1` fixture data; it does not replace live host or operate-session evidence for mutations.
+- Dashboard proof serves the built bundle with Vite's preview server and captures the landing page and the console. It does not replace live host or operate-session evidence for mutations.
 - Set `KILN_PROOF_SKIP_KILN_APP=1` only for the CI smoke or when Rust is unavailable; full local proof should build kiln-api.
 - Playwright installs Chromium on first run (`npx playwright install chromium`).

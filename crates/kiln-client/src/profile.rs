@@ -51,35 +51,6 @@ pub struct CentralProfile {
         skip_serializing_if = "server_is_chosen"
     )]
     pub server_chosen: bool,
-    /// Tenant default when the operator omits `--server` on login.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_server_id: Option<String>,
-}
-
-pub fn resolve_server_placement(
-    central: &mut CentralProfile,
-    explicit_server: Option<&str>,
-) -> Result<()> {
-    if let Some(id) = explicit_server {
-        ensure!(
-            central.server.id == id,
-            "run `kiln login --server {id}` before targeting that server"
-        );
-        central.server_chosen = true;
-        return Ok(());
-    }
-    if central.server_chosen {
-        return Ok(());
-    }
-    let Some(default) = central.default_server_id.as_deref() else {
-        anyhow::bail!("server is not chosen; run `kiln login --server SERVER_ID`");
-    };
-    ensure!(
-        central.server.id == default,
-        "default server is unavailable; run `kiln login --server SERVER_ID`"
-    );
-    central.server_chosen = true;
-    Ok(())
 }
 
 #[derive(Serialize, Deserialize)]

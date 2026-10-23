@@ -11,9 +11,11 @@ fail() {
 
 docs=$(awk '/^  docs-check:$/,/^  feature-map-guard:$/' .github/workflows/build.yml)
 server=$(awk '/^  server-check:$/,/^  reuse:$/' .github/workflows/build.yml)
+lint=$root/scripts/server-check-test-and-lint.sh
 printf '%s\n' "$docs" | grep -q 'sh scripts/test-check-dropped-platform.sh' \
   || fail 'docs-check does not run the platform check'
 printf '%s\n' "$server" | grep -q 'sh scripts/test-check-dropped-platform.sh' \
+  || grep -q 'sh scripts/test-check-dropped-platform.sh' "$lint" \
   || fail 'server-check does not run the platform check'
 printf '%s\n' "$docs" | grep -q 'needs: changes' \
   || fail 'docs-check is not a required dependency'

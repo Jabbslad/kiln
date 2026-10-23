@@ -36,6 +36,8 @@ grep -q 'sh scripts/test-check.sh' .github/workflows/build.yml \
   || fail 'build.yml must run test-check.sh'
 grep -q 'sh scripts/test-server-check-nextest.sh' .github/workflows/build.yml \
   || fail 'build.yml must run test-server-check-nextest.sh'
+grep -q 'sh scripts/test-server-check-hang-evidence.sh' .github/workflows/build.yml \
+  || fail 'build.yml must run test-server-check-hang-evidence.sh'
 grep -q 'sh scripts/test-pre-push-hook.sh' .github/workflows/build.yml \
   || fail 'build.yml must run test-pre-push-hook.sh'
 grep -q 'scripts/check.sh' .githooks/pre-push \
@@ -60,5 +62,67 @@ grep -q 'bash scripts/test-identity-upgrade.sh' "$docs" \
   || fail 'check-docs.sh must run test-identity-upgrade.sh (docs-check parity)'
 grep -q 'sh scripts/test-verify-release-attestations.sh' "$docs" \
   || fail 'check-docs.sh must run test-verify-release-attestations.sh (docs-check parity)'
+grep -q 'sh scripts/test-server-check-hang-evidence.sh' "$docs" \
+  || fail 'check-docs.sh must run test-server-check-hang-evidence.sh (docs-check parity)'
+
+server_fn=$(printf '%s\n' "$body" | awk '/^run_server_check\(\)/,/^}/')
+printf '%s\n' "$server_fn" | grep -q 'run-workspace-nextest.sh' \
+  || fail 'run_server_check must run workspace nextest'
+printf '%s\n' "$server_fn" | grep -q 'test-nextest-memory-cap.sh' \
+  || fail 'run_server_check must run the memory-cap check when memory is low'
+printf '%s\n' "$server_fn" | grep -q 'fi &&' \
+  || fail 'run_server_check must chain the nextest step with && so failures propagate'
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+real_cargo=$(command -v cargo)
+cat >"$work/cargo" <<EOF
+#!/bin/sh
+if [ "\$1" = clippy ]; then
+  exit 1
+fi
+exec "$real_cargo" "\$@"
+EOF
+chmod +x "$work/cargo"
+
+if out=$(PATH="$work:$PATH" sh "$check" 2>&1); then
+  printf '%s\n' "$out" >&2
+  fail 'check.sh must exit non-zero when server-check clippy fails'
+fi
+printf '%s\n' "$out" | grep -q 'FAILED: server-check' \
+  || fail 'check.sh must print FAILED: server-check when clippy fails'
+
+nextest_script=$root/scripts/run-workspace-nextest.sh
+nextest_saved=$work/run-workspace-nextest.saved
+cp "$nextest_script" "$nextest_saved"
+tag_script=$root/scripts/tag-path-dry-run.sh
+tag_saved=$work/tag-path-dry-run.saved
+cp "$tag_script" "$tag_saved"
+restore_scripts() {
+  cp "$nextest_saved" "$nextest_script"
+  cp "$tag_saved" "$tag_script"
+}
+trap 'restore_scripts; rm -rf "$work"' EXIT
+printf '%s\n' '#!/bin/sh' 'exit 0' >"$nextest_script"
+chmod +x "$nextest_script"
+printf '%s\n' '#!/bin/sh' 'exit 1' >"$tag_script"
+chmod +x "$tag_script"
+
+if out=$(
+  PR_BASE_SHA=$(git rev-parse HEAD) \
+    PR_BODY='feature-map: n/a' \
+    GH_TOKEN=test-token \
+    sh "$check" --release 2>&1
+); then
+  printf '%s\n' "$out" >&2
+  fail 'check.sh --release must exit non-zero when tag-path-dry-run fails'
+fi
+printf '%s\n' "$out" | grep -q 'FAILED: tag-path-dry-run' \
+  || {
+    printf '%s\n' "$out" >&2
+    fail 'check.sh --release must print FAILED: tag-path-dry-run when dry-run fails'
+  }
+restore_scripts
+trap 'rm -rf "$work"' EXIT
 
 printf 'check wiring tests ok\n'

@@ -197,9 +197,25 @@ if [ "${KILN_DEPLOY_DRY_RUN:-}" = 1 ]; then
   printf 'deploy inputs %s\n' "$tag"
   exit 0
 fi
+# Digits only: ssh joins the remote command for the host shell.
+run_id=${GITHUB_RUN_ID:-}
+attempt=${GITHUB_RUN_ATTEMPT:-}
+case "$run_id" in
+  *[!0-9]*) fail 'GITHUB_RUN_ID must be digits' ;;
+esac
+case "$attempt" in
+  *[!0-9]*) fail 'GITHUB_RUN_ATTEMPT must be digits' ;;
+esac
+if [ "${#run_id}" -gt 18 ] || [ "${#attempt}" -gt 4 ]; then
+  fail 'GITHUB_RUN_ID or GITHUB_RUN_ATTEMPT is too long'
+fi
 if [ -n "$address" ]; then
-  bash "$ssh_sh" ssh -- bash "$remote/install-remote.sh" "$remote" "$address"
+  bash "$ssh_sh" ssh -- \
+    env "GITHUB_RUN_ID=${run_id}" "GITHUB_RUN_ATTEMPT=${attempt}" \
+    bash "$remote/install-remote.sh" "$remote" "$address"
 else
-  bash "$ssh_sh" ssh -- bash "$remote/install-remote.sh" "$remote"
+  bash "$ssh_sh" ssh -- \
+    env "GITHUB_RUN_ID=${run_id}" "GITHUB_RUN_ATTEMPT=${attempt}" \
+    bash "$remote/install-remote.sh" "$remote"
 fi
 printf 'deployed %s\n' "$tag"

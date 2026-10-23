@@ -602,8 +602,7 @@ this section defines the deliberate adaptations for Kiln's public page and conso
   open-source Geist Mono for labels instead of ABC Favorit Mono trial fonts.
 - `/` is a public, API-independent landing page for developers operating their own
   Linux host. Its job is to explain the product and lead to client installation and
-  server enrollment. `/boxes` remains the console; preview stays explicit at
-  `/boxes?preview=1`. Dashboard sign-in shipped. Live VM controls are not implemented.
+  server enrollment. `/boxes` remains the console. Dashboard sign-in shipped.
 - Use Kiln's real CLI commands and existing setup documentation. Do not copy Prime
   Intellect's logos, customers, testimonials, benchmark numbers, or product claims.
 - Retain console information density and mobile navigation. Use white active
@@ -624,8 +623,8 @@ this section defines the deliberate adaptations for Kiln's public page and conso
   seed/model are unavailable. The source prompt and generated image are retained in
   this implementation thread, `T-01a0ef91-e214-71d6-80ab-ac7c12ac47c0`.
 - Verify both surfaces at desktop and phone widths, plus intermediate breakpoints.
-  Exercise navigation, install-command copy (and failure), explicit preview and
-  disconnected states, existing dialogs, and automated accessibility checks.
+  Exercise navigation, install-command copy (and failure), the disconnected
+  console, existing dialogs, and automated accessibility checks.
 - On dark-forge, a laptop reaches the host at `https://cli.dark-forge.dev` on
   port 443. The paseo override pins Caddy at `172.18.0.3`. Caddy dials
   `https://172.18.0.1:8444` and trusts the Kiln CA with `tls_trust_pool`.

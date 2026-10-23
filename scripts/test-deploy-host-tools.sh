@@ -27,6 +27,8 @@ remote=$root/deploy/github/install-remote.sh
 grep -q 'kiln-api self-check' "$remote" \
   || fail 'install-remote.sh must validate dashboard metrics with kiln-api self-check'
 
+bash "$root/scripts/test-smoke-box.sh"
+
 cargo xtask test-deploy-workflow >/dev/null \
   || fail 'deploy workflow tests failed'
 

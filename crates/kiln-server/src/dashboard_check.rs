@@ -214,6 +214,7 @@ mod tests {
                 BoxFacts {
                     id: "box-running".into(),
                     name: "smoke".into(),
+                    owner: None,
                     state: "running".into(),
                     memory_mib: 4096,
                     vcpus: 1,
@@ -244,6 +245,7 @@ mod tests {
                 BoxFacts {
                     id: "box-stopped".into(),
                     name: "idle".into(),
+                    owner: None,
                     state: "stopped".into(),
                     memory_mib: 4096,
                     vcpus: 1,

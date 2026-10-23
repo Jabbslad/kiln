@@ -1,5 +1,5 @@
 //! Fixed-purpose SSH upgrades. No destination ports or host paths from clients.
-use crate::Failure;
+use crate::{Failure, revocation::StreamCancel};
 use axum::{
     extract::Request,
     http::{StatusCode, header},
@@ -49,7 +49,12 @@ pub fn busy() -> Failure {
     )
 }
 
-pub fn upgrade<S>(mut request: Request, mut upstream: S, permit: OwnedSemaphorePermit) -> Response
+pub fn upgrade<S>(
+    mut request: Request,
+    mut upstream: S,
+    permit: OwnedSemaphorePermit,
+    cancel: StreamCancel,
+) -> Response
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -58,11 +63,15 @@ where
         let _permit = permit;
         if let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_secs(10), connection).await {
             let mut stream = hyper_util::rt::TokioIo::new(stream);
-            // Bound abandoned sessions independently of the management API.
-            let _ = tokio::time::timeout(
-                Duration::from_secs(24 * 3600),
-                tokio::io::copy_bidirectional(&mut stream, &mut upstream),
-            )
+            let deadline = Duration::from_secs(24 * 3600);
+            let _ = tokio::time::timeout(deadline, async {
+                let copy = tokio::io::copy_bidirectional(&mut stream, &mut upstream);
+                tokio::pin!(copy);
+                tokio::select! {
+                    _ = cancel.wait(), if !cancel.is_cancelled() => {}
+                    _ = copy => {}
+                }
+            })
             .await;
         }
     });
@@ -108,7 +117,7 @@ mod tests {
                         echo.write_all(&bytes).await.unwrap();
                         echo.shutdown().await.unwrap();
                     });
-                    upgrade(request, stream, permit)
+                    upgrade(request, stream, permit, StreamCancel::new())
                 }
             }),
         );

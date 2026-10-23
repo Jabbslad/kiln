@@ -1,7 +1,8 @@
-use kiln_api::{Operation, OperationState};
+use kiln_api::{Caller, Operation, OperationState, may_access_box};
 use kiln_runtime::launch_timing::LaunchTiming;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::HashSet;
 
 #[derive(Default)]
 pub(crate) struct Inventory {
@@ -22,6 +23,7 @@ pub(crate) struct CheckpointFacts {
 pub(crate) struct BoxFacts {
     pub id: String,
     pub name: String,
+    pub owner: Option<String>,
     pub state: String,
     pub memory_mib: u32,
     pub vcpus: u8,
@@ -83,6 +85,8 @@ struct Resources {
 struct BoxBody {
     id: String,
     name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner: Option<String>,
     state: String,
     image: String,
     resources: Option<Resources>,
@@ -202,7 +206,7 @@ pub(crate) fn document(
                 "unknown".to_string()
             },
             state: state.to_string(),
-            created_at: utc_timestamp(row.created_at),
+            created_at: utc_timestamp(crate::journal::journal_stored_secs(row.created_at)),
             detail: client_detail(&row.operation),
             steps: Vec::new(),
         });
@@ -241,10 +245,34 @@ pub(crate) fn stamp_value(value: &mut Value, workspace: &str, observed_at: &str)
     }
 }
 
+pub(crate) fn scope_to_caller(
+    mut document: Document,
+    caller: &Caller,
+    tenant_owner: &str,
+) -> Document {
+    let visible: HashSet<_> = document
+        .boxes
+        .iter()
+        .filter(|box_body| may_access_box(caller, box_body.owner.as_deref(), tenant_owner))
+        .map(|box_body| box_body.id.clone())
+        .collect();
+    document
+        .boxes
+        .retain(|box_body| visible.contains(&box_body.id));
+    document
+        .operations
+        .retain(|operation| visible.contains(&operation.box_id));
+    document
+        .checkpoints
+        .retain(|checkpoint| visible.contains(&checkpoint.box_id));
+    document
+}
+
 fn box_body(facts: &BoxFacts) -> BoxBody {
     BoxBody {
         id: facts.id.clone(),
         name: facts.name.clone(),
+        owner: facts.owner.clone(),
         state: box_state(&facts.state).to_string(),
         image: String::new(),
         resources: resources(facts.vcpus, facts.memory_mib, facts.disk_bytes),

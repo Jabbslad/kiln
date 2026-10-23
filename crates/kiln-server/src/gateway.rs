@@ -9,10 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use kiln_api::{
-    OperationSubmitQuery,
-    auth::{CALLER_ROLE_HEADER, CALLER_SUB_HEADER, CALLER_TENANT_HEADER, Caller, Role, Scope},
-};
+use kiln_api::{Caller, OperationSubmitQuery, Role, Scope};
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
@@ -88,13 +85,6 @@ fn validate_uri_query(
     }
 }
 
-fn caller_role_header(role: Role) -> &'static str {
-    match role {
-        Role::Owner => "owner",
-        Role::Member => "member",
-    }
-}
-
 async fn authenticate(
     state: &Gateway,
     headers: &HeaderMap,
@@ -107,14 +97,19 @@ async fn authenticate(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
-    let (scope, caller) = state.auth.authenticate_caller(token).await.map_err(|_| {
-        Failure::new(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "A valid credential is required.",
-        )
-    })?;
+    let (caller, scope) = state
+        .auth
+        .authenticate_with_caller(token)
+        .await
+        .map_err(|_| {
+            Failure::new(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "A valid credential is required.",
+            )
+        })?;
     if required == Scope::Operate && scope != Scope::Operate {
+        let _ = crate::auth::deny("insufficient_scope");
         return Err(Failure::new(
             StatusCode::FORBIDDEN,
             "insufficient_scope",
@@ -125,10 +120,30 @@ async fn authenticate(
     Ok(caller)
 }
 
+fn trusted_request(request: reqwest::RequestBuilder, caller: &Caller) -> reqwest::RequestBuilder {
+    // Only authenticated context crosses the Unix socket; incoming identity
+    // headers and bearer credentials are never forwarded. Host authorizes all paths.
+    request
+        .header(kiln_api::OPERATION_ACTOR_HEADER, &caller.sub)
+        .header(
+            crate::host::CALLER_ROLE_HEADER,
+            match caller.role {
+                Role::Owner => "owner",
+                Role::Member => "member",
+            },
+        )
+}
+
 async fn ssh_tunnel(
     State(state): State<Arc<Gateway>>,
     request: Request,
 ) -> Result<Response, Failure> {
+    let token = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .unwrap_or("");
     let caller = authenticate(
         &state,
         request.headers(),
@@ -137,24 +152,28 @@ async fn ssh_tunnel(
         Scope::Operate,
     )
     .await?;
+    let cancel = match state.auth.central_identity(token).await {
+        Ok(identity) => state.auth.track_stream(&identity),
+        Err(_) => crate::revocation::StreamCancel::new(),
+    };
     let key = crate::ssh::admission(&request)?;
     let permit = state
         .sessions
         .clone()
         .try_acquire_owned()
         .map_err(|_| crate::ssh::busy())?;
-    let upstream = state
-        .client
-        .get(format!("http://localhost{}", request.uri().path()))
-        .header(header::CONNECTION, "upgrade")
-        .header(header::UPGRADE, kiln_api::SSH_UPGRADE)
-        .header(kiln_api::SSH_KEY_HEADER, key)
-        .header(CALLER_SUB_HEADER, &caller.sub)
-        .header(CALLER_TENANT_HEADER, &caller.tenant_id)
-        .header(CALLER_ROLE_HEADER, caller_role_header(caller.role))
-        .send()
-        .await
-        .map_err(|_| upstream_error())?;
+    let upstream = trusted_request(
+        state
+            .client
+            .get(format!("http://localhost{}", request.uri().path()))
+            .header(header::CONNECTION, "upgrade")
+            .header(header::UPGRADE, kiln_api::SSH_UPGRADE)
+            .header(kiln_api::SSH_KEY_HEADER, key),
+        &caller,
+    )
+    .send()
+    .await
+    .map_err(|_| upstream_error())?;
     if upstream.status() != StatusCode::SWITCHING_PROTOCOLS {
         return Err(host_ssh_error(upstream).await);
     }
@@ -167,7 +186,7 @@ async fn ssh_tunnel(
         return Err(upstream_error());
     }
     let upstream = upstream.upgrade().await.map_err(|_| upstream_error())?;
-    Ok(crate::ssh::upgrade(request, upstream, permit))
+    Ok(crate::ssh::upgrade(request, upstream, permit, cancel))
 }
 
 async fn dashboard(
@@ -183,6 +202,7 @@ async fn dashboard(
     )
     .await?;
     let observed_at = crate::dashboard::utc_timestamp(crate::dashboard::unix_now());
+    let tenant_owner = state.auth.tenant_owner().unwrap_or_default();
     match proxy(
         Arc::clone(&state),
         request,
@@ -195,7 +215,14 @@ async fn dashboard(
     .await
     {
         Ok(response) if response.status().is_success() => {
-            stamp(response, &state.workspace, &observed_at).await
+            stamp(
+                response,
+                &state.workspace,
+                &observed_at,
+                &caller,
+                &tenant_owner,
+            )
+            .await
         }
         Err(failure) if socket_failed(&failure) => Ok(json_document(
             StatusCode::OK,
@@ -220,14 +247,18 @@ async fn stamp(
     response: Response,
     workspace: &str,
     observed_at: &str,
+    caller: &Caller,
+    tenant_owner: &str,
 ) -> Result<Response, Failure> {
     let (parts, body) = response.into_parts();
     let bytes = to_bytes(body, kiln_api::MAX_RESPONSE_BYTES)
         .await
         .map_err(|_| upstream_error())?;
-    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+    let Ok(document) = serde_json::from_slice::<crate::dashboard::Document>(&bytes) else {
         return Ok(Response::from_parts(parts, Body::from(bytes)));
     };
+    let document = crate::dashboard::scope_to_caller(document, caller, tenant_owner);
+    let mut value = serde_json::to_value(&document).map_err(|_| upstream_error())?;
     crate::dashboard::stamp_value(&mut value, workspace, observed_at);
     Ok(json_document(parts.status, value))
 }
@@ -319,13 +350,7 @@ async fn proxy(
             "Request body exceeds 128 KiB.",
         )
     })?;
-    let mut upstream = state
-        .client
-        .request(method, uri)
-        .body(bytes)
-        .header(CALLER_SUB_HEADER, &caller.sub)
-        .header(CALLER_TENANT_HEADER, &caller.tenant_id)
-        .header(CALLER_ROLE_HEADER, caller_role_header(caller.role));
+    let mut upstream = trusted_request(state.client.request(method, uri).body(bytes), caller);
     if let Some(content_type) = content_type {
         upstream = upstream.header(header::CONTENT_TYPE, content_type);
     }
@@ -390,9 +415,19 @@ mod tests {
             .status(StatusCode::OK)
             .body(Body::from(vec![b'x'; kiln_api::MAX_RESPONSE_BYTES + 1]))
             .unwrap();
-        let failure = stamp(response, "server-b", "1970-01-01T00:00:00Z")
-            .await
-            .expect_err("oversized body");
+        let failure = stamp(
+            response,
+            "server-b",
+            "1970-01-01T00:00:00Z",
+            &Caller {
+                sub: "owner-a".into(),
+                tenant_id: "tenant-a".into(),
+                role: kiln_api::Role::Owner,
+            },
+            "owner-a",
+        )
+        .await
+        .expect_err("oversized body");
         assert_eq!(failure.0, StatusCode::BAD_GATEWAY);
         assert_eq!(failure.1.code, "host_unavailable");
         let response = failure.into_response();

@@ -2,9 +2,10 @@
 //! The administrator token is not a JWT and never opens that dial.
 //! A dashboard cookie authorizes `GET /api/v1/dashboard`. That route sends
 //! the session JWT and does not copy the browser `Authorization` header.
-//! `GET /v1/boxes/{id}/ssh` with `Upgrade: kiln-ssh` is proxied only for an
-//! operate-scope JWT whose subject is the enrolled owner. The caller's
-//! `Authorization` header is forwarded unchanged. Every other upgrade is rejected.
+//! `GET /v1/boxes/{id}/ssh` with `Upgrade: kiln-ssh` is proxied for an
+//! operate-scope JWT for a tenant member (members only for boxes they own).
+//! The caller's `Authorization` header is forwarded unchanged.
+//! Every other upgrade is rejected.
 use crate::{
     Failure,
     auth::{Authenticator, Enrollment},
@@ -466,18 +467,18 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
     let box_id = ssh_box_id(request.uri().path()).unwrap_or("").to_owned();
     let bearer = ssh_bearer(&request);
     let addr = ssh_audit_addr(&request);
-    let scope = match door.auth.authenticate_central(bearer).await {
-        Ok(scope) => scope,
+    let (caller, scope) = match door.auth.authenticate_caller(bearer).await {
+        Ok(pair) => pair,
         Err(_) => {
             door.ssh_audit
                 .record("unauthorized", &box_id, "anonymous", addr);
             return unauthorized();
         }
     };
-    let caller = door.auth.central_caller(bearer).await;
     if scope != Scope::Operate {
+        let _ = crate::auth::deny("insufficient_scope");
         door.ssh_audit
-            .record("insufficient_scope", &box_id, &caller, addr);
+            .record("insufficient_scope", &box_id, &caller.sub, addr);
         return deny(
             StatusCode::FORBIDDEN,
             "insufficient_scope",
@@ -485,7 +486,8 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
         );
     }
     if request.uri().query().is_some() {
-        door.ssh_audit.record("invalid_ssh", &box_id, &caller, addr);
+        door.ssh_audit
+            .record("invalid_ssh", &box_id, &caller.sub, addr);
         return deny(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -495,7 +497,8 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
     let key = match crate::ssh::admission(&request) {
         Ok(key) => key,
         Err(failure) => {
-            door.ssh_audit.record("invalid_ssh", &box_id, &caller, addr);
+            door.ssh_audit
+                .record("invalid_ssh", &box_id, &caller.sub, addr);
             return no_store(failure.into_response());
         }
     };
@@ -505,8 +508,27 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
         return unauthorized();
     };
     authorization.set_sensitive(true);
+    let Some(tenant_owner) = door.auth.tenant_owner() else {
+        door.ssh_audit
+            .record("unauthorized", &box_id, &caller.sub, addr);
+        return unauthorized();
+    };
+    if let Err(failure) = crate::box_access::ensure_member_box_access(
+        &door.client,
+        &door.upstream,
+        &authorization,
+        &box_id,
+        &caller,
+        &tenant_owner,
+    )
+    .await
+    {
+        door.ssh_audit
+            .record("not_found", &box_id, &caller.sub, addr);
+        return no_store(failure.into_response());
+    }
     let Ok(permit) = door.ssh_sessions.clone().try_acquire_owned() else {
-        door.ssh_audit.record("busy", &box_id, &caller, addr);
+        door.ssh_audit.record("busy", &box_id, &caller.sub, addr);
         return deny(
             StatusCode::TOO_MANY_REQUESTS,
             "ssh_busy",
@@ -527,7 +549,8 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
     {
         Ok(upstream) => upstream,
         Err(_) => {
-            door.ssh_audit.record("upstream", &box_id, &caller, addr);
+            door.ssh_audit
+                .record("upstream", &box_id, &caller.sub, addr);
             return deny(
                 StatusCode::BAD_GATEWAY,
                 "host_unavailable",
@@ -536,7 +559,8 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
         }
     };
     if upstream.status() != StatusCode::SWITCHING_PROTOCOLS {
-        door.ssh_audit.record("upstream", &box_id, &caller, addr);
+        door.ssh_audit
+            .record("upstream", &box_id, &caller.sub, addr);
         return ssh_refusal(upstream).await;
     }
     if upstream
@@ -545,7 +569,8 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
         .and_then(|value| value.to_str().ok())
         != Some(kiln_api::SSH_UPGRADE)
     {
-        door.ssh_audit.record("upstream", &box_id, &caller, addr);
+        door.ssh_audit
+            .record("upstream", &box_id, &caller.sub, addr);
         return deny(
             StatusCode::BAD_GATEWAY,
             "host_unavailable",
@@ -555,7 +580,8 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
     let upstream = match upstream.upgrade().await {
         Ok(upstream) => upstream,
         Err(_) => {
-            door.ssh_audit.record("upstream", &box_id, &caller, addr);
+            door.ssh_audit
+                .record("upstream", &box_id, &caller.sub, addr);
             return deny(
                 StatusCode::BAD_GATEWAY,
                 "host_unavailable",
@@ -563,8 +589,13 @@ async fn ssh_proxy(door: &Door, request: Request) -> Response {
             );
         }
     };
-    door.ssh_audit.record("upgraded", &box_id, &caller, addr);
-    crate::ssh::upgrade(request, upstream, permit)
+    door.ssh_audit
+        .record("upgraded", &box_id, &caller.sub, addr);
+    let cancel = match door.auth.central_identity(bearer).await {
+        Ok(identity) => door.auth.track_stream(&identity),
+        Err(_) => crate::revocation::StreamCancel::new(),
+    };
+    crate::ssh::upgrade(request, upstream, permit, cancel)
 }
 
 async fn ssh_refusal(upstream: reqwest::Response) -> Response {
@@ -890,7 +921,7 @@ async fn approve(door: &Door, dash: &Dash, tokens: DeviceTokens) -> Approve {
     };
     if !matches!(
         door.auth.authenticate_central(&grant.access_token).await,
-        Ok(Scope::Operate)
+        Ok(auth) if auth.scope == Scope::Operate
     ) {
         let _ = revoke_device(dash, &device_id, &central).await;
         return Approve::Denied;
@@ -1067,7 +1098,7 @@ async fn operate_jwt(door: &Door, dash: &Dash, slot: &SessionSlot) -> Jwt {
     };
     if !matches!(
         door.auth.authenticate_central(&grant.access_token).await,
-        Ok(Scope::Operate)
+        Ok(auth) if auth.scope == Scope::Operate
     ) || !(1..=300).contains(&grant.expires_in)
     {
         kill(dash, &mut session);
@@ -1315,7 +1346,7 @@ fn static_response(door: &Door, request: &Request) -> Option<Response> {
         return Some(unauthorized());
     }
     let query = request.uri().query();
-    if query.is_some() && query != Some("preview=1") {
+    if query.is_some() {
         return Some(deny(
             StatusCode::BAD_REQUEST,
             "invalid_request",

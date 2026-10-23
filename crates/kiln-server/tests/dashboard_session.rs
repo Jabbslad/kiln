@@ -17,7 +17,10 @@ use axum::{
 };
 use base64::Engine;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::auth::{AccessToken, DeviceAuthorization, DeviceTokens, Role, Scope, ServerClaims};
+use kiln_api::{
+    Role, Scope, ServerClaims,
+    auth::{AccessToken, DeviceAuthorization, DeviceTokens},
+};
 use kiln_server::{
     auth::{Authenticator, Enrollment},
     door::{self, Dashboard},
@@ -399,15 +402,13 @@ async fn wrong_account_does_not_open_a_session() {
 }
 
 #[tokio::test]
-async fn preview_document_does_not_replace_api_paths() {
+async fn static_document_does_not_replace_api_paths() {
     let world = world(true).await;
     std::fs::create_dir_all(world.session_dir.parent().unwrap().join("dash/assets")).unwrap();
     let root = world.session_dir.parent().unwrap().join("dash");
     std::fs::write(root.join("index.html"), b"<p>preview</p>").unwrap();
     std::fs::write(root.join("assets/app.js"), b"console.log(1)").unwrap();
-    let response = world
-        .call(req("GET", "/boxes?preview=1", None, None, None))
-        .await;
+    let response = world.call(req("GET", "/boxes", None, None, None)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(header_str(&response, header::CACHE_CONTROL), "no-store");
     assert!(header_str(&response, header::CONTENT_SECURITY_POLICY).contains("default-src 'self'"));
@@ -422,13 +423,7 @@ async fn preview_document_does_not_replace_api_paths() {
         "public, max-age=31536000, immutable"
     );
     let response = world
-        .call(req(
-            "GET",
-            "/boxes?preview=1",
-            None,
-            Some("Bearer not-a-jwt"),
-            None,
-        ))
+        .call(req("GET", "/boxes", None, Some("Bearer not-a-jwt"), None))
         .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(world.hits.load(Ordering::SeqCst), 0);
@@ -446,9 +441,7 @@ async fn preview_document_does_not_replace_api_paths() {
     );
 
     let bare = world_without_root().await;
-    let response = bare
-        .call(req("GET", "/boxes?preview=1", None, None, None))
-        .await;
+    let response = bare.call(req("GET", "/boxes", None, None, None)).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(bare.hits.load(Ordering::SeqCst), 0);
 }
@@ -460,8 +453,8 @@ async fn world(with_root: bool) -> World {
     let identity_ca = cert.cert.pem();
     let issuer = format!("https://127.0.0.1:{identity_port}/");
     let (key, jwks) = signing_key();
-    let jwt = mint_with(&key, &issuer, "owner-a");
-    let wrong_jwt = mint_with(&key, &issuer, "owner-b");
+    let jwt = mint_with(&key, &issuer, "owner-a", "tenant-a", Role::Owner);
+    let wrong_jwt = mint_with(&key, &issuer, "owner-b", "tenant-other", Role::Member);
     let identity = Identity {
         port: identity_port,
         approved: Arc::new(AtomicBool::new(false)),
@@ -504,6 +497,7 @@ async fn world(with_root: bool) -> World {
         issuer: issuer.clone(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
+        tenant_id: Some("tenant-a".into()),
     };
     let cache = tmp.path().join("jwks.json");
     std::fs::write(
@@ -744,22 +738,32 @@ fn post_op(cookie: &str, csrf: Option<&str>, admin: &str) -> Request<Body> {
 }
 
 fn mint(world: &World, sub: &str) -> String {
-    mint_with(&world.key, &world.issuer, sub)
+    mint_with(
+        &world.key,
+        &world.issuer,
+        sub,
+        "tenant-a",
+        if sub == "owner-a" {
+            Role::Owner
+        } else {
+            Role::Member
+        },
+    )
 }
 
-fn mint_with(key: &EncodingKey, issuer: &str, sub: &str) -> String {
+fn mint_with(key: &EncodingKey, issuer: &str, sub: &str, tenant_id: &str, role: Role) -> String {
     let now = jsonwebtoken::get_current_timestamp();
     let claims = ServerClaims {
         iss: issuer.into(),
         sub: sub.into(),
         aud: "kiln:server:server-b".into(),
+        tenant_id: Some(tenant_id.into()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "dev_dashboard".into(),
         scope: Scope::Operate,
-        role: Role::Owner,
-        tenant_id: String::new(),
+        role: Some(role),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());

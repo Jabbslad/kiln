@@ -1,24 +1,53 @@
 use crate::ci_docs_only::{is_documentation, needs_heavy, normalize};
 
-const RELEASE_PREFIXES: &[&str] = &["deploy/", "images/", "xtask/", "scripts/", ".github/"];
-
 const RELEASE_ROOT: &[&str] = &["Cargo.toml", "Cargo.lock"];
+
+const RELEASE_WORKFLOWS: &[&str] = &[
+    ".github/workflows/build.yml",
+    ".github/workflows/slow-lane-merge.yml",
+];
+
+const RELEASE_XTASK: &[&str] = &[
+    "xtask/src/merge_queue.rs",
+    "xtask/src/reuse_release.rs",
+    "xtask/src/release_version.rs",
+    "xtask/src/release.rs",
+];
+
+pub fn is_release_script(path: &str) -> bool {
+    let rel = normalize(path);
+    let Some(name) = rel.strip_prefix("scripts/") else {
+        return false;
+    };
+    name.contains("release")
+        || name.starts_with("package-server")
+        || name.starts_with("stamp")
+        || name.starts_with("tag-path")
+        || name.starts_with("reuse-proved")
+        || name.starts_with("reuse-server")
+        || name.starts_with("plan-release")
+        || name.starts_with("next-release-tag")
+        || name.starts_with("check-stamped")
+}
 
 pub fn is_release_path(path: &str) -> bool {
     let rel = normalize(path);
     if rel.is_empty() {
         return false;
     }
-    if RELEASE_PREFIXES
-        .iter()
-        .any(|prefix| rel.starts_with(prefix))
-    {
+    if rel.starts_with("deploy/") || rel.starts_with("images/") {
         return true;
     }
-    if RELEASE_ROOT.contains(&rel.as_str()) {
+    if RELEASE_ROOT.contains(&rel.as_str()) || rel.ends_with("/Cargo.toml") {
         return true;
     }
-    rel.ends_with("/Cargo.toml")
+    if RELEASE_WORKFLOWS.contains(&rel.as_str()) {
+        return true;
+    }
+    if RELEASE_XTASK.contains(&rel.as_str()) {
+        return true;
+    }
+    is_release_script(&rel)
 }
 
 pub fn needs_web(paths: &[String]) -> bool {
@@ -142,6 +171,21 @@ fn test_rust_only_pull_request_skips_docs_and_tag_path() {
     assert!(!needs_web(&paths));
 }
 
+fn test_ci_only_script_skips_tag_path() {
+    let paths = vec![
+        "scripts/run-workspace-nextest.sh".to_string(),
+        "scripts/test-server-check-nextest.sh".to_string(),
+        "scripts/check-docs.sh".to_string(),
+    ];
+    for path in &paths {
+        assert!(
+            !is_release_path(path),
+            "expected {path} not to run tag-path-dry-run"
+        );
+    }
+    assert!(!needs_release_path(&paths));
+}
+
 fn test_web_paths_enable_dashboard_npm() {
     let paths = vec!["web/src/App.tsx".to_string()];
     assert!(needs_web(&paths));
@@ -202,6 +246,7 @@ fn test_classify_emits_four_outputs() {
 crate::register_cases! {
     test_docs_only_pull_request_runs_docs_check_not_compile,
     test_rust_only_pull_request_skips_docs_and_tag_path,
+    test_ci_only_script_skips_tag_path,
     test_deploy_change_runs_tag_path_not_docs,
     test_release_workflow_change_runs_tag_path,
     test_cargo_toml_bump_runs_tag_path,

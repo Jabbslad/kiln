@@ -18,69 +18,42 @@ pub enum Scope {
     Operate,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
-    #[default]
     Owner,
     Member,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Caller {
     pub sub: String,
     pub tenant_id: String,
     pub role: Role,
 }
 
-/// Per-server member box cap; enforced locally on each server (not tenant-wide).
-pub const DEFAULT_MEMBER_BOX_QUOTA: u32 = 4;
-pub const SERVER_BOX_QUOTA: u32 = 8;
-
-pub const CALLER_SUB_HEADER: &str = "x-kiln-account";
-pub const CALLER_TENANT_HEADER: &str = "x-kiln-tenant";
-pub const CALLER_ROLE_HEADER: &str = "x-kiln-account-role";
-
-pub fn caller_may_access_box(caller: &Caller, box_owner: &str) -> bool {
-    match caller.role {
-        Role::Owner => true,
-        Role::Member => caller.sub == box_owner,
-    }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthGrant {
+    pub caller: Caller,
+    pub scope: Scope,
 }
 
-pub fn filter_visible_boxes<'a>(
-    caller: &Caller,
-    box_owners: impl IntoIterator<Item = &'a str>,
-) -> impl Iterator<Item = &'a str> {
-    box_owners
-        .into_iter()
-        .filter(move |owner| caller_may_access_box(caller, owner))
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantMember {
+    pub account_id: String,
+    pub role: Role,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
-pub fn parse_caller_headers(
-    sub: Option<&str>,
-    tenant_id: Option<&str>,
-    role: Option<&str>,
-) -> Option<Caller> {
-    let sub = sub?;
-    if sub.is_empty() || sub.len() > 128 {
-        return None;
-    }
-    let tenant_id = tenant_id.unwrap_or("");
-    if tenant_id.len() > 128 {
-        return None;
-    }
-    let role = match role {
-        Some("member") => Role::Member,
-        Some("owner") | None => Role::Owner,
-        Some(_) => return None,
-    };
-    Some(Caller {
-        sub: sub.into(),
-        tenant_id: tenant_id.into(),
-        role,
-    })
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TenantSummary {
+    pub id: String,
+    pub role: Role,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_server_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,13 +115,28 @@ pub struct ServerClaims {
     pub iss: String,
     pub sub: String,
     pub aud: String,
+    /// Present on tokens minted after the tenant migration; legacy issuers omit it until upgraded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
     pub iat: u64,
     pub nbf: u64,
     pub exp: u64,
     pub credential_id: String,
     pub scope: Scope,
-    #[serde(default)]
-    pub role: Role,
-    #[serde(default)]
+    /// Present on tokens minted after the tenant migration; legacy issuers omit it until upgraded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevocationQuery {
     pub tenant_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RevocationSet {
+    pub accounts: Vec<String>,
+    pub credentials: Vec<String>,
 }

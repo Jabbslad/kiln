@@ -1,11 +1,13 @@
+mod audit;
 mod config;
 mod providers;
 mod store;
 pub mod tokens;
+pub use audit::{SignInAuditRow, query_signin_audit, read_signin_audit, signin_audit_path};
 use axum::{
     Json, Router,
-    extract::{ConnectInfo, Form, Path, State},
-    http::{HeaderMap, StatusCode, header},
+    extract::{ConnectInfo, Form, FromRequestParts, Path, State},
+    http::{HeaderMap, StatusCode, header, request::Parts},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{delete, get, post, put},
 };
@@ -14,7 +16,10 @@ pub use config::{
     Config, GITHUB_AUTHORIZE_URL, GITHUB_TOKEN_URL, GITHUB_USER_URL, PRODUCTION_IDENTITY_ORIGIN,
     unix_now,
 };
-use kiln_api::auth::{DeviceTokens, Registration, Role, Scope, ServerClaims};
+use kiln_api::auth::{
+    DeviceTokens, Registration, RevocationQuery, RevocationSet, Role, Scope, ServerClaims,
+    TenantMember, TenantSummary,
+};
 pub use providers::{Provider, ProviderIdentity};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -24,7 +29,7 @@ use std::{
     sync::Arc,
 };
 pub use store::Store;
-use store::{hash, secret};
+use store::{ensure_owner_tenant, hash, secret, set_default_server};
 use subtle::ConstantTimeEq;
 
 #[derive(Clone)]
@@ -135,6 +140,7 @@ pub fn router(mut cfg: Config, store: Store) -> anyhow::Result<Router> {
         .route("/v1/servers/{id}/app-login", post(app_login))
         .route("/v1/access", post(access))
         .route("/v1/server-status", post(server_status))
+        .route("/v1/revocations", post(revocations))
         .route("/v1/devices", get(devices))
         .route("/v1/devices/{id}", delete(revoke_device))
         .route(
@@ -146,6 +152,16 @@ pub fn router(mut cfg: Config, store: Store) -> anyhow::Result<Router> {
         .route("/v1/keys", get(keys).post(create_key))
         .route("/v1/keys/{id}", delete(revoke_key))
         .route("/v1/key-token", post(key_token))
+        .route("/v1/tenants", get(tenant_list))
+        .route(
+            "/v1/tenants/{id}/members",
+            get(list_tenant_members).post(add_tenant_member),
+        )
+        .route(
+            "/v1/tenants/{id}/members/{name}",
+            delete(remove_tenant_member),
+        )
+        .route("/v1/tenants/{id}/servers", get(tenant_servers))
         .with_state(app)
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))
         .layer(axum::middleware::from_fn(
@@ -195,25 +211,102 @@ async fn login() -> impl IntoResponse {
 struct LogoutForm {
     csrf: String,
 }
-async fn logout(State(a): State<Arc<App>>, h: HeaderMap, Form(form): Form<LogoutForm>) -> Response {
-    if h.get(header::ORIGIN).and_then(|v| v.to_str().ok()) != Some(a.cfg.public_origin.as_str()) {
-        return err(StatusCode::FORBIDDEN, "invalid_origin");
-    }
-    let Some(raw) = cookie(&h, "__Host-kiln_session") else {
-        return err(StatusCode::UNAUTHORIZED, "login_required");
+async fn logout(
+    State(a): State<Arc<App>>,
+    peer: Peer,
+    h: HeaderMap,
+    Form(form): Form<LogoutForm>,
+) -> Response {
+    let session = cookie(&h, "__Host-kiln_session");
+    let missing = session.is_none();
+    let session = session.unwrap_or_default();
+    let revoke = |outcome: &'static str,
+                  reason: &'static str,
+                  account: &str,
+                  tenant: &str,
+                  response: Response| {
+        auth_note(
+            &a,
+            peer.0,
+            &h,
+            audit::REVOCATION,
+            "session",
+            outcome,
+            reason,
+            account,
+            tenant,
+            "",
+            &session,
+            "",
+            response,
+        )
     };
+    if h.get(header::ORIGIN).and_then(|v| v.to_str().ok()) != Some(a.cfg.public_origin.as_str()) {
+        return revoke(
+            "failure",
+            "invalid_origin",
+            "",
+            "",
+            err(StatusCode::FORBIDDEN, "invalid_origin"),
+        );
+    }
+    if missing {
+        return revoke(
+            "failure",
+            "login_required",
+            "",
+            "",
+            err(StatusCode::UNAUTHORIZED, "login_required"),
+        );
+    }
     let valid = a.store.db.lock().ok().and_then(|c| c.query_row(
         "SELECT EXISTS(SELECT 1 FROM browser_sessions WHERE hash=?1 AND csrf_hash=?2 AND expires_at>?3)",
-        params![hash(&raw), hash(&form.csrf), (a.cfg.now)()], |r| r.get::<_, bool>(0)).ok()).unwrap_or(false);
+        params![hash(&session), hash(&form.csrf), (a.cfg.now)()], |r| r.get::<_, bool>(0)).ok()).unwrap_or(false);
     if !valid {
-        return err(StatusCode::FORBIDDEN, "invalid_csrf");
+        return revoke(
+            "failure",
+            "invalid_csrf",
+            "",
+            "",
+            err(StatusCode::FORBIDDEN, "invalid_csrf"),
+        );
     }
-    let removed = a.store.db.lock().ok().and_then(|c| {
-        c.execute("DELETE FROM browser_sessions WHERE hash=?1", [hash(&raw)])
+    let account = a
+        .store
+        .db
+        .lock()
+        .ok()
+        .and_then(|c| {
+            c.query_row(
+                "SELECT IFNULL(account_id, '') FROM browser_sessions WHERE hash=?1",
+                params![hash(&session)],
+                |r| r.get::<_, String>(0),
+            )
             .ok()
+        })
+        .unwrap_or_default();
+    let tenant = a
+        .store
+        .db
+        .lock()
+        .ok()
+        .map(|c| tenant_on(&c, &account))
+        .unwrap_or_default();
+    let removed = a.store.db.lock().ok().and_then(|c| {
+        c.execute(
+            "DELETE FROM browser_sessions WHERE hash=?1",
+            [hash(&session)],
+        )
+        .ok()
     });
     if removed != Some(1) {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+        return revoke(
+            "failure",
+            "server_error",
+            &account,
+            &tenant,
+            err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        );
     }
     let mut response = Redirect::to("/login").into_response();
     response.headers_mut().insert(
@@ -222,7 +315,7 @@ async fn logout(State(a): State<Arc<App>>, h: HeaderMap, Form(form): Form<Logout
             .parse()
             .expect("static cookie"),
     );
-    secure(nostore(response))
+    revoke("success", "", &account, &tenant, secure(nostore(response)))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -283,28 +376,88 @@ async fn oauth_token(
         tx.commit()?;
         Ok(())
     })();
+    let event = if f.grant_type == "refresh_token" {
+        audit::TOKEN_REFRESH
+    } else {
+        audit::TOKEN_ISSUE
+    };
+    let method = if f.grant_type == "refresh_token" {
+        "refresh_token"
+    } else {
+        "device_code"
+    };
+    let audit = |outcome: &'static str,
+                 reason: &'static str,
+                 account: &str,
+                 tenant: &str,
+                 token: &str,
+                 response: Response| {
+        auth_note(
+            &a, peer, &h, event, method, outcome, reason, account, tenant, "kiln-cli", "", token,
+            response,
+        )
+    };
     if limited.is_err() {
-        return err(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+        return audit(
+            "failure",
+            "rate_limited",
+            "",
+            "",
+            "",
+            err(StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+        );
     }
     let mut c = a.store.db.lock().unwrap();
     let tx = match c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
         Ok(x) => x,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        Err(_) => {
+            return audit(
+                "failure",
+                "server_error",
+                "",
+                "",
+                "",
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
+        }
     };
     if f.grant_type == "urn:ietf:params:oauth:grant-type:device_code" {
         let raw = match f.device_code {
             Some(x) => x,
-            None => return err(StatusCode::BAD_REQUEST, "invalid_request"),
+            None => {
+                return audit(
+                    "failure",
+                    "invalid_request",
+                    "",
+                    "",
+                    "",
+                    err(StatusCode::BAD_REQUEST, "invalid_request"),
+                );
+            }
         };
         let row = match tx.query_row("SELECT name,state,expires_at,next_poll,interval,account_id FROM pending_devices WHERE secret_hash=?1",[hash(&raw)],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,Option<String>>(5)?))).optional() {
             Ok(row) => row,
-            Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            Err(_) => return audit("failure", "server_error", "", "", &raw, err(StatusCode::INTERNAL_SERVER_ERROR, "server_error")),
         };
         let Some((name, state, exp, next, interval, account)) = row else {
-            return err(StatusCode::BAD_REQUEST, "invalid_grant");
+            return audit(
+                "failure",
+                "invalid_grant",
+                "",
+                "",
+                &raw,
+                err(StatusCode::BAD_REQUEST, "invalid_grant"),
+            );
         };
         if now >= exp {
-            return err(StatusCode::BAD_REQUEST, "expired_token");
+            return audit(
+                "failure",
+                "expired_token",
+                account.as_deref().unwrap_or(""),
+                &tenant_on(&tx, account.as_deref().unwrap_or("")),
+                &raw,
+                err(StatusCode::BAD_REQUEST, "expired_token"),
+            );
         }
         if now < next {
             let _ = tx.execute(
@@ -323,10 +476,24 @@ async fn oauth_token(
             return err(StatusCode::BAD_REQUEST, "authorization_pending");
         }
         if state == "denied" {
-            return err(StatusCode::BAD_REQUEST, "access_denied");
+            return audit(
+                "failure",
+                "access_denied",
+                account.as_deref().unwrap_or(""),
+                &tenant_on(&tx, account.as_deref().unwrap_or("")),
+                &raw,
+                err(StatusCode::BAD_REQUEST, "access_denied"),
+            );
         }
         let Some(account) = account.filter(|_| state == "approved") else {
-            return err(StatusCode::BAD_REQUEST, "invalid_grant");
+            return audit(
+                "failure",
+                "invalid_grant",
+                "",
+                "",
+                &raw,
+                err(StatusCode::BAD_REQUEST, "invalid_grant"),
+            );
         };
         let live: bool = match tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM accounts WHERE id=?1 AND revoked_at IS NULL)",
@@ -334,41 +501,95 @@ async fn oauth_token(
             |r| r.get(0),
         ) {
             Ok(value) => value,
-            Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            Err(_) => {
+                return audit(
+                    "failure",
+                    "server_error",
+                    &account,
+                    &tenant_on(&tx, &account),
+                    &raw,
+                    err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+                );
+            }
         };
         if !live {
-            return err(StatusCode::BAD_REQUEST, "invalid_grant");
+            return audit(
+                "failure",
+                "invalid_grant",
+                &account,
+                &tenant_on(&tx, &account),
+                &raw,
+                err(StatusCode::BAD_REQUEST, "invalid_grant"),
+            );
         }
         let did = format!("dev_{}", uuid::Uuid::new_v4().simple());
         let family = secret();
         let refresh = secret();
         let central = secret();
+        let tenant = tenant_on(&tx, &account);
         let ok=tx.execute("DELETE FROM pending_devices WHERE secret_hash=?1",[hash(&raw)]).and_then(|_|tx.execute("INSERT INTO devices(id,account_id,name,created_at,last_used)VALUES(?1,?2,?3,?4,?4)",params![did,account,name,now])).and_then(|_|tx.execute("INSERT INTO refresh_tokens(hash,family_id,device_id,created_at,last_used,absolute_expiry)VALUES(?1,?2,?3,?4,?4,?5)",params![hash(&refresh),family,did,now,now+90*86400])).and_then(|_|tx.execute("INSERT INTO central_tokens(hash,device_id,family_id,expires_at)VALUES(?1,?2,?3,?4)",params![hash(&central),did,family,now+300]));
         if ok.is_err() || tx.commit().is_err() {
-            return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+            return audit(
+                "failure",
+                "server_error",
+                &account,
+                &tenant,
+                &raw,
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
         }
-        return nostore(
-            Json(DeviceTokens {
-                access_token: central,
-                token_type: "Bearer".into(),
-                expires_in: 300,
-                refresh_token: refresh,
-            })
-            .into_response(),
+        let issued = central.clone();
+        return audit(
+            "success",
+            "",
+            &account,
+            &tenant,
+            &issued,
+            nostore(
+                Json(DeviceTokens {
+                    access_token: central,
+                    token_type: "Bearer".into(),
+                    expires_in: 300,
+                    refresh_token: refresh,
+                })
+                .into_response(),
+            ),
         );
     }
     if f.grant_type == "refresh_token" {
         let raw = match f.refresh_token {
             Some(x) => x,
-            None => return err(StatusCode::BAD_REQUEST, "invalid_request"),
+            None => {
+                return audit(
+                    "failure",
+                    "invalid_request",
+                    "",
+                    "",
+                    "",
+                    err(StatusCode::BAD_REQUEST, "invalid_request"),
+                );
+            }
         };
         let row = match tx.query_row("SELECT rowid,family_id,device_id,created_at,last_used,absolute_expiry,spent_at,family_revoked_at FROM refresh_tokens WHERE hash=?1",[hash(&raw)],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,Option<i64>>(6)?,r.get::<_,Option<i64>>(7)?))).optional() {
             Ok(row) => row,
-            Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            Err(_) => return audit("failure", "server_error", "", "", &raw, err(StatusCode::INTERNAL_SERVER_ERROR, "server_error")),
         };
         let Some((rowid, family, did, _, last, absolute, spent, revoked)) = row else {
-            return err(StatusCode::BAD_REQUEST, "invalid_grant");
+            return audit(
+                "failure",
+                "invalid_grant",
+                "",
+                "",
+                &raw,
+                err(StatusCode::BAD_REQUEST, "invalid_grant"),
+            );
         };
+        let account: String = tx
+            .query_row("SELECT account_id FROM devices WHERE id=?1", [&did], |r| {
+                r.get(0)
+            })
+            .unwrap_or_default();
+        let tenant = tenant_on(&tx, &account);
         if spent.is_some() {
             if tx
                 .execute(
@@ -378,16 +599,37 @@ async fn oauth_token(
                 .is_err()
                 || tx.commit().is_err()
             {
-                return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+                return audit(
+                    "failure",
+                    "server_error",
+                    &account,
+                    &tenant,
+                    &raw,
+                    err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+                );
             }
-            return err(StatusCode::BAD_REQUEST, "invalid_grant");
+            return audit(
+                "failure",
+                "invalid_grant",
+                &account,
+                &tenant,
+                &raw,
+                err(StatusCode::BAD_REQUEST, "invalid_grant"),
+            );
         }
         let live: bool = match tx.query_row("SELECT EXISTS(SELECT 1 FROM devices d JOIN accounts a ON a.id=d.account_id WHERE d.id=?1 AND d.revoked_at IS NULL AND a.revoked_at IS NULL)",[&did],|r|r.get(0)) {
             Ok(value) => value,
-            Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            Err(_) => return audit("failure", "server_error", &account, &tenant, &raw, err(StatusCode::INTERNAL_SERVER_ERROR, "server_error")),
         };
         if !live || revoked.is_some() || now - last >= 30 * 86400 || now >= absolute {
-            return err(StatusCode::BAD_REQUEST, "invalid_grant");
+            return audit(
+                "failure",
+                "invalid_grant",
+                &account,
+                &tenant,
+                &raw,
+                err(StatusCode::BAD_REQUEST, "invalid_grant"),
+            );
         }
         let refresh = secret();
         let central = secret();
@@ -399,19 +641,41 @@ async fn oauth_token(
             )
         });
         if ok.is_err() || tx.commit().is_err() {
-            return err(StatusCode::BAD_REQUEST, "invalid_grant");
+            return audit(
+                "failure",
+                "invalid_grant",
+                &account,
+                &tenant,
+                &raw,
+                err(StatusCode::BAD_REQUEST, "invalid_grant"),
+            );
         }
-        return nostore(
-            Json(DeviceTokens {
-                access_token: central,
-                token_type: "Bearer".into(),
-                expires_in: 300,
-                refresh_token: refresh,
-            })
-            .into_response(),
+        let issued = central.clone();
+        return audit(
+            "success",
+            "",
+            &account,
+            &tenant,
+            &issued,
+            nostore(
+                Json(DeviceTokens {
+                    access_token: central,
+                    token_type: "Bearer".into(),
+                    expires_in: 300,
+                    refresh_token: refresh,
+                })
+                .into_response(),
+            ),
         );
     }
-    err(StatusCode::BAD_REQUEST, "unsupported_grant_type")
+    audit(
+        "failure",
+        "unsupported_grant_type",
+        "",
+        "",
+        "",
+        err(StatusCode::BAD_REQUEST, "unsupported_grant_type"),
+    )
 }
 fn bearer(h: &HeaderMap) -> Option<&str> {
     h.get(header::AUTHORIZATION)?
@@ -453,12 +717,14 @@ async fn me(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
     })
 }
 async fn servers(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
-    authorized(&a, &h, |tx, owner, _| {
+    authorized(&a, &h, |tx, account, _| {
         let mut q = tx.prepare(
-            "SELECT id,name,origin,ca_pem,revision FROM servers WHERE owner_id=?1 AND active=1",
+            "SELECT s.id,s.name,s.origin,s.ca_pem,s.revision FROM servers s
+             JOIN tenant_members m ON m.tenant_id=s.tenant_id
+             WHERE m.account_id=?1 AND s.active=1 ORDER BY s.created_at",
         )?;
         let values = q
-            .query_map([owner], |r| {
+            .query_map([account], |r| {
                 Ok(kiln_api::auth::ServerDescriptor {
                     id: r.get(0)?,
                     name: r.get(1)?,
@@ -471,41 +737,141 @@ async fn servers(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
         Ok(Json(values).into_response())
     })
 }
+fn member_role(raw: &str) -> Option<Role> {
+    match raw {
+        "owner" => Some(Role::Owner),
+        "member" => Some(Role::Member),
+        _ => None,
+    }
+}
+fn local_member_name(name: &str) -> bool {
+    (1..=32).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && name
+            .as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_lowercase())
+}
+fn tenant_owner(
+    tx: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+    account: &str,
+) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tenant_members WHERE tenant_id=?1 AND account_id=?2 AND role='owner')",
+        params![tenant_id, account],
+        |r| r.get(0),
+    )
+}
+fn tenant_member_rows(
+    tx: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+) -> rusqlite::Result<Vec<TenantMember>> {
+    let mut q = tx.prepare(
+        "SELECT account_id,role,local_name FROM tenant_members WHERE tenant_id=?1 ORDER BY role,local_name,account_id",
+    )?;
+    q.query_map([tenant_id], |r| {
+        let role: String = r.get(1)?;
+        Ok(TenantMember {
+            account_id: r.get(0)?,
+            role: member_role(&role).unwrap_or(Role::Member),
+            name: r.get(2)?,
+        })
+    })?
+    .collect()
+}
+fn tenant_servers_rows(
+    tx: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+) -> rusqlite::Result<Vec<kiln_api::auth::ServerDescriptor>> {
+    let mut q = tx.prepare(
+        "SELECT id,name,origin,ca_pem,revision FROM servers WHERE tenant_id=?1 AND active=1 ORDER BY created_at",
+    )?;
+    q.query_map([tenant_id], |r| {
+        Ok(kiln_api::auth::ServerDescriptor {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            origin: r.get(2)?,
+            ca_pem: r.get(3)?,
+            revision: r.get::<_, i64>(4)? as u64,
+        })
+    })?
+    .collect()
+}
+fn directory_in_tenant(
+    tx: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+    raw: &str,
+) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM servers WHERE tenant_id=?1 AND directory_hash=?2 AND active=1)",
+        params![tenant_id, hash(raw)],
+        |r| r.get(0),
+    )
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AccessReq {
     server_id: String,
 }
-async fn access(State(a): State<Arc<App>>, h: HeaderMap, Json(f): Json<AccessReq>) -> Response {
-    authorized(&a, &h, |tx, owner, did| {
-        let owns: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM servers WHERE id=?1 AND owner_id=?2 AND active=1)",
-            params![f.server_id, owner],
-            |r| r.get(0),
-        )?;
-        if !owns {
+async fn access(
+    State(a): State<Arc<App>>,
+    peer: Peer,
+    h: HeaderMap,
+    Json(f): Json<AccessReq>,
+) -> Response {
+    authorized(&a, &h, |tx, account, did| {
+        let row: Option<(String, String)> = tx
+            .query_row(
+                "SELECT s.tenant_id,m.role FROM servers s JOIN tenant_members m ON m.tenant_id=s.tenant_id AND m.account_id=?2 WHERE s.id=?1 AND s.active=1",
+                params![f.server_id, account],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((tenant_id, role_raw)) = row else {
             return Ok(err(StatusCode::NOT_FOUND, "not_found"));
-        }
+        };
+        let Some(role) = member_role(&role_raw) else {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        };
         let now = (a.cfg.now)() as u64;
         let claims = ServerClaims {
             iss: a.cfg.public_origin.clone(),
-            sub: owner.clone(),
+            sub: account,
             aud: format!("kiln:server:{}", f.server_id),
+            tenant_id: Some(tenant_id),
             iat: now,
             nbf: now,
             exp: now + 300,
             credential_id: did,
             scope: Scope::Operate,
-            role: Role::Owner,
-            tenant_id: owner,
+            role: Some(role),
         };
         let token = a.signer.issue(&claims)?;
-        Ok(Json(tokens::Grant {
-            access_token: token,
-            token_type: "Bearer",
-            expires_in: 300,
-        })
-        .into_response())
+        let issued = token.clone();
+        Ok(auth_note(
+            &a,
+            peer.0,
+            &h,
+            audit::TOKEN_ISSUE,
+            "device",
+            "success",
+            "",
+            &claims.sub,
+            claims.tenant_id.as_deref().unwrap_or(""),
+            &f.server_id,
+            "",
+            &issued,
+            Json(tokens::Grant {
+                access_token: token,
+                token_type: "Bearer",
+                expires_in: 300,
+            })
+            .into_response(),
+        ))
     })
 }
 async fn jwks(State(a): State<Arc<App>>) -> impl IntoResponse {
@@ -520,21 +886,78 @@ async fn devices(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
 }
 async fn revoke_device(
     State(a): State<Arc<App>>,
+    peer: Peer,
     h: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    authorized(&a, &h, |tx, owner, _| {
+    let token = bearer(&h).unwrap_or("").to_owned();
+    let saw = std::cell::Cell::new(false);
+    let response = authorized(&a, &h, |tx, owner, _| {
+        saw.set(true);
+        let tenant = tenant_on(tx, &owner);
         let n = tx.execute(
             "UPDATE devices SET revoked_at=?1 WHERE id=?2 AND account_id=?3 AND revoked_at IS NULL",
             params![(a.cfg.now)(), id, owner],
         )?;
         if n == 1 {
             tx.execute("INSERT INTO audit_events(event,actor_id,resource_id,outcome,created_at) VALUES('device_revoked',?1,?2,'success',?3)", params![owner,id,(a.cfg.now)()])?;
-            Ok(StatusCode::NO_CONTENT.into_response())
+            Ok(auth_note(
+                &a,
+                peer.0,
+                &h,
+                audit::REVOCATION,
+                "device",
+                "success",
+                "",
+                &owner,
+                &tenant,
+                &id,
+                "",
+                &token,
+                StatusCode::NO_CONTENT.into_response(),
+            ))
         } else {
-            Ok(err(StatusCode::NOT_FOUND, "not_found"))
+            Ok(auth_note(
+                &a,
+                peer.0,
+                &h,
+                audit::REVOCATION,
+                "device",
+                "failure",
+                "not_found",
+                &owner,
+                &tenant,
+                &id,
+                "",
+                &token,
+                err(StatusCode::NOT_FOUND, "not_found"),
+            ))
         }
-    })
+    });
+    if saw.get() {
+        response
+    } else {
+        let reason = if response.status() == StatusCode::UNAUTHORIZED {
+            "invalid_token"
+        } else {
+            "server_error"
+        };
+        auth_note(
+            &a,
+            peer.0,
+            &h,
+            audit::REVOCATION,
+            "device",
+            "failure",
+            reason,
+            "",
+            "",
+            &id,
+            "",
+            &token,
+            response,
+        )
+    }
 }
 
 #[derive(Deserialize)]
@@ -650,23 +1073,74 @@ async fn approve(
     h: HeaderMap,
     Form(f): Form<Approval>,
 ) -> Response {
+    let decision = |outcome: &'static str,
+                    reason: &'static str,
+                    account: &str,
+                    tenant: &str,
+                    response: Response| {
+        auth_note(
+            &a,
+            peer,
+            &h,
+            audit::DEVICE_APPROVAL,
+            "device_code",
+            outcome,
+            reason,
+            account,
+            tenant,
+            "kiln-cli",
+            "",
+            &f.user_code,
+            response,
+        )
+    };
     if h.get(header::ORIGIN).and_then(|v| v.to_str().ok())
         != Some(a.cfg.public_origin.trim_end_matches('/'))
     {
-        return err(StatusCode::FORBIDDEN, "invalid_origin");
+        return decision(
+            "failure",
+            "invalid_origin",
+            "",
+            "",
+            err(StatusCode::FORBIDDEN, "invalid_origin"),
+        );
     }
     let Some(raw) = cookie(&h, "__Host-kiln_session") else {
-        return err(StatusCode::UNAUTHORIZED, "login_required");
+        return decision(
+            "failure",
+            "login_required",
+            "",
+            "",
+            err(StatusCode::UNAUTHORIZED, "login_required"),
+        );
     };
     let now = (a.cfg.now)();
     let Some(csrf_cookie) = cookie(&h, "__Host-kiln_csrf") else {
-        return err(StatusCode::FORBIDDEN, "invalid_csrf");
+        return decision(
+            "failure",
+            "invalid_csrf",
+            "",
+            "",
+            err(StatusCode::FORBIDDEN, "invalid_csrf"),
+        );
     };
     if f.csrf != csrf_cookie {
-        return err(StatusCode::FORBIDDEN, "invalid_csrf");
+        return decision(
+            "failure",
+            "invalid_csrf",
+            "",
+            "",
+            err(StatusCode::FORBIDDEN, "invalid_csrf"),
+        );
     }
     if !matches!(f.decision.as_str(), "approve" | "deny") || f.user_code.len() != 12 {
-        return err(StatusCode::BAD_REQUEST, "invalid_request");
+        return decision(
+            "failure",
+            "invalid_request",
+            "",
+            "",
+            err(StatusCode::BAD_REQUEST, "invalid_request"),
+        );
     }
     let limited = (|| -> anyhow::Result<()> {
         let mut c = a.store.db.lock().unwrap();
@@ -683,12 +1157,26 @@ async fn approve(
         Ok(())
     })();
     if limited.is_err() {
-        return err(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
+        return decision(
+            "failure",
+            "rate_limited",
+            "",
+            "",
+            err(StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+        );
     }
     let mut c = a.store.db.lock().unwrap();
     let tx = match c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
         Ok(tx) => tx,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        Err(_) => {
+            return decision(
+                "failure",
+                "server_error",
+                "",
+                "",
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
+        }
     };
     let account = match tx
         .query_row(
@@ -699,10 +1187,24 @@ async fn approve(
         .optional()
     {
         Ok(row) => row.flatten(),
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        Err(_) => {
+            return decision(
+                "failure",
+                "server_error",
+                "",
+                "",
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
+        }
     };
     let Some(account) = account else {
-        return err(StatusCode::UNAUTHORIZED, "login_required");
+        return decision(
+            "failure",
+            "login_required",
+            "",
+            "",
+            err(StatusCode::UNAUTHORIZED, "login_required"),
+        );
     };
     let state = if f.decision == "approve" {
         "approved"
@@ -719,18 +1221,54 @@ async fn approve(
             params![state, account, f.user_code, now],
         )?)
     })();
+    let tenant = tenant_on(&tx, &account);
+    let outcome = if state == "approved" {
+        "success"
+    } else {
+        "failure"
+    };
+    let reason = if state == "approved" {
+        ""
+    } else {
+        "access_denied"
+    };
     match result {
         Ok(1) => {
             if tx.execute("INSERT INTO audit_events(event,actor_id,resource_id,outcome,created_at) VALUES('request_decision',?1,?2,?3,?4)", params![account,f.user_code,state,now]).is_err() || tx.commit().is_err() {
-                return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+                return decision(
+                    "failure",
+                    "server_error",
+                    &account,
+                    &tenant,
+                    err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+                );
             }
-            page("<h1>Decision saved.</h1><p>You can return to your terminal.</p>").into_response()
+            decision(
+                outcome,
+                reason,
+                &account,
+                &tenant,
+                page("<h1>Decision saved.</h1><p>You can return to your terminal.</p>")
+                    .into_response(),
+            )
         }
         Ok(_) => {
             let _ = tx.commit();
-            err(StatusCode::BAD_REQUEST, "invalid_code")
+            decision(
+                "failure",
+                "invalid_code",
+                &account,
+                &tenant,
+                err(StatusCode::BAD_REQUEST, "invalid_code"),
+            )
         }
-        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        Err(_) => decision(
+            "failure",
+            "server_error",
+            &account,
+            &tenant,
+            err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        ),
     }
 }
 async fn oauth_begin(
@@ -833,19 +1371,64 @@ struct Callback {
 }
 async fn oauth_callback(
     State(a): State<Arc<App>>,
+    peer: Peer,
     Path(p): Path<String>,
     h: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<Callback>,
 ) -> Response {
+    let method = if p == "google" { "google" } else { "github" };
+    let client = if p == "google" {
+        a.cfg.google_client_id.clone()
+    } else {
+        a.cfg.github_client_id.clone()
+    };
+    let sign = |outcome: &'static str,
+                reason: &'static str,
+                account: &str,
+                tenant: &str,
+                session: &str,
+                response: Response| {
+        auth_note(
+            &a,
+            peer.0,
+            &h,
+            audit::SIGN_IN,
+            method,
+            outcome,
+            reason,
+            account,
+            tenant,
+            &client,
+            session,
+            "",
+            response,
+        )
+    };
     let Some(session) = cookie(&h, "__Host-kiln_session") else {
-        return err(StatusCode::BAD_REQUEST, "invalid_state");
+        return sign(
+            "failure",
+            "invalid_state",
+            "",
+            "",
+            "",
+            err(StatusCode::BAD_REQUEST, "invalid_state"),
+        );
     };
     let now = (a.cfg.now)();
     let row = {
         let mut c = a.store.db.lock().unwrap();
         let tx = match c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
             Ok(tx) => tx,
-            Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            Err(_) => {
+                return sign(
+                    "failure",
+                    "server_error",
+                    "",
+                    "",
+                    &session,
+                    err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+                );
+            }
         };
         let row=tx.query_row("SELECT provider,pkce,nonce FROM oauth_attempts WHERE state_hash=?1 AND session_hash=?2 AND expires_at>?3",params![hash(&q.state),hash(&session),now],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?))).optional().ok().flatten();
         if tx
@@ -856,15 +1439,36 @@ async fn oauth_callback(
             .is_err()
             || tx.commit().is_err()
         {
-            return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+            return sign(
+                "failure",
+                "server_error",
+                "",
+                "",
+                &session,
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
         }
         row
     };
     let Some((provider, pkce, nonce)) = row else {
-        return err(StatusCode::BAD_REQUEST, "invalid_state");
+        return sign(
+            "failure",
+            "invalid_state",
+            "",
+            "",
+            &session,
+            err(StatusCode::BAD_REQUEST, "invalid_state"),
+        );
     };
     if provider != p {
-        return err(StatusCode::BAD_REQUEST, "provider_mismatch");
+        return sign(
+            "failure",
+            "provider_mismatch",
+            "",
+            "",
+            &session,
+            err(StatusCode::BAD_REQUEST, "provider_mismatch"),
+        );
     }
     let redirect = format!(
         "{}/oauth/{}/callback",
@@ -874,7 +1478,16 @@ async fn oauth_callback(
     let ident = if p == "github" {
         let s = match std::fs::read_to_string(&a.cfg.github_secret_file) {
             Ok(x) => x,
-            Err(_) => return err(StatusCode::SERVICE_UNAVAILABLE, "provider_unavailable"),
+            Err(_) => {
+                return sign(
+                    "failure",
+                    "provider_unavailable",
+                    "",
+                    "",
+                    &session,
+                    err(StatusCode::SERVICE_UNAVAILABLE, "provider_unavailable"),
+                );
+            }
         };
         providers::github_finish(
             &a.http,
@@ -890,7 +1503,16 @@ async fn oauth_callback(
     } else {
         let s = match std::fs::read_to_string(&a.cfg.google_secret_file) {
             Ok(x) => x,
-            Err(_) => return err(StatusCode::SERVICE_UNAVAILABLE, "provider_unavailable"),
+            Err(_) => {
+                return sign(
+                    "failure",
+                    "provider_unavailable",
+                    "",
+                    "",
+                    &session,
+                    err(StatusCode::SERVICE_UNAVAILABLE, "provider_unavailable"),
+                );
+            }
         };
         providers::google_finish(
             &a.http,
@@ -905,7 +1527,16 @@ async fn oauth_callback(
     };
     let ident = match ident {
         Ok(x) => x,
-        Err(_) => return err(StatusCode::BAD_GATEWAY, "provider_failed"),
+        Err(_) => {
+            return sign(
+                "failure",
+                "provider_failed",
+                "",
+                "",
+                &session,
+                err(StatusCode::BAD_GATEWAY, "provider_failed"),
+            );
+        }
     };
     let account = match a.store.seed_account(
         ident.provider.as_str(),
@@ -914,7 +1545,16 @@ async fn oauth_callback(
         now,
     ) {
         Ok(x) => x,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        Err(_) => {
+            return sign(
+                "failure",
+                "server_error",
+                "",
+                "",
+                &session,
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
+        }
     };
     let rotated = secret();
     let updated = a.store.db.lock().ok().and_then(|c| c.execute(
@@ -922,16 +1562,48 @@ async fn oauth_callback(
         params![hash(&rotated), account, now + 43200, hash(&session), now],
     ).ok()).unwrap_or(0);
     if updated != 1 {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+        return sign(
+            "failure",
+            "server_error",
+            &account,
+            "",
+            &session,
+            err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        );
     }
+    let tenant = a
+        .store
+        .db
+        .lock()
+        .ok()
+        .map(|c| tenant_on(&c, &account))
+        .unwrap_or_default();
     let pending = take_server_authorization(&a, &session);
     let mut response = match pending {
         Ok(Some(pending)) => match finish_server_authorization(&a, &account, &pending, now) {
             Ok(response) => response,
-            Err(()) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            Err(()) => {
+                return sign(
+                    "failure",
+                    "server_error",
+                    &account,
+                    &tenant,
+                    &rotated,
+                    err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+                );
+            }
         },
         Ok(None) => Redirect::to("/device").into_response(),
-        Err(()) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        Err(()) => {
+            return sign(
+                "failure",
+                "server_error",
+                &account,
+                &tenant,
+                &rotated,
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
+        }
     };
     response.headers_mut().insert(
         header::SET_COOKIE,
@@ -941,7 +1613,14 @@ async fn oauth_callback(
         .parse()
         .expect("cookie"),
     );
-    secure(nostore(response))
+    sign(
+        "success",
+        "",
+        &account,
+        &tenant,
+        &rotated,
+        secure(nostore(response)),
+    )
 }
 
 #[derive(Deserialize)]
@@ -1087,7 +1766,22 @@ async fn registration_poll(State(a): State<Arc<App>>, Json(f): Json<SecretReq>) 
     }
     let sid = format!("srv_{}", uuid::Uuid::new_v4().simple());
     let dir = secret();
-    let ok=tx.execute("INSERT INTO servers(id,owner_id,name,origin,ca_pem,revision,active,directory_hash,created_at)VALUES(?1,?2,?3,?4,?5,1,0,?6,?7)",params![sid,owner,name,origin,ca,hash(&dir),now]).and_then(|_|tx.execute("UPDATE pending_registrations SET poll_consumed=1 WHERE secret_hash=?1 AND poll_consumed=0",[hash(&f.registration_code)]));
+    let tenant = match ensure_owner_tenant(&tx, &owner, now) {
+        Ok(tenant) => tenant,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let ok = tx
+        .execute(
+            "INSERT INTO servers(id,owner_id,tenant_id,name,origin,ca_pem,revision,active,directory_hash,created_at)VALUES(?1,?2,?3,?4,?5,?6,1,0,?7,?8)",
+            params![sid, owner, tenant, name, origin, ca, hash(&dir), now],
+        )
+        .and_then(|_| set_default_server(&tx, &tenant, &sid))
+        .and_then(|_| {
+            tx.execute(
+                "UPDATE pending_registrations SET poll_consumed=1 WHERE secret_hash=?1 AND poll_consumed=0",
+                [hash(&f.registration_code)],
+            )
+        });
     if ok.is_err() || tx.commit().is_err() {
         return err(StatusCode::BAD_REQUEST, "invalid_grant");
     }
@@ -1164,12 +1858,216 @@ async fn delete_server(
     }
 }
 
+async fn tenant_list(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
+    authorized(&a, &h, |tx, account, _| {
+        let mut q = tx.prepare(
+            "SELECT t.id,m.role,t.default_server_id FROM tenants t
+             JOIN tenant_members m ON m.tenant_id=t.id
+             WHERE m.account_id=?1 ORDER BY t.created_at",
+        )?;
+        let tenants = q
+            .query_map([account], |r| {
+                Ok(TenantSummary {
+                    id: r.get(0)?,
+                    role: member_role(&r.get::<_, String>(1)?).unwrap_or(Role::Member),
+                    default_server_id: r.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Json(tenants).into_response())
+    })
+}
+
+#[derive(Serialize)]
+struct TenantMembersResponse {
+    tenant_id: String,
+    members: Vec<TenantMember>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddTenantMemberReq {
+    name: String,
+}
+
+async fn list_tenant_members(
+    State(a): State<Arc<App>>,
+    h: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if id.is_empty() || id.len() > 128 {
+        return err(StatusCode::NOT_FOUND, "not_found");
+    }
+    let Some(raw) = bearer(&h) else {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
+    let mut c = match a.store.db.lock() {
+        Ok(c) => c,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let tx = match c.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred) {
+        Ok(tx) => tx,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let directory = match directory_in_tenant(&tx, &id, raw) {
+        Ok(v) => v,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    if directory {
+        let members = match tenant_member_rows(&tx, &id) {
+            Ok(v) => v,
+            Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        };
+        if tx.commit().is_err() {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+        }
+        return nostore(
+            Json(TenantMembersResponse {
+                tenant_id: id,
+                members,
+            })
+            .into_response(),
+        );
+    }
+    drop(tx);
+    drop(c);
+    authorized(&a, &h, |tx, caller, _| {
+        if !tenant_owner(tx, &id, &caller)? {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        }
+        Ok(nostore(
+            Json(TenantMembersResponse {
+                tenant_id: id.clone(),
+                members: tenant_member_rows(tx, &id)?,
+            })
+            .into_response(),
+        ))
+    })
+}
+
+async fn add_tenant_member(
+    State(a): State<Arc<App>>,
+    h: HeaderMap,
+    Path(id): Path<String>,
+    Json(f): Json<AddTenantMemberReq>,
+) -> Response {
+    if id.is_empty() || id.len() > 128 {
+        return err(StatusCode::NOT_FOUND, "not_found");
+    }
+    if !local_member_name(&f.name) {
+        return err(StatusCode::BAD_REQUEST, "invalid_name");
+    }
+    authorized(&a, &h, |tx, caller, _| {
+        if !tenant_owner(tx, &id, &caller)? {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        }
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tenant_members WHERE tenant_id=?1 AND local_name=?2)",
+            params![id, f.name],
+            |r| r.get(0),
+        )?;
+        if exists {
+            return Ok(err(StatusCode::CONFLICT, "name_in_use"));
+        }
+        let account = format!("acct_{}", uuid::Uuid::new_v4().simple());
+        let now = (a.cfg.now)();
+        tx.execute(
+            "INSERT INTO accounts(id,created_at)VALUES(?1,?2)",
+            params![account, now],
+        )?;
+        tx.execute(
+            "INSERT INTO tenant_members(tenant_id,account_id,role,local_name)VALUES(?1,?2,'member',?3)",
+            params![id, account, f.name],
+        )?;
+        tx.execute(
+            "INSERT INTO audit_events(event,actor_id,resource_id,outcome,created_at) VALUES('tenant_member_added',?1,?2,'success',?3)",
+            params![caller, account, now],
+        )?;
+        Ok(Json(serde_json::json!({
+            "tenant_id": id,
+            "account_id": account,
+            "name": f.name,
+            "role": "member",
+        }))
+        .into_response())
+    })
+}
+
+async fn remove_tenant_member(
+    State(a): State<Arc<App>>,
+    h: HeaderMap,
+    Path((id, name)): Path<(String, String)>,
+) -> Response {
+    if id.is_empty() || id.len() > 128 || !local_member_name(&name) {
+        return err(StatusCode::NOT_FOUND, "not_found");
+    }
+    authorized(&a, &h, |tx, caller, _| {
+        if !tenant_owner(tx, &id, &caller)? {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        }
+        let account: Option<String> = tx
+            .query_row(
+                "SELECT account_id FROM tenant_members WHERE tenant_id=?1 AND local_name=?2 AND role='member'",
+                params![id, name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(account) = account else {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        };
+        let now = (a.cfg.now)();
+        tx.execute(
+            "UPDATE automation_keys SET revoked_at=?1 WHERE owner_id=?2 AND server_id IN (SELECT id FROM servers WHERE tenant_id=?3) AND revoked_at IS NULL",
+            params![now, account, id],
+        )?;
+        tx.execute(
+            "DELETE FROM automation_keys WHERE owner_id=?1 AND server_id IN (SELECT id FROM servers WHERE tenant_id=?2)",
+            params![account, id],
+        )?;
+        tx.execute(
+            "DELETE FROM tenant_members WHERE tenant_id=?1 AND account_id=?2",
+            params![id, account],
+        )?;
+        tx.execute(
+            "DELETE FROM accounts WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM provider_identities WHERE account_id=?1) AND NOT EXISTS(SELECT 1 FROM devices WHERE account_id=?1)",
+            [&account],
+        )?;
+        tx.execute(
+            "INSERT INTO audit_events(event,actor_id,resource_id,outcome,created_at) VALUES('tenant_member_removed',?1,?2,'success',?3)",
+            params![caller, account, now],
+        )?;
+        Ok(StatusCode::NO_CONTENT.into_response())
+    })
+}
+
+async fn tenant_servers(
+    State(a): State<Arc<App>>,
+    h: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if id.is_empty() || id.len() > 128 {
+        return err(StatusCode::NOT_FOUND, "not_found");
+    }
+    authorized(&a, &h, |tx, account, _| {
+        let member: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tenant_members WHERE tenant_id=?1 AND account_id=?2)",
+            params![id, account],
+            |r| r.get(0),
+        )?;
+        if !member {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        }
+        Ok(Json(tenant_servers_rows(tx, &id)?).into_response())
+    })
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NewKey {
     server_id: String,
     scope: Scope,
     expires_in: Option<u64>,
+    account: Option<String>,
 }
 async fn keys(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
     authorized(&a, &h, |tx, owner, _| {
@@ -1180,6 +2078,37 @@ async fn keys(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
 }
 async fn create_key(State(a): State<Arc<App>>, h: HeaderMap, Json(f): Json<NewKey>) -> Response {
     authorized(&a, &h, |tx, owner, _| {
+        let tenant_id: Option<String> = tx
+            .query_row(
+                "SELECT tenant_id FROM servers WHERE id=?1 AND active=1",
+                [&f.server_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(tenant_id) = tenant_id else {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        };
+        if !tenant_owner(tx, &tenant_id, &owner)? {
+            return Ok(err(StatusCode::NOT_FOUND, "not_found"));
+        }
+        let key_account = if let Some(name) = f.account.as_deref() {
+            if !local_member_name(name) {
+                return Ok(err(StatusCode::BAD_REQUEST, "invalid_name"));
+            }
+            match tx
+                .query_row(
+                    "SELECT account_id FROM tenant_members WHERE tenant_id=?1 AND local_name=?2 AND role='member'",
+                    params![tenant_id, name],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?
+            {
+                Some(account) => account,
+                None => return Ok(err(StatusCode::NOT_FOUND, "not_found")),
+            }
+        } else {
+            owner.clone()
+        };
         let raw = secret();
         let id = format!("key_{}", uuid::Uuid::new_v4().simple());
         let now = (a.cfg.now)();
@@ -1191,7 +2120,20 @@ async fn create_key(State(a): State<Arc<App>>, h: HeaderMap, Json(f): Json<NewKe
             Scope::Read => "read",
             Scope::Operate => "operate",
         };
-        let n=tx.execute("INSERT INTO automation_keys(id,owner_id,server_id,hash,scope,expires_at) SELECT ?1,?2,id,?3,?4,?5 FROM servers WHERE id=?6 AND owner_id=?2 AND active=1",params![id,owner,hash(&raw),scope,now+life as i64,f.server_id])?;
+        let n = tx.execute(
+            "INSERT INTO automation_keys(id,owner_id,server_id,hash,scope,expires_at)
+             SELECT ?1,?2,s.id,?3,?4,?5 FROM servers s
+             JOIN tenant_members m ON m.tenant_id=s.tenant_id AND m.account_id=?2
+             WHERE s.id=?6 AND s.active=1",
+            params![
+                id,
+                key_account,
+                hash(&raw),
+                scope,
+                now + life as i64,
+                f.server_id
+            ],
+        )?;
         if n != 1 {
             return Ok(err(StatusCode::NOT_FOUND, "not_found"));
         }
@@ -1199,18 +2141,79 @@ async fn create_key(State(a): State<Arc<App>>, h: HeaderMap, Json(f): Json<NewKe
         Ok(Json(serde_json::json!({"id":id,"key":raw,"server_id":f.server_id,"scope":scope,"expires_at":now+life as i64})).into_response())
     })
 }
-async fn revoke_key(State(a): State<Arc<App>>, h: HeaderMap, Path(id): Path<String>) -> Response {
-    authorized(&a, &h, |tx, owner, _| {
+async fn revoke_key(
+    State(a): State<Arc<App>>,
+    peer: Peer,
+    h: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let token = bearer(&h).unwrap_or("").to_owned();
+    let saw = std::cell::Cell::new(false);
+    let response = authorized(&a, &h, |tx, owner, _| {
+        saw.set(true);
+        let tenant = tenant_on(tx, &owner);
         let n=tx.execute("UPDATE automation_keys SET revoked_at=?1 WHERE id=?2 AND owner_id=?3 AND revoked_at IS NULL",params![(a.cfg.now)(),id,owner])?;
         if n == 1 {
             tx.execute("INSERT INTO audit_events(event,actor_id,resource_id,outcome,created_at) VALUES('key_revoked',?1,?2,'success',?3)", params![owner,id,(a.cfg.now)()])?;
-            Ok(StatusCode::NO_CONTENT.into_response())
+            Ok(auth_note(
+                &a,
+                peer.0,
+                &h,
+                audit::REVOCATION,
+                "automation_key",
+                "success",
+                "",
+                &owner,
+                &tenant,
+                &id,
+                "",
+                &token,
+                StatusCode::NO_CONTENT.into_response(),
+            ))
         } else {
-            Ok(err(StatusCode::NOT_FOUND, "not_found"))
+            Ok(auth_note(
+                &a,
+                peer.0,
+                &h,
+                audit::REVOCATION,
+                "automation_key",
+                "failure",
+                "not_found",
+                &owner,
+                &tenant,
+                &id,
+                "",
+                &token,
+                err(StatusCode::NOT_FOUND, "not_found"),
+            ))
         }
-    })
+    });
+    if saw.get() {
+        response
+    } else {
+        let reason = if response.status() == StatusCode::UNAUTHORIZED {
+            "invalid_token"
+        } else {
+            "server_error"
+        };
+        auth_note(
+            &a,
+            peer.0,
+            &h,
+            audit::REVOCATION,
+            "automation_key",
+            "failure",
+            reason,
+            "",
+            "",
+            &id,
+            "",
+            &token,
+            response,
+        )
+    }
 }
-async fn key_token(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
+async fn key_token(State(a): State<Arc<App>>, peer: Peer, h: HeaderMap) -> Response {
     let Some(raw) = bearer(&h) else {
         return err(StatusCode::UNAUTHORIZED, "invalid_token");
     };
@@ -1224,6 +2227,21 @@ async fn key_token(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
     let Some((kid, owner, sid, scope, name, origin, ca, rev)) = row else {
         return err(StatusCode::UNAUTHORIZED, "invalid_token");
     };
+    let row: Option<(String, String)> = tx
+        .query_row(
+            "SELECT s.tenant_id,m.role FROM servers s JOIN tenant_members m ON m.tenant_id=s.tenant_id AND m.account_id=?2 WHERE s.id=?1 AND s.active=1",
+            params![sid, owner],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    let Some((tenant_id, role_raw)) = row else {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
+    let Some(role) = member_role(&role_raw) else {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
     let scope = match scope.as_str() {
         "read" => Scope::Read,
         "operate" => Scope::Operate,
@@ -1234,21 +2252,66 @@ async fn key_token(State(a): State<Arc<App>>, h: HeaderMap) -> Response {
         iss: a.cfg.public_origin.clone(),
         sub: owner.clone(),
         aud: format!("kiln:server:{sid}"),
+        tenant_id: Some(tenant_id.clone()),
         iat: n,
         nbf: n,
         exp: n + 300,
         credential_id: kid,
         scope,
-        role: Role::Owner,
-        tenant_id: owner,
+        role: Some(role),
     }) {
         Ok(x) => x,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        Err(_) => {
+            return auth_note(
+                &a,
+                peer.0,
+                &h,
+                audit::TOKEN_ISSUE,
+                "automation_key",
+                "failure",
+                "server_error",
+                &owner,
+                &tenant_id,
+                &sid,
+                "",
+                raw,
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
+        }
     };
     if tx.commit().is_err() {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+        return auth_note(
+            &a,
+            peer.0,
+            &h,
+            audit::TOKEN_ISSUE,
+            "automation_key",
+            "failure",
+            "server_error",
+            &owner,
+            &tenant_id,
+            &sid,
+            "",
+            raw,
+            err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        );
     }
-    nostore(Json(serde_json::json!({"token":{"access_token":jwt,"token_type":"Bearer","expires_in":300},"server":{"id":sid,"name":name,"origin":origin,"ca_pem":ca,"revision":rev}})).into_response())
+    let issued = jwt.clone();
+    auth_note(
+        &a,
+        peer.0,
+        &h,
+        audit::TOKEN_ISSUE,
+        "automation_key",
+        "success",
+        "",
+        &owner,
+        &tenant_id,
+        &sid,
+        "",
+        &issued,
+        nostore(Json(serde_json::json!({"token":{"access_token":jwt,"token_type":"Bearer","expires_in":300},"server":{"id":sid,"name":name,"origin":origin,"ca_pem":ca,"revision":rev}})).into_response()),
+    )
 }
 #[derive(Deserialize)]
 struct ServerQuery {
@@ -1358,7 +2421,13 @@ fn insert_server_code(
     )?;
     Ok(raw)
 }
-fn issue_app(a: &App, owner: &str, server: &str, now: i64) -> anyhow::Result<String> {
+fn issue_app(
+    a: &App,
+    owner: &str,
+    server: &str,
+    tenant_id: &str,
+    now: i64,
+) -> anyhow::Result<String> {
     let credential = format!("app_{server}");
     anyhow::ensure!(credential.len() <= 128, "invalid server id");
     let now = u64::try_from(now)?;
@@ -1366,13 +2435,13 @@ fn issue_app(a: &App, owner: &str, server: &str, now: i64) -> anyhow::Result<Str
         iss: a.cfg.public_origin.clone(),
         sub: owner.to_owned(),
         aud: format!("kiln:server:{server}"),
+        tenant_id: Some(tenant_id.to_owned()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: credential,
         scope: Scope::Operate,
-        role: Role::Owner,
-        tenant_id: owner.to_owned(),
+        role: Some(Role::Owner),
     })
 }
 async fn oauth_server(
@@ -1554,27 +2623,108 @@ struct CodeExchange {
 struct ReaderExchange {
     reader: String,
 }
-async fn server_token(State(a): State<Arc<App>>, h: HeaderMap, body: String) -> Response {
+async fn server_token(
+    State(a): State<Arc<App>>,
+    peer: Peer,
+    h: HeaderMap,
+    body: String,
+) -> Response {
     let value: serde_json::Value = match serde_json::from_str(&body) {
         Ok(value) => value,
-        Err(_) => return err(StatusCode::BAD_REQUEST, "invalid_request"),
+        Err(_) => {
+            return auth_note(
+                &a,
+                peer.0,
+                &h,
+                audit::OAUTH_CODE_EXCHANGE,
+                "authorization_code",
+                "failure",
+                "invalid_request",
+                "",
+                "",
+                "",
+                "",
+                "",
+                err(StatusCode::BAD_REQUEST, "invalid_request"),
+            );
+        }
     };
     if value.get("reader").is_some() {
         let exchange: ReaderExchange = match serde_json::from_value(value) {
             Ok(exchange) => exchange,
-            Err(_) => return err(StatusCode::BAD_REQUEST, "invalid_request"),
+            Err(_) => {
+                return auth_note(
+                    &a,
+                    peer.0,
+                    &h,
+                    audit::APP_READER_EXCHANGE,
+                    "app_reader",
+                    "failure",
+                    "invalid_request",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    err(StatusCode::BAD_REQUEST, "invalid_request"),
+                );
+            }
         };
         let Some(presented) = bearer(&h) else {
-            return err(StatusCode::UNAUTHORIZED, "invalid_token");
+            return auth_note(
+                &a,
+                peer.0,
+                &h,
+                audit::APP_READER_EXCHANGE,
+                "app_reader",
+                "failure",
+                "invalid_token",
+                "",
+                "",
+                "",
+                "",
+                "",
+                err(StatusCode::UNAUTHORIZED, "invalid_token"),
+            );
         };
-        return reader_token(&a, &exchange.reader, presented);
+        return reader_token(&a, peer.0, &h, &exchange.reader, presented);
     }
     let exchange: CodeExchange = match serde_json::from_value(value) {
         Ok(exchange) => exchange,
-        Err(_) => return err(StatusCode::BAD_REQUEST, "invalid_request"),
+        Err(_) => {
+            return auth_note(
+                &a,
+                peer.0,
+                &h,
+                audit::OAUTH_CODE_EXCHANGE,
+                "authorization_code",
+                "failure",
+                "invalid_request",
+                "",
+                "",
+                "",
+                "",
+                "",
+                err(StatusCode::BAD_REQUEST, "invalid_request"),
+            );
+        }
     };
     let Some(presented) = bearer(&h) else {
-        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+        return auth_note(
+            &a,
+            peer.0,
+            &h,
+            audit::OAUTH_CODE_EXCHANGE,
+            "authorization_code",
+            "failure",
+            "invalid_token",
+            "",
+            "",
+            "",
+            "",
+            "",
+            err(StatusCode::UNAUTHORIZED, "invalid_token"),
+        );
     };
     let now = (a.cfg.now)();
     let mut c = a.store.db.lock().unwrap();
@@ -1599,10 +2749,40 @@ async fn server_token(State(a): State<Arc<App>>, h: HeaderMap, body: String) -> 
         .optional()
     {
         Ok(row) => row,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        Err(_) => {
+            return auth_note(
+                &a,
+                peer.0,
+                &h,
+                audit::OAUTH_CODE_EXCHANGE,
+                "authorization_code",
+                "failure",
+                "server_error",
+                "",
+                "",
+                "",
+                "",
+                &exchange.code,
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
+        }
     };
     let Some((server, account, redirect, challenge, expires)) = row else {
-        return err(StatusCode::BAD_REQUEST, "invalid_grant");
+        return auth_note(
+            &a,
+            peer.0,
+            &h,
+            audit::OAUTH_CODE_EXCHANGE,
+            "authorization_code",
+            "failure",
+            "invalid_grant",
+            "",
+            "",
+            "",
+            "",
+            &exchange.code,
+            err(StatusCode::BAD_REQUEST, "invalid_grant"),
+        );
     };
     let secret_ok: bool = match tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM servers s JOIN accounts a ON a.id=s.owner_id WHERE s.id=?1 AND s.owner_id=?2 AND s.login_secret_hash=?3 AND s.active=1 AND a.revoked_at IS NULL)",
@@ -1610,30 +2790,123 @@ async fn server_token(State(a): State<Arc<App>>, h: HeaderMap, body: String) -> 
         |row| row.get(0),
     ) {
         Ok(value) => value,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        Err(_) => {
+            return auth_note(
+                &a,
+                peer.0,
+                &h,
+                audit::OAUTH_CODE_EXCHANGE,
+                "authorization_code",
+                "failure",
+                "server_error",
+                &account,
+                "",
+                &server,
+                "",
+                presented,
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
+        }
+    };
+    let client_id = server.clone();
+    let exchange_note = |outcome: &'static str,
+                         reason: &'static str,
+                         account: &str,
+                         tenant: &str,
+                         token: &str,
+                         response: Response| {
+        auth_note(
+            &a,
+            peer.0,
+            &h,
+            audit::OAUTH_CODE_EXCHANGE,
+            "authorization_code",
+            outcome,
+            reason,
+            account,
+            tenant,
+            &client_id,
+            "",
+            token,
+            response,
+        )
     };
     if !secret_ok {
-        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+        return exchange_note(
+            "failure",
+            "invalid_token",
+            &account,
+            "",
+            presented,
+            err(StatusCode::UNAUTHORIZED, "invalid_token"),
+        );
     }
     let consume = tx.execute(
         "DELETE FROM server_codes WHERE hash=?1",
         params![hash(&exchange.code)],
     );
     if consume.is_err() {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+        return exchange_note(
+            "failure",
+            "server_error",
+            &account,
+            "",
+            presented,
+            err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        );
     }
     if now >= expires {
         let _ = tx.commit();
-        return err(StatusCode::BAD_REQUEST, "expired_token");
+        return exchange_note(
+            "failure",
+            "expired_token",
+            &account,
+            "",
+            &exchange.code,
+            err(StatusCode::BAD_REQUEST, "expired_token"),
+        );
     }
     if exchange.redirect_uri != redirect || !pkce_ok(&exchange.code_verifier, &challenge) {
         let _ = tx.commit();
-        return err(StatusCode::BAD_REQUEST, "invalid_grant");
+        return exchange_note(
+            "failure",
+            "invalid_grant",
+            &account,
+            "",
+            &exchange.code,
+            err(StatusCode::BAD_REQUEST, "invalid_grant"),
+        );
     }
+    let tenant_id: String = match tx.query_row(
+        "SELECT tenant_id FROM servers WHERE id=?1 AND active=1",
+        [&server],
+        |r| r.get(0),
+    ) {
+        Ok(v) => v,
+        Err(_) => {
+            return exchange_note(
+                "failure",
+                "server_error",
+                &account,
+                "",
+                presented,
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
+        }
+    };
     let reader = secret();
-    let jwt = match issue_app(&a, &account, &server, now) {
+    let jwt = match issue_app(&a, &account, &server, &tenant_id, now) {
         Ok(jwt) => jwt,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        Err(_) => {
+            return exchange_note(
+                "failure",
+                "server_error",
+                &account,
+                &tenant_id,
+                presented,
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
+        }
     };
     if tx
         .execute(
@@ -1643,24 +2916,61 @@ async fn server_token(State(a): State<Arc<App>>, h: HeaderMap, body: String) -> 
         .is_err()
         || tx.commit().is_err()
     {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+        return exchange_note(
+            "failure",
+            "server_error",
+            &account,
+            &tenant_id,
+            presented,
+            err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        );
     }
-    nostore(
-        Json(serde_json::json!({
-            "access_token": jwt,
-            "token_type": "Bearer",
-            "expires_in": 300,
-            "reader": reader,
-        }))
-        .into_response(),
+    let issued = jwt.clone();
+    exchange_note(
+        "success",
+        "",
+        &account,
+        &tenant_id,
+        &issued,
+        nostore(
+            Json(serde_json::json!({
+                "access_token": jwt,
+                "token_type": "Bearer",
+                "expires_in": 300,
+                "reader": reader,
+            }))
+            .into_response(),
+        ),
     )
 }
-fn reader_token(a: &App, reader: &str, presented: &str) -> Response {
+fn reader_token(
+    a: &App,
+    peer: SocketAddr,
+    headers: &HeaderMap,
+    reader: &str,
+    presented: &str,
+) -> Response {
     let now = (a.cfg.now)();
     let mut c = a.store.db.lock().unwrap();
     let tx = match c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
         Ok(tx) => tx,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        Err(_) => {
+            return auth_note(
+                a,
+                peer,
+                headers,
+                audit::APP_READER_EXCHANGE,
+                "app_reader",
+                "failure",
+                "server_error",
+                "",
+                "",
+                "",
+                "",
+                presented,
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
+        }
     };
     let row = match tx.query_row(
         "SELECT r.server_id,r.account_id FROM app_readers r JOIN servers s ON s.id=r.server_id JOIN accounts a ON a.id=r.account_id WHERE r.hash=?1 AND r.expires_at>?2 AND s.login_secret_hash=?3 AND s.active=1 AND a.revoked_at IS NULL AND s.owner_id=r.account_id",
@@ -1668,25 +2978,124 @@ fn reader_token(a: &App, reader: &str, presented: &str) -> Response {
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
     ).optional() {
         Ok(row) => row,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        Err(_) => {
+            return auth_note(
+                a,
+                peer,
+                headers,
+                audit::APP_READER_EXCHANGE,
+                "app_reader",
+                "failure",
+                "server_error",
+                "",
+                "",
+                "",
+                "",
+                presented,
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
+        }
     };
     let Some((server, account)) = row else {
-        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+        return auth_note(
+            a,
+            peer,
+            headers,
+            audit::APP_READER_EXCHANGE,
+            "app_reader",
+            "failure",
+            "invalid_token",
+            "",
+            "",
+            "",
+            "",
+            presented,
+            err(StatusCode::UNAUTHORIZED, "invalid_token"),
+        );
     };
-    let jwt = match issue_app(a, &account, &server, now) {
+    let tenant_id: String = match tx.query_row(
+        "SELECT tenant_id FROM servers WHERE id=?1 AND active=1",
+        [&server],
+        |r| r.get(0),
+    ) {
+        Ok(v) => v,
+        Err(_) => {
+            return auth_note(
+                a,
+                peer,
+                headers,
+                audit::APP_READER_EXCHANGE,
+                "app_reader",
+                "failure",
+                "server_error",
+                &account,
+                "",
+                &server,
+                "",
+                presented,
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
+        }
+    };
+    let jwt = match issue_app(a, &account, &server, &tenant_id, now) {
         Ok(jwt) => jwt,
-        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        Err(_) => {
+            return auth_note(
+                a,
+                peer,
+                headers,
+                audit::APP_READER_EXCHANGE,
+                "app_reader",
+                "failure",
+                "server_error",
+                &account,
+                &tenant_id,
+                &server,
+                "",
+                presented,
+                err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            );
+        }
     };
     if tx.commit().is_err() {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+        return auth_note(
+            a,
+            peer,
+            headers,
+            audit::APP_READER_EXCHANGE,
+            "app_reader",
+            "failure",
+            "server_error",
+            &account,
+            &tenant_id,
+            &server,
+            "",
+            presented,
+            err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        );
     }
-    nostore(
-        Json(tokens::Grant {
-            access_token: jwt,
-            token_type: "Bearer",
-            expires_in: 300,
-        })
-        .into_response(),
+    let issued = jwt.clone();
+    auth_note(
+        a,
+        peer,
+        headers,
+        audit::APP_READER_EXCHANGE,
+        "app_reader",
+        "success",
+        "",
+        &account,
+        &tenant_id,
+        &server,
+        "",
+        &issued,
+        nostore(
+            Json(tokens::Grant {
+                access_token: jwt,
+                token_type: "Bearer",
+                expires_in: 300,
+            })
+            .into_response(),
+        ),
     )
 }
 #[derive(Deserialize)]
@@ -1701,22 +3110,204 @@ struct StatusBody {
 }
 async fn revoke_reader(
     State(a): State<Arc<App>>,
+    peer: Peer,
     h: HeaderMap,
     Json(body): Json<ReaderExchange>,
 ) -> Response {
     let Some(presented) = bearer(&h) else {
-        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+        return auth_note(
+            &a,
+            peer.0,
+            &h,
+            audit::REVOCATION,
+            "app_reader",
+            "failure",
+            "invalid_token",
+            "",
+            "",
+            "",
+            "",
+            "",
+            err(StatusCode::UNAUTHORIZED, "invalid_token"),
+        );
     };
     let deleted = a.store.db.lock().unwrap().execute(
         "DELETE FROM app_readers WHERE hash=?1 AND EXISTS(SELECT 1 FROM servers s WHERE s.id=app_readers.server_id AND s.login_secret_hash=?2)",
         params![hash(&body.reader), hash(presented)],
     );
-    match deleted {
-        Ok(1) => nostore(StatusCode::NO_CONTENT.into_response()),
-        Ok(_) => err(StatusCode::UNAUTHORIZED, "invalid_token"),
-        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
-    }
+    let (outcome, reason, response) = match deleted {
+        Ok(1) => (
+            "success",
+            "",
+            nostore(StatusCode::NO_CONTENT.into_response()),
+        ),
+        Ok(_) => (
+            "failure",
+            "invalid_token",
+            err(StatusCode::UNAUTHORIZED, "invalid_token"),
+        ),
+        Err(_) => (
+            "failure",
+            "server_error",
+            err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+        ),
+    };
+    auth_note(
+        &a,
+        peer.0,
+        &h,
+        audit::REVOCATION,
+        "app_reader",
+        outcome,
+        reason,
+        "",
+        "",
+        "",
+        "",
+        presented,
+        response,
+    )
 }
+fn schema_has(tx: &rusqlite::Transaction<'_>, table: &str) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get(0),
+    )
+}
+
+fn servers_have_tenant_id(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('servers') WHERE name='tenant_id')",
+        [],
+        |row| row.get(0),
+    )
+}
+
+fn tenant_accounts(
+    tx: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+) -> rusqlite::Result<Vec<String>> {
+    let mut ids = Vec::new();
+    if schema_has(tx, "tenants")?
+        && let Ok(owner) = tx.query_row(
+            "SELECT owner_id FROM tenants WHERE id=?1",
+            [tenant_id],
+            |row| row.get::<_, String>(0),
+        )
+    {
+        ids.push(owner);
+    }
+    if schema_has(tx, "tenant_members")? {
+        let mut q = tx.prepare("SELECT account_id FROM tenant_members WHERE tenant_id=?1")?;
+        ids.extend(
+            q.query_map([tenant_id], |row| row.get::<_, String>(0))?
+                .filter_map(Result::ok),
+        );
+    } else {
+        ids.push(tenant_id.to_owned());
+    }
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+fn tenant_revocation_set(
+    tx: &rusqlite::Transaction<'_>,
+    tenant_id: &str,
+) -> rusqlite::Result<RevocationSet> {
+    let accounts = tenant_accounts(tx, tenant_id)?;
+    let mut revoked_accounts = Vec::new();
+    for id in &accounts {
+        let live: bool = tx.query_row(
+            "SELECT revoked_at IS NULL FROM accounts WHERE id=?1",
+            [id.as_str()],
+            |row| row.get(0),
+        )?;
+        if !live {
+            revoked_accounts.push(id.clone());
+        }
+    }
+    let mut revoked_credentials = Vec::new();
+    if !accounts.is_empty() {
+        let placeholders = accounts.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let device_sql = format!(
+            "SELECT id FROM devices WHERE revoked_at IS NOT NULL AND account_id IN ({placeholders})"
+        );
+        let params: Vec<&str> = accounts.iter().map(String::as_str).collect();
+        if let Ok(mut q) = tx.prepare(&device_sql) {
+            revoked_credentials.extend(
+                q.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                    row.get::<_, String>(0)
+                })?
+                .filter_map(Result::ok),
+            );
+        }
+    }
+    let key_sql = if servers_have_tenant_id(tx)? {
+        "SELECT k.id FROM automation_keys k JOIN servers s ON s.id=k.server_id WHERE k.revoked_at IS NOT NULL AND s.tenant_id=?1"
+    } else {
+        "SELECT k.id FROM automation_keys k JOIN servers s ON s.id=k.server_id WHERE k.revoked_at IS NOT NULL AND s.owner_id=?1"
+    };
+    if let Ok(mut q) = tx.prepare(key_sql) {
+        revoked_credentials.extend(
+            q.query_map([tenant_id], |row| row.get::<_, String>(0))?
+                .filter_map(Result::ok),
+        );
+    }
+    revoked_accounts.sort();
+    revoked_accounts.dedup();
+    revoked_credentials.sort();
+    revoked_credentials.dedup();
+    Ok(RevocationSet {
+        accounts: revoked_accounts,
+        credentials: revoked_credentials,
+    })
+}
+
+async fn revocations(
+    State(a): State<Arc<App>>,
+    h: HeaderMap,
+    Json(f): Json<RevocationQuery>,
+) -> Response {
+    let Some(secret) = bearer(&h) else {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    };
+    if f.tenant_id.is_empty() || f.tenant_id.len() > 128 {
+        return err(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    let c = match a.store.db.lock() {
+        Ok(c) => c,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let tx = match c.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    let authorized: bool = if servers_have_tenant_id(&tx).unwrap_or(false) {
+        tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM servers WHERE login_secret_hash=?1 AND active=1 AND tenant_id=?2)",
+            params![hash(secret), f.tenant_id],
+            |row| row.get(0),
+        )
+    } else {
+        tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM servers WHERE login_secret_hash=?1 AND active=1 AND owner_id=?2)",
+            params![hash(secret), f.tenant_id],
+            |row| row.get(0),
+        )
+    }
+    .unwrap_or(false);
+    if !authorized {
+        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+    }
+    let set = match tenant_revocation_set(&tx, &f.tenant_id) {
+        Ok(set) => set,
+        Err(_) => return err(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    };
+    nostore(Json(set).into_response())
+}
+
 async fn server_status(
     State(a): State<Arc<App>>,
     h: HeaderMap,
@@ -1749,15 +3340,44 @@ struct AppLoginReq {
 }
 async fn app_login(
     State(a): State<Arc<App>>,
+    peer: Peer,
     h: HeaderMap,
     Path(id): Path<String>,
     Json(f): Json<AppLoginReq>,
 ) -> Response {
     if f.redirect_uri != kiln_api::auth::APP_OAUTH_REDIRECT {
-        return err(StatusCode::BAD_REQUEST, "invalid_redirect");
+        return auth_note(
+            &a,
+            peer.0,
+            &h,
+            audit::TOKEN_ISSUE,
+            "app_login",
+            "failure",
+            "invalid_redirect",
+            "",
+            "",
+            &id,
+            "",
+            "",
+            err(StatusCode::BAD_REQUEST, "invalid_redirect"),
+        );
     }
     let Some(raw) = bearer(&h) else {
-        return err(StatusCode::UNAUTHORIZED, "invalid_token");
+        return auth_note(
+            &a,
+            peer.0,
+            &h,
+            audit::TOKEN_ISSUE,
+            "app_login",
+            "failure",
+            "invalid_token",
+            "",
+            "",
+            &id,
+            "",
+            "",
+            err(StatusCode::UNAUTHORIZED, "invalid_token"),
+        );
     };
     let token = secret();
     let n = a.store.db.lock().unwrap().execute(
@@ -1765,10 +3385,144 @@ async fn app_login(
         params![f.redirect_uri, hash(&token), id, hash(raw)],
     ).unwrap_or(0);
     if n == 1 {
-        return nostore(Json(serde_json::json!({"login_token": token})).into_response());
+        let issued = token.clone();
+        return auth_note(
+            &a,
+            peer.0,
+            &h,
+            audit::TOKEN_ISSUE,
+            "app_login",
+            "success",
+            "",
+            "",
+            "",
+            &id,
+            "",
+            &issued,
+            nostore(Json(serde_json::json!({"login_token": token})).into_response()),
+        );
     }
-    err(StatusCode::UNAUTHORIZED, "invalid_token")
+    auth_note(
+        &a,
+        peer.0,
+        &h,
+        audit::TOKEN_ISSUE,
+        "app_login",
+        "failure",
+        "invalid_token",
+        "",
+        "",
+        &id,
+        "",
+        raw,
+        err(StatusCode::UNAUTHORIZED, "invalid_token"),
+    )
 }
+struct Peer(SocketAddr);
+
+impl<S> FromRequestParts<S> for Peer
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let addr = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|info| info.0)
+            .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
+        Ok(Peer(addr))
+    }
+}
+
+fn tenant_on(c: &rusqlite::Connection, account: &str) -> String {
+    if account.is_empty() {
+        return String::new();
+    }
+    c.query_row(
+        "SELECT tenant_id FROM tenant_members WHERE account_id=?1 ORDER BY tenant_id LIMIT 1",
+        [account],
+        |row| row.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .unwrap_or_default()
+}
+
+fn user_agent(headers: &HeaderMap) -> String {
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .chars()
+        .take(200)
+        .collect()
+}
+
+fn note(
+    a: &App,
+    peer: SocketAddr,
+    headers: &HeaderMap,
+    mut input: audit::Input,
+    response: Response,
+) -> Response {
+    input.client_ip = client_ip(&a.cfg, peer, headers).to_string();
+    input.user_agent = user_agent(headers);
+    if input.session_raw.is_empty() {
+        input.session_raw = cookie(headers, "__Host-kiln_session").unwrap_or_default();
+    }
+    a.store.audit().record(input);
+    response
+}
+
+fn blank(
+    event: &'static str,
+    outcome: &'static str,
+    reason: &'static str,
+    auth_method: &'static str,
+) -> audit::Input {
+    audit::Input {
+        event,
+        outcome,
+        reason,
+        auth_method,
+        account_id: String::new(),
+        tenant_id: String::new(),
+        client_ip: String::new(),
+        user_agent: String::new(),
+        client_id: String::new(),
+        session_raw: String::new(),
+        token_raw: String::new(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn auth_note(
+    a: &App,
+    peer: SocketAddr,
+    headers: &HeaderMap,
+    event: &'static str,
+    auth_method: &'static str,
+    outcome: &'static str,
+    reason: &'static str,
+    account: &str,
+    tenant: &str,
+    client_id: &str,
+    session: &str,
+    token: &str,
+    response: Response,
+) -> Response {
+    let mut input = blank(event, outcome, reason, auth_method);
+    input.account_id = account.to_owned();
+    input.tenant_id = tenant.to_owned();
+    input.client_id = client_id.to_owned();
+    input.session_raw = session.to_owned();
+    input.token_raw = token.to_owned();
+    note(a, peer, headers, input, response)
+}
+
 fn err(s: StatusCode, code: &str) -> Response {
     nostore((s, Json(serde_json::json!({"error":code}))).into_response())
 }

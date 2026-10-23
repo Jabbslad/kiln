@@ -11,6 +11,7 @@ use std::{
 #[derive(Clone)]
 pub struct Store {
     pub(crate) db: Arc<Mutex<Connection>>,
+    audit: crate::audit::AuditLog,
 }
 pub(crate) fn hash(s: &str) -> Vec<u8> {
     Sha256::digest(s.as_bytes()).to_vec()
@@ -80,7 +81,7 @@ impl Store {
         let c = Connection::open(path)?;
         let version: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0))?;
         anyhow::ensure!(
-            version == 0 || version == 1 || version == 2,
+            version == 0 || version == 1 || version == 2 || version == 3,
             "unsupported identity schema; restore a compatible backup"
         );
         if version == 0 {
@@ -94,30 +95,56 @@ impl Store {
         c.pragma_update(None, "journal_mode", "WAL")?;
         c.pragma_update(None, "synchronous", "FULL")?;
         c.execute_batch(SCHEMA)?;
+        let mut version = version;
         if version == 1 {
             let tx = c.unchecked_transaction()?;
             add_column(&tx, "redirect_uri", "TEXT")?;
             add_column(&tx, "login_secret_hash", "BLOB")?;
             tx.pragma_update(None, "user_version", 2)?;
             tx.commit()?;
+            version = 2;
         } else if version == 2
             && (!column_present(&c, "redirect_uri")? || !column_present(&c, "login_secret_hash")?)
         {
             anyhow::bail!("unsupported identity schema; restore a compatible backup");
-        } else {
-            c.pragma_update(None, "user_version", 2)?;
+        }
+        if version == 2 {
+            let tx = c.unchecked_transaction()?;
+            migrate_tenants_v3(&tx)?;
+            tx.pragma_update(None, "user_version", 3)?;
+            tx.commit()?;
+            version = 3;
+        } else if version == 3
+            && (!table_present(&c, "tenants")? || !column_present(&c, "tenant_id")?)
+        {
+            anyhow::bail!("unsupported identity schema; restore a compatible backup");
+        }
+        if version == 0 || version == 3 {
+            c.pragma_update(None, "user_version", 3)?;
         }
         Ok(Self {
             db: Arc::new(Mutex::new(c)),
+            audit: crate::audit::AuditLog::open(&crate::audit::signin_audit_path(path)),
         })
     }
     pub fn open_memory() -> anyhow::Result<Self> {
         let c = Connection::open_in_memory()?;
         c.pragma_update(None, "foreign_keys", "ON")?;
         c.execute_batch(SCHEMA)?;
+        c.pragma_update(None, "user_version", 3)?;
         Ok(Self {
             db: Arc::new(Mutex::new(c)),
+            audit: crate::audit::AuditLog::open_temp(),
         })
+    }
+    pub fn flush_signin_audit(&self) {
+        self.audit.flush();
+    }
+    pub fn signin_audit_failures(&self) -> u64 {
+        self.audit.failures()
+    }
+    pub(crate) fn audit(&self) -> &crate::audit::AuditLog {
+        &self.audit
     }
     pub fn create_device(
         &self,
@@ -206,14 +233,23 @@ impl Store {
     ) -> anyhow::Result<(String, String)> {
         let sid = id("srv");
         let token = secret();
-        let c = self.db.lock().unwrap();
-        c.execute("INSERT INTO servers(id,owner_id,name,origin,ca_pem,revision,active,directory_hash,created_at)VALUES(?1,?2,?3,?4,?5,1,1,?6,?7)",params![sid,owner,name,origin,ca,hash(&token),now])?;
+        let mut c = self.db.lock().unwrap();
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tenant = ensure_owner_tenant(&tx, owner, now)?;
+        tx.execute(
+            "INSERT INTO servers(id,owner_id,tenant_id,name,origin,ca_pem,revision,active,directory_hash,created_at)VALUES(?1,?2,?3,?4,?5,?6,1,1,?7,?8)",
+            params![sid, owner, tenant, name, origin, ca, hash(&token), now],
+        )?;
+        set_default_server(&tx, &tenant, &sid)?;
+        tx.commit()?;
         Ok((sid, token))
     }
     pub fn servers(&self, owner: &str) -> anyhow::Result<Vec<ServerDescriptor>> {
         let c = self.db.lock().unwrap();
         let mut q = c.prepare(
-            "SELECT id,name,origin,ca_pem,revision FROM servers WHERE owner_id=?1 AND active=1",
+            "SELECT s.id,s.name,s.origin,s.ca_pem,s.revision FROM servers s
+             JOIN tenant_members m ON m.tenant_id=s.tenant_id
+             WHERE m.account_id=?1 AND s.active=1 ORDER BY s.created_at",
         )?;
         Ok(q.query_map([owner], |r| {
             Ok(ServerDescriptor {
@@ -263,6 +299,107 @@ impl Store {
         )?;
         Ok(())
     }
+}
+fn table_present(c: &Connection, table: &str) -> anyhow::Result<bool> {
+    let n: i64 = c.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [table],
+        |r| r.get(0),
+    )?;
+    Ok(n == 1)
+}
+fn migrate_tenants_v3(c: &Connection) -> anyhow::Result<()> {
+    c.execute_batch(
+        "DROP TABLE IF EXISTS server_members;
+         CREATE TABLE IF NOT EXISTS tenants(
+            id TEXT PRIMARY KEY,
+            owner_account_id TEXT NOT NULL UNIQUE REFERENCES accounts(id),
+            default_server_id TEXT,
+            created_at INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS tenant_members(
+            tenant_id TEXT NOT NULL REFERENCES tenants(id),
+            account_id TEXT NOT NULL REFERENCES accounts(id),
+            role TEXT NOT NULL CHECK(role IN ('owner','member')),
+            local_name TEXT,
+            PRIMARY KEY(tenant_id,account_id)
+         );
+         CREATE UNIQUE INDEX IF NOT EXISTS tenant_members_local_name
+            ON tenant_members(tenant_id,local_name)
+            WHERE local_name IS NOT NULL;",
+    )?;
+    add_column(c, "tenant_id", "TEXT REFERENCES tenants(id)")?;
+    let mut owners = c.prepare("SELECT DISTINCT owner_id FROM servers ORDER BY owner_id")?;
+    let owners = owners
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for owner in owners {
+        let tenant = id("ten");
+        let created: i64 = c.query_row(
+            "SELECT min(created_at) FROM servers WHERE owner_id=?1",
+            [&owner],
+            |r| r.get(0),
+        )?;
+        c.execute(
+            "INSERT INTO tenants(id,owner_account_id,created_at)VALUES(?1,?2,?3)",
+            params![tenant, owner, created],
+        )?;
+        c.execute(
+            "INSERT INTO tenant_members(tenant_id,account_id,role)VALUES(?1,?2,'owner')",
+            params![tenant, owner],
+        )?;
+        c.execute(
+            "UPDATE servers SET tenant_id=?1 WHERE owner_id=?2",
+            params![tenant, owner],
+        )?;
+        let default: Option<String> = c
+            .query_row(
+                "SELECT id FROM servers WHERE owner_id=?1 ORDER BY created_at LIMIT 1",
+                [&owner],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(server) = default {
+            c.execute(
+                "UPDATE tenants SET default_server_id=?1 WHERE id=?2",
+                params![server, tenant],
+            )?;
+        }
+    }
+    Ok(())
+}
+pub(crate) fn ensure_owner_tenant(c: &Connection, owner: &str, now: i64) -> anyhow::Result<String> {
+    if let Some(tenant) = c
+        .query_row(
+            "SELECT id FROM tenants WHERE owner_account_id=?1",
+            [owner],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        return Ok(tenant);
+    }
+    let tenant = id("ten");
+    c.execute(
+        "INSERT INTO tenants(id,owner_account_id,created_at)VALUES(?1,?2,?3)",
+        params![tenant, owner, now],
+    )?;
+    c.execute(
+        "INSERT INTO tenant_members(tenant_id,account_id,role)VALUES(?1,?2,'owner')",
+        params![tenant, owner],
+    )?;
+    Ok(tenant)
+}
+pub(crate) fn set_default_server(
+    c: &Connection,
+    tenant: &str,
+    server_id: &str,
+) -> rusqlite::Result<()> {
+    c.execute(
+        "UPDATE tenants SET default_server_id=?1 WHERE id=?2 AND default_server_id IS NULL",
+        params![server_id, tenant],
+    )?;
+    Ok(())
 }
 fn column_present(c: &Connection, column: &str) -> anyhow::Result<bool> {
     let mut stmt = c.prepare("PRAGMA table_info(servers)")?;
@@ -315,7 +452,10 @@ CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY,account_id TEXT NOT NULL 
 CREATE TABLE IF NOT EXISTS refresh_tokens(hash BLOB PRIMARY KEY,family_id TEXT NOT NULL,device_id TEXT NOT NULL REFERENCES devices(id),created_at INTEGER NOT NULL,last_used INTEGER NOT NULL,absolute_expiry INTEGER NOT NULL,spent_at INTEGER,family_revoked_at INTEGER);
 CREATE TABLE IF NOT EXISTS central_tokens(hash BLOB PRIMARY KEY,device_id TEXT NOT NULL REFERENCES devices(id),family_id TEXT,expires_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS pending_registrations(secret_hash BLOB PRIMARY KEY,user_code TEXT UNIQUE NOT NULL,name TEXT NOT NULL,origin TEXT NOT NULL,ca_pem TEXT NOT NULL,state TEXT NOT NULL,owner_id TEXT REFERENCES accounts(id),expires_at INTEGER NOT NULL,poll_consumed INTEGER NOT NULL DEFAULT 0,next_poll INTEGER NOT NULL,interval INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS servers(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES accounts(id),name TEXT NOT NULL,origin TEXT NOT NULL,ca_pem TEXT NOT NULL,revision INTEGER NOT NULL,active INTEGER NOT NULL,directory_hash BLOB NOT NULL,created_at INTEGER NOT NULL,redirect_uri TEXT,login_secret_hash BLOB);
+CREATE TABLE IF NOT EXISTS tenants(id TEXT PRIMARY KEY,owner_account_id TEXT NOT NULL UNIQUE REFERENCES accounts(id),default_server_id TEXT,created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS tenant_members(tenant_id TEXT NOT NULL REFERENCES tenants(id),account_id TEXT NOT NULL REFERENCES accounts(id),role TEXT NOT NULL CHECK(role IN ('owner','member')),local_name TEXT,PRIMARY KEY(tenant_id,account_id));
+CREATE UNIQUE INDEX IF NOT EXISTS tenant_members_local_name ON tenant_members(tenant_id,local_name) WHERE local_name IS NOT NULL;
+CREATE TABLE IF NOT EXISTS servers(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES accounts(id),tenant_id TEXT REFERENCES tenants(id),name TEXT NOT NULL,origin TEXT NOT NULL,ca_pem TEXT NOT NULL,revision INTEGER NOT NULL,active INTEGER NOT NULL,directory_hash BLOB NOT NULL,created_at INTEGER NOT NULL,redirect_uri TEXT,login_secret_hash BLOB);
 CREATE TABLE IF NOT EXISTS server_codes(hash BLOB PRIMARY KEY,server_id TEXT NOT NULL,account_id TEXT NOT NULL,redirect_uri TEXT NOT NULL,challenge TEXT NOT NULL,expires_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS server_authorizations(session_hash BLOB PRIMARY KEY,server_id TEXT NOT NULL,redirect_uri TEXT NOT NULL,state TEXT NOT NULL,challenge TEXT NOT NULL,expires_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS app_readers(hash BLOB PRIMARY KEY,server_id TEXT NOT NULL,account_id TEXT NOT NULL,expires_at INTEGER NOT NULL);

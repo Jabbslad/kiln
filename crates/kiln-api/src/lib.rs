@@ -1,5 +1,8 @@
 //! Portable, public management contract. No runtime records or host paths.
+pub mod access;
 pub mod auth;
+pub use access::may_access_box;
+pub use auth::{AuthGrant, Caller, Role, Scope, ServerClaims};
 pub use kiln_protocol::{ExecRequest, ExecResult, SshReady, release_version, valid_ssh_public_key};
 use serde::{Deserialize, Serialize};
 
@@ -7,6 +10,8 @@ pub const MAX_REQUEST_BYTES: usize = 128 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const SSH_UPGRADE: &str = "kiln-ssh";
 pub const SSH_KEY_HEADER: &str = "x-kiln-ssh-key";
+/// Loopback host hint: gateway sets this to the authenticated central JWT `sub`.
+pub const OPERATION_ACTOR_HEADER: &str = "x-kiln-operation-actor";
 
 /// Token bytes never appear in errors. Unix enforces owner-only mode here.
 pub fn read_token(path: &std::path::Path) -> std::io::Result<String> {
@@ -241,6 +246,8 @@ pub struct BoxView {
     pub state: String,
     pub memory_mib: u32,
     pub vcpus: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

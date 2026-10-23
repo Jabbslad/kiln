@@ -161,7 +161,7 @@ async fn run(cli: Cli) -> Result<(Value, i32)> {
             launch_profile(&runtime, &profile, allow_unsafe_development)?;
             serde_json::to_value(
                 runtime
-                    .create(&image, &name, memory_mib, vcpus, false, "", None)
+                    .create(&image, &name, memory_mib, vcpus, false)
                     .await?,
             )?
         }
@@ -263,7 +263,7 @@ async fn run(cli: Cli) -> Result<(Value, i32)> {
             allow_unsafe_development,
         } => {
             launch_profile(&runtime, &profile, allow_unsafe_development)?;
-            serde_json::to_value(runtime.clone_template(&template, &name, "", None).await?)?
+            serde_json::to_value(runtime.clone_template(&template, &name).await?)?
         }
         Command::Benchmark {
             image,

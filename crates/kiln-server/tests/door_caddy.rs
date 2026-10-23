@@ -27,8 +27,8 @@ use axum::{
 use futures_util::stream;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use kiln_api::{
-    Action, ExecRequest, ExecResult, Operation, OperationState, Outcome, Submit,
-    auth::{Role, Scope, ServerClaims},
+    Action, ExecRequest, ExecResult, Operation, OperationState, Outcome, Role, Scope, ServerClaims,
+    Submit,
 };
 use kiln_server::{
     auth::{Authenticator, Enrollment},
@@ -81,13 +81,13 @@ fn token(key: &EncodingKey) -> String {
         iss: "https://identity.example.test".into(),
         sub: "owner-a".into(),
         aud: "kiln:server:server-b".into(),
+        tenant_id: Some("tenant-a".into()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-1".into(),
         scope: Scope::Operate,
-        role: Role::Owner,
-        tenant_id: String::new(),
+        role: Some(Role::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -100,6 +100,7 @@ fn enrollment() -> Enrollment {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
+        tenant_id: Some("tenant-a".into()),
     }
 }
 
@@ -251,6 +252,7 @@ async fn poll_exec(
                     state: "running".into(),
                     memory_mib: 512,
                     vcpus: 1,
+                    owner: None,
                 };
                 state.boxes.lock().unwrap().push(view.clone());
                 Outcome::Box(view)
@@ -851,7 +853,6 @@ async fn exec_poll_reads_stdout_through_caddy_and_rejected_tokens_do_not_dial() 
             credential_file: credential,
             door_trust: kiln_client::profile::DoorTrust::Pin,
             server_chosen: true,
-            default_server_id: None,
         },
         &kiln_client::credentials::Credentials {
             issuer: "https://dark-forge.dev".into(),

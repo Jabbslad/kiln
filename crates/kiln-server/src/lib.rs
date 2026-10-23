@@ -1,5 +1,6 @@
 pub mod app_listener;
 pub mod auth;
+mod box_access;
 mod dashboard;
 pub mod dashboard_check;
 pub mod door;
@@ -8,6 +9,7 @@ pub mod gateway;
 pub mod host;
 mod journal;
 mod metrics;
+pub mod revocation;
 mod ssh;
 mod terminal;
 

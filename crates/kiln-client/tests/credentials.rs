@@ -39,7 +39,6 @@ fn central_profiles_contain_no_secret_and_validate_origins_and_paths() {
         credential_file: root.path().join("credential.json"),
         door_trust: kiln_client::profile::DoorTrust::Pin,
         server_chosen: true,
-        default_server_id: None,
     });
     let text = serde_json::to_string(&value).unwrap();
     assert!(!text.contains("refresh_token"));
@@ -113,7 +112,6 @@ fn failed_login_preserves_existing_profile_and_credentials() {
         credential_file: root.path().join("private/old.json"),
         door_trust: kiln_client::profile::DoorTrust::Pin,
         server_chosen: true,
-        default_server_id: None,
     };
     let mut credentials = Credentials {
         issuer: central.issuer.clone(),

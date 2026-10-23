@@ -55,8 +55,8 @@ pub struct BoxRecord {
     pub network: Option<Topology>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_launch: Option<LaunchTiming>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub owner: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,37 +81,6 @@ pub struct Snapshot {
 pub struct Runtime {
     root: PathBuf,
     isolation: Option<Config>,
-    /// Tenant owner account id used when upgrading legacy box records without `owner`.
-    tenant_owner: String,
-}
-
-const SERVER_BOX_CAPACITY: usize = 8;
-
-pub(crate) fn check_create_limits(
-    records: &[BoxRecord],
-    memory_mib: u32,
-    owner: &str,
-    account_box_limit: Option<u32>,
-) -> Result<()> {
-    if records.len() >= SERVER_BOX_CAPACITY
-        || records.iter().map(|r| r.memory_mib).sum::<u32>() + memory_mib > 16384
-    {
-        return Err(Error::Invalid(
-            "local quota exceeded (8 boxes / 16384 MiB allocated)".into(),
-        ));
-    }
-    if let Some(limit) = account_box_limit {
-        let owned = records
-            .iter()
-            .filter(|record| record.owner == owner)
-            .count();
-        if owned >= limit as usize {
-            return Err(Error::Invalid(format!(
-                "account quota exceeded ({limit} boxes)"
-            )));
-        }
-    }
-    Ok(())
 }
 
 pub fn random_bytes(count: usize) -> Result<Vec<u8>> {
@@ -188,27 +157,7 @@ impl Runtime {
             config.preflight()?;
             storage::atomic_json(&root.join("isolation.json"), config)?;
         }
-        Ok(Self {
-            root,
-            isolation,
-            tenant_owner: String::new(),
-        })
-    }
-
-    pub fn with_tenant_owner(mut self, tenant_owner: String) -> Self {
-        self.tenant_owner = tenant_owner;
-        self
-    }
-
-    fn migrate_owner(&self, mut record: BoxRecord) -> BoxRecord {
-        if record.owner.is_empty() && !self.tenant_owner.is_empty() {
-            record.owner = self.tenant_owner.clone();
-        }
-        record
-    }
-
-    pub fn read_sync(&self, id: &str) -> Result<BoxRecord> {
-        Ok(self.migrate_owner(self.read(id)?))
+        Ok(Self { root, isolation })
     }
 
     pub fn is_isolated(&self) -> bool {
@@ -335,7 +284,7 @@ impl Runtime {
         ) {
             topology.validate(&config.namespace_scope)?;
         }
-        Ok(self.migrate_owner(record))
+        Ok(record)
     }
 
     async fn allocation(&self) -> Result<File> {
@@ -610,7 +559,6 @@ impl Runtime {
         Ok(records)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         manifest: &Path,
@@ -618,8 +566,6 @@ impl Runtime {
         memory_mib: u32,
         vcpus: u8,
         template: bool,
-        owner: &str,
-        account_box_limit: Option<u32>,
     ) -> Result<BoxRecord> {
         let phase = Phase::start("image_verification");
         if name.is_empty()
@@ -665,7 +611,7 @@ impl Runtime {
             jail: None,
             network: None,
             last_launch: None,
-            owner: owner.into(),
+            owner: None,
         };
         let (result, phases) = scoped(async {
             let result = async {
@@ -675,7 +621,13 @@ impl Runtime {
                 let phase = Phase::start("reservation");
                 let records = self.records()?;
                 ensure_unique_name(&records, name)?;
-                check_create_limits(&records, memory_mib, owner, account_box_limit)?;
+                if records.len() >= 8
+                    || records.iter().map(|r| r.memory_mib).sum::<u32>() + memory_mib > 16384
+                {
+                    return Err(Error::Invalid(
+                        "local quota exceeded (8 boxes / 16384 MiB allocated)".into(),
+                    ));
+                }
                 record.jail = self.allocate_identity(&records)?;
                 record.network = self.allocate_network(&records)?;
                 storage::private_dir(&self.root.join("boxes").join(&record.id))?;
@@ -1236,22 +1188,28 @@ impl Runtime {
             return Err(Error::Invalid("box must be stopped before starting".into()));
         }
         let previous = record.clone();
-        if self.is_isolated() {
-            self.terminate(&mut record)?;
-            record.run = self::id()?;
-            if record.disk_layer.is_none() {
-                storage::copy_disk(
-                    &self.run(&previous)?.join("disk.ext4"),
-                    &self.run(&record)?.join("disk.ext4"),
-                    Instant::now() + Duration::from_secs(120),
-                )?;
-            }
-        }
         record.operation = Some("start".into());
         self.save(&record)?;
         let started = Instant::now();
         let (result, phases) = scoped(async {
-            let result = self.boot(&mut record, None, true).await;
+            let result = async {
+                if self.is_isolated() {
+                    self.terminate(&mut record)?;
+                    record.run = self::id()?;
+                    if record.disk_layer.is_none() {
+                        let phase = Phase::start("disk_copy");
+                        let method = storage::relocate_disk(
+                            &self.run(&previous)?.join("disk.ext4"),
+                            &self.run(&record)?.join("disk.ext4"),
+                        )?;
+                        record.disk_copy = format!("{method:?}");
+                        self.save(&record)?;
+                        drop(phase);
+                    }
+                }
+                self.boot(&mut record, None, true).await
+            }
+            .await;
             (result, take_phases())
         })
         .await;
@@ -1350,45 +1308,5 @@ mod tests {
         assert!(recovered.process.is_none());
         assert!(recovered.operation.is_none());
         assert!(recovered.last_error.unwrap().contains("interrupted launch"));
-    }
-
-    #[test]
-    fn member_account_quota_is_enforced_per_server() {
-        let records: Vec<BoxRecord> = (0..4)
-            .map(|index| BoxRecord {
-                schema_version: 1,
-                id: format!("{index:032x}"),
-                name: format!("box-{index}"),
-                state: "stopped".into(),
-                run: "0123456789abcdef0123456789abcde0".into(),
-                process: None,
-                image: crate::image::Manifest {
-                    schema_version: 1,
-                    architecture: "x86_64".into(),
-                    kernel_path: "/kernel".into(),
-                    kernel_sha256: "ab".repeat(32),
-                    rootfs_path: "/rootfs".into(),
-                    rootfs_sha256: "cd".repeat(32),
-                    agent_protocol_version: 1,
-                    boot_mode: Default::default(),
-                },
-                host: "fixture".into(),
-                memory_mib: 128,
-                vcpus: 1,
-                source: None,
-                operation: None,
-                last_error: None,
-                disk_copy: String::new(),
-                disk_layer: None,
-                jail: None,
-                network: None,
-                last_launch: None,
-                owner: "acct-member".into(),
-            })
-            .collect();
-        let err = super::check_create_limits(&records, 128, "acct-member", Some(4))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("account quota exceeded"));
     }
 }

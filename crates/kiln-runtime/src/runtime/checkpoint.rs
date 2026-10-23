@@ -265,22 +265,15 @@ impl Runtime {
         vcpus: u8,
     ) -> Result<Snapshot> {
         let builder = self
-            .create(image, "template-builder", memory_mib, vcpus, true, "", None)
+            .create(image, "template-builder", memory_mib, vcpus, true)
             .await?;
         let result = self.capture(&builder.id, true).await;
         self.delete(&builder.id).await?;
         result
     }
 
-    pub async fn clone_template(
-        &self,
-        snapshot_id: &str,
-        name: &str,
-        owner: &str,
-        account_box_limit: Option<u32>,
-    ) -> Result<BoxRecord> {
-        self.clone_template_with_id(snapshot_id, name, &id()?, owner, account_box_limit)
-            .await
+    pub async fn clone_template(&self, snapshot_id: &str, name: &str) -> Result<BoxRecord> {
+        self.clone_template_with_id(snapshot_id, name, &id()?).await
     }
 
     /// Reserve a service-assigned identity. Existing directories (including
@@ -290,8 +283,19 @@ impl Runtime {
         snapshot_id: &str,
         name: &str,
         box_id: &str,
-        owner: &str,
-        account_box_limit: Option<u32>,
+    ) -> Result<BoxRecord> {
+        self.clone_template_for_owner(snapshot_id, name, box_id, None)
+            .await
+    }
+
+    /// Persist the authenticated creator with the initial reservation, including
+    /// when launch later fails. Direct runtime callers retain legacy ownership.
+    pub async fn clone_template_for_owner(
+        &self,
+        snapshot_id: &str,
+        name: &str,
+        box_id: &str,
+        owner: Option<&str>,
     ) -> Result<BoxRecord> {
         if !storage::valid_id(box_id) {
             return Err(Error::Invalid("invalid box ID".into()));
@@ -314,7 +318,11 @@ impl Runtime {
                 "only prepared templates can be cloned".into(),
             ));
         }
-        super::check_create_limits(&records, snapshot.memory_mib, owner, account_box_limit)?;
+        if records.len() >= 8
+            || records.iter().map(|r| r.memory_mib).sum::<u32>() + snapshot.memory_mib > 16384
+        {
+            return Err(Error::Invalid("local box quota exceeded".into()));
+        }
         let mut record = BoxRecord {
             schema_version: 1,
             id: box_id.into(),
@@ -338,7 +346,7 @@ impl Runtime {
                 None
             },
             last_launch: None,
-            owner: owner.into(),
+            owner: owner.map(str::to_owned),
         };
         use std::os::unix::fs::DirBuilderExt;
         fs::DirBuilder::new()
@@ -382,7 +390,7 @@ mod tests {
         fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let runtime = Runtime::open(root.path()).unwrap();
         let invalid = runtime
-            .clone_template_with_id("missing", "box", "../outside", "", None)
+            .clone_template_with_id("missing", "box", "../outside")
             .await
             .unwrap_err();
         assert!(invalid.to_string().contains("invalid box ID"), "{invalid}");
@@ -391,7 +399,7 @@ mod tests {
         fs::create_dir(&directory).unwrap();
         fs::write(directory.join("sentinel"), "keep").unwrap();
         let conflict = runtime
-            .clone_template_with_id("missing", "box", &existing, "", None)
+            .clone_template_with_id("missing", "box", &existing)
             .await
             .unwrap_err();
         assert!(
@@ -474,7 +482,7 @@ mod tests {
             disk_layer: None,
             jail: None,
             network: None,
-            owner: String::new(),
+            owner: None,
         };
         let directory = root.join("boxes").join(id);
         crate::storage::private_dir(&directory).unwrap();
@@ -492,7 +500,7 @@ mod tests {
         store_box(root.path(), &second, "shared");
         let fresh = "e".repeat(32);
         let duplicate = runtime
-            .clone_template_with_id(&"d".repeat(32), "shared", &fresh, "", None)
+            .clone_template_with_id(&"d".repeat(32), "shared", &fresh)
             .await
             .unwrap_err();
         assert!(
@@ -508,7 +516,7 @@ mod tests {
             assert_eq!(record.name, "shared");
         }
         let other = runtime
-            .clone_template_with_id("missing", "other", &"f".repeat(32), "", None)
+            .clone_template_with_id("missing", "other", &"f".repeat(32))
             .await
             .unwrap_err();
         assert!(!other.to_string().contains("already in use"), "{other}");
