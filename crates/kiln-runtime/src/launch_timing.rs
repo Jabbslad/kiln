@@ -25,6 +25,7 @@ pub struct LaunchTiming {
 impl LaunchTiming {
     pub fn from_phases(
         method: &str,
+        cache: &str,
         disk_copy: &str,
         total_ms: f64,
         phases: BTreeMap<&'static str, f64>,
@@ -39,7 +40,7 @@ impl LaunchTiming {
         };
         Self {
             method: method.into(),
-            cache: "uncontrolled".into(),
+            cache: cache.into(),
             disk_copy: disk_copy.into(),
             storage_ms: sum(&[
                 "image_verification",
@@ -100,7 +101,7 @@ mod tests {
         phases.insert("disk_copy", 100.);
         phases.insert("vmm_start", 50.);
         phases.insert("guest_ready", 25.);
-        let timing = LaunchTiming::from_phases("create", "Copy", 200., phases);
+        let timing = LaunchTiming::from_phases("create", "uncontrolled", "Copy", 200., phases);
         assert_eq!(timing.storage_ms, Some(100.));
         assert_eq!(timing.vmm_ms, Some(50.));
         assert_eq!(timing.init_ms, Some(25.));

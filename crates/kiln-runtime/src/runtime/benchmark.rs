@@ -187,7 +187,8 @@ mod tests {
             }
         })
         .await;
-        let before = LaunchTiming::from_phases("create", "Copy", 8367.8, take_phases());
+        let before =
+            LaunchTiming::from_phases("create", "uncontrolled", "Copy", 8367.8, take_phases());
         println!(
             "PROOF_BEFORE {}",
             serde_json::to_string(&before).expect("timing json")
@@ -213,7 +214,7 @@ mod tests {
             take_phases()
         })
         .await;
-        let after = LaunchTiming::from_phases("create", "Copy", 8367.8, phases);
+        let after = LaunchTiming::from_phases("create", "uncontrolled", "Copy", 8367.8, phases);
         println!(
             "PROOF_AFTER {}",
             serde_json::to_string(&after).expect("timing json")
@@ -242,8 +243,13 @@ mod tests {
             take_phases()
         })
         .await;
-        let timing =
-            crate::launch_timing::LaunchTiming::from_phases("create", "Copy", 100., phases);
+        let timing = crate::launch_timing::LaunchTiming::from_phases(
+            "create",
+            "uncontrolled",
+            "Copy",
+            100.,
+            phases,
+        );
         assert!(timing.storage_ms.is_some());
         assert!(timing.vmm_ms.is_some());
         assert!(timing.init_ms.is_some());
