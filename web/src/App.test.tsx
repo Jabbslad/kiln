@@ -11,7 +11,7 @@ import { previewDashboard } from './fixtures'
 
 afterEach(() => vi.unstubAllGlobals())
 
-function open(path = '/boxes?preview=1') {
+function open(path = '/boxes') {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <App />
@@ -57,7 +57,7 @@ it('shows a plain empty message when the running version has no embedded notes',
   expect(screen.getByText('No release notes for v9.9.9')).toBeVisible()
 })
 
-it('keeps the public page independent of the host and makes preview an explicit choice', async () => {
+it('keeps the public page independent of the host', async () => {
   const request = vi.fn().mockRejectedValue(new Error('Host unavailable'))
   vi.stubGlobal('fetch', request)
   open('/')
@@ -65,16 +65,10 @@ it('keeps the public page independent of the host and makes preview an explicit 
   expect(screen.getByRole('link', { name: 'Open console' })).toHaveAttribute('href', '/boxes')
   expect(screen.queryByRole('link', { name: 'Sign in' })).not.toBeInTheDocument()
   expect(request).not.toHaveBeenCalled()
-  await userEvent.setup().click(screen.getByRole('link', { name: 'Explore design preview' }))
-  expect(await screen.findByRole('heading', { name: 'Boxes' })).toBeVisible()
-  expect(screen.getByText('EXAMPLE DATA · NO VM OPERATIONS')).toBeVisible()
-  expect(screen.queryByRole('link', { name: 'Sign in' })).not.toBeInTheDocument()
-  expect(request).not.toHaveBeenCalled()
 })
 
-it('combines search and filters without mutating fixture state or fetching', async () => {
-  const request = vi.fn()
-  vi.stubGlobal('fetch', request)
+it('combines search and filters without mutating fixture state', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(previewDashboard)))
   open()
   expect(await screen.findByRole('heading', { name: 'Boxes' })).toBeVisible()
   const user = userEvent.setup()
@@ -85,7 +79,6 @@ it('combines search and filters without mutating fixture state or fetching', asy
   expect(screen.getByText('No matching boxes')).toBeVisible()
   await user.click(screen.getByRole('button', { name: 'Clear filters' }))
   expect(screen.getByRole('link', { name: 'api-dev' })).toBeVisible()
-  expect(request).not.toHaveBeenCalled()
   expect(previewDashboard.boxes[1].state).toBe('paused')
 })
 
@@ -129,8 +122,9 @@ it('renders an actually empty service response as empty, not disconnected', asyn
   expect(screen.queryByText('Connect your control plane')).not.toBeInTheDocument()
 })
 
-it('shows only same-box checkpoints and keeps restore gated after acknowledgement in preview', async () => {
-  open('/boxes/box-7f3a2c1e?preview=1&tab=checkpoints')
+it('shows only same-box checkpoints and enables restore after acknowledgement', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(previewDashboard)))
+  open('/boxes/box-7f3a2c1e?tab=checkpoints')
   const user = userEvent.setup()
   await user.click(await screen.findByRole('button', { name: 'Restore before-upgrade' }))
   const dialog = screen.getByRole('dialog')
@@ -141,7 +135,7 @@ it('shows only same-box checkpoints and keeps restore gated after acknowledgemen
   await user.click(
     within(dialog).getByRole('checkbox', { name: /I understand external state may replay/ }),
   )
-  expect(restore).toBeDisabled()
+  expect(restore).toBeEnabled()
   await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 })
@@ -462,14 +456,8 @@ it('shows lifecycle still in progress and leaves the box state unchanged', async
   expect(screen.getByText('running', { selector: '.status' })).toBeVisible()
 })
 
-it('disables lifecycle confirmation when the console is not live or not authenticated', async () => {
+it('disables lifecycle confirmation when the host is offline', async () => {
   const user = userEvent.setup()
-  const { unmount } = open('/boxes/box-7f3a2c1e?preview=1')
-  await user.click(await screen.findByRole('button', { name: 'Pause' }))
-  expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Pause' })).toBeDisabled()
-  expect(within(screen.getByRole('dialog')).getByText(/Read-only preview/)).toBeVisible()
-  unmount()
-
   const offline = {
     ...previewDashboard,
     host: { ...previewDashboard.host, state: 'offline' as const },
@@ -577,19 +565,8 @@ it('shows delete still in progress and leaves the box in the inventory', async (
   expect(screen.queryByText('Box not found')).not.toBeInTheDocument()
 })
 
-it('disables delete when the console is not live or not authenticated', async () => {
+it('disables delete when the host is offline', async () => {
   const user = userEvent.setup()
-  const { unmount } = open('/boxes/box-7f3a2c1e?preview=1')
-  await user.click(await screen.findByRole('button', { name: /^Delete$/ }))
-  const previewDialog = screen.getByRole('dialog')
-  await user.type(
-    within(previewDialog).getByRole('textbox', { name: 'Type the box name' }),
-    'api-dev',
-  )
-  expect(within(previewDialog).getByRole('button', { name: 'Delete box' })).toBeDisabled()
-  expect(within(previewDialog).getByText(/Read-only preview/)).toBeVisible()
-  unmount()
-
   const offline = {
     ...previewDashboard,
     host: { ...previewDashboard.host, state: 'offline' as const },
@@ -603,13 +580,8 @@ it('disables delete when the console is not live or not authenticated', async ()
   expect(within(dialog).getByText(/Read-only console/)).toBeVisible()
 })
 
-it('disables exec in preview, when the host is offline or unknown, and when the box is stopped', async () => {
+it('disables exec when the host is offline or unknown, and when the box is stopped', async () => {
   const user = userEvent.setup()
-  const { unmount } = open('/boxes/box-7f3a2c1e?preview=1&tab=exec')
-  expect(await screen.findByRole('button', { name: /Execute command/ })).toBeDisabled()
-  expect(screen.getByText(/Read-only preview/)).toBeVisible()
-  unmount()
-
   for (const state of ['offline', 'unknown'] as const) {
     vi.stubGlobal(
       'fetch',
@@ -679,8 +651,9 @@ it('shows the exit code, stdout and stderr after one exec', async () => {
   expect(posts).toBe(1)
 })
 
-it('validates a create form but cannot create a fake VM', async () => {
-  open('/templates?preview=1')
+it('validates a create form without changing the sample inventory', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(previewDashboard)))
+  open('/templates')
   const user = userEvent.setup()
   await user.click(await screen.findByRole('button', { name: 'Create box' }))
   const dialog = screen.getByRole('dialog')
@@ -690,18 +663,8 @@ it('validates a create form but cannot create a fake VM', async () => {
   await user.clear(name)
   await user.type(name, 'api-staging')
   expect(within(dialog).queryByText(/Use lowercase letters/)).not.toBeInTheDocument()
-  expect(within(dialog).getByRole('button', { name: 'Create box' })).toBeDisabled()
-  expect(within(dialog).getByText(/Read-only preview/)).toBeVisible()
+  expect(within(dialog).getByRole('button', { name: 'Create box' })).toBeEnabled()
   expect(previewDashboard.boxes).toHaveLength(4)
-})
-
-it('marks the terminal capability available and keeps preview disconnected', async () => {
-  open('/boxes/box-7f3a2c1e?preview=1')
-  const terminal = await screen.findByTestId('capability-terminal')
-  expect(terminal).toHaveAttribute('data-capability-state', 'available')
-  expect(within(terminal).queryByText('Not available yet')).not.toBeInTheDocument()
-  expect(within(terminal).getByText('Session not connected')).toBeVisible()
-  expect(within(terminal).getByRole('button', { name: 'Connect terminal' })).toBeDisabled()
 })
 
 it('enables Connect terminal only for a running box on a live console', async () => {

@@ -247,18 +247,11 @@ impl Runtime {
         self.save(&record)?;
         let started = std::time::Instant::now();
         let (result, phases) = super::benchmark::scoped(async {
-            let result = self.boot(&mut record, Some(&snapshot), None, false).await;
+            let result = self.boot(&mut record, Some(&snapshot), false).await;
             (result, super::benchmark::take_phases())
         })
         .await;
-        self.finish_launch(
-            &mut record,
-            started,
-            "restore",
-            "uncontrolled",
-            result,
-            phases,
-        )?;
+        self.finish_launch(&mut record, started, "restore", result, phases)?;
         fs::remove_dir_all(self.directory(box_id)?.join(previous.run))?;
         self.cleanup_disk_layers(&record, record.disk_layer.as_deref())?;
         fs::remove_file(self.directory(box_id)?.join("restore.previous.json"))?;
@@ -362,20 +355,13 @@ impl Runtime {
                 self.save(&record)?;
                 failpoint("after-layer-publication");
                 drop(phase);
-                self.boot(&mut record, Some(&snapshot), None, true).await
+                self.boot(&mut record, Some(&snapshot), true).await
             }
             .await;
             (result, super::benchmark::take_phases())
         })
         .await;
-        self.finish_launch(
-            &mut record,
-            started,
-            "create",
-            "template_restore",
-            result,
-            phases,
-        )?;
+        self.finish_launch(&mut record, started, "create", result, phases)?;
         Ok(record)
     }
 }

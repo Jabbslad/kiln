@@ -112,7 +112,7 @@ Every response on the dashboard listener gets the header set identity already ap
 - `Referrer-Policy` is `strict-origin`. Identity uses that value because `no-referrer` makes a browser form POST send `Origin: null` (`docs/identity-service.md` lines 147-149).
 - `X-Content-Type-Options` is `nosniff`.
 
-Geist and Geist Mono are bundled locally (`web/README.md` line 3), so the policy does not need a font host. Preview mode, `?preview=1`, stays a labelled local fixture and still makes no API call.
+Geist and Geist Mono are bundled locally (`web/README.md` line 3), so the policy does not need a font host.
 
 ## Browser login
 
@@ -186,7 +186,7 @@ Three PRs, in this order. Each one is usable before the next. None of them flips
 
 ### A. Dashboard endpoint and static files
 
-Land the assembler, `GET /api/v1/dashboard`, and static serving on the existing gateway. Authorize the route with the current bearer check, read scope, and the enrolled owner. The SPA still sends no `Authorization` header, so a browser without preview mode stays on the disconnected screen. That is the current client. Do not add a temporary token to the SPA.
+Land the assembler, `GET /api/v1/dashboard`, and static serving on the existing gateway. Authorize the route with the current bearer check, read scope, and the enrolled owner. The SPA still sends no `Authorization` header, so a browser without a session stays on the disconnected screen. That is the current client. Do not add a temporary token to the SPA.
 
 A reviewer on a cloud VM can prove all of the following without a provider account.
 
@@ -219,7 +219,7 @@ Land the dashboard listener, the login redirect, the callback, the session cooki
 A reviewer on a cloud VM can prove all of the following against a fixture identity service and a test certificate.
 
 - The session cookie is `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, and has no `Domain`. The attempt cookie survives a cross-site top-level callback. Logout is POST, checks `Origin` and CSRF, and clears one session.
-- After login, the SPA's same-origin `GET /api/v1/dashboard` returns the schema. With no cookie it returns 401 and the disconnected screen. Preview mode still makes no request.
+- After login, the SPA's same-origin `GET /api/v1/dashboard` returns the schema. With no cookie it returns 401 and the disconnected screen.
 - The dashboard cookie is ignored on the CLI listener. An `operate` route there still requires a bearer token.
 - Deactivating the server, or removing local enrollment, ends dashboard sessions. A fixture that sets `revoked_at` ends them on the next status check. An identity process that refuses connections leaves an unexpired session usable.
 - A burst past 60 requests per minute from one address is limited. The 32-permit ceiling still returns 429 under concurrency.
