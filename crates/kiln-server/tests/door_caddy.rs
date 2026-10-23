@@ -27,8 +27,8 @@ use axum::{
 use futures_util::stream;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use kiln_api::{
-    Action, ExecRequest, ExecResult, Operation, OperationState, Outcome, Role, Scope,
-    ServerClaims, Submit,
+    Action, ExecRequest, ExecResult, Operation, OperationState, Outcome, Role, Scope, ServerClaims,
+    Submit,
 };
 use kiln_server::{
     auth::{Authenticator, Enrollment},
@@ -100,7 +100,7 @@ fn enrollment() -> Enrollment {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: String::new(),
+        tenant_id: Some("tenant-a".into()),
     }
 }
 

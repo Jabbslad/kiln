@@ -14,8 +14,7 @@ use axum::{
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use kiln_api::{
-    ApiError, BoxView, ExecResult, Operation, OperationState, Outcome,
-    use kiln_api::{Role, Scope, ServerClaims},
+    ApiError, BoxView, ExecResult, Operation, OperationState, Outcome, Role, Scope, ServerClaims,
 };
 use kiln_runtime::{
     image::{BootMode, Manifest},

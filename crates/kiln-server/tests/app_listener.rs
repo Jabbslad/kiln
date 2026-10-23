@@ -83,13 +83,7 @@ fn token(key: &EncodingKey, sub: &str, scope: Scope) -> String {
     token_with(key, sub, scope, "device-1")
 }
 
-fn tenant_token(
-    key: &EncodingKey,
-    sub: &str,
-    scope: Scope,
-    tenant_id: &str,
-    role: Role,
-) -> String {
+fn tenant_token(key: &EncodingKey, sub: &str, scope: Scope, tenant_id: &str, role: Role) -> String {
     let now = jsonwebtoken::get_current_timestamp();
     let claims = ServerClaims {
         iss: "https://identity.example.test".into(),
@@ -1129,44 +1123,11 @@ fn identity_exchange_must_dial_loopback() {
     assert!(rejected.is_err());
 }
 
-fn token_for_tenant(
-    key: &EncodingKey,
-    sub: &str,
-    tenant_id: &str,
-    role: Role,
-    scope: Scope,
-    credential_id: &str,
-) -> String {
-    let now = jsonwebtoken::get_current_timestamp();
-    let claims = ServerClaims {
-        iss: "https://identity.example.test".into(),
-        sub: sub.into(),
-        aud: "kiln:server:server-b".into(),
-        tenant_id: Some(tenant_id.into()),
-        iat: now,
-        nbf: now,
-        exp: now + 300,
-        credential_id: credential_id.into(),
-        scope,
-        role: Some(role),
-    };
-    let mut header = Header::new(Algorithm::ES256);
-    header.kid = Some("first".into());
-    jsonwebtoken::encode(&header, &claims, key).unwrap()
-}
-
 #[tokio::test]
 async fn another_tenant_jwt_is_rejected_at_central_auth() {
     let root = tempfile::tempdir().unwrap();
     let (auth, key) = auth(root.path());
-    let jwt = token_for_tenant(
-        &key,
-        "owner-b",
-        "tenant-other",
-        Role::Owner,
-        Scope::Operate,
-        "device-other-tenant",
-    );
+    let jwt = tenant_token(&key, "owner-b", Scope::Operate, "tenant-other", Role::Owner);
     assert!(auth.authenticate_central(&jwt).await.is_err());
     assert!(
         central(root.path())
@@ -1611,13 +1572,7 @@ async fn serve_operations() -> ServedOperations {
         &format!("https://127.0.0.1:{port}"),
         ca_pem.as_bytes(),
         Some(root.path()),
-        &tenant_token(
-            &key,
-            "member-b",
-            Scope::Operate,
-            "tenant-a",
-            Role::Member,
-        ),
+        &tenant_token(&key, "member-b", Scope::Operate, "tenant-a", Role::Member),
     )
     .unwrap();
     ServedOperations {
