@@ -148,6 +148,7 @@ async fn https_lifecycle_and_crashed_host_never_replay_exec() {
         socket: root.join("host.sock"),
         isolation_config: isolation.clone(),
         allow_unsafe_development: isolation.is_none(),
+        jail_pool: 0,
         templates: [("test".into(), template.id.clone())].into(),
     };
     fs::write(root.join("host.json"), serde_json::to_vec(&config).unwrap()).unwrap();

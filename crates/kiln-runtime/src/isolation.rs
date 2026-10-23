@@ -205,7 +205,7 @@ impl Config {
     ) -> Result<Vec<String>> {
         self.validate_identity(identity)?;
         self.cgroup(run)?;
-        if !base.is_absolute() || !(128..=4096).contains(&memory) || !(1..=4).contains(&vcpus) {
+        if !base.is_absolute() || !launch_limits(memory, vcpus) {
             return Err(Error::Invalid(
                 "invalid jail path or resource limits".into(),
             ));
@@ -297,6 +297,10 @@ impl Config {
         fs::remove_dir(path)?;
         Ok(())
     }
+}
+
+pub(crate) fn launch_limits(memory: u32, vcpus: u8) -> bool {
+    (128..=4096).contains(&memory) && (1..=4).contains(&vcpus)
 }
 
 fn memory_limit(memory: u32) -> u64 {

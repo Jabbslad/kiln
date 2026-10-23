@@ -1497,6 +1497,7 @@ async fn serve_operations() -> ServedOperations {
         socket: root.path().join("host.sock"),
         isolation_config: None,
         allow_unsafe_development: true,
+        jail_pool: 0,
         templates: Default::default(),
     };
     drop(Host::open(&config).unwrap());
@@ -2524,6 +2525,7 @@ async fn a_signed_in_operate_session_reaches_the_host() {
         socket: root.path().join("host.sock"),
         isolation_config: None,
         allow_unsafe_development: true,
+        jail_pool: 0,
         templates: Default::default(),
     };
     drop(Host::open(&config).unwrap());

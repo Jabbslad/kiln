@@ -14,6 +14,7 @@ fn config(root: &std::path::Path) -> Config {
         socket: root.join("host.sock"),
         isolation_config: None,
         allow_unsafe_development: true,
+        jail_pool: 0,
         templates: Default::default(),
     }
 }
