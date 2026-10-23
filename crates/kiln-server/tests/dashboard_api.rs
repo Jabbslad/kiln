@@ -15,7 +15,7 @@ use axum::{
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use kiln_api::{
     ApiError, BoxView, ExecResult, Operation, OperationState, Outcome,
-    auth::{MemberRole, Scope, ServerClaims},
+    use kiln_api::{Role, Scope, ServerClaims},
 };
 use kiln_runtime::{
     image::{BootMode, Manifest},
@@ -444,7 +444,7 @@ fn enrollment(cache: &Path) -> (Authenticator, EncodingKey) {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: WORKSPACE.into(),
-        tenant_id: String::new(),
+        tenant_id: Some("tenant-a".into()),
     };
     fs::write(
         cache,
@@ -462,13 +462,13 @@ fn read_jwt(key: &EncodingKey) -> String {
         iss: "https://identity.example.test".into(),
         sub: "owner-a".into(),
         aud: format!("kiln:server:{WORKSPACE}"),
-        tenant_id: None,
+        tenant_id: Some("tenant-a".into()),
         iat: now,
         nbf: now,
         exp: now + 300,
         credential_id: "device-1".into(),
         scope: Scope::Read,
-        role: Some(MemberRole::Owner),
+        role: Some(Role::Owner),
     };
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
@@ -639,7 +639,7 @@ async fn read_scope_and_admin_token_receive_schema_version_one() {
 
 #[tokio::test]
 async fn tenant_member_dashboard_lists_only_owned_boxes() {
-    use kiln_api::auth::MemberRole;
+    use kiln_api::Role;
     let (fixture, hits) = fixture().await;
     let (auth, key) = enrollment(&fixture.root.path().join("jwks.json"));
     let router = gateway::router_with_workspace(&fixture.socket, auth, WORKSPACE.into()).unwrap();
@@ -654,8 +654,8 @@ async fn tenant_member_dashboard_lists_only_owned_boxes() {
             exp: now + 300,
             credential_id: "device-member".into(),
             scope: Scope::Read,
-            tenant_id: Some("owner-a".into()),
-            role: Some(MemberRole::Member),
+            tenant_id: Some("tenant-a".into()),
+            role: Some(Role::Member),
         };
         let mut header = Header::new(Algorithm::ES256);
         header.kid = Some("first".into());

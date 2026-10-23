@@ -16,7 +16,7 @@ use axum::{
 };
 use futures_util::stream;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use kiln_api::{Action, Submit, auth::MemberRole, auth::Scope, auth::ServerClaims, new_id};
+use kiln_api::{Action, Role, Scope, ServerClaims, Submit, new_id};
 use kiln_server::{
     app_listener::{self, BIND},
     auth::{Authenticator, Enrollment},
@@ -64,7 +64,7 @@ fn auth(dir: &Path) -> (Authenticator, EncodingKey) {
         issuer: "https://identity.example.test".into(),
         owner_id: "owner-a".into(),
         server_id: "server-b".into(),
-        tenant_id: "tenant-a".into(),
+        tenant_id: Some("tenant-a".into()),
     };
     let cache = dir.join("jwks.json");
     std::fs::write(
@@ -88,7 +88,7 @@ fn tenant_token(
     sub: &str,
     scope: Scope,
     tenant_id: &str,
-    role: MemberRole,
+    role: Role,
 ) -> String {
     let now = jsonwebtoken::get_current_timestamp();
     let claims = ServerClaims {
@@ -110,7 +110,7 @@ fn tenant_token(
 
 fn token_with(key: &EncodingKey, sub: &str, scope: Scope, credential_id: &str) -> String {
     let now = jsonwebtoken::get_current_timestamp();
-    let role = (sub == "owner-a").then_some(MemberRole::Owner);
+    let role = (sub == "owner-a").then_some(Role::Owner);
     let claims = ServerClaims {
         iss: "https://identity.example.test".into(),
         sub: sub.into(),
@@ -1129,6 +1129,53 @@ fn identity_exchange_must_dial_loopback() {
     assert!(rejected.is_err());
 }
 
+fn token_for_tenant(
+    key: &EncodingKey,
+    sub: &str,
+    tenant_id: &str,
+    role: Role,
+    scope: Scope,
+    credential_id: &str,
+) -> String {
+    let now = jsonwebtoken::get_current_timestamp();
+    let claims = ServerClaims {
+        iss: "https://identity.example.test".into(),
+        sub: sub.into(),
+        aud: "kiln:server:server-b".into(),
+        tenant_id: Some(tenant_id.into()),
+        iat: now,
+        nbf: now,
+        exp: now + 300,
+        credential_id: credential_id.into(),
+        scope,
+        role: Some(role),
+    };
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some("first".into());
+    jsonwebtoken::encode(&header, &claims, key).unwrap()
+}
+
+#[tokio::test]
+async fn another_tenant_jwt_is_rejected_at_central_auth() {
+    let root = tempfile::tempdir().unwrap();
+    let (auth, key) = auth(root.path());
+    let jwt = token_for_tenant(
+        &key,
+        "owner-b",
+        "tenant-other",
+        Role::Owner,
+        Scope::Operate,
+        "device-other-tenant",
+    );
+    assert!(auth.authenticate_central(&jwt).await.is_err());
+    assert!(
+        central(root.path())
+            .authenticate_central(&jwt)
+            .await
+            .is_err()
+    );
+}
+
 #[tokio::test]
 async fn read_grant_is_checked_and_another_server_is_rejected() {
     let root = tempfile::tempdir().unwrap();
@@ -1136,29 +1183,42 @@ async fn read_grant_is_checked_and_another_server_is_rejected() {
     assert!(matches!(
         auth.authenticate_central(&token(&key, "owner-a", Scope::Read))
             .await,
-        Ok(Scope::Read)
+        Ok(grant) if grant.scope == Scope::Read && grant.caller.sub == "owner-a"
     ));
-    assert!(
-        auth.authenticate_central(&token(&key, "someone-else", Scope::Read))
-            .await
-            .is_err()
-    );
-    let now = jsonwebtoken::get_current_timestamp();
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some("first".into());
+    let now = jsonwebtoken::get_current_timestamp();
+    let wrong_tenant = jsonwebtoken::encode(
+        &header,
+        &ServerClaims {
+            iss: "https://identity.example.test".into(),
+            sub: "member-z".into(),
+            aud: "kiln:server:server-b".into(),
+            tenant_id: Some("tenant-other".into()),
+            iat: now,
+            nbf: now,
+            exp: now + 300,
+            credential_id: "app_wrong_tenant".into(),
+            scope: Scope::Read,
+            role: Some(Role::Member),
+        },
+        &key,
+    )
+    .unwrap();
+    assert!(auth.authenticate_central(&wrong_tenant).await.is_err());
     let other = jsonwebtoken::encode(
         &header,
         &ServerClaims {
             iss: "https://identity.example.test".into(),
             sub: "owner-a".into(),
             aud: "kiln:server:other".into(),
-            tenant_id: Some("ten_other".into()),
+            tenant_id: Some("tenant-a".into()),
             iat: now,
             nbf: now,
             exp: now + 300,
             credential_id: "app_other".into(),
             scope: Scope::Read,
-            role: Some(MemberRole::Owner),
+            role: Some(Role::Owner),
         },
         &key,
     )
@@ -1556,7 +1616,7 @@ async fn serve_operations() -> ServedOperations {
             "member-b",
             Scope::Operate,
             "tenant-a",
-            MemberRole::Member,
+            Role::Member,
         ),
     )
     .unwrap();
@@ -2447,7 +2507,7 @@ fn central(dir: &Path) -> Authenticator {
             issuer: "https://identity.example.test".into(),
             owner_id: "owner-a".into(),
             server_id: "server-b".into(),
-            tenant_id: "tenant-a".into(),
+            tenant_id: Some("tenant-a".into()),
         },
         dir.join("jwks.json"),
     )

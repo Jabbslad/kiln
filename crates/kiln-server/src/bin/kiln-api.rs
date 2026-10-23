@@ -120,8 +120,11 @@ async fn main() -> Result<()> {
             } => {
                 let enrollment = kiln_server::auth::Enrollment::load(&enrollment_file)?
                     .context("server is not enrolled")?;
-                let auth =
-                    kiln_server::auth::Authenticator::central_only(enrollment.clone(), jwks_cache)?;
+                let auth = kiln_server::auth::Authenticator::central_with_enrollment_file(
+                    enrollment.clone(),
+                    jwks_cache,
+                    Some(enrollment_file.clone()),
+                )?;
                 let ca = std::fs::read(&upstream_ca).context("upstream CA required")?;
                 kiln_server::door::serve(
                     listen,
@@ -190,8 +193,15 @@ async fn main() -> Result<()> {
         .as_ref()
         .map(|enrollment| enrollment.server_id.clone())
         .unwrap_or_default();
-    let auth =
-        kiln_server::auth::Authenticator::new(&token, enrollment.map(|e| (e, args.jwks_cache)))?;
+    let auth = match enrollment {
+        Some(enrollment) => kiln_server::auth::Authenticator::new_with_enrollment_file(
+            &token,
+            enrollment,
+            args.jwks_cache,
+            args.enrollment_file,
+        )?,
+        None => kiln_server::auth::Authenticator::new(&token, None)?,
+    };
     let router = kiln_server::gateway::router_with_workspace(
         &args.host_socket.context("host socket required")?,
         auth,

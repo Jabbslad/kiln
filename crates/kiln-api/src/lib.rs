@@ -1,7 +1,8 @@
 //! Portable, public management contract. No runtime records or host paths.
 pub mod access;
 pub mod auth;
-pub use access::{Caller, Role, may_access_box};
+pub use access::may_access_box;
+pub use auth::{AuthGrant, Caller, Role, Scope, ServerClaims};
 pub use kiln_protocol::{ExecRequest, ExecResult, SshReady, release_version, valid_ssh_public_key};
 use serde::{Deserialize, Serialize};
 

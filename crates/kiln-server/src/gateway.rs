@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use kiln_api::{Caller, OperationSubmitQuery, auth::Scope};
+use kiln_api::{Caller, OperationSubmitQuery, Scope};
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
@@ -138,7 +138,7 @@ async fn ensure_box_access(
         authorization,
         box_id,
         caller,
-        tenant_owner,
+        &tenant_owner,
     )
     .await
 }
@@ -201,7 +201,7 @@ async fn dashboard(
     )
     .await?;
     let observed_at = crate::dashboard::utc_timestamp(crate::dashboard::unix_now());
-    let tenant_owner = state.auth.tenant_owner().unwrap_or("").to_owned();
+    let tenant_owner = state.auth.tenant_owner().unwrap_or_default();
     match proxy(
         Arc::clone(&state),
         request,
