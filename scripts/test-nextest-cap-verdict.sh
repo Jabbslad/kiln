@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2016 # patterns match script source and must not expand
 # The 4 GiB nextest cap fails only when nextest exits non-zero or oom_kill > 0.
 # Peak at the cap and memory.events max are reclaim, not a kill.
 set -eu

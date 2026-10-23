@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2016 # patterns match script source and must not expand
 # Off CI, the PR tag-path rehearsal extracts rootfs.ext4 once and compiles
 # release bins once. CI still requires TAG_PATH_RELEASE_BIN_DIR and still
 # packages with package-server-release.sh.
