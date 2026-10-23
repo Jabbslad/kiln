@@ -23,6 +23,7 @@ cargo xtask test-deploy-workflow
 cargo xtask test-ci-docs-only
 cargo xtask test-ci-job-paths
 sh scripts/test-dashboard-npm-ci.sh
+sh scripts/test-playwright-ci-cache.sh
 cargo xtask test-reuse-release
 cargo xtask test-merge-queue-tested
 sh scripts/test-reuse-proved-server-package.sh
@@ -78,6 +79,7 @@ shellcheck scripts/fetch-firecracker.sh scripts/install-caddy.sh scripts/check-b
   scripts/test-check-dashboard-bundle.sh \
   scripts/test-check-installed-versions.sh \
   scripts/test-deploy-host-tools.sh \
+  scripts/test-smoke-box.sh \
   deploy/github/diagnose.sh deploy/github/diagnose-run.sh \
   scripts/test-listener-restart.sh \
   scripts/test-install-upgrade-failure-message.sh \
